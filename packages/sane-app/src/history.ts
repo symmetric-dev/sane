@@ -2,13 +2,15 @@ import { isAbsolute } from "node:path";
 import { FIXED_EFFORT_VALUES } from "../shared/conversation/harness-capabilities";
 import type { CompactRequest, CompactionMetadata, Harness } from "./oc-contract";
 import { isStoredAssistantAgentId, isWorkerAgentId, type AssistantAgentId, type StoredAssistantAgentId, type WorkerAgentId } from "sane-core/agent-catalog";
+import type { ContextPackageRef } from "./context-package";
 
 /** Historical identity is immutable, including archived Knowledge conversations.
  * Missing kind is a legacy assistant; workers always persist their kind. */
-export type AgentSnapshot = { agent?: StoredAssistantAgentId | WorkerAgentId; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean };
+export type AgentSnapshot = { agent?: StoredAssistantAgentId | WorkerAgentId; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; saneExecution?: import("./canonical-execution-store").CanonicalExecutionRef };
 /** Newly resolved profiles cannot introduce archival identities. */
 export type CanonicalAgentSnapshot = Omit<AgentSnapshot, "agent"> & { agent?: AssistantAgentId | WorkerAgentId };
 export function validAgentSnapshot(value: AgentSnapshot): boolean {
+  if (value.saneExecution !== undefined && (!value.saneExecution || typeof value.saneExecution !== "object" || Object.keys(value.saneExecution).some(k => !["schema", "revision"].includes(k)) || value.saneExecution.schema !== 1 || !/^[a-f0-9]{64}$/.test(value.saneExecution.revision) || !value.agent || !value.agentKind || value.agent === "knowledge")) return false;
   if (value.nativeAgentSelected !== undefined && typeof value.nativeAgentSelected !== "boolean") return false;
   if (value.agentKind !== undefined && value.agentKind !== "assistant" && value.agentKind !== "worker") return false;
   if (value.agent === undefined) return value.agentKind === undefined && value.nativeAgentSelected === undefined;
@@ -17,8 +19,9 @@ export function validAgentSnapshot(value: AgentSnapshot): boolean {
 
 export type Status = "running" | "completed" | "failed" | "interrupted";
 export type Session = AgentSnapshot & { sessionId: string; harness?: Harness; nativeSessionId?: string; authorityId?: string; cwd: string; lastStatus: Status | "unknown"; lastRunId: string | null; title?: string; hidden?: boolean; model?: string; effort?: string; profileId?: string; attachment?: { state: "pending" | "ready"; source: string; error?: string }; saneContext?: SaneSessionContext };
-/** Recorded once when SANE creates the session; delivered into native history at startup. */
-export type SaneSessionContext = { version: number; framework: string; assignment?: string };
+/** Legacy sessions deliver framework into startup history. A package reference
+ * opts this conversation into pinned standing context without rewriting old runs. */
+export type SaneSessionContext = { version: number; framework: string; assignment?: string; package?: ContextPackageRef };
 export const efforts = FIXED_EFFORT_VALUES;
 export type Effort = typeof efforts[number];
 export const validModel = (v: unknown): v is string => typeof v === "string" && v.length <= 200 && /^[a-zA-Z0-9][a-zA-Z0-9._:/\[\]-]*$/.test(v);
@@ -84,7 +87,12 @@ export function validateMetadata(value: unknown): Metadata {
     // as empty. Immutable per conversation once set (like harness/cwd).
     if (!validAgentSnapshot(s)) return fail();
     if (s.profileId !== undefined && !validProfileId(s.profileId)) return fail();
-    if (s.saneContext !== undefined && (!object(s.saneContext) || !Object.keys(s.saneContext).every(k => ["version", "framework", "assignment"].includes(k)) || !Number.isSafeInteger(s.saneContext.version) || s.saneContext.version < 1 || typeof s.saneContext.framework !== "string" || !s.saneContext.framework || s.saneContext.assignment !== undefined && (typeof s.saneContext.assignment !== "string" || !s.saneContext.assignment || s.agentKind !== "worker"))) return fail();
+    if (s.saneExecution !== undefined && !s.saneContext?.package) return fail();
+    if (s.saneContext !== undefined && (!object(s.saneContext) || !Object.keys(s.saneContext).every(k => ["version", "framework", "assignment", "package"].includes(k)) || !Number.isSafeInteger(s.saneContext.version) || s.saneContext.version < 1 || typeof s.saneContext.framework !== "string" || !s.saneContext.framework || s.saneContext.assignment !== undefined && (typeof s.saneContext.assignment !== "string" || !s.saneContext.assignment || s.agentKind !== "worker"))) return fail();
+    if (s.saneContext?.package !== undefined) {
+      const p = s.saneContext.package;
+      if (!object(p) || Object.keys(p).some(k => !["schema", "revision", "delivery", "activation"].includes(k)) || p.schema !== 1 || p.delivery !== "standing-native-role" || p.activation !== undefined && p.activation !== "upgrade" || typeof p.revision !== "string" || !/^[a-f0-9]{64}$/.test(p.revision) || s.agent === undefined) return fail();
+    }
     const key = JSON.stringify([s.harness, s.authorityId, s.nativeSessionId]);
     if (nativeIds.has(key)) return fail();
     nativeIds.add(key);

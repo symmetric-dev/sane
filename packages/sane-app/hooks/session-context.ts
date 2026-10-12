@@ -1,5 +1,5 @@
-// Installed only on a new session's first launch, after SessionStart framework delivery.
-// A launch can process automatic continuations too, so emit context only once.
+// Legacy startup or one canonical dynamic snapshot per App launch. Automatic
+// continuations share the snapshot, so emit once for this run's unique file.
 import { open } from "node:fs/promises";
 
 const path = process.argv[2];

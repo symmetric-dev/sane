@@ -13,6 +13,11 @@ import type { ConversationActivity } from "../shared/conversation/activity";
 import { ClaudeActivity } from "./claude-activity";
 import { synchronousDispatchHook } from "./dispatch-evidence";
 import { HarnessDispatchError } from "./harness-dispatch";
+import { prepareContextDelivery, assertContextCurrent, contextReceipt, type ContextProvider } from "./context-delivery";
+import type { ContextDelivery } from "./context-package";
+import { claudeExecutionConfiguration } from "./canonical-agent-operations";
+import type { CanonicalExecutionProvider } from "./canonical-execution-store";
+import { execFile } from "node:child_process";
 
 export const hookEvents = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged"] as const;
 
@@ -50,6 +55,8 @@ export type ClaudeRunDependencies = {
   assertWorkerDeliverySubmission: (owner: RunOwner) => void;
   /** The startup SANE Session block from current membership, or null. */
   saneSession: (sessionId: string) => Promise<string | null>;
+  canonicalContext?: ContextProvider;
+  canonicalExecution?: CanonicalExecutionProvider;
 };
 
 type SpawnOptions = {
@@ -72,6 +79,7 @@ export type ClaudeRunRuntime = {
   env: NodeJS.ProcessEnv;
   writeSettings: (path: string, content: string) => Promise<void>;
   agentSettings: typeof claudeAgentSettings;
+  version?: (executable: string) => Promise<string>;
 };
 
 export type ClaudeHookInput = { runId?: unknown; payload?: unknown };
@@ -106,7 +114,7 @@ type Supervision = {
 };
 type QueuedFollowup = { owner: RunOwner; input: ClaudeQueuedFollowup; cancelled?: boolean; persisted: Promise<void>; draining?: Promise<void> };
 /** failure: the first non-success result record; framework: the SessionStart text this run must deliver. */
-type Result = ClaudeResultSequenceState & { stderr: string };
+type Result = ClaudeResultSequenceState & { stderr: string; canonical?: { delivery: ContextDelivery; dynamicAccepted: boolean; rejected: boolean } };
 const resultTextLimit = CLAUDE_RESULT_TEXT_LIMIT;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -136,6 +144,7 @@ export class ClaudeRunService {
       env: process.env,
       writeSettings: (path, content) => writeFile(path, content, { mode: 0o600 }),
       agentSettings: claudeAgentSettings,
+      version: executable => new Promise((resolve, reject) => execFile(executable, ["--version"], { timeout: 10000, maxBuffer: 4096 }, (error, stdout) => error ? reject(error) : resolve(stdout.trim()))),
       ...runtime,
     };
   }
@@ -367,6 +376,23 @@ export class ClaudeRunService {
           this.stoppedTurns.delete(run.runId); this.turnHooks.set(run.runId, undefined);
         }
         const observation = consumeClaudeResultRecord(result, data, nativeSessionId);
+        const canonical = result.canonical;
+        if (canonical && isClaudeRootRecord(data) && (data.session_id === undefined || data.session_id === nativeSessionId)) {
+          if (data.type === "system" && data.subtype === "hook_response" && data.hook_event === "UserPromptSubmit") {
+            let output: any;
+            try { output = JSON.parse(data.stdout); } catch { /* An unrelated hook response. */ }
+            if (data.outcome === "success" && (data.exit_code === undefined || data.exit_code === 0)
+              && output?.hookSpecificOutput?.hookEventName === "UserPromptSubmit" && output.hookSpecificOutput.additionalContext === canonical.delivery.dynamic && !canonical.dynamicAccepted) {
+              canonical.dynamicAccepted = true;
+              await this.deps.emit(run, "context", { ...contextReceipt(canonical.delivery, "configured", "UserPromptSubmit"), stage: "hook-accepted", dynamicDelivered: true });
+            }
+          }
+          if ((data.type === "assistant" || data.type === "result") && !canonical.dynamicAccepted) {
+            canonical.rejected = result.error = true;
+            result.diagnostic = "Canonical dynamic context was not acknowledged before native output";
+            void this.terminate(owner);
+          }
+        }
         // Fail fast: Claude must not proceed without this run's framework.
         if (observation.frameworkRejected) void this.terminate(owner);
       }
@@ -431,7 +457,7 @@ export class ClaudeRunService {
     try {
       assertSource();
       const identity = snapshotIdentity(run), agent = run.agent, saneContextVersion = run.saneContextVersion;
-      const frameworkPath = !resume && sessionAtEntry?.saneContext ? join(this.options.dataDir, `${runId}.session-start.md`) : undefined;
+      const frameworkPath = !resume && sessionAtEntry?.saneContext && !sessionAtEntry.saneContext.package ? join(this.options.dataDir, `${runId}.session-start.md`) : undefined;
       const framework = frameworkPath ? saneContextText(sessionAtEntry!.saneContext!) : undefined;
       if (operation !== "compact" && compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
       // Write the first log record before publishing its metadata reference.
@@ -447,6 +473,13 @@ export class ClaudeRunService {
         }
       };
       await checkExecution();
+      const assertContextDispatch = () => {
+        assertSource();
+        if (deps.closing() || deps.storageFailed() || owner.stopRequested || owner.cancelling || owner.settled || !deps.owns(owner)) throw new Error("Canonical context preparation cancelled");
+      };
+      const canonical = await prepareContextDelivery(assertSource(), run, deps.canonicalContext, deps.emit, assertContextDispatch);
+      const appendPath = canonical ? join(this.options.dataDir, `${runId}.canonical-context.md`) : undefined;
+      if (appendPath) await prepare(() => deps.enqueue(() => runtime.writeSettings(appendPath, canonical!.standing)));
       const secret = runtime.randomUUID() + runtime.randomUUID(); this.secrets.set(runId, { secret, supervised });
       const hooks: Record<string, { hooks: { type: "command"; command: string; timeout: number }[] }[]> = Object.fromEntries(hookEvents.map(event => [event, [{ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/forward.ts"))} ${quote(event)}`, timeout: 3 }] }]]));
       // The framework enters native history once, from the run that creates the native session.
@@ -456,11 +489,21 @@ export class ClaudeRunService {
         result.framework = { text: framework!, delivered: false, rejected: false, failures: [] };
         hooks.SessionStart!.push({ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/session-start.ts"))} ${quote(frameworkPath)}`, timeout: 10 }] });
       }
-      const installed = identity ? await prepare(() => runtime.agentSettings(this.options.claudeRoot, identity)) : undefined;
-      const ccAgent = installed?.agent, permissions = installed?.permissions;
-      // Separate from SessionStart framework delivery: add the Session block only
-      // alongside the first prompt, never as a per-run system prompt override.
-      const saneSession = !resume ? await prepare(() => deps.saneSession(sessionId)) : null;
+      const executionPolicy = await prepare(async () => await deps.canonicalExecution?.(sessionId) ?? null);
+      if (executionPolicy && (!identity || executionPolicy.policy.spec.name !== `sane/${identity.kind}/${identity.role}`)) throw new Error("Canonical execution role differs from the run");
+      const privateExecution = executionPolicy ? claudeExecutionConfiguration({ policy: executionPolicy.policy, children: executionPolicy.children }) : undefined;
+      let claudeVersion: string | null = null;
+      if (privateExecution) {
+        claudeVersion = await prepare(() => runtime.version!(this.options.claudeBin));
+        const version = /^(\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(claudeVersion);
+        if (!version || Number(version[1]) < 2 || Number(version[1]) === 2 && (Number(version[2]) < 1 || Number(version[2]) === 1 && Number(version[3]) < 281)) throw new AgentLaunchConfigurationError("Canonical execution requires Claude Code 2.1.281 or newer");
+      }
+      const installed = identity && !privateExecution ? await prepare(() => runtime.agentSettings(this.options.claudeRoot, identity)) : undefined;
+      const ccAgent = privateExecution?.agent ?? installed?.agent, permissions = privateExecution?.permissions ?? installed?.permissions;
+      // Canonical static context stays pinned across resumes; mutable membership
+      // travels through UserPromptSubmit rather than Claude's prompt snapshot.
+      const saneSession = canonical && operation !== "compact" ? canonical.dynamic : !resume ? await prepare(() => deps.saneSession(sessionId)) : null;
+      if (canonical && operation !== "compact") result.canonical = { delivery: canonical, dynamicAccepted: false, rejected: false };
       const sessionPath = saneSession === null ? undefined : join(this.options.dataDir, `${runId}.sane-session.md`);
       if (sessionPath) {
         if (saneSession!.length > hookContextLimit) throw new AgentLaunchConfigurationError(`SANE Session context exceeds the ${hookContextLimit}-character hook context limit`);
@@ -472,7 +515,12 @@ export class ClaudeRunService {
       await prepare(() => deps.enqueue(() => runtime.writeSettings(settingsPath, settings)));
       if (deps.closing() || deps.storageFailed() || owner.stopRequested) throw new Error("Closing before launch");
       const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", nativeSessionId!, "--settings", settingsPath];
-      if (ccAgent !== undefined) args.push("--agent", ccAgent);
+      if (privateExecution) args.push(...privateExecution.args);
+      else if (ccAgent !== undefined) args.push("--agent", ccAgent);
+      if (appendPath) args.push("--append-system-prompt-file", appendPath);
+      // This durable activation marker applies to every later launch too: CC
+      // otherwise restores the pre-upgrade Base snapshot on the next resume.
+      if (appendPath && sessionAtEntry?.saneContext?.package?.activation === "upgrade") args.push("--system-prompt-snapshot", "off");
       if (model !== undefined) args.push("--model", model);
       if (effort !== undefined) args.push("--effort", effort);
       // Native HOME/hooks stay shared, but bridge credentials/context do not.
@@ -481,12 +529,15 @@ export class ClaudeRunService {
       const context = await prepare(() => deps.executionContext(sessionId));
       await prepare(() => deps.emit(run, "launch", {
         harness: "claude-code", resume, operation: operation ?? "prompt", workstreamId: context.workstreamId, workstreamRoot: context.artifactsRoot, implementationRoot: cwd,
-        agent: agent ?? null, saneContextVersion: saneContextVersion ?? null, args: [...args], claudeVersion: null,
+        agent: agent ?? null, saneContextVersion: saneContextVersion ?? null, args: [...args], claudeVersion,
+        ...(executionPolicy ? { executionPolicy: { revision: executionPolicy.revision, agent: ccAgent, nativeRoleRegistration: false, policyTranslation: privateExecution!.policyTranslation } } : {}),
         agentFile: installed?.agentFile ?? null, settings: { path: settingsPath, sha256: sha256(settings) },
         framework: frameworkPath ? { path: frameworkPath, sha256: sha256(framework!) } : null,
         sessionBlock: sessionPath ? { path: sessionPath, sha256: sha256(saneSession!) } : null,
       }));
       await checkExecution();
+      await assertContextCurrent(canonical, deps.canonicalContext, assertContextDispatch);
+      if (canonical) await prepare(() => deps.emit(run, "context", { ...contextReceipt(canonical, "configured", operation === "compact" ? "append-system-prompt-file" : "append-system-prompt-file + UserPromptSubmit"), dynamicDelivered: false, snapshot: sessionAtEntry?.saneContext?.package?.activation === "upgrade" ? "off" : "default" }));
       deps.assertWorkerDeliverySubmission(owner);
       if (deps.closing() || deps.storageFailed() || owner.stopRequested || owner.cancelling || owner.settled || !deps.owns(owner)) throw new Error("Execution unavailable before launch");
       assertSource();
@@ -526,6 +577,10 @@ export class ClaudeRunService {
       if (this.groupAlive(owner) && !(await this.terminate(owner))) throw new Error("Process group termination unconfirmed");
       assertSource();
       rejectUndeliveredClaudeFramework(result);
+      if (result.canonical && (!result.canonical.dynamicAccepted || result.canonical.rejected)) {
+        result.error = true;
+        result.diagnostic = "Canonical dynamic context delivery was not confirmed";
+      }
       const closing = deps.closing(), stopRequested = owner.stopRequested, storageFailed = deps.storageFailed();
       const exitSignal = supervised.exitSignal, exitedNormally = exit === 0 && exitSignal === null;
       const status = closing || stopRequested ? "interrupted" : !storageFailed && exitedNormally && result.seen && !result.error ? "completed" : "failed";

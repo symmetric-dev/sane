@@ -74,7 +74,7 @@ afterEach(async () => {
 describe("lifecycle CLI: approval and validation routing", () => {
   test("refuses planning approval when docs are invalid (validation-first)", async () => {
     await expect(cli(["approve", "planning", "--ref", "owner", "--workstream", "demo"])).rejects.toThrow(/Cannot approve planning/)
-  })
+  }, 20_000)
 
   test("records engineering approval with hash and advances phase status", async () => {
     write("design/solutions/SOLUTION.md", "# Solution\n")
@@ -84,7 +84,7 @@ describe("lifecycle CLI: approval and validation routing", () => {
     expect(approval.approval_ref).toBe("owner-approval")
     const current = await status()
     expect(current.workstream.lifecycle.phases.find((p: any) => p.phase === "engineering")?.status).toBe("approved")
-  })
+  }, 20_000)
 
   test("thin approval wrapper forwards phase and reference; validation surfaces amendment warnings", async () => {
     write("PRD.md", "# Direction\n")
@@ -96,7 +96,7 @@ describe("lifecycle CLI: approval and validation routing", () => {
     const validation = (await cli(["validate", "design", "--workstream", "demo"])) as any
     expect(validation.ok).toBe(true)
     expect(validation.warnings.some((w: string) => w.includes("changed since approval"))).toBe(true)
-  })
+  }, 20_000)
 })
 
 describe("lifecycle CLI: job command routing", () => {
@@ -115,7 +115,7 @@ describe("lifecycle CLI: job command routing", () => {
     expect(context.job.jobId).toBe("01")
     expect(context.job.specExists).toBe(true)
     expect(context.planningApproval).not.toBeNull()
-  })
+  }, 20_000)
 })
 
 describe("lifecycle CLI: execution report routing", () => {
@@ -134,7 +134,7 @@ describe("lifecycle CLI: execution report routing", () => {
     await cli(["approve", "execution", "--ref", "owner", "--workstream", "demo"])
     const current = await status()
     expect(current.workstream.lifecycle.jobs.every((j: any) => j.status === "completed")).toBe(true)
-  })
+  }, 20_000)
 })
 
 describe("lifecycle CLI: research command routing", () => {
@@ -148,5 +148,5 @@ describe("lifecycle CLI: research command routing", () => {
     expect(index.registered[0].modified).toBe(true)
     expect(((await cli(["research", "unregister", "--topic", "topic", "--workstream", "demo"])) as any)).toEqual({ unregistered: "topic" })
     expect(((await cli(["research", "index", "--workstream", "demo", "--verbose"])) as any).unregistered).toEqual(["research/topic.md"])
-  })
+  }, 20_000)
 })

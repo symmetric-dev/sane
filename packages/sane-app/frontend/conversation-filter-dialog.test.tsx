@@ -52,10 +52,16 @@ test("filter dialog renders fields and reports changes", async () => {
       root!.render(<ConversationFilterDialog value={value} onChange={next => { value = next; seen.push(next.harness); }} workspaces={[]} navigation={{ workspaceId: "ws1", worktreeId: "wt1" }} overview={null} onClose={() => {}} />);
     });
     expect(host.textContent).toContain("Filter conversations");
-    expect(host.querySelectorAll("select").length).toBeGreaterThanOrEqual(5);
-    const harness = [...host.querySelectorAll("select")].find(s => s.innerHTML.includes("Claude Code")) as HTMLSelectElement;
-    await act(async () => { harness.value = "opencode"; harness.dispatchEvent(new Event("change", { bubbles: true })); });
-    expect(seen).toContain("opencode");
+    const fields = [...host.querySelectorAll<HTMLButtonElement>('[role="combobox"]')];
+    const label = (field: HTMLButtonElement) => document.getElementById(field.getAttribute("aria-labelledby")!)?.textContent;
+    expect(fields.map(label)).toEqual(["Workspace", "Workstream", "Worktree", "Harness", "Phase", "Status"]);
+    const harness = fields.find(field => label(field) === "Harness")!;
+    await act(async () => harness.click());
+    const options = [...document.getElementById(harness.getAttribute("aria-controls")!)!.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(options.map(option => option.firstElementChild?.textContent)).toEqual(["All harnesses", "Claude Code", "OpenCode"]);
+    await act(async () => options.find(option => option.firstElementChild?.textContent === "OpenCode")!.click());
+    expect(seen).toEqual(["opencode"]);
+    expect(harness.getAttribute("aria-expanded")).toBe("false");
   } finally {
     if (root) await act(async () => root!.unmount()); browser.close();
     for (const [key, descriptor] of prior) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }

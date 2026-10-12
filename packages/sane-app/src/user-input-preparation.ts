@@ -5,6 +5,65 @@ import { requireOperation, validateHarness } from "./harness-operations";
 import { validEffort, validModel, validVariant, type AgentSnapshot, type Session } from "./history";
 import type { Harness } from "./oc-contract";
 import type { OpenCodeLaunch } from "./opencode";
+import type { StoredSaneAgentIdentity } from "sane-core/agent-catalog";
+import type { CanonicalExecutionStore } from "./canonical-execution-store";
+import type { ContextPackageStore } from "./context-package-store";
+import { saneSessionContext } from "./agent-launch";
+
+export type CanonicalActivation = { saneExecution: NonNullable<Session["saneExecution"]>; saneContext: NonNullable<Session["saneContext"]> };
+export type ActivationSnapshot = { saneExecution?: Session["saneExecution"]; saneContext?: Session["saneContext"] };
+export type ActivationReservation = { schema: 2; identity: StoredSaneAgentIdentity; activation: ActivationSnapshot };
+function isActivationReservation(value: unknown): value is ActivationReservation {
+  if (!value || typeof value !== "object" || !("schema" in value) || value.schema !== 2 || !("identity" in value) || !("activation" in value)) return false;
+  const { identity, activation } = value;
+  if (!identity || typeof identity !== "object" || !("kind" in identity) || !("role" in identity) || typeof identity.role !== "string" || !["assistant", "worker"].includes(String(identity.kind)) || !activation || typeof activation !== "object") return false;
+  if ("saneExecution" in activation && activation.saneExecution !== undefined) {
+    const ref = activation.saneExecution;
+    if (!ref || typeof ref !== "object" || !("schema" in ref) || ref.schema !== 1 || !("revision" in ref) || typeof ref.revision !== "string" || !/^[a-f0-9]{64}$/.test(ref.revision)) return false;
+  }
+  if (!("saneContext" in activation) || !activation.saneContext || typeof activation.saneContext !== "object") return false;
+  const context = activation.saneContext;
+  return "version" in context && typeof context.version === "number" && Number.isSafeInteger(context.version) && context.version > 0 && "framework" in context && typeof context.framework === "string" && !!context.framework;
+}
+/** A persisted pair wins over today's flag and authored files. Old execution-only
+ * records cannot establish a context binding and require explicit reconciliation. */
+export async function reserveActivation(identity: StoredSaneAgentIdentity, deps: {
+  read: () => Promise<unknown | undefined>;
+  write: (record: ActivationReservation) => Promise<void>;
+  create?: () => Promise<ActivationSnapshot>;
+  validate: (activation: ActivationSnapshot) => Promise<void>;
+}): Promise<ActivationSnapshot> {
+  const saved = await deps.read();
+  if (saved !== undefined) {
+    if (!isActivationReservation(saved)) throw new Error("Unpaired legacy execution reservation requires reconciliation; context cannot be reconstructed");
+    if (saved.identity.kind !== identity.kind || saved.identity.role !== identity.role) throw new Error("Reserved activation identity changed");
+    await deps.validate(saved.activation);
+    return saved.activation;
+  }
+  if (!deps.create) throw new Error("Native creation has no paired activation reservation; reconcile its original configuration");
+  const activation = await deps.create();
+  await deps.validate(activation);
+  await deps.write({ schema: 2, identity, activation });
+  return activation;
+}
+type ActivationStores = { execution: Pick<CanonicalExecutionStore, "create" | "load">; context: Pick<ContextPackageStore, "create" | "load"> };
+export async function validateCanonicalActivation(pair: CanonicalActivation, identity: StoredSaneAgentIdentity, stores: ActivationStores) {
+  if (!pair.saneContext?.package || !pair.saneExecution || pair.saneExecution.schema !== 1) throw new Error("Canonical activation requires paired context and execution references");
+  const [execution, context] = await Promise.all([stores.execution.load(pair.saneExecution), stores.context.load(pair.saneContext.package)]);
+  const role = context.bundle.assets.find(asset => asset.kind === "role");
+  if (context.bundle.identity.kind !== identity.kind || context.bundle.identity.role !== identity.role || execution.policy.spec.name !== `sane/${identity.kind}/${identity.role}` || !role || execution.policy.spec.body !== role.text) throw new Error("Canonical activation context and execution role bytes differ");
+  return execution;
+}
+export async function createCanonicalActivation(identity: StoredSaneAgentIdentity, stores: ActivationStores): Promise<CanonicalActivation> {
+  const saneExecution = await stores.execution.create(identity);
+  const context = await stores.context.create(identity);
+  const { saneContext } = saneSessionContext(identity);
+  if (!saneContext) throw new Error("Canonical activation requires a SANE identity");
+  const pair = { saneExecution, saneContext: { ...saneContext, package: context } };
+  await validateCanonicalActivation(pair, identity, stores);
+  if ((await stores.execution.create(identity)).revision !== saneExecution.revision) throw new Error("Authored execution changed during activation preparation");
+  return pair;
+}
 
 type Immutable<T> = T extends object ? { readonly [K in keyof T]: Immutable<T[K]> } : T;
 type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
@@ -45,6 +104,7 @@ export type UserInputPreparationDependencies = {
   ensureDirectory: (cwd: string) => Promise<void>;
   validateOpenCodeModel: (model: string, effort?: string) => unknown;
   resolveOpenCodeLaunch: (cwd: string, settings: { model?: string; effort?: string; agent?: string }) => Promise<OpenCodeLaunch>;
+  prepareCanonicalExecution?: (role: AssistantAgentId) => Promise<CanonicalActivation & { model?: string; effort?: string }>;
 };
 
 export type UserInputRevalidationDependencies = {
@@ -66,7 +126,7 @@ function freeze<T>(value: T): T {
   }
   return value;
 }
-const snapshot = (s: Session): Configuration => copy({ profileId: profileId(s), model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, saneContext: s.saneContext, attachment: s.attachment });
+const snapshot = (s: Session): Configuration => copy({ profileId: profileId(s), model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, saneExecution: s.saneExecution, saneContext: s.saneContext, attachment: s.attachment });
 const sessionBinding = (s: Session, authorityId: string): Binding => copy({ conversationId: s.sessionId, harness: validateHarness(s.harness, { defaultHarness: "claude-code" }), authorityId: s.authorityId ?? authorityId, nativeSessionId: s.nativeSessionId, cwd: s.cwd });
 const same = (a: unknown, b: unknown): boolean => {
   // JSON object insertion order is not identity (including after persistence).
@@ -134,12 +194,14 @@ export async function prepareUserInput(value: unknown, deps: UserInputPreparatio
   let model = upgrade ? upgrade.model || undefined : input.model as string | undefined ?? session?.model;
   let effort = upgrade ? upgrade.effort || undefined : input.effort as string | undefined ?? session?.effort;
   const agent = upgrade ? upgrade.role ?? undefined : input.agent as AssistantAgentId | undefined ?? session?.agent;
+  const canonical = (!session || !session.agent) && isAssistantAgentId(agent) ? await deps.prepareCanonicalExecution?.(agent) : undefined;
+  if (canonical && harness === "opencode" && !model) { model = canonical.model; effort ??= canonical.effort; }
   if (harness === "opencode" && input.model === undefined && model !== undefined) deps.validateOpenCodeModel(model, effort);
   const selectedCwd = !session && input.cwd === undefined && typeof input.workspaceId === "string" && typeof input.worktreeId === "string" ? await deps.selectedDirectory(input.workspaceId, input.worktreeId) : undefined;
   const cwd = resolve(input.cwd as string | undefined ?? session?.cwd ?? selectedCwd ?? deps.defaultCwd);
   try { await deps.ensureDirectory(cwd); } catch { throw new UserInputPreparationError("cwd must be an existing directory", 400); }
   if (session && session.cwd !== cwd) throw new UserInputPreparationError("Session cwd cannot change", 400);
-  const nativeLaunch = harness === "opencode" && !session ? copy(await deps.resolveOpenCodeLaunch(cwd, { model, effort, ...(isAssistantAgentId(agent) ? { agent: nativeAgentId({ kind: "assistant", role: agent }, harness) } : {}) })) : undefined;
+  const nativeLaunch = harness === "opencode" && !session ? copy(await deps.resolveOpenCodeLaunch(cwd, { model, effort, ...(isAssistantAgentId(agent) ? { agent: canonical ? "build" : nativeAgentId({ kind: "assistant", role: agent }, harness) } : {}) })) : undefined;
   if (nativeLaunch?.model) {
     model = input.model = `${nativeLaunch.model.providerID}/${nativeLaunch.model.id}`;
     effort = input.effort = nativeLaunch.model.variant;
@@ -147,7 +209,7 @@ export async function prepareUserInput(value: unknown, deps: UserInputPreparatio
   const binding = session ? sessionBinding(session, authorityId) : { conversationId: deps.conversationId(), harness, authorityId, cwd };
   const normalized = copy({ harness: input.harness, model: input.model, effort: input.effort, agent: input.agent, profileId: input.profileId }) as NormalizedSettings;
   const configuration: Configuration = copy({ ...(session ? snapshot(session) : {}), profileId: upgrade?.id ?? (session ? profileId(session) : profile?.id ?? legacyProfileId(harness, agent)), model, effort, agent,
-    ...(!session && agent !== undefined ? { agentKind: "assistant", nativeAgentSelected: true } : {}) });
+    ...(!session && agent !== undefined ? { agentKind: "assistant", nativeAgentSelected: !canonical || harness !== "opencode" } : {}), ...(canonical ? { saneExecution: canonical.saneExecution, saneContext: canonical.saneContext } : {}) });
   // An upgrade clearing model/effort must not retain inherited defaults.
   if (model === undefined) delete configuration.model;
   if (effort === undefined) delete configuration.effort;

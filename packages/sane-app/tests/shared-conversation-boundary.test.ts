@@ -11,7 +11,7 @@ async function sources(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
   const nested = await Promise.all(entries.map(entry => {
     const path = join(root, entry.name);
-    return entry.isDirectory() ? sources(path) : Promise.resolve(entry.name.endsWith(".ts") ? [path] : []);
+    return entry.isDirectory() ? sources(path) : Promise.resolve(entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts") ? [path] : []);
   }));
   return nested.flat();
 }

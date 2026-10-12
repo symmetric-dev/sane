@@ -3,9 +3,9 @@
  * Never builds assets, ensures a managed service, or invokes installed CLIs/models.
  * Run this file alone: startup selectors/password are saved and restored below.
  */
-import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test as bunTest } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { start, type Options } from "../src/bridge";
 import { atomicAppRecord, initializeAppStore } from "../src/app-store";
@@ -41,6 +41,22 @@ import { HarnessDispatchRegistry } from "../src/harness-dispatch";
 import type { Session } from "../src/history";
 import { discoverRepository, initializeRepository, DomainError, RepositoryDomain } from "sane-core/server";
 import * as repository from "sane-core/server";
+import { captureContextEvidence } from "./canonical-fixture";
+
+/** Opt-in diagnostic trace survives a stuck test/process timeout. */
+const test: typeof bunTest = new Proxy(bunTest, {
+  apply(target, receiver, [name, body, timeout]) {
+    const file = process.env.SANE_BRIDGE_TEST_PROGRESS;
+    if (!file) return Reflect.apply(target, receiver, [name, body, timeout]);
+    return Reflect.apply(target, receiver, [name, async (...args: unknown[]) => {
+      appendFileSync(file, JSON.stringify({ event: "start", name, at: new Date().toISOString() }) + "\n");
+      let outcome = "passed";
+      try { await body(...args); }
+      catch (error) { outcome = "failed"; throw error; }
+      finally { appendFileSync(file, JSON.stringify({ event: "finish", name, outcome, at: new Date().toISOString() }) + "\n"); }
+    }, timeout]);
+  },
+});
 
 const TEMP = "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode";
 const TIMEOUT = 30000;
@@ -55,6 +71,8 @@ type Call = { path: string; method: string; body?: any; authorization: string | 
 type FakeSession = { info: any; messages: NativeMessage[]; inbox: any[]; active: boolean };
 const calls: Call[] = [];
 const sessions = new Map<string, FakeSession>();
+const contextEntries = new Map<string, string>();
+const executionConfigurations = new Map<string, unknown>();
 const pendingInteractions = new Map<string, { permissions: any[]; forms: any[] }>();
 let nativeAvailable = true;
 const nativePassword = "fixture-native-password";
@@ -103,12 +121,30 @@ function complete(id: string, outcome = "succeeded") {
 
 async function fakeNative(req: Request) {
   const url = new URL(req.url), path = url.pathname;
-  const input = req.method === "POST" ? await req.json().catch(() => undefined) : undefined;
+  const input = ["POST", "PUT"].includes(req.method) ? await req.json().catch(() => undefined) : undefined;
   calls.push({ path: path + url.search, method: req.method, body: input, authorization: req.headers.get("authorization") });
   if (req.headers.get("authorization") !== nativeAuthorization) return Response.json({ error: "fixture credentials required" }, { status: 401 });
+  const contextRoute = /^\/api\/experimental\/session\/([^/]+)\/instructions\/entries(?:\/sane.context)?$/.exec(path);
+  if (contextRoute) {
+    const id = contextRoute[1]!;
+    if (!sessions.has(id)) return Response.json({ error: "unknown fixture session" }, { status: 404 });
+    if (req.method === "PUT") { contextEntries.set(id, input.value); return Response.json({ data: { key: "sane.context", value: input.value } }); }
+    return Response.json({ data: contextEntries.has(id) ? [{ key: "sane.context", value: contextEntries.get(id) }] : [] });
+  }
   if (path === "/api/info") return Response.json({ version: "2.0.18", pid: process.pid });
   if (path === "/api/model") return nativeAvailable ? Response.json({ data: [{ id: "offline", providerID: "fixture", name: "Offline fixture", enabled: true, variants: [{ id: "bounded" }] }] }) : Response.json({ error: "offline fixture disconnected" }, { status: 503 });
-  if (path === "/api/agent") return Response.json({ data: [{ id: "sane/assistant/engineering", model: { providerID: "fixture", id: "offline", variant: "bounded" } }] });
+  if (path === "/api/agent") return Response.json({ data: [{ id: "sane/assistant/engineering", model: { providerID: "fixture", id: "offline", variant: "bounded" } }, { id: "build", model: { providerID: "fixture", id: "offline", variant: "bounded" } }] });
+  if (path === "/api/rpc/sane-execution/configure") {
+    const configuration = input?.input, session = sessions.get(configuration?.sessionID);
+    if (!session) return Response.json({ error: "unknown fixture session" }, { status: 404 });
+    if (!/^sane-execution-[a-f0-9]{64}$/.test(configuration.agent) || configuration.executionAgent !== configuration.agent || configuration.directory !== session.info.location.directory || configuration.directory !== url.searchParams.get("location[directory]")) return Response.json({ error: "fixture execution binding mismatch" }, { status: 409 });
+    const ids = configuration.nativeChildren.map((child: any) => child.id);
+    if (new Set(ids).size !== ids.length || configuration.directChildren.some((id: string) => !ids.includes(id))) return Response.json({ error: "fixture delegation graph mismatch" }, { status: 400 });
+    const { readOnly = false, ...applied } = configuration;
+    if (readOnly && JSON.stringify(executionConfigurations.get(configuration.sessionID)) !== JSON.stringify(applied)) return Response.json({ error: "fixture requires idle configuration" }, { status: 409 });
+    if (!readOnly) { executionConfigurations.set(configuration.sessionID, structuredClone(applied)); session.info.agent = configuration.agent; }
+    return Response.json({ output: { sessionID: configuration.sessionID, agent: configuration.agent, nativeChildren: ids } });
+  }
   if (path === "/api/session/active") return Response.json({ data: Object.fromEntries([...sessions].filter(([, s]) => s.active).map(([id]) => [id, { type: "running" }])) });
   if (path === "/api/session" && req.method === "POST") {
     const id = `ses_fixture_${sessions.size + 1}`, time = 1700000000000 + sessions.size * 1000;
@@ -121,6 +157,15 @@ async function fakeNative(req: Request) {
   if (!session) return Response.json({ error: `Unexpected fixture route: ${path}` }, { status: 404 });
   switch (match![2]) {
     case undefined: return Response.json({ data: session.info });
+    case "fork": {
+      const id = `ses_fixture_${sessions.size + 1}`;
+      const boundary = input.before ?? session.messages.at(-1)!.id;
+      const beforeIndex = input.before ? session.messages.findIndex(m => m.id === input.before) : session.messages.length;
+      const info = { ...structuredClone(session.info), id, fork: { sessionID: match![1], boundary: { type: input.before ? "before" : "through", messageID: boundary } } };
+      sessions.set(id, { info, messages: structuredClone(session.messages.slice(0, beforeIndex)), inbox: [], active: false });
+      if (contextEntries.has(match![1]!)) contextEntries.set(id, contextEntries.get(match![1]!)!);
+      return Response.json({ data: info });
+    }
     case "model": session.info.model = input.model; return Response.json({ data: session.info });
     case "inbox": return Response.json({ data: session.inbox });
     case "synthetic": {
@@ -216,9 +261,16 @@ async function queueSession(harness: Harness = "claude-code", initialized = fals
   return disk("metadata.json").sessions.find((s: Session) => s.sessionId === created.body.sessionId) as Session;
 }
 const queuePath = (id: string) => `/api/sessions/${id}/pending-inputs`;
-async function isolatedApi(running: Awaited<ReturnType<typeof start>>, path: string, input?: unknown, token = "") {
-  const res = await fetch(`${running.origin}${path}`, { method: input === undefined ? "GET" : "POST", headers: { origin: running.origin, "content-type": "application/json", ...(token ? { cookie: token } : {}) }, ...(input === undefined ? {} : { body: JSON.stringify(input) }), signal: AbortSignal.timeout(5000) });
-  return { status: res.status, body: await res.json() as any, cookie: res.headers.get("set-cookie")?.split(";")[0] };
+async function isolatedApi(running: Awaited<ReturnType<typeof start>>, path: string, input?: unknown, token = "", timeoutMs = 5000) {
+  const method = input === undefined ? "GET" : "POST", started = performance.now();
+  try {
+    const res = await fetch(`${running.origin}${path}`, { method, headers: { origin: running.origin, "content-type": "application/json", ...(token ? { cookie: token } : {}) }, ...(input === undefined ? {} : { body: JSON.stringify(input) }), signal: AbortSignal.timeout(timeoutMs) });
+    return { status: res.status, body: await res.json() as any, cookie: res.headers.get("set-cookie")?.split(";")[0] };
+  } catch (cause) {
+    const diagnostic = { method, path, elapsedMs: Math.round(performance.now() - started), error: String(cause) };
+    captureContextEvidence("isolated-http-failure", diagnostic);
+    throw new Error(`Offline fixture HTTP ${method} ${path} failed after ${diagnostic.elapsedMs}ms: ${String(cause)}`, { cause });
+  }
 }
 async function isolatedLogin(running: Awaited<ReturnType<typeof start>>) { return (await isolatedApi(running, "/api/login", { password: PASSWORD })).cookie!; }
 async function isolatedQueueSeed(name: string, initialized: boolean, harness: Harness = "claude-code", wakeClock?: PendingInputWakeClock | null) {
@@ -226,14 +278,38 @@ async function isolatedQueueSeed(name: string, initialized: boolean, harness: Ha
   // Only the default-clock activation case omits the internal fixture dependency.
   if (wakeClock === null) delete selected.pendingInputWakeClock;
   expect(Bun.spawnSync(["git", "init", "-q", cwd]).exitCode).toBe(0);
-  const running = await start({ ...selected, cwd }), token = await isolatedLogin(running);
-  const registered = await isolatedApi(running, "/api/workspaces", { cwd }, token);
-  if (initialized) expect((await isolatedApi(running, `/api/workstreams/init?workspaceId=${registered.body.workspaceId}`, {}, token)).body.state).toBe("ready");
-  const created = await isolatedApi(running, "/api/sessions", { prompt: "offline repository queue classification seed", cwd, harness }, token);
-  expect(created.status).toBe(202);
-  await until("repository queue seed settled", async () => JSON.parse(readFileSync(join(selected.dataDir, "metadata.json"), "utf8")).runs.find((r: any) => r.runId === created.body.runId)?.status === "completed" || undefined);
-  const session = JSON.parse(readFileSync(join(selected.dataDir, "metadata.json"), "utf8")).sessions[0] as Session;
-  return { selected, running, token, session, discovery: discoverRepository(cwd) };
+  const running = await start({ ...selected, cwd });
+  let stage = "login";
+  try {
+    const token = await isolatedLogin(running);
+    stage = "workspace registration";
+    const registered = await isolatedApi(running, "/api/workspaces", { cwd }, token);
+    stage = "repository initialization";
+    if (initialized) expect((await isolatedApi(running, `/api/workstreams/init?workspaceId=${registered.body.workspaceId}`, {}, token)).body.state).toBe("ready");
+    stage = "seed admission";
+    // Seed admission includes Git-backed repository validation; isolated captures
+    // measured 5.262s before the scenario starts. Keep scenario requests at 5s.
+    const created = await isolatedApi(running, "/api/sessions", { prompt: "offline repository queue classification seed", cwd, harness }, token, 10000);
+    expect(created.status).toBe(202);
+    stage = "seed settlement";
+    await until("repository queue seed settled", async () => JSON.parse(readFileSync(join(selected.dataDir, "metadata.json"), "utf8")).runs.find((r: any) => r.runId === created.body.runId)?.status === "completed" || undefined);
+    // Terminal status is persisted before lifecycle reconciliation releases the
+    // owner/admission lease. Scenarios requiring a new lease must wait for that
+    // public capability, not race the metadata write.
+    stage = "seed owner release";
+    await until("repository queue seed owner released", async () => {
+      const row = (await isolatedApi(running, "/api/sessions", undefined, token)).body.sessions.find((s: any) => s.sessionId === created.body.sessionId);
+      return row?.lastStatus === "completed" && row?.availability?.canSend ? true : undefined;
+    });
+    const session = JSON.parse(readFileSync(join(selected.dataDir, "metadata.json"), "utf8")).sessions[0] as Session;
+    return { selected, running, token, session, discovery: discoverRepository(cwd) };
+  } catch (error) {
+    // A failed seed never returns a handle to the caller's finally block.
+    // Close here so an admission timeout cannot leak a live App into later tests.
+    await running.close();
+    captureContextEvidence("isolated-seed-failure", { name, harness, stage, error: String(error), cleanup: "App closed" });
+    throw error;
+  }
 }
 async function driveConsumer(running: Awaited<ReturnType<typeof start>>) {
   running.pendingInputConsumer.poll(); await running.pendingInputConsumer.drain();
@@ -447,9 +523,14 @@ async function recoveredOCSeed(name: string) {
   return { ...f, head, waiter, original: original as PendingInputStoredItem };
 }
 async function fixtureSession(harness: Harness) {
+  await login();
   const response = await api("/api/sessions");
   expect(response.status).toBe(200);
-  const session = response.body.sessions.find((s: any) => s.harness === harness && !s.attachment && s.lastStatus === "completed");
+  let session = response.body.sessions.find((s: any) => s.harness === harness && !s.attachment && s.lastStatus === "completed" && s.availability?.canSend);
+  if (!session) {
+    const created = await queueSession(harness);
+    session = (await api("/api/sessions")).body.sessions.find((s: any) => s.sessionId === created.sessionId && s.availability?.canSend);
+  }
   expect(session).toBeDefined();
   return session;
 }
@@ -981,8 +1062,18 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     const lease = app!.preparedInput.reserve(context.intent, session.sessionId);
     let published: DispatchLifecycle | undefined, result!: PreparedAdmissionResult;
     const activity = OpenCodeAdapter.prototype.activity, idle = OpenCodeAdapter.prototype.assertIdle;
-    const activityGuard = spyOn(OpenCodeAdapter.prototype, "activity").mockImplementation(function(this: OpenCodeAdapter, ...args) { if (args[0] === session.nativeSessionId) throw new Error("Post-claim activity guard is forbidden"); return activity.apply(this, args); });
-    const idleGuard = spyOn(OpenCodeAdapter.prototype, "assertIdle").mockImplementation(function(this: OpenCodeAdapter, ...args) { if (args[0] === session.nativeSessionId) throw new Error("Post-claim idle guard is forbidden"); return idle.apply(this, args); });
+    const guardedReads: { method: string; dispatched: boolean; status?: string; stack?: string }[] = [];
+    const guardRead = (method: string, id: string) => {
+      if (id !== session.nativeSessionId) return;
+      guardedReads.push({ method, dispatched: !!published?.owner.nativeDispatched, status: published?.owner.run.status, stack: new Error().stack });
+      // The claimed input must not be gated on foreign native activity before
+      // dispatch. Once completed, lifecycle wake legitimately performs fresh
+      // read-only settlement proof; delegate that exact proof to the real adapter.
+      if (published?.owner.nativeDispatched && published.owner.run.status === "completed") return;
+      throw new Error(`Post-claim ${method} guard is forbidden`);
+    };
+    const activityGuard = spyOn(OpenCodeAdapter.prototype, "activity").mockImplementation(function(this: OpenCodeAdapter, ...args) { guardRead("activity", args[0]); return activity.apply(this, args); });
+    const idleGuard = spyOn(OpenCodeAdapter.prototype, "assertIdle").mockImplementation(function(this: OpenCodeAdapter, ...args) { guardRead("idle", args[0]); return idle.apply(this, args); });
     try {
       result = await app!.preparedInput.admit(prepared, lease, { context, publish: lifecycle => {
         expect(published).toBeUndefined(); published = lifecycle; claim.hooks.push("publish");
@@ -1002,7 +1093,10 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       expect(result.lifecycle.submissionEvidence()).toMatchObject({ ...claim.expected, submission: "submitted", nativeAcceptance: "accepted" });
       expect(claim.hooks.filter(hook => hook === "link")).toHaveLength(1); expect(claim.hooks.filter(hook => hook === "publish")).toHaveLength(1); expect(claim.hooks.filter(hook => hook === "native")).toHaveLength(1);
     } finally { app!.preparedInput.release(lease); activityGuard.mockRestore(); idleGuard.mockRestore(); fake.active = false; }
-    expect(await result!.lifecycle.successfulSettlement()).toEqual({ ready: true });
+    const settlement = await result!.lifecycle.successfulSettlement();
+    captureContextEvidence(`strict-handoff-guard-${foreignRace}`, { guardedReads, settlement, submission: result!.lifecycle.submissionEvidence() });
+    expect(guardedReads.every(read => read.dispatched && read.status === "completed")).toBe(true);
+    expect(settlement).toEqual({ ready: true });
   }, TIMEOUT);
 
   test("strict prepared handoff rejects incomplete capabilities, policy, origin and configuration before native preparation/publication", async () => {
@@ -1938,6 +2032,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
 
   for (const resumed of [false, true]) test(`${resumed ? "Phase5b resumed" : "Phase4c2"} transport unavailable waits without storage poison, while fresh domain drift pauses`, async () => {
     const f = await isolatedQueueSeed(`consumer-unavailable-${resumed}`, true, "opencode"), id = f.session.sessionId, input = queueWire(f.session), store = f.running.pendingInputs.store;
+    const promptsBefore = prompts().length;
     const activity = OpenCodeAdapter.prototype.activity;
     const unavailable = spyOn(OpenCodeAdapter.prototype, "activity").mockImplementation(async function(this: OpenCodeAdapter, ...args) { if (args[0] === f.session.nativeSessionId) throw new OpenCodeUnavailableError("Offline consumer proof unavailable"); return activity.apply(this, args); });
     try {
@@ -1945,13 +2040,24 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       if (resumed) await f.running.pendingInputs.resume(id, { version: 1, action: "resume", requestId: crypto.randomUUID(), conversationId: id, expectedRevision: store.get(id).revision });
       await driveConsumer(f.running);
       expect(store.lookup(id, input.requestId)!.item.claim).toBeNull(); expect(store.inspect(id).pause).toBeNull();
+      // App association routes correctly reject changes while this queue chain
+      // exists. Model an external local-domain writer instead, with its own
+      // validated handle and explicit identity/correlation (no App guard bypass).
+      const inspected = repository.inspectRepositoryStore(f.discovery);
+      if (inspected.state !== "ready") throw new Error("Fixture domain must be initialized");
+      const domain = RepositoryDomain.open(inspected.context);
+      const mutation = { actor: { kind: "local" as const }, correlationId: crypto.randomUUID() };
+      try {
+        domain.createWorkstream({ id: "consumer-context-drift", title: "Offline context drift", type: "feature" }, mutation);
+        domain.associateConversation({ harness: "oc", authorityId: f.session.authorityId!, nativeId: f.session.nativeSessionId! }, "consumer-context-drift", mutation);
+      } finally { domain.close(); }
       unavailable.mockRestore();
-      const listed = (await isolatedApi(f.running, "/api/sessions", undefined, f.token)).body.sessions.find((s: any) => s.sessionId === id);
-      expect((await isolatedApi(f.running, `/api/workstreams?workspaceId=${listed.workspaceId}`, { id: "consumer-context-drift", title: "Offline context drift", type: "feature" }, f.token)).status).toBe(200);
-      expect((await isolatedApi(f.running, `/api/workstreams/associate?workspaceId=${listed.workspaceId}`, { sessionId: id, workstreamId: "consumer-context-drift" }, f.token)).status).toBe(200);
       await driveConsumer(f.running);
       expect(store.inspect(id).pause?.code).toBe("context-changed"); expect(store.lookup(id, input.requestId)!.item.claim).toBeNull();
-      expect((await isolatedApi(f.running, "/api/sessions", { harness: "claude-code", prompt: "offline storage remains available" }, f.token)).status).toBe(202);
+      expect(prompts()).toHaveLength(promptsBefore);
+      const storageProof = await isolatedApi(f.running, "/api/sessions", { harness: "claude-code", prompt: "offline storage remains available" }, f.token);
+      expect(storageProof.status).toBe(202);
+      captureContextEvidence(`transport-unavailable-domain-drift-${resumed}`, { pause: store.inspect(id).pause, item: store.lookup(id, input.requestId)!.item, source: input.source, storageProofStatus: storageProof.status, nativePromptsAdded: prompts().length - promptsBefore });
     } finally { unavailable.mockRestore(); await f.running.close(); }
   }, TIMEOUT);
 
@@ -2186,34 +2292,102 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
   for (const harness of ["claude-code", "opencode"] as const)
     test(`Phase5b ${harness} failed settled predecessor needs new consent, retains sticky Stop history and does not reuse consent after another failure`, async () => {
       const f = await isolatedQueueSeed(`resume-failed-${harness}`, false, harness), id = f.session.sessionId, store = f.running.pendingInputs.store;
+      const ccExecute = ClaudeRunService.prototype.execute; let ccService: ClaudeRunService | undefined;
+      const ccCapture = spyOn(ClaudeRunService.prototype, "execute").mockImplementation(function(this: ClaudeRunService, ...args) {
+        if (args[0].run.sessionId === id) ccService = this;
+        return ccExecute.apply(this, args);
+      });
+      const stages: { stage: string; at: string }[] = [];
+      const mark = (stage: string) => { stages.push({ stage, at: new Date().toISOString() }); captureContextEvidence(`failed-predecessor-stages-${harness}`, { stages, queue: store.inspect(id) }); };
+      const readiness = ConversationCoordinator.prototype.inspectReadiness, readinessRefusals: unknown[] = [];
+      const readinessTrace = spyOn(ConversationCoordinator.prototype, "inspectReadiness").mockImplementation(function(this: ConversationCoordinator<RunOwner>, ...args) {
+        const result = readiness.apply(this, args);
+        if (args[0].conversationId === id && !result.ready) { readinessRefusals.push({ intent: args[0].intent, phase: args[0].phase, result }); if (readinessRefusals.length > 20) readinessRefusals.shift(); }
+        return result;
+      });
       const admit = f.running.preparedInput.admit; let published: DispatchLifecycle | undefined;
       const publisher = spyOn(f.running.preparedInput, "admit").mockImplementation((prepared, lease, options) => admit(prepared, lease, { ...options, publish: lifecycle => { published = lifecycle; options!.publish!(lifecycle); } }));
       try {
         const first = queueWire(f.session, harness === "claude-code" ? "fail for FIFO consumer resume predecessor" : "hold for failed resume predecessor");
-        const second = queueWire(f.session, harness === "claude-code" ? "fail for FIFO consumer resumed head" : "hold for failed resumed head"), last = queueWire(f.session, "offline waiting after second failure"), healthy = queueWire(f.session, "offline ordinary healthy successor");
+        const second = queueWire(f.session, harness === "claude-code" ? "fail for FIFO consumer resumed head" : "hold for failed resumed head"), last = queueWire(f.session, "offline waiting after second failure");
         await f.running.pendingInputs.enqueue(id, first); await f.running.pendingInputs.enqueue(id, second); await f.running.pendingInputs.enqueue(id, last);
         await driveConsumer(f.running); await until("failed predecessor submitted", async () => published?.submissionEvidence().submission === "submitted" || undefined);
         if (harness === "opencode") complete(f.session.nativeSessionId!, "failed");
         const failed = published!; await failed.done; await settledInput(f.running, id, first.requestId);
-        failed.owner.stopRequested = true; failed.owner.stopping = Promise.resolve(true);
+        mark("first failure settled");
+        failed.owner.stopRequested = true;
+        if (harness === "claude-code") { expect(ccService).toBeDefined(); expect(await ccService!.terminate(failed.owner)).toBe(true); }
+        else failed.owner.stopping = Promise.resolve(true);
         const before = harness === "opencode" ? prompts().length : invocations().length;
         await driveConsumer(f.running); expect(store.lookup(id, second.requestId)!.item.claim).toBeNull();
         const request = { version: 1, action: "resume", requestId: crypto.randomUUID(), conversationId: id, expectedRevision: store.get(id).revision };
         const receipt = await f.running.pendingInputs.resume(id, request); await driveConsumer(f.running);
-        await until("resumed failed head submitted", async () => published !== failed && published?.submissionEvidence().submission === "submitted" || undefined);
+        mark("first resume driven");
+        try { await until("resumed failed head submitted", async () => published !== failed && published?.submissionEvidence().submission === "submitted" || undefined); }
+        catch (error) {
+          const diagnostic = { harness, queue: store.inspect(id), previous: { status: failed.owner.run.status, settled: failed.owner.settled, stopRequested: failed.owner.stopRequested,
+            submission: failed.submissionEvidence(), release: await failed.releasedSettlement() }, replacementPublished: published !== failed, readinessRefusals };
+          captureContextEvidence(`failed-predecessor-resume-${harness}`, diagnostic);
+          throw new Error(`Resumed failed predecessor blocked: ${JSON.stringify(diagnostic)}`, { cause: error });
+        }
         expect(store.lookup(id, second.requestId)!.item.claim!.authorization.predecessorRunId).toBe(failed.owner.run.runId);
         expect(failed.owner.stopRequested).toBe(true); expect(failed.owner.stopping).toBeDefined();
         if (harness === "opencode") complete(f.session.nativeSessionId!, "failed");
         await published!.done; await settledInput(f.running, id, second.requestId);
-        expect(await f.running.pendingInputs.resume(id, request)).toEqual(receipt); await driveConsumer(f.running);
+        mark("second failure settled");
+        expect(await f.running.pendingInputs.resume(id, request)).toEqual(receipt); await driveConsumer(f.running); await driveConsumer(f.running);
         expect(store.lookup(id, last.requestId)!.item.claim).toBeNull(); expect(store.get(id).paused).toBe(true);
-        await f.running.pendingInputs.enqueue(id, healthy);
+        expect(harness === "opencode" ? prompts().length : invocations().length).toBe(before + 1);
         await f.running.pendingInputs.resume(id, { ...request, requestId: crypto.randomUUID(), expectedRevision: store.get(id).revision });
-        await settledInput(f.running, id, healthy.requestId);
-        expect(harness === "opencode" ? prompts().length : invocations().length).toBe(before + 3);
-        expect(store.lookup(id, healthy.requestId)!.item.claim!.authorization.predecessorRunId).toBe(store.lookup(id, last.requestId)!.item.claim!.identity.runId);
-      } finally { publisher.mockRestore(); await f.running.close(); }
+        mark("second resume committed");
+        await settledInput(f.running, id, last.requestId);
+        mark("freshly consented head settled");
+        expect(harness === "opencode" ? prompts().length : invocations().length).toBe(before + 2);
+        expect(store.lookup(id, last.requestId)!.item.claim!.authorization.predecessorRunId).toBe(store.lookup(id, second.requestId)!.item.claim!.identity.runId);
+      } finally { publisher.mockRestore(); readinessTrace.mockRestore(); ccCapture.mockRestore(); await f.running.close(); }
     }, TIMEOUT);
+
+  for (const harness of ["claude-code", "opencode"] as const) test(`Phase5b ${harness} real release proof denies foreign admission despite permitted submitted-failure resume policy`, async () => {
+    const f = await isolatedQueueSeed(`resume-real-release-${harness}`, false, harness), id = f.session.sessionId, store = f.running.pendingInputs.store;
+    let lifecycle: DispatchLifecycle | undefined, coordinator: ConversationCoordinator<RunOwner> | undefined, foreignLease: ConversationAdmissionLease | undefined;
+    const install = ConversationCoordinator.prototype.installOwner, admit = f.running.preparedInput.admit;
+    const capture = spyOn(ConversationCoordinator.prototype, "installOwner").mockImplementation(function(this: ConversationCoordinator<RunOwner>, lease, owner) {
+      if (owner.run.sessionId === id) coordinator = this;
+      return install.call(this, lease, owner);
+    });
+    const publish = spyOn(f.running.preparedInput, "admit").mockImplementation((prepared, lease, options) => admit(prepared, lease, { ...options, publish: current => { lifecycle = current; options!.publish!(current); } }));
+    let restorePolicy = () => {};
+    try {
+      const first = queueWire(f.session, harness === "claude-code" ? "fail for FIFO consumer real release" : "hold for real release failure"), next = queueWire(f.session, "offline release denial waiter");
+      await f.running.pendingInputs.enqueue(id, first); await f.running.pendingInputs.enqueue(id, next); await driveConsumer(f.running);
+      await until("original failed predecessor submitted for release proof", async () => lifecycle?.submissionEvidence().submission === "submitted" ? true : undefined);
+      if (harness === "opencode") complete(f.session.nativeSessionId!, "failed");
+      const original = lifecycle!; await original.done; await settledInput(f.running, id, first.requestId);
+      expect(original.owner.run.status).toBe("failed");
+      await f.running.pendingInputs.resume(id, { version: 1, action: "resume", requestId: crypto.randomUUID(), conversationId: id, expectedRevision: store.get(id).revision });
+      const internal = coordinator as unknown as { options: { policy: (input: any) => unknown } }, policy = internal.options.policy;
+      const policyResults: { requestId: string; permitted: boolean }[] = [];
+      internal.options.policy = input => {
+        const result = policy(input);
+        if (input.conversationId === id && input.phase === "dispatch") policyResults.push({ requestId: input.intent.requestId, permitted: result === undefined });
+        return result;
+      };
+      restorePolicy = () => { internal.options.policy = policy; };
+      const reserved = coordinator!.reserveAdmission({ conversationIds: [id], intent: { kind: "history-refresh", requestId: crypto.randomUUID() } });
+      expect(reserved.ready).toBe(true); if (!reserved.ready) throw new Error(reserved.reason); foreignLease = reserved.lease;
+      const proof = await original.releasedSettlement();
+      expect(policyResults).toContainEqual({ requestId: first.requestId, permitted: true });
+      expect(proof).toMatchObject({ ready: false, code: "dispatch-unavailable" });
+      const before = harness === "opencode" ? prompts().length : invocations().length;
+      await driveConsumer(f.running); await driveConsumer(f.running);
+      expect(store.lookup(id, next.requestId)!.item.claim).toBeNull();
+      expect(harness === "opencode" ? prompts().length : invocations().length).toBe(before);
+      expect(coordinator!.releaseAdmission(foreignLease)).toBe(true); foreignLease = undefined;
+      await settledInput(f.running, id, next.requestId);
+      expect(harness === "opencode" ? prompts().length : invocations().length).toBe(before + 1);
+      captureContextEvidence(`real-resume-release-proof-${harness}`, { proof, policyResults, previous: original.submissionEvidence(), successor: store.lookup(id, next.requestId)!.item });
+    } finally { if (foreignLease) coordinator!.releaseAdmission(foreignLease); restorePolicy(); capture.mockRestore(); publish.mockRestore(); await f.running.close(); }
+  }, TIMEOUT);
 
   for (const harness of ["claude-code", "opencode"] as const)
     test(`Phase5b ${harness} duplicate/stale consent after another Stop cannot reauthorize any waiter`, async () => {
@@ -2449,7 +2623,9 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
         } else {
           // A different reservation cannot impersonate the original opaque lease.
           expect(coordinator!.releaseAdmission(originalLease!)).toBe(true);
-          const foreign = coordinator!.reserveAdmission({ conversationIds: [id], intent: { kind: "compact", requestId: crypto.randomUUID() } });
+          // A legitimate read-only history refresh may reserve this conversation
+          // while its queue exists; Compact is correctly rejected by chain policy.
+          const foreign = coordinator!.reserveAdmission({ conversationIds: [id], intent: { kind: "history-refresh", requestId: crypto.randomUUID() } });
           expect(foreign.ready).toBe(true);
           if (!foreign.ready) throw new Error(foreign.reason);
           restore = () => { coordinator!.releaseAdmission(foreign.lease); };
@@ -2503,6 +2679,13 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
   }, TIMEOUT * 3);
 
   test("Phase5e2 original protocol contradiction is journaled without Run metadata and survives restart to block typed and consumed Stop", async () => {
+    const observations: { stop: boolean; elapsedMs?: number; started: string }[] = [];
+    const observe = OpenCodeRunService.prototype.observeRecoveredInput;
+    const trace = spyOn(OpenCodeRunService.prototype, "observeRecoveredInput").mockImplementation(async function(this: OpenCodeRunService, scope, stop = false) {
+      const event = { stop, started: new Date().toISOString(), elapsedMs: undefined as number | undefined }; observations.push(event);
+      const started = performance.now();
+      try { return await observe.call(this, scope, stop); } finally { event.elapsedMs = Math.round(performance.now() - started); }
+    });
     const f = await recoveredOCSeed("phase5e2-original-protocol-journal"), id = f.session.sessionId, identity = f.original.claim!.identity;
     const metadataPath = join(f.selected.dataDir, "metadata.json"), metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
     metadata.runs = metadata.runs.filter((run: any) => run.runId !== identity.runId);
@@ -2531,7 +2714,10 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       consumeQueuedInput(identity.source.nativeSessionId!, identity.nativeCommandId!);
       expect(fake.active).toBe(true);
       expect(fake.messages.some(message => message.id === identity.nativeCommandId && message.type === "user")).toBe(true);
-      expect((await isolatedApi(running, `/api/sessions/${id}/cancel`, {}, token)).body).toMatchObject({ interrupted: false, reconciliationRequired: true });
+      // This recovery path refreshes and then observes Stop serially, including
+      // Git-backed checkout validation. Keep a bounded transport deadline while
+      // allowing both checks; the assertions below still prohibit cancellation.
+      expect((await isolatedApi(running, `/api/sessions/${id}/cancel`, {}, token, 10000)).body).toMatchObject({ interrupted: false, reconciliationRequired: true });
       expect(fake.active).toBe(true);
       expect(store.lookup(id, f.head.requestId)!.item).toMatchObject({ state: "run-linked", history: null, claim: { identity, uncertain: true, evidence: f.original.claim!.evidence } });
       expect(store.lookup(id, f.waiter.requestId)!.item).toMatchObject({ state: "waiting", claim: null, request: { text: f.waiter.text } });
@@ -2541,7 +2727,11 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       expect(journal().filter(event => event.data?.nativeQueuedHandoffProtocolMismatch === true)).toEqual([marker]);
       expect(JSON.parse(readFileSync(metadataPath, "utf8")).runs.some((run: any) => run.runId === identity.runId)).toBe(false);
       expect(calls.slice(before).filter(call => call.method !== "GET")).toEqual([]);
-    } finally { await running.close(); }
+    } finally {
+      trace.mockRestore();
+      captureContextEvidence("original-protocol-stop-diagnostic", { observations, calls: calls.slice(before), queue: running.pendingInputs.store.inspect(id), journal: journal() });
+      await running.close();
+    }
   }, TIMEOUT);
 
   test("Phase5e2 eager original journal pin rejects marker-free replacement during startup queue preflight and retains original locks", async () => {
@@ -2667,10 +2857,9 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       expect(running.pendingInputs.store.inspect(id).lastPredecessorRunId).toBe(predecessorRunId);
       const request = { version: 1, action: "resume", requestId: crypto.randomUUID(), conversationId: id, expectedRevision: running.pendingInputs.store.get(id).revision };
       const receipt = await running.pendingInputs.resume(id, request);
-      await isolatedApi(running, `/api/sessions/${id}/cancel`, {}, f.token);
       const before = harness === "opencode" ? prompts().length : invocations().length;
       await running.close(); running = await start({ ...f.selected, cwd: f.session.cwd });
-      expect(running.pendingInputs.store.inspect(id).pause?.code).toBe("stopped");
+      expect(running.pendingInputs.store.inspect(id).pause?.code).toBe("restart");
       expect((await isolatedApi(running, "/api/sessions", undefined, await isolatedLogin(running))).body.availability.canSend).toBe(true);
       expect(await running.pendingInputs.resume(id, request)).toEqual(receipt);
       await driveConsumer(running); expect(running.pendingInputs.store.get(id).paused).toBe(true);
@@ -3229,9 +3418,19 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       // An external domain edit is allowed; consumer pin drift remains its job.
       initializeRepository(f.discovery);
       expect((await request(`/api/workstreams${qs}`, { id: "app-only-lifecycle", title: "Offline lifecycle", type: "feature" })).status).toBe(200);
+      // Approval must reach the mutation fence rather than fail earlier on the
+      // newly scaffolded documents' intentionally unresolved authoring guidance.
+      for (const file of ["PRD.md", "design/SDD.md"]) {
+        const path = join(f.discovery.stateRoot, "workstreams", "app-only-lifecycle", file);
+        writeFileSync(path, readFileSync(path, "utf8").replace(/<!--[\s\S]*?-->/g, "Offline verified fixture content."));
+      }
       const status = (await request(`/api/workstreams/status${qs}&id=app-only-lifecycle`)).body;
       const action = { id: "app-only-lifecycle", phase: "design", repositoryId: status.workstream.repositoryId, expectedRevision: status.workstream.revision };
-      for (const operation of ["provide", "approve"]) expect(await request(`/api/workstreams/${operation}${qs}`, { ...action, ...(operation === "approve" ? { approvalRef: "offline human approval" } : {}) })).toMatchObject({ status: 409, body: { code: "pending-input-chain-active" } });
+      expect(await request(`/api/workstreams/provide${qs}`, action)).toMatchObject({ status: 409, body: { code: "pending-input-chain-active" } });
+      // Approval fences only assigned phase participants; this App-only chain
+      // has no phase assignment and cannot block an unrelated approval.
+      expect((await request(`/api/workstreams/approve${qs}`, { ...action, approvalRef: "offline human approval" })).status).toBe(200);
+      action.expectedRevision = (await request(`/api/workstreams/status${qs}&id=app-only-lifecycle`)).body.workstream.revision;
       expect(f.running.pendingInputs.store.inspect(id)).toEqual(chain); expect(mutations()).toHaveLength(before);
       expect((await request(`${queuePath(id)}/${chain.snapshot.items[0]!.itemId}/remove`, { version: 1, requestId: crypto.randomUUID(), inputRequestId: input.requestId, conversationId: id, itemId: chain.snapshot.items[0]!.itemId })).status).toBe(200);
       held = true; const changing = request(`/api/workstreams/provide${qs}`, action); await entered.promise;
@@ -3682,7 +3881,12 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     const session = await queueSession("claude-code", true), path = queuePath(session.sessionId), input = queueWire(session), receipt = (await api(path, input)).body;
     const association = (await api("/api/sessions")).body.sessions.find((s: any) => s.sessionId === session.sessionId), workspaceId = association.workspaceId;
     const created = await api(`/api/workstreams?workspaceId=${workspaceId}`, { id: "phase3-queue-context", title: "Offline queue context", type: "feature" }); expect(created.status).toBe(200);
-    expect((await api(`/api/workstreams/associate?workspaceId=${workspaceId}`, { sessionId: session.sessionId, workstreamId: "phase3-queue-context" })).status).toBe(200);
+    // Drift is external: the App correctly fences association while queued.
+    const inspected = repository.inspectRepositoryStore(discoverRepository(session.cwd));
+    if (inspected.state !== "ready") throw new Error("Fixture domain must be ready");
+    const domain = RepositoryDomain.open(inspected.context);
+    try { domain.associateConversation({ harness: "cc", authorityId: session.authorityId!, nativeId: session.nativeSessionId! }, "phase3-queue-context", { actor: { kind: "local" }, correlationId: crypto.randomUUID() }); }
+    finally { domain.close(); }
     expect((await api(path, queueWire(session))).status).toBe(409);
     expect((await api(`${path}/resume`, { version: 1, requestId: crypto.randomUUID(), conversationId: session.sessionId, action: "resume", expectedRevision: (await api(path)).body.snapshot.revision })).status).toBe(409);
     expect((await api(path, input)).body).toEqual(receipt);
@@ -3863,7 +4067,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
   }, TIMEOUT);
 
   for (const delayed of [false, true]) test(`recovered accepted command settles ${delayed ? "automatically after startup" : "after exact native terminal"} while preserving waiting text and pause`, async () => {
-    const f = await recoveredOCSeed("recovered-exact-terminal"), id = f.session.sessionId, identity = f.original.claim!.identity;
+    const f = await recoveredOCSeed(`recovered-exact-terminal-${delayed}`), id = f.session.sessionId, identity = f.original.claim!.identity;
     const path = join(f.selected.dataDir, "pending-inputs.json"), records = JSON.parse(readFileSync(path, "utf8"));
     records.conversations.find((conversation: any) => conversation.conversationId === id).items.find((item: any) => item.requestId === f.head.requestId).claim.evidence =
       { ...identity, submission: "submitted", nativeAcceptance: "accepted" };
@@ -4200,5 +4404,65 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     }
     expect(calls).toHaveLength(nativeReads);
     expect(sideEffects()).toEqual(before);
+  }, TIMEOUT);
+
+  test("canonical bridge persists pinned package across restart, resumes, Base upgrade and isolated native bindings", async () => {
+    await app!.close(); app = undefined;
+    const canonicalOptions = { ...startupFixture("canonical-context"), contextDelivery: "canonical" as const };
+    try {
+      app = await start(canonicalOptions); await login();
+      const created = await api("/api/sessions", { harness: "opencode", agent: "engineering", model: "fixture/offline", effort: "bounded", cwd: repoDir, prompt: "canonical first turn" });
+      if (created.status !== 202) {
+        const rows = (await api("/api/sessions")).body.sessions;
+        const failures = await Promise.all(rows.map(async (s: any) => ({ session: s, events: s.lastRunId ? (await api(`/api/runs/${s.lastRunId}/events`)).body.events : [] })));
+        const evidence = { response: created.body, failures, nativeCalls: calls.slice(-10).map(({ path, method, body }) => ({ path, method, body })) };
+        captureContextEvidence("bridge-oc-admission-failure", evidence);
+        throw new Error(`Canonical admission failed: ${JSON.stringify(evidence)}`);
+      }
+      expect(created).toMatchObject({ status: 202 });
+      expect((await waitIdle(created.body.sessionId)).lastStatus).toBe("completed");
+      const initial = (await api(`/api/runs/${created.body.runId}/events`)).body.events.filter((e: any) => e.data?.type === "canonical-context");
+      expect(initial.map((e: any) => e.data.stage)).toEqual(["prepared", "stored-readback"]);
+      const delivery = initial[0].data.delivery;
+      const roleSegments = delivery.segments.filter((s: any) => s.id === "role.assistant.engineering");
+      expect(roleSegments).toHaveLength(1); expect(roleSegments[0]).toMatchObject({ source: "opencode/agents/sane/assistant/engineering.md", channel: "standing" });
+      expect(delivery.standing.split(roleSegments[0].text)).toHaveLength(2);
+      expect(JSON.stringify(executionConfigurations.get(created.body.nativeSessionId))).not.toContain(roleSegments[0].text);
+      expect(contextEntries.get(created.body.nativeSessionId)).toBe(`${delivery.standing}\n\n${delivery.dynamic}`);
+      const writesBefore = calls.filter(c => c.method === "PUT").length;
+      await app.close(); app = await start(canonicalOptions); await login();
+      const resumed = await api("/api/sessions", { sessionId: created.body.sessionId, prompt: "canonical resumed turn" });
+      expect(resumed.status).toBe(202); expect((await waitIdle(created.body.sessionId)).lastStatus).toBe("completed");
+      const resumedEvents = (await api(`/api/runs/${resumed.body.runId}/events`)).body.events.filter((e: any) => e.data?.type === "canonical-context");
+      expect(resumedEvents[0].data.delivery).toEqual(delivery);
+      expect(calls.filter(c => c.method === "PUT")).toHaveLength(writesBefore);
+      const base = await api("/api/sessions", { profileId: "base:oc", model: "fixture/offline", cwd: repoDir, prompt: "ordinary base" });
+      expect(base.status).toBe(202); await waitIdle(base.body.sessionId);
+      expect(contextEntries.has(base.body.nativeSessionId)).toBe(false);
+      expect(executionConfigurations.has(base.body.nativeSessionId)).toBe(false);
+      const baseEvents = (await api(`/api/runs/${base.body.runId}/events`)).body.events;
+      expect(baseEvents.some((e: any) => e.data?.type === "canonical-context")).toBe(false);
+      const profile = await api("/api/agents", { fromId: "template:engineering", label: "Canonical OC Engineering", harness: "opencode", model: "fixture/offline" });
+      expect(profile.status).toBe(200);
+      const upgraded = await api("/api/sessions", { sessionId: base.body.sessionId, profileId: profile.body.profile.id, prompt: "explicit upgrade" });
+      expect(upgraded).toMatchObject({ status: 202 }); expect((await waitIdle(base.body.sessionId)).lastStatus).toBe("completed");
+      const upgradedEvents = (await api(`/api/runs/${upgraded.body.runId}/events`)).body.events.filter((e: any) => e.data?.type === "canonical-context");
+      expect(upgradedEvents[0].data.delivery.binding.nativeSessionId).toBe(base.body.nativeSessionId);
+      expect(upgradedEvents[0].data.delivery.binding.sessionId).not.toBe(delivery.binding.sessionId);
+      expect(contextEntries.get(created.body.nativeSessionId)).toBe(`${delivery.standing}\n\n${delivery.dynamic}`);
+      const branch = await api(`/api/sessions/${created.body.sessionId}/branch`, { requestId: crypto.randomUUID(), runId: resumed.body.runId, replace: false, prompt: "canonical child turn" });
+      expect(branch).toMatchObject({ status: 201 });
+      const childId = branch.body.sessionId;
+      const child = await waitIdle(childId);
+      expect(child.lastStatus).toBe("completed");
+      expect(child.nativeSessionId).not.toBe(created.body.nativeSessionId);
+      const childEvents = (await api(`/api/runs/${child.lastRunId}/events`)).body.events.filter((e: any) => e.data?.type === "canonical-context");
+      expect(childEvents[0].data.delivery.packageRevision).toBe(delivery.packageRevision);
+      expect(childEvents[0].data.delivery.binding).toMatchObject({ sessionId: childId, nativeSessionId: child.nativeSessionId });
+      expect(contextEntries.get(created.body.nativeSessionId)).toBe(`${delivery.standing}\n\n${delivery.dynamic}`);
+      captureContextEvidence("bridge-oc-restart-base-upgrade", { initial, resumed: resumedEvents, upgraded: upgradedEvents, branch: childEvents });
+    } finally {
+      await app?.close(); app = await start(options); await login();
+    }
   }, TIMEOUT);
 });

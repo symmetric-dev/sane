@@ -14,6 +14,8 @@ test("one shell model preserves filters across modes and presentations while His
   const prior = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   const priorCatalog = catalog.state;
+  const priorState = store.state;
+  store.state = { ...priorState, phase: "ready" };
   const priorFetch = globalThis.fetch;
   const requests: string[] = [];
   let overviewVersion = "original";
@@ -94,7 +96,7 @@ test("one shell model preserves filters across modes and presentations while His
   } finally {
     if (root) await act(async () => root!.unmount());
     registerWorkerSessions(store.snapshot().conversations);
-    catalog.state = priorCatalog; globalThis.fetch = priorFetch; browser.close();
+    catalog.state = priorCatalog; store.state = priorState; globalThis.fetch = priorFetch; browser.close();
     for (const [key, descriptor] of prior) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
   }
 });

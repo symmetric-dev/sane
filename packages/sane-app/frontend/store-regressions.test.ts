@@ -13,7 +13,7 @@ function fixture(overrides: Partial<ConversationClient> = {}) {
     reconcile: async () => ({ history: history() }), nativeHistory: async () => ({ history: history() }), submit: async () => ({ conversationId: "A", runId: "next" }), ...overrides,
   };
   const store = new ChatStore(client);
-  store.state = { ...store.state, selected: "A", connected: true, availability: { canSend: true } };
+  store.state = { ...store.state, selected: "A", connected: true, loading: false, availability: { canSend: true } };
   store.capabilities = () => ({ cancelRun: true });
   store.reconnect = () => {};
   return { store, client, poll: () => (store as any).poll() as Promise<void>, close: () => (store as any).stop() };
@@ -25,7 +25,7 @@ test("attached Claude requires an explicit per-submission acknowledgement, not t
   f.store.state.conversations = [{ id: "A", nativeSessionId: "A", harness: "claude-code", cwd: "/fixture", lastRunId: null, status: "unknown", attachment: { state: "ready" } }];
   f.store.executionUnavailable = () => ""; f.store.modelUnavailable = () => false;
   try {
-    await f.store.send("new text"); expect(submitted).toEqual([]); expect(f.store.state.submissionError).toContain("Confirm external Claude");
+    await f.store.send("new text"); expect(submitted).toEqual([]); expect(f.store.state.submissionError).toBe("Confirm external assistant execution is stopped before sending.");
     await f.store.send("new text", true); expect(submitted).toHaveLength(1); expect(submitted[0]).toMatchObject({ conversationId: "A", nativeStopped: true, text: "new text" });
     f.store.state.connected = true; f.store.state.availability = { canSend: true };
     await f.store.send("new text"); expect(submitted).toHaveLength(1);
@@ -68,8 +68,10 @@ for (const action of ["reply", "cancel", "reconcile"] as const) for (const stale
 
 for (const failing of ["runs", "events"] as const) test(`native snapshot reloads after transient ${failing} failure`, async () => {
   let reads = 0, fail = true;
-  const meta: RunMetadata = { id: "accepted", conversationId: "A", nativeCommandId: "msg_accepted", cwd: "/fixture", status: "completed", createdAt: "2026-09-27T00:00:00Z" };
-  const f = fixture({ nativeHistory: async () => { reads++; return { history: history() }; },
+  const meta: RunMetadata = { id: "accepted", conversationId: "A", harness: "opencode", nativeCommandId: "msg_accepted", cwd: "/fixture", status: "completed", createdAt: "2026-09-27T00:00:00Z" };
+  const snapshot = history();
+  snapshot.messages.push({ messageId: "msg_response", role: "assistant", parts: [{ id: "response-text", type: "text", text: "Native response" }], status: "completed", createdAt: "2026-09-27T00:00:01Z" });
+  const f = fixture({ nativeHistory: async () => { reads++; return { history: snapshot }; },
     runs: async () => { if (fail && failing === "runs") throw new Error("transient runs failure"); return [meta]; },
     events: async () => { if (fail && failing === "events") throw new Error("transient events failure"); return { events: [], nextCursor: 0, status: "completed" }; },
   });
@@ -78,7 +80,8 @@ for (const failing of ["runs", "events"] as const) test(`native snapshot reloads
     await f.poll(); expect(f.store.state.connected).toBe(false); expect(f.store.state.nativeHistory).toBeUndefined();
     f.close(); fail = false; await f.poll();
     expect(reads).toBe(2); expect(f.store.state.nativeHistory?.reason).toBe("native");
-    expect(f.store.state.messages.map(m => m.id)).toEqual(["msg_accepted"]);
+    expect(f.store.state.messages.map(m => m.id)).toEqual(["msg_accepted", "msg_response"]);
+    expect(f.store.state.messages.map(m => m.runId)).toEqual(["accepted", "accepted"]);
   } finally { f.close(); }
 });
 

@@ -11,6 +11,8 @@ export type AppConfig = {
   server: { host: string; port: number; publicOrigin: string | null; allowRemote: boolean };
   maxConcurrentRuns: number;
   maxWorkersPerCheckout?: number;
+  contextDelivery?: "startup" | "canonical";
+  agentModelConfig?: string;
   native: { claude: { executable: string; profileRoot: string }; opencode: { mode: "managed"; registrationFile: string } };
 };
 export type SourceCapability = { state: "available" | "unavailable"; locator: string; authority?: NativeAuthority };
@@ -57,7 +59,7 @@ export function parseConfigJson(input: string): Record<string, any> {
     else { const m = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(input.slice(i)); if (!m) invalid("Malformed config JSON"); i += m![0].length; return; }
     invalid("Malformed config JSON");
   };
-  try { value(); whitespace(); if (i !== input.length) invalid("Malformed config JSON"); return object(JSON.parse(input), ["format", "version", "dataDir", "defaultExecutionCwd", "server", "maxConcurrentRuns", "maxWorkersPerCheckout", "native"], "config"); }
+   try { value(); whitespace(); if (i !== input.length) invalid("Malformed config JSON"); return object(JSON.parse(input), ["format", "version", "dataDir", "defaultExecutionCwd", "server", "maxConcurrentRuns", "maxWorkersPerCheckout", "native", "contextDelivery", "agentModelConfig"], "config"); }
   catch (e) { if (e instanceof AppConfigError) throw e; return invalid("Malformed config JSON"); }
 }
 
@@ -67,7 +69,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   const env = context.env ?? process.env, home = context.home ?? homedir();
   const invocation = resolve(context.invocationCwd), packageDir = resolve(context.packageDir);
   const flags = new Map<string, string | boolean | null>();
-  const valued: Record<string, string> = { "--config": "config", "--cwd": "cwd", "--data-dir": "data", "--host": "host", "--port": "port", "--public-origin": "origin", "--claude-bin": "executable", "--claude-profile": "profile", "--opencode-registration": "registration", "--max-concurrent-runs": "concurrency" };
+  const valued: Record<string, string> = { "--config": "config", "--cwd": "cwd", "--data-dir": "data", "--host": "host", "--port": "port", "--public-origin": "origin", "--claude-bin": "executable", "--claude-profile": "profile", "--opencode-registration": "registration", "--max-concurrent-runs": "concurrency", "--context-delivery": "contextDelivery" };
   const switches: Record<string, [string, boolean | null]> = { "--allow-remote": ["remote", true], "--no-allow-remote": ["remote", false], "--clear-public-origin": ["origin", null], "--no-build": ["noBuild", true], "--reconcile-interrupted": ["reconcile", true], "--help": ["help", true] };
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]!; let key: string, value: string | boolean | null;
@@ -95,6 +97,9 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   for (const [v, label] of [[raw.dataDir,"dataDir"],[raw.defaultExecutionCwd,"cwd"],[cc.executable,"executable"],[cc.profileRoot,"profile"],[oc.registrationFile,"registration"],[server.host,"host"]] as const) if (v !== undefined) text(v, label);
   if (server.port !== undefined) integer(server.port, 0, 65535, "port");
   if (raw.maxConcurrentRuns !== undefined) integer(raw.maxConcurrentRuns, 1, 256, "concurrency");
+  if (raw.contextDelivery !== undefined && raw.contextDelivery !== "startup" && raw.contextDelivery !== "canonical") invalid("Invalid contextDelivery");
+  const contextDelivery = choose("contextDelivery", raw.contextDelivery, "startup");
+  if (contextDelivery !== "startup" && contextDelivery !== "canonical") invalid("Invalid contextDelivery");
   if (server.allowRemote !== undefined && typeof server.allowRemote !== "boolean") invalid("Invalid allowRemote");
   if (server.publicOrigin !== undefined && server.publicOrigin !== null) text(server.publicOrigin, "publicOrigin");
   const executable = text(choose("executable", cc.executable, "claude"), "executable");
@@ -105,6 +110,8 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
     server: { host: text(choose("host", server.host, "127.0.0.1"), "host"), port: integer(flags.has("port") ? Number(flags.get("port")) : server.port ?? 8787, 0, 65535, "port"), publicOrigin: choose("origin", server.publicOrigin, null) as string | null, allowRemote: choose("remote", server.allowRemote, false) as boolean },
     maxConcurrentRuns: integer(flags.has("concurrency") ? Number(flags.get("concurrency")) : raw.maxConcurrentRuns ?? 24, 1, 256, "concurrency"),
     maxWorkersPerCheckout: integer(raw.maxWorkersPerCheckout ?? DEFAULT_MAX_WORKERS_PER_CHECKOUT, 1, 256, "workers per checkout"),
+    contextDelivery: contextDelivery as "startup" | "canonical",
+    ...(raw.agentModelConfig !== undefined ? { agentModelConfig: resolve(base, text(raw.agentModelConfig, "agentModelConfig")) } : {}),
     native: { claude: { executable: executable.includes("/") ? resolve(flags.has("executable") ? invocation : base, executable) : executable, profileRoot: path("profile", cc.profileRoot, resolve(invocation, env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"))) }, opencode: { mode: "managed", registrationFile: path("registration", oc.registrationFile, resolve(invocation, env.XDG_STATE_HOME ?? join(home, ".local/state"), "opencode/service.json")) } },
   };
   const contradiction = (name: string) => invalid(`Native selector contradicts configuration: ${name}`);

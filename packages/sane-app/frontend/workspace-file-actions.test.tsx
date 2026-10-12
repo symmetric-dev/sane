@@ -8,6 +8,7 @@ import { WorkspaceSidebar } from "./workspace-tree";
 import { catalog } from "./catalog";
 import { dirty, notifyWorkspace, resetWorkspaceState } from "./workspace-store";
 import { copyDestination } from "./workspace-file-actions";
+import { ApplicationCommandProvider } from "./application-commands";
 
 test("copy destination preserves folders/extensions, including extensionless and hidden files", () => {
   expect(copyDestination("docs/notes.md")).toBe("docs/notes-copy.md");
@@ -45,7 +46,7 @@ test("Code actions copy saved contents, preserve failed input/local edits, and c
   try {
     resetWorkspaceState();
     const { createRoot } = await import("react-dom/client"), host = document.createElement("div"); document.body.append(host); root = createRoot(host);
-    await act(async () => root!.render(<WorkspaceProvider view="code" navigate={() => {}}><Probe /></WorkspaceProvider>));
+    await act(async () => root!.render(<ApplicationCommandProvider><WorkspaceProvider view="code" navigate={() => {}}><Probe /></WorkspaceProvider></ApplicationCommandProvider>));
     expect(controller!.selected).toBe("notes.md"); expect(controller!.buffer).toBeDefined();
     const footer = host.querySelector(".workspace-sidebar-actions")!;
     expect(footer.tagName).toBe("FOOTER");

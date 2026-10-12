@@ -1,4 +1,4 @@
-import { readFile, writeFile, rename, appendFile, stat, readdir, realpath, open } from "node:fs/promises";
+import { readFile, writeFile, rename, appendFile, stat, readdir, realpath, open, mkdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolve, dirname, join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,7 +44,7 @@ import { createPendingInputControls } from "./pending-input-controls";
 import { assertPendingInputDomainMutation, assertDomainInitializationIdle, chainInRepository } from "./pending-input-domain-guard";
 import { equal as equalPendingPin } from "./prepared-input-codec";
 import { decodePendingInputPins } from "./pending-input-codec";
-import { prepareUserInput, revalidatePreparedUserInput, assertPreparedUserInputCurrent, UserInputPreparationError, type PreparedUserInput } from "./user-input-preparation";
+import { prepareUserInput, revalidatePreparedUserInput, assertPreparedUserInputCurrent, UserInputPreparationError, createCanonicalActivation, validateCanonicalActivation, reserveActivation, type ActivationSnapshot, type PreparedUserInput } from "./user-input-preparation";
 import { ScienceSubmissionStore, ScienceSubmissionError, ScienceSubmissionStorageError, type SciencePreparedSnapshotReference, type ScienceSubmissionReceipt } from "./science-submission-store";
 import { canonicalJSON } from "./prepared-input-codec";
 import type { ScienceSnapshotReference, ScienceSubmissionView } from "../shared/conversation/types";
@@ -73,8 +73,13 @@ import { restoreWorkerOutput, workerOutput } from "./worker-output";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery } from "./worker-contract";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
 import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneContextText, saneFrameworkMessageId, saneSessionContext, saneSessionText, sha256, workerAssignment } from "./agent-launch";
+import { ContextPackageStore } from "./context-package-store";
+import { renderContextDelivery, validateContextComposition, type ContextComposition } from "./context-package";
+import type { ContextProvider } from "./context-delivery";
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 import { BranchStore, type BranchOperation } from "./branches";
+import { CanonicalExecutionStore, type CanonicalExecutionRef, type CanonicalExecutionSnapshot } from "./canonical-execution-store";
+import { isWorkerAgentId } from "sane-core/agent-catalog";
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
 import { NativeSubagentError, NativeSubagentService } from "./native-subagent-service";
 import { OpenCodeSubagentRecorder } from "./opencode-subagent-recorder";
@@ -84,7 +89,7 @@ import { HarnessOperationError, dispatchHarness, dispatchOwnedOperation, require
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export { hookEvents };
-export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; /** Internal deterministic fixture dependency; never parsed from CLI/config/HTTP. */ pendingInputWakeClock?: PendingInputWakeClock; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
+export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; contextDelivery?: "startup" | "canonical"; agentModelConfig?: string; /** Internal deterministic fixture dependency; never parsed from CLI/config/HTTP. */ pendingInputWakeClock?: PendingInputWakeClock; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
 export function parseOptions(args: string[]): Options {
   return runtimeOptions(resolveAppConfig(args, { packageDir: root, invocationCwd: process.cwd() }));
 }
@@ -92,13 +97,14 @@ export function runtimeOptions(resolved: ReturnType<typeof resolveAppConfig>): O
   const { config: c, operational } = resolved;
   return { host: c.server.host, port: c.server.port, cwd: c.defaultExecutionCwd, dataDir: c.dataDir,
     claudeBin: c.native.claude.executable, allowRemote: c.server.allowRemote, publicOrigin: c.server.publicOrigin ?? undefined,
-    maxConcurrentRuns: c.maxConcurrentRuns, maxWorkersPerCheckout: c.maxWorkersPerCheckout, reconcileInterrupted: operational.reconcileInterrupted, noBuild: operational.noBuild,
+    maxConcurrentRuns: c.maxConcurrentRuns, maxWorkersPerCheckout: c.maxWorkersPerCheckout, reconcileInterrupted: operational.reconcileInterrupted, noBuild: operational.noBuild, contextDelivery: c.contextDelivery, agentModelConfig: c.agentModelConfig,
     nativeSources: { cc: { version: 1, harness: "cc", kind: "local-profile", profileRoot: c.native.claude.profileRoot },
       oc: { version: 1, harness: "oc", kind: "local-registration", registrationFile: c.native.opencode.registrationFile } } };
 }
 export function startupSummary(o: Options): string {
   return ["SANE App startup configuration:", `  Invocation cwd: ${process.cwd()}`, `  Default execution cwd: ${o.cwd}`, `  App data: ${o.dataDir}`,
     `  Native mode: Claude executable ${o.claudeBin}; configured managed OpenCode registration`,
+    `  New SANE context delivery: ${o.contextDelivery ?? "startup"}`,
     `  Listener: ${o.host}:${o.port}; public origin: ${o.publicOrigin ?? "listener origin"}`,
     "  Workstreams: explicit per-workspace inspect/init; no implicit project initialization",
   ].join("\n");
@@ -364,9 +370,97 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const executionContext = async (sessionId: string) => { const a = admissions.get(sessionId); if (!a) throw new WorkstreamAdapterError(409, "admission-missing", "Conversation has no durable admission"); return router!.execution(a); };
   const execution = async (sessionId: string) => (await executionContext(sessionId)).executionCheckout;
   const saneSession = async (sessionId: string) => saneSessionText(meta.sessions.find(s => s.sessionId === sessionId)!, await executionContext(sessionId));
+  const contextPackages = new ContextPackageStore(resolve(root, "../.."), join(options.dataDir, "context-packages"));
+  const canonicalContextEnabled = options.contextDelivery === "canonical";
+  const executionPackages = new CanonicalExecutionStore(resolve(root, "../.."), join(options.dataDir, "execution-packages"), options.agentModelConfig);
+  const activationStores = { execution: executionPackages, context: contextPackages };
+  const executionReservation = async (sessionId: string, identity: NonNullable<Parameters<typeof saneSessionContext>[0]>, create?: () => Promise<ActivationSnapshot>) => {
+    if (!uuid(sessionId)) throw new Error("Invalid execution reservation identity");
+    const directory = join(options.dataDir, "activations", sessionId), name = "activation.json";
+    return reserveActivation(identity, {
+      read: async () => {
+        let text: string;
+        try { text = await readFile(join(directory, name), "utf8"); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+        return JSON.parse(text);
+      },
+      write: async record => {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        if (await realpath(directory) !== resolve(directory)) throw new Error("Activation reservation directory cannot contain symbolic links");
+        atomicAppRecord(directory, name, record);
+      },
+      create,
+      validate: async pair => {
+        if (pair.saneExecution) {
+          if (!pair.saneContext) throw new Error("Reserved execution requires its pinned context");
+          await validateCanonicalActivation({ saneExecution: pair.saneExecution, saneContext: pair.saneContext }, identity, activationStores);
+        } else if (pair.saneContext?.package) throw new Error("Unpaired canonical context reservation requires reconciliation");
+      },
+    });
+  };
+  const prepareCanonicalExecution = async (role: import("sane-core/agent-catalog").AssistantAgentId) => {
+    const pair = await createCanonicalActivation({ kind: "assistant", role }, activationStores);
+    const { policy } = await executionPackages.load(pair.saneExecution);
+    return { ...pair, ...(policy.model ? { model: `${policy.model.providerID}/${policy.model.id}`, effort: policy.model.variant } : {}) };
+  };
+  const canonicalExecution = async (sessionId: string): Promise<CanonicalExecutionSnapshot | null> => {
+    const session = meta.sessions.find(s => s.sessionId === sessionId);
+    if (!session?.saneExecution) return null;
+    const pin = JSON.stringify(session);
+    const assertBinding = () => {
+      const current = meta.sessions.find(s => s.sessionId === sessionId), a = admissions.get(sessionId);
+      if (!current || JSON.stringify(current) !== pin || !a || a.state !== "ready" || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || a.binding.executionCheckout !== session.cwd || a.source.descriptor.harness !== (session.harness === "opencode" ? "oc" : "cc")) throw new Error("Canonical execution requires an exact ready admission");
+    };
+    assertBinding();
+    if (!session.saneContext) throw new Error("Canonical execution requires paired context");
+    const identity = session.agentKind === "worker" && isWorkerAgentId(session.agent) ? { kind: "worker" as const, role: session.agent } : isStoredAssistantAgentId(session.agent) ? { kind: "assistant" as const, role: session.agent } : undefined;
+    if (!identity) throw new Error("Canonical execution requires a valid identity");
+    const snapshot = await validateCanonicalActivation({ saneExecution: session.saneExecution, saneContext: session.saneContext }, identity, activationStores);
+    if (snapshot.policy.spec.name !== `sane/${session.agentKind}/${session.agent}`) throw new Error("Execution policy role differs from its conversation");
+    await executionContext(sessionId);
+    assertBinding();
+    return snapshot;
+  };
+  const prepareSaneContext = async (...args: Parameters<typeof saneSessionContext>) => {
+    const result: ReturnType<typeof saneSessionContext> & { saneExecution?: CanonicalExecutionRef } = saneSessionContext(...args);
+    if (result.saneContext && args[0] && args[0].role !== "knowledge" && canonicalContextEnabled) {
+      return createCanonicalActivation(args[0], activationStores);
+    }
+    return result;
+  };
+  const canonicalComposition = async (sessionId: string): Promise<ContextComposition | null> => {
+    const session = meta.sessions.find(s => s.sessionId === sessionId);
+    if (!session?.saneContext?.package) return null;
+    const pin = JSON.stringify([session.harness, session.authorityId, session.nativeSessionId, session.cwd, session.agent, session.agentKind, session.nativeAgentSelected, session.saneContext, session.saneExecution]);
+    const assertAdmission = () => {
+      const admission = admissions.get(sessionId);
+      if (!admission || admission.state !== "ready" || admission.nativeId !== session.nativeSessionId || admission.source.authorityId !== session.authorityId
+        || admission.binding.executionCheckout !== session.cwd || admission.source.descriptor.harness !== (session.harness === "opencode" ? "oc" : "cc")) throw new Error("Canonical context requires an exact ready admission");
+    };
+    assertAdmission();
+    const { bundle, paths } = await contextPackages.load(session.saneContext.package);
+    if (bundle.identity.role !== session.agent || bundle.identity.kind !== session.agentKind) throw new Error("Context package role differs from its conversation");
+    if (bundle.identity.kind === "worker" && !session.saneContext.assignment) throw new Error("Canonical worker context requires its persisted assignment");
+    const context = await executionContext(sessionId);
+    const current = meta.sessions.find(s => s.sessionId === sessionId);
+    if (!current || pin !== JSON.stringify([current.harness, current.authorityId, current.nativeSessionId, current.cwd, current.agent, current.agentKind, current.nativeAgentSelected, current.saneContext, current.saneExecution])) throw new Error("Context binding changed during preparation");
+    assertAdmission();
+    const dynamic = saneSessionText(session, context) ?? `# SANE Session\n\nWorkstream: none\nImplementation root: ${context.executionCheckout}`;
+    return { bundle, binding: { sessionId, harness: session.harness!, authorityId: session.authorityId!, nativeSessionId: session.nativeSessionId!, cwd: session.cwd }, paths, dynamic, assignment: session.saneContext.assignment, injectRole: !!session.saneExecution || session.harness === "opencode" && !session.nativeAgentSelected };
+  };
+  const canonicalContext: ContextProvider = async sessionId => {
+    const expected = await canonicalComposition(sessionId);
+    return expected ? renderContextDelivery(expected.bundle, expected.binding, expected.paths, expected.dynamic, expected.assignment, expected.injectRole) : null;
+  };
+  canonicalContext.validate = async delivery => {
+    const expected = await canonicalComposition(delivery.binding.sessionId);
+    if (!expected) throw new Error("Canonical context activation is unavailable");
+    validateContextComposition(delivery, expected);
+  };
   // Acknowledged at OC creation, before any run exists; the session's first run journals it.
   const frameworkDeliveries = new Map<string, FrameworkDelivery>();
   const deliverSaneFramework = async (nativeId: string, sessionId: string, context: SaneSessionContext) => {
+    if (context.package) return;
     const messageId = saneFrameworkMessageId(sessionId), text = saneContextText(context);
     await oc.deliverSaneFramework(nativeId, messageId, text);
     frameworkDeliveries.set(sessionId, { messageId, sha256: sha256(text), chars: text.length });
@@ -619,14 +713,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     closing: () => closing, storageFailed: () => storageFailed, retained: () => retainOwner,
     requireReconciliation: () => { retainOwner = true; meta.reconciliationRequired = true; },
     failClosed, emit, persist, enqueue, execution, executionContext, compactExecution,
-    refreshCompactHistory, assertWorkerDeliverySubmission, saneSession,
+    refreshCompactHistory, assertWorkerDeliverySubmission, saneSession, canonicalContext, canonicalExecution,
   });
   const handoffs = new HandoffService(admissions, catalog, router, store.sources, () => meta.sessions, () => {
     if (closing || storageFailed || meta.reconciliationRequired) throw new WorkstreamAdapterError(503, "handoff-owner-unavailable", "App execution owner is unavailable");
   }, store.manifest.storeId, async (to, cwd) => {
     const launch = resolveAssistantProfile(agentProfiles, to);
     const descriptor = requireOperation(launch.harness, "prompt");
-    const native = launch.harness === "opencode" ? await oc.resolveLaunch(cwd, launch) : undefined;
+    const canonical = canonicalContextEnabled && launch.identity && isAssistantAgentId(launch.identity.role) ? await prepareCanonicalExecution(launch.identity.role) : undefined;
+    const native = launch.harness === "opencode" ? await oc.resolveLaunch(cwd, canonical ? { ...launch, agent: "build", model: launch.model ?? canonical.model, effort: launch.effort ?? (!launch.model ? canonical.effort : undefined) } : launch) : undefined;
     const model = native ? native.model ? `${native.model.providerID}/${native.model.id}` : undefined : launch.model;
     const effort = native ? native.model?.variant : launch.effort;
     return {
@@ -664,6 +759,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const sessionId = h.recipient.sessionId, cwd = h.recipient.checkout.path, harness = h.recipient.harness === "oc" ? "opencode" : "claude-code";
         if (sessionId !== selected.recipient.sessionId || !coordinator.holdsAdmission(lease!, sessionId)) throw new WorkstreamAdapterError(409, "recipient-unavailable", "Recipient admission changed");
         let a = admissions.get(sessionId);
+        const freshAdmission = !a;
         if (!a) {
           const association = await catalog.register(cwd);
           a = await admissions.begin({ sessionId, operation: "create", harness: h.recipient.harness, cwd, nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: association.workspaceId, worktreeId: association.worktreeId });
@@ -677,19 +773,26 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const role = config ? config.agent.replace(harness === "opencode" ? /^sane\/assistant\// : /^sane-assistant-/, "")
           : isStoredAssistantAgentId(requestedRole) ? requestedRole : canonicalSlot(h.input.to).split(":")[0];
         if (!isStoredAssistantAgentId(role) || config && config.agent !== nativeAgentId({ kind: "assistant", role }, harness)) throw new DomainError("CONFLICT", "Reserved handoff assistant identity is invalid; reconcile its original configuration.");
+        const existingSession = meta.sessions.find(s => s.sessionId === sessionId);
+        const sane: ActivationSnapshot = existingSession ? structuredClone({ saneContext: existingSession.saneContext, saneExecution: existingSession.saneExecution })
+          : await executionReservation(sessionId, { kind: "assistant", role }, a.state === "intent" || freshAdmission ? () => prepareSaneContext({ kind: "assistant", role }) : undefined);
+        const nativeAgent = sane.saneExecution ? "build" : config?.agent ?? nativeAgentId({ kind: "assistant", role }, harness);
+        const policy = sane.saneExecution ? (await executionPackages.load(sane.saneExecution)).policy : undefined;
+        if (policy && policy.spec.name !== `sane/assistant/${role}`) throw new Error("Reserved execution policy role changed");
+        const model = config?.model ?? (policy?.model ? `${policy.model.providerID}/${policy.model.id}` : undefined);
+        const effort = config?.effort ?? (!config?.model ? policy?.model?.variant : undefined);
         let launch = a.state === "intent" && harness === "opencode"
-          ? config ? { agent: config.agent, ...(config.model ? { model: oc.model(config.model, config.effort) } : {}) }
-            : await oc.resolveLaunch(cwd, { agent: nativeAgentId({ kind: "assistant", role }, harness) })
+          ? config ? { agent: nativeAgent, ...(model ? { model: oc.model(model, effort) } : {}) }
+            : await oc.resolveLaunch(cwd, { agent: nativeAgent, model, effort })
           : undefined;
         if (a.state === "intent") a = await admissions.createNative(sessionId, async () => (await oc.createResolved(cwd, launch!)).id);
         if (!a.nativeId || a.state === "native_creation_unknown") throw new WorkstreamAdapterError(409, "native_creation_unknown", "Reconcile recipient creation before retry");
         if (!meta.sessions.some(s => s.sessionId === sessionId)) {
-          if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId, cwd, config?.agent ?? nativeAgentId({ kind: "assistant", role }, harness));
-          const sane = harness === "claude-code" || launch ? saneSessionContext({ kind: "assistant", role }) : {};
+          if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId, cwd, nativeAgent);
           if (harness === "opencode" && sane.saneContext) await deliverSaneFramework(a.nativeId, sessionId, sane.saneContext);
           meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
             ...(config ? { profileId: config.profileId, ...(harness === "claude-code" ? { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}) } : {}) } : {}),
-            ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: true, ...sane } : {}),
+            ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: !sane.saneExecution || harness !== "opencode", ...sane } : {}),
             ...(launch?.model ? { model: `${launch.model.providerID}/${launch.model.id}`, ...(launch.model.variant ? { effort: launch.model.variant } : {}) } : {}),
           });
           await persist();
@@ -1199,7 +1302,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     events: runId => events.get(runId) ?? [], emit, persist, execution, executionContext,
     takeFrameworkDelivery: sessionId => { const delivery = frameworkDeliveries.get(sessionId); frameworkDeliveries.delete(sessionId); return delivery; },
     compactExecution, refreshCompactHistory, assertWorkerDeliverySubmission,
-    workerHasRun: runId => workerStore.hasRun(runId), sleep: ms => Bun.sleep(ms), saneSession,
+    workerHasRun: runId => workerStore.hasRun(runId), sleep: ms => Bun.sleep(ms), saneSession, canonicalContext, canonicalExecution,
     completionInboxEmpty: async id => {
       const result = await oc.request<{ data: unknown[] }>(oc.path(id) + "/inbox");
       return Array.isArray(result?.data) && result.data.length === 0;
@@ -1211,7 +1314,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   function dispatchSnapshot(session: Session) {
     return JSON.stringify([dispatchSource(session), session.profileId, session.model, session.effort, session.agent,
-      session.agentKind, session.nativeAgentSelected, session.saneContext, session.attachment]);
+      session.agentKind, session.nativeAgentSelected, session.saneContext, session.saneExecution, session.attachment]);
   }
   function assertDispatchSnapshot(sessionId: string, snapshot: string) {
     const session = meta.sessions.find(s => s.sessionId === sessionId);
@@ -1377,7 +1480,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   async function ensureDirectory(cwd: string) {
     if (!(await stat(cwd)).isDirectory()) throw new Error("Execution directory unavailable");
   }
-  const preparationState = () => ({ getSession: (id: string) => meta.sessions.find(s => s.sessionId === id), profiles: agentProfiles, sourceAuthorityId: nativeSource });
+  const preparationState = () => ({ getSession: (id: string) => meta.sessions.find(s => s.sessionId === id), profiles: agentProfiles, sourceAuthorityId: nativeSource, ...(canonicalContextEnabled ? { prepareCanonicalExecution } : {}) });
   // Ordinary-send science authority. Preview data never enters this resolver.
   function scienceReferences(conversationId: string, refs: ScienceSnapshotReference[], settings: Record<string, any>): SciencePreparedSnapshotReference[] {
     const snapshots = scienceChats.resolveShareSnapshots(conversationId, refs.map(ref => ref.snapshotId));
@@ -1411,7 +1514,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   function ordinaryRolePrefix(prepared: PreparedUserInput): string {
     const { agent, nativeAgentSelected } = prepared.configuration;
-    return isStoredAssistantAgentId(agent) && prepared.binding.harness === "opencode" && !nativeAgentSelected
+    return isStoredAssistantAgentId(agent) && prepared.binding.harness === "opencode" && !nativeAgentSelected && !prepared.configuration.saneContext?.package
       ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n` : "";
   }
   /** Backend launch authority shared by immediate admission and the existing
@@ -1442,7 +1545,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (harness === "opencode" && (context?.origin ?? (queuedFollowupId ? "queued-user" : "user")) === "queued-user" && !nativeHandoff) throw new UserInputPreparationError("OpenCode queued-user admission requires explicit native-queued-handoff policy", 409);
     if (nativeHandoff) {
       const pins = (configuration: PreparedUserInput["configuration"]) => JSON.stringify([configuration.profileId, configuration.model, configuration.effort,
-        configuration.agent, configuration.agentKind, configuration.nativeAgentSelected, configuration.saneContext, configuration.attachment]);
+        configuration.agent, configuration.agentKind, configuration.nativeAgentSelected, configuration.saneContext, configuration.saneExecution, configuration.attachment]);
       if (prepared.stagedUpgrade || prepared.nativeLaunch || !prepared.expectedPrior || pins(prepared.expectedPrior.configuration) !== pins(prepared.configuration)
         || (["model", "effort", "agent", "profileId"] as const).some(key => input[key] !== undefined && input[key] !== prepared.configuration[key])) throw new UserInputPreparationError("Native queued handoff cannot change captured conversation configuration", 409);
     }
@@ -1485,19 +1588,28 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const workspaceId = prepared.associationSelection.workspaceId, worktreeId = prepared.associationSelection.worktreeId;
     const association = await catalog.associate(conversationId, cwd, workspaceId, worktreeId);
     assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
+    const upgradedRole = prepared.stagedUpgrade?.role ?? input.agent;
+    const upgradeContext: ActivationSnapshot | undefined = session && !session.agent && isAssistantAgentId(upgradedRole) && prepared.configuration.saneExecution
+      ? structuredClone({ saneContext: prepared.configuration.saneContext, saneExecution: prepared.configuration.saneExecution }) : undefined;
+    if (upgradeContext?.saneContext?.package) upgradeContext.saneContext.package.activation = "upgrade";
+    if (upgradeContext?.saneExecution && upgradeContext.saneContext && isAssistantAgentId(upgradedRole)) await validateCanonicalActivation({ saneExecution: upgradeContext.saneExecution, saneContext: upgradeContext.saneContext }, { kind: "assistant", role: upgradedRole }, activationStores);
+    assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
     if (!session) {
       if (association.association !== "resolved") throw new WorkstreamAdapterError(409, "association-unresolved", "Execution association unavailable");
+      const sane = input.agent !== undefined ? await executionReservation(conversationId, { kind: "assistant", role: input.agent }, async () => prepared.configuration.saneExecution
+        ? structuredClone({ saneContext: prepared.configuration.saneContext, saneExecution: prepared.configuration.saneExecution }) : saneSessionContext({ kind: "assistant", role: input.agent! })) : {};
+      if (prepared.configuration.saneExecution && (sane.saneExecution?.revision !== prepared.configuration.saneExecution.revision || sane.saneContext?.package?.revision !== prepared.configuration.saneContext?.package?.revision)) throw new Error("Prepared activation differs from its durable reservation");
+      assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
       await admissions.begin({ sessionId: conversationId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd,
         nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: association.workspaceId, worktreeId: association.worktreeId });
       assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
       if (harness === "opencode") await admissions.createNative(conversationId, async () => { assertLease(); return (await oc.createResolved(cwd, prepared.nativeLaunch!)).id; });
       const a = admissions.get(conversationId)!;
-      const sane = input.agent !== undefined ? saneSessionContext({ kind: "assistant", role: input.agent }) : {};
       assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
       if (harness === "opencode" && sane.saneContext) await deliverSaneFramework(a.nativeId!, conversationId, sane.saneContext);
       session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
         ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}),
-        ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: true, ...sane } : {}),
+        ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: !sane.saneExecution || harness !== "opencode", ...sane } : {}),
         ...(prepared.selectedProfile ? { profileId: prepared.selectedProfile.id } : {}) };
       createdSnapshot = structuredClone(session);
       meta.sessions.push(session); await persist();
@@ -1537,6 +1649,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (prepared.stagedUpgrade.model) configured.model = prepared.stagedUpgrade.model; else delete configured.model;
       if (prepared.stagedUpgrade.effort) configured.effort = prepared.stagedUpgrade.effort; else delete configured.effort;
     }
+    if (upgradeContext?.saneContext) {
+      configured.agentKind = "assistant";
+      configured.saneContext = upgradeContext.saneContext;
+      configured.saneExecution = prepared.configuration.saneExecution ?? upgradeContext.saneExecution;
+      configured.nativeAgentSelected = harness !== "opencode";
+      configured.model = prepared.configuration.model;
+      configured.effort = prepared.configuration.effort;
+    }
     if (!configured.title) configured.title = titleFromPrompt(prepared.prompt) ?? undefined;
     const run: Run = { runId, sessionId: conversationId, cwd, status: "running", createdAt: new Date().toISOString(),
       ...(nativeDelivery ? { nativeDelivery } : {}), ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}),
@@ -1545,7 +1665,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // it must not normalize preferences or upgrade metadata during a claim.
       profileId: nativeHandoff ? configured.profileId : sessionProfileId(configured), ...saneContextSnapshot(configured), ...(queuedFollowupId ? { queuedFollowupId } : {}) };
     if (harness === "opencode") { run.nativeCommandId = nativeCommandId!; run.nativePhase = "preparing"; }
-    const effectivePrompt = !options.scienceSubmission && isStoredAssistantAgentId(agent) && harness === "opencode" && !session.nativeAgentSelected
+    const effectivePrompt = !options.scienceSubmission && isStoredAssistantAgentId(agent) && harness === "opencode" && !session.nativeAgentSelected && !configured.saneContext?.package
       ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n${prepared.prompt}` : prepared.prompt;
     const installedSnapshot = structuredClone(configured);
     const lifecycle = executePrompt(lease, session, run, effectivePrompt, prepared.resume, origin, {
@@ -1761,12 +1881,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const lease = reserve({ kind: "worker-launch", requestId: w.id }, w.sessionId);
       try {
         if (closing || storageFailed) throw new Error("App unavailable before worker creation");
-        let nativeLaunch = harness === "opencode" ? await oc.resolveLaunch(w.checkout, { agent: w.launch.agent, model: w.launch.model, effort: w.launch.effort }) : undefined;
-        if (harness === "claude-code") await claudeAgentSettings(claudeRoot, w.launch.identity!);
+        if (!w.launch.identity) throw new Error("Worker activation requires an identity");
+        const pinnedContext = await executionReservation(w.sessionId, w.launch.identity, () => prepareSaneContext(w.launch.identity));
+        const policy = pinnedContext.saneExecution ? (await executionPackages.load(pinnedContext.saneExecution)).policy : undefined;
+        if (policy && policy.spec.name !== `sane/${w.launch.identity?.kind}/${w.launch.identity?.role}`) throw new Error("Reserved worker execution policy role changed");
+        let nativeLaunch = harness === "opencode" ? await oc.resolveLaunch(w.checkout, { agent: policy ? "build" : w.launch.agent, model: w.launch.model ?? (policy?.model ? `${policy.model.providerID}/${policy.model.id}` : undefined), effort: w.launch.effort ?? (!w.launch.model ? policy?.model?.variant : undefined) }) : undefined;
+        if (harness === "claude-code" && !policy) await claudeAgentSettings(claudeRoot, w.launch.identity!);
         let a = await admissions.begin({ sessionId: w.sessionId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd: w.checkout, nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: parentAdmission.binding.workspaceId, worktreeId: parentAdmission.binding.worktreeId, parent: w.parent.native });
         if (harness === "opencode") a = await admissions.createNative(w.sessionId, async () => (await oc.createResolved(w.checkout, nativeLaunch!)).id);
         const launch = { ...w.launch, ...(nativeLaunch?.model ? { model: `${nativeLaunch.model.providerID}/${nativeLaunch.model.id}`, effort: nativeLaunch.model.variant } : {}) };
-        const session: Session = { sessionId: w.sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd: w.checkout, lastStatus: "unknown", lastRunId: null, ...agentLaunchSnapshot(launch) };
+        const session: Session = { sessionId: w.sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd: w.checkout, lastStatus: "unknown", lastRunId: null, ...agentLaunchSnapshot(launch), ...pinnedContext, ...(pinnedContext.saneExecution ? { nativeAgentSelected: harness !== "opencode" } : {}) };
         workerStore.update(w.id, { launch, child: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! } });
         meta.sessions.push(session); await persist();
         await catalog.associate(w.sessionId, w.checkout, a.binding.workspaceId, a.binding.worktreeId);
@@ -1778,8 +1902,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         try {
           const child = { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! };
-          const { saneContext } = saneSessionContext(w.launch.identity, workerAssignment((await router!.forAdmission(a))!.domain, child, w.parent.native, w.input.worker, w.input.jobs ?? [], w.id));
+          const { saneContext } = pinnedContext;
           if (!saneContext) throw new Error("Worker launch has no SANE worker identity");
+          saneContext.assignment = workerAssignment((await router!.forAdmission(a))!.domain, child, w.parent.native, w.input.worker, w.input.jobs ?? [], w.id);
           if (harness === "opencode") await deliverSaneFramework(a.nativeId!, w.sessionId, saneContext);
           session.saneContext = saneContext;
         } catch (e) {
@@ -1788,7 +1913,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           throw e;
         }
         await persist();
-        const run: Run = { runId: crypto.randomUUID(), sessionId: w.sessionId, cwd: w.checkout, status: "running", createdAt: new Date().toISOString(), ...agentLaunchSnapshot(launch), ...saneContextSnapshot(session), ...(harness === "opencode" ? { nativeCommandId: `msg_${crypto.randomUUID().replaceAll("-", "")}`, nativePhase: "preparing" as const } : {}) };
+        const run: Run = { runId: crypto.randomUUID(), sessionId: w.sessionId, cwd: w.checkout, status: "running", createdAt: new Date().toISOString(), agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, saneExecution: session.saneExecution, profileId: session.profileId, model: session.model, effort: session.effort, ...saneContextSnapshot(session), ...(harness === "opencode" ? { nativeCommandId: `msg_${crypto.randomUUID().replaceAll("-", "")}`, nativePhase: "preparing" as const } : {}) };
         workerStore.update(w.id, { runId: run.runId, state: "running" });
         const prompt = w.input.context === undefined ? w.input.prompt : `${w.input.prompt}\n\nSupplied context:\n${w.input.context}`;
         executePrompt(lease, session, run, prompt, false, "user", {
@@ -2927,7 +3052,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           input = { ...ordinary, prompt: scienceReceipt.dispatchText };
         }
         if (input?.sessionId && uuid(input.sessionId) && pendingInputs!.hasChain(input.sessionId)) return json({ error: "A durable input chain is active; use the explicit pending-inputs API", code: "pending-input-chain-active" }, 409);
-        const prepared = await prepareUserInput(input, { profiles: agentProfiles, getSession: id => meta.sessions.find(s => s.sessionId === id),
+        const prepared = await prepareUserInput(input, { ...preparationState(), profiles: agentProfiles, getSession: id => meta.sessions.find(s => s.sessionId === id),
           defaultCwd: options.cwd, conversationId: () => crypto.randomUUID(), sourceAuthorityId: nativeSource,
           selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
           ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) });
@@ -3203,6 +3328,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (runsMatch && req.method === "GET") { if (!meta.sessions.some(s => s.sessionId === runsMatch[1])) return json({ error: "Unknown session" }, 404); return json({ runs: meta.runs.filter(r => r.sessionId === runsMatch[1]) }); }
       const eventMatch = /^\/api\/runs\/([^/]+)\/events$/.exec(path);
       if (eventMatch && req.method === "GET") { const run = meta.runs.find(r => r.runId === eventMatch[1]); if (!run) return json({ error: "Unknown run" }, 404); const after = Number(url.searchParams.get("after") ?? 0); if (!Number.isSafeInteger(after) || after < 0) return json({ error: "Invalid cursor" }, 400); const list = events.get(run.runId)!.filter(e => e.seq > after); return json({ events: list, nextCursor: list.at(-1)?.seq ?? after, status: run.status }); }
+      const contextMatch = /^\/api\/runs\/([^/]+)\/context$/.exec(path);
+      if (contextMatch && req.method === "GET") {
+        const run = meta.runs.find(r => r.runId === contextMatch[1]);
+        if (!run) return json({ error: "Unknown run" }, 404);
+        return json({ schema: 1, runId: run.runId, sessionId: run.sessionId, status: run.status,
+          records: (events.get(run.runId) ?? []).filter(event => event.kind === "context" || event.kind === "launch"),
+          evidence: "Prepared segments and transport receipts; model-request observation is not implied" });
+      }
       if (path === "/api/sessions/search" && req.method === "GET") {
         // Best-effort message-body search over in-memory event logs plus
         // persisted native-history snapshots. Metadata filters always work
@@ -3573,7 +3706,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const a = admissions.get(w.sessionId);
     if (!meta.runs.some(r => r.runId === w.runId && r.sessionId === w.sessionId) && a?.nativeId && w.launch.harness === "opencode") {
       try {
-        const selected = await oc.recoverLaunch(a.nativeId, w.checkout, w.launch.agent!);
+        const session = meta.sessions.find(s => s.sessionId === w.sessionId);
+        if (!session && !w.launch.identity) throw new Error("Worker recovery requires its original identity");
+        const activation = session ?? await executionReservation(w.sessionId, w.launch.identity!);
+        const selected = await oc.recoverLaunch(a.nativeId, w.checkout, activation.saneExecution ? "build" : w.launch.agent!);
         workerStore.update(w.id, { state: "uncertain", child: { harness: "oc", authorityId: a.source.authorityId, nativeId: a.nativeId }, launch: { ...w.launch, ...(selected?.model ? { model: `${selected.model.providerID}/${selected.model.id}`, effort: selected.model.variant } : {}) }, error: "Native selection recovered; reconciling admission and run-publication evidence without resubmitting" });
       } catch (e) { workerStore.update(w.id, { state: "uncertain", error: e instanceof Error ? e.message : "Native selection recovery unavailable" }); }
     }

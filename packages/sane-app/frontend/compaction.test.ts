@@ -95,17 +95,25 @@ test("automatic lifecycle polling at high usage is observation-only and never er
 
 test("uncertain acceptance has no automatic retry: explicit recovery reuses UUID or observes the existing operation", async () => {
   for (const found of [false, true]) {
-    let reads = 0;
+    let recover = false;
     const payloads: CompactRequest[] = [];
     const f = fixture("opencode", {
       compact: async (_id, input) => { payloads.push(input); if (payloads.length === 1) throw new Error("ack lost"); return { sessionId: "A", runId: "C", operation: operation("requested", { requestId: input.requestId }) }; },
-      compactState: async () => { reads++; return eligible(found && reads >= 3 ? [operation("completed", { requestId: payloads[0]!.requestId })] : []); },
+      compactState: async () => eligible(found && recover ? [operation("completed", { requestId: payloads[0]!.requestId })] : []),
     });
     f.store.setDraft({ text: "do not lose this" });
     try {
       await f.store.compact();
       expect(f.store.state.pendingCompacts?.A?.phase).toBe("unconfirmed"); expect(f.store.state.compactError).toContain("no automatic retry");
       await f.store.refreshCompact(); await f.store.refreshCompact(); expect(payloads).toHaveLength(1);
+      // The fixture suppresses reconnect; acquire the post-mutation bridge
+      // readiness explicitly before the user resumes the original operation.
+      f.store.state.phase = "ready";
+      await f.poll(); f.close();
+      expect(payloads).toHaveLength(1);
+      expect(f.store.state.connected).toBe(true);
+      expect(f.store.state.pendingCompacts?.A?.phase).toBe("unconfirmed");
+      recover = true;
       await f.store.compact();
       expect(payloads).toHaveLength(found ? 1 : 2);
       if (!found) expect(payloads[1]).toEqual(payloads[0]);

@@ -1,7 +1,16 @@
 import { expect, test } from "bun:test";
 import { act } from "react";
+import type { WorkstreamDocument, WorkstreamDocumentCatalog } from "../../sane-core/src/contracts";
 import { CreateWorkstreamDialog, WorkstreamDetails, WorkstreamDocuments } from "./workstream-content";
 import { assignment, button, click, deferred, detail, field, input, pin, repositoryId, row, select, submit, timestamp, withDom } from "./workstreams.test-utils";
+
+function document(path: string, title: string, phase: WorkstreamDocument["phase"], overrides: Partial<WorkstreamDocument> = {}): WorkstreamDocument {
+  return { path, title, phase, kind: "primary", required: true, exists: true, revision: "revision-one", ...overrides };
+}
+
+function documentCatalog(documents: WorkstreamDocument[], workstreamId = "alpha"): WorkstreamDocumentCatalog {
+  return { repositoryId, workstreamId, documents };
+}
 
 test("create requires explicit type, generates ID, keeps custom conflict inputs and prevents duplicate submissions", async () => {
   const requests: unknown[] = [], responses: ReturnType<typeof deferred>[] = [], selected: string[] = []; let closes = 0;
@@ -69,11 +78,26 @@ test("documents group friendly names, registered missing reports remain visible 
     { topic: "missing-topic", reportPath: "research/missing-topic/REPORT.md", contentHash: "hash-one", createdAt: timestamp, updatedAt: timestamp, missing: true, modified: false },
     { topic: "modified-topic", reportPath: "research/modified-topic/REPORT.md", contentHash: "hash-two", createdAt: timestamp, updatedAt: timestamp, missing: false, modified: true },
   ], unregistered: ["research/unregistered/notes.md"], warnings: ["Hash mismatch"] };
-  const paths = ["README.md", "design/PRD.md", "design/SDD.md", "design/solutions/options/SOLUTION.md", "execution/PLAN.md", "execution/jobs/job-one.md", "execution/reports/job-one.md", "research/modified-topic/REPORT.md", "research/unregistered/notes.md"];
+  const documents = [
+    document("README.md", "Overview", "resources", { kind: "resource", required: false }),
+    document("design/PRD.md", "Product requirements", "design"),
+    document("design/SDD.md", "Software design", "design"),
+    document("design/solutions/options/SOLUTION.md", "Solution specification", "engineering"),
+    document("execution/PLAN.md", "Execution plan", "planning"),
+    document("execution/jobs/job-one.md", "Job one", "planning", { kind: "supporting" }),
+    document("execution/reports/job-one.md", "Job one report", "execution", { kind: "supporting" }),
+    document("research/missing-topic/REPORT.md", "Missing topic report", "research", { exists: false, revision: null }),
+    document("research/modified-topic/REPORT.md", "Modified topic report", "research"),
+    document("research/unregistered/notes.md", "Notes", "research", { kind: "supporting", required: false }),
+  ];
   const opened: unknown[] = [];
-  await withDom(async () => Response.json(paths), async (host, _, render) => {
+  await withDom(async (url, init) => {
+    expect(String(url)).toContain("/artifacts/catalog");
+    expect(JSON.parse(String(init?.body))).toEqual({ id: "alpha", repositoryId });
+    return Response.json(documentCatalog(documents));
+  }, async (host, _, render) => {
     await render(<WorkstreamDocuments workspaceId="workspace" detail={value} openArtifact={value => opened.push(value)} />);
-    expect([...host.querySelectorAll("h4")].map(node => node.textContent)).toEqual(["Design", "Engineering", "Execution", "Research"]);
+    expect([...host.querySelectorAll("h4")].map(node => node.textContent)).toEqual(["Design", "Engineering", "Planning", "Execution", "Research", "Resources"]);
     expect(host.textContent).toContain("Product requirements"); expect(host.textContent).toContain("Solution specification"); expect(host.textContent).toContain("Execution plan");
     const missing = [...host.querySelectorAll("li")].find(node => node.textContent?.includes("research/missing-topic/REPORT.md"))!;
     expect(missing.textContent).toContain("Missing"); expect(missing.querySelector("button")).toBeNull();
@@ -82,15 +106,19 @@ test("documents group friendly names, registered missing reports remain visible 
     expect(modified.querySelector("details")!.open).toBe(false); expect(modified.querySelector("details")!.textContent).toContain("hash-two");
     await click(modified.querySelector<HTMLButtonElement>("button")!);
     expect(opened).toEqual([{ workspaceId: "workspace", workstreamId: "alpha", repositoryId, path: "research/modified-topic/REPORT.md" }]);
-    const reports = [...host.querySelectorAll("details")].find(node => node.querySelector("summary")?.textContent === "Job reports · 1")!;
-    expect(reports.open).toBe(false); expect(host.textContent).toContain("1 missing · 1 modified · 1 unregistered");
+    const reports = host.querySelector('[aria-label="Execution documents"]')!;
+    expect(reports.querySelectorAll("li")).toHaveLength(1);
+    expect(reports.textContent).toContain("Job one report");
+    expect(reports.querySelector("details")!.open).toBe(false);
+    expect(host.querySelector('[aria-label="Planning documents"]')!.textContent).toContain("Execution plan");
+    expect(host.textContent).toContain("1 missing · 1 modified · 1 unregistered");
   });
 });
 
 test("research REPORT.md rows have distinguishable topic-derived surface names", async () => {
   const value = detail();
   value.research.registered = ["deployment-options", "storage-options"].map(topic => ({ topic, reportPath: `research/${topic}/REPORT.md`, contentHash: "hash", createdAt: timestamp, updatedAt: timestamp, missing: false, modified: false }));
-  await withDom(async () => Response.json(value.research.registered.map(report => report.reportPath)), async (host, _, render) => {
+  await withDom(async () => Response.json(documentCatalog(value.research.registered.map(report => document(report.reportPath, "Research report", "research")))), async (host, _, render) => {
     await render(<WorkstreamDocuments workspaceId="workspace" detail={value} openArtifact={() => {}} />);
     const names = [...host.querySelectorAll('.workstream-document-group[aria-label="Research documents"] .workstream-document-name')].map(node => node.textContent!);
     expect(names).toHaveLength(2); expect(new Set(names).size, "Both names currently collapse to REPORT.md").toBe(2);
@@ -104,7 +132,7 @@ test("document failure hides raw diagnostics in details and retry succeeds; old 
     const id = JSON.parse(String(init?.body)).id;
     if (id === "alpha" && ++calls === 1) return Response.json({ error: "raw repository path unavailable" }, { status: 503 });
     if (id === "alpha") return pending.promise;
-    return Response.json(["design/ISSUE.md"]);
+    return Response.json(documentCatalog([document("design/ISSUE.md", "Issue brief", "design")], id));
   }, async (host, _, render) => {
     await render(<WorkstreamDocuments workspaceId="workspace" detail={detail()} openArtifact={() => {}} />);
     expect(host.querySelector('[role="alert"]')?.textContent).toContain("Documents couldn't be loaded");
@@ -112,7 +140,7 @@ test("document failure hides raw diagnostics in details and retry succeeds; old 
     await click(button(host, "Retry"));
     await render(<WorkstreamDocuments workspaceId="workspace" detail={detail("beta", "Beta")} openArtifact={() => {}} />);
     expect(host.textContent).toContain("Issue brief");
-    await act(async () => { pending.resolve(Response.json(["design/PRD.md"])); });
+    await act(async () => { pending.resolve(Response.json(documentCatalog([document("design/PRD.md", "Product requirements", "design")]))); });
     expect(host.textContent).toContain("Issue brief"); expect(host.textContent).not.toContain("Product requirements");
   });
 });

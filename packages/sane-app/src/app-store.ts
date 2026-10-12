@@ -226,7 +226,7 @@ export function validateAppStore(root: string) {
   if (navigation.version !== 1) corrupt("Unsupported navigation");
   for (const session of metadata.sessions) {
     const a = admissions.admissions.find(a => a.sessionId === session.sessionId);
-    if (!a || a.nativeId !== session.nativeSessionId || a.binding.executionCheckout !== session.cwd || (a.source.descriptor.harness === "cc" ? "claude-code" : "opencode") !== session.harness) corrupt("History has no matching admission");
+    if (!a || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || a.binding.executionCheckout !== session.cwd || (a.source.descriptor.harness === "cc" ? "claude-code" : "opencode") !== session.harness) corrupt("History has no matching admission");
   }
   for (const a of admissions.admissions) {
     const source = sources[a.source.descriptor.harness];

@@ -7,7 +7,7 @@ import { FollowLatest } from "./chat-scroll";
 
 test("typing, spaces, IME and earlier-line selection survive streaming parent updates without value writes", async () => {
   const browser = new Window({ url: "http://localhost" });
-  const globals = { window: browser, document: browser.document, navigator: browser.navigator, HTMLElement: browser.HTMLElement, Event: browser.Event, IS_REACT_ACT_ENVIRONMENT: true };
+  const globals = { window: browser, document: browser.document, navigator: browser.navigator, HTMLElement: browser.HTMLElement, Event: browser.Event, ResizeObserver: browser.ResizeObserver, IS_REACT_ACT_ENVIRONMENT: true };
   const prior = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   let root: Root | undefined;
@@ -46,6 +46,9 @@ test("typing, spaces, IME and earlier-line selection survive streaming parent up
     expect(saved).toBe(composed); expect(writes).toBe(0);
     await act(async () => { textarea.dispatchEvent(new browser.KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, isComposing: true, bubbles: true }) as unknown as Event); });
     expect(sends).toBe(0);
+    // A composing key event starts a native IME interval; finish it before
+    // testing a separate, non-composing submission shortcut.
+    await act(async () => { textarea.dispatchEvent(new browser.CompositionEvent("compositionend", { bubbles: true }) as unknown as Event); });
     await act(async () => { textarea.dispatchEvent(new browser.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event); });
     expect(sends).toBe(0);
     await act(async () => { textarea.dispatchEvent(new browser.KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }) as unknown as Event); });

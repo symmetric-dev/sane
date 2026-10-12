@@ -16,6 +16,7 @@ import {
   installSaneAgentContextPackages,
   parseCliArguments,
   rewritePluginImports,
+  type AgentContextPackageInstallationOptions,
 } from "../src/install-sane-agent-context-packages.ts"
 
 async function expectMissing(path: string): Promise<void> {
@@ -61,6 +62,7 @@ describe("install-sane-agent-context-packages", () => {
     const pluginIndex = join(sourceRoot, "opencode", "plugins", "sane", "index.ts")
     await mkdir(dirname(pluginIndex), { recursive: true })
     await Bun.write(pluginIndex, pluginIndexFixture())
+    for (const filename of ["execution.ts", "execution-rpc.ts"]) await Bun.write(join(dirname(pluginIndex), filename), pluginSrcFixture(filename))
     for (const filename of PLUGIN_SRC_FILES) {
       const path = join(sourceRoot, "packages", "sane-cli", "src", filename)
       await mkdir(dirname(path), { recursive: true })
@@ -77,7 +79,7 @@ describe("install-sane-agent-context-packages", () => {
     await rm(temporaryDirectory, { recursive: true, force: true })
   })
 
-  function options(extra: { modelConfigPath?: string; dryRun?: boolean; overwrite?: boolean; onlySkill?: "review-opencode-sessions"; write?: (line: string) => void } = {}) {
+  function options(extra: AgentContextPackageInstallationOptions = {}) {
     return { homeDirectory, sourceRoot, write: () => {}, ...extra }
   }
 
@@ -194,6 +196,11 @@ describe("install-sane-agent-context-packages", () => {
       pluginIndexFixture(),
     )
     expect(installedContent).not.toContain("packages/sane-cli")
+    for (const filename of ["execution.ts", "execution-rpc.ts"]) {
+      const destination = join(dirname(installedIndex), filename)
+      expect(result.created).toContain(destination)
+      expect(await readFile(destination, "utf8")).toBe(pluginSrcFixture(filename))
+    }
     for (const filename of PLUGIN_SRC_FILES) {
       const destination = join(
         homeDirectory,
@@ -219,8 +226,8 @@ describe("install-sane-agent-context-packages", () => {
     })
   })
 
-  test("actual repository packaging loads the shared-domain native closure", async () => {
-    await installSaneAgentContextPackages({ homeDirectory, write: () => {} })
+  test.each([false, true])("actual repository packaging loads the shared-domain native closure (runtime-only: %s)", async runtimeOnly => {
+    await installSaneAgentContextPackages({ homeDirectory, runtimeOnly, write: () => {} })
     const installed = join(homeDirectory, ".config", "opencode", "plugins", "sane")
     const content = await readFile(join(installed, "index.ts"), "utf8")
     expect(content).toBe(rewritePluginImports(await readFile(join(import.meta.dir, "../../../opencode/plugins/sane/index.ts"), "utf8")))
@@ -234,6 +241,17 @@ describe("install-sane-agent-context-packages", () => {
     await symlink(join(import.meta.dir, "../node_modules/@modelcontextprotocol/sdk"), join(homeDirectory, "node_modules/@modelcontextprotocol/sdk"))
     const { SanePlugin } = await import(join(installed, "index.ts"))
     expect(typeof SanePlugin.setup).toBe("function")
+    const execution = await import(join(installed, "execution.ts"))
+    expect(typeof execution.registerExecutionOperations).toBe("function")
+    expect((await import(join(installed, "execution-rpc.ts"))).SaneExecution).toBeDefined()
+    await expectMissing(join(installed, "runtime/packages/sane-app"))
+    const built = await Bun.build({
+      entrypoints: [join(installed, "index.ts"), ...["native-claude-mcp.ts", "native-claude-hook.ts"].map(name => join(installed, "runtime/packages/sane-cli/src", name))],
+      target: "bun",
+      packages: "external",
+    })
+    expect(built.success).toBe(true)
+    for (const output of built.outputs) expect(await output.text()).not.toContain("canonical-agent-operations")
     const native = await import(join(installed, "runtime/packages/sane-cli/src/native-caller.ts"))
     expect(typeof native.openNativeCaller).toBe("function")
     const configuration = await import(join(installed, "runtime/packages/sane-cli/src/native-configuration.ts"))
@@ -241,6 +259,69 @@ describe("install-sane-agent-context-packages", () => {
     expect(generated.opencode.plugins[0].package).toBe(installed)
     const { Server } = await import("@modelcontextprotocol/sdk/server/index.js")
     expect(typeof Server).toBe("function")
+  })
+
+  test("runtime-only provisions clean native integrations without reading or publishing role assets", async () => {
+    for (const directory of ["opencode/agents", "skills", ".opencode/skills"]) await rm(join(sourceRoot, directory), { recursive: true })
+    const result = await installSaneAgentContextPackages(options({ runtimeOnly: true }))
+    expect(result.removed).toEqual([])
+    for (const directory of [".agents", ".claude/agents", ".claude/skills", ".claude/sane-agent-settings", ".config/opencode/agents", ".config/opencode/skills"]) await expectMissing(join(homeDirectory, directory))
+    const oc = await Bun.file(join(homeDirectory, ".config/opencode/opencode.json")).json()
+    expect(oc.plugins).toEqual([{ package: join(homeDirectory, ".config/opencode/plugins/sane"), options: { registrationFile: join(homeDirectory, ".local/state/opencode/service.json"), appConnectionFile: join(sourceRoot, "packages/sane-app/.data/native-handoff.json") } }])
+    const cc = await Bun.file(join(homeDirectory, ".claude.json")).json()
+    expect(cc.mcpServers.sane).toEqual({ type: "stdio", command: process.execPath, args: [join(homeDirectory, ".config/opencode/plugins/sane/runtime/packages/sane-cli/src/native-claude-mcp.ts"), join(homeDirectory, ".claude"), join(homeDirectory, ".claude/sane-bindings"), join(sourceRoot, "packages/sane-app/.data/native-handoff.json")] })
+    const settings = await Bun.file(join(homeDirectory, ".claude/settings.json")).json()
+    expect(settings.hooks.PreToolUse[0].matcher).toContain("mcp__sane__sane_worker_start")
+    expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain("native-claude-hook.ts")
+    expect(await installSaneAgentContextPackages(options({ runtimeOnly: true }))).toMatchObject({ created: [], updated: [], removed: [] })
+  })
+
+  test("runtime-only dry-run creates no home and preserves existing assets and unrelated configuration", async () => {
+    const runtime = { runtimeOnly: true, registrationFile: join(temporaryDirectory, "registration.json"), appConnectionFile: join(temporaryDirectory, "app/native-handoff.json") }
+    const dry = await installSaneAgentContextPackages(options({ ...runtime, dryRun: true }))
+    expect(dry.created).toContain(join(homeDirectory, ".claude.json"))
+    await expectMissing(homeDirectory)
+    const retired = await seedRetiredSkills()
+    const assets = [".config/opencode/agents/sane/assistant/design.md", ".claude/agents/sane-worker-scout.md", ".claude/skills/review-opencode-sessions/SKILL.md"]
+    for (const asset of assets) { await mkdir(dirname(join(homeDirectory, asset)), { recursive: true }); await Bun.write(join(homeDirectory, asset), "custom\n") }
+    const settings = { env: { KEEP: "yes" }, hooks: { Stop: [{ hooks: [{ type: "command", command: "keep-stop" }] }], PreToolUse: [{ matcher: "Read", hooks: [{ type: "command", command: "keep-read" }] }] } }
+    await Bun.write(join(homeDirectory, ".claude/settings.json"), JSON.stringify(settings))
+    await Bun.write(join(homeDirectory, ".claude.json"), JSON.stringify({ unrelated: true, mcpServers: { other: { command: "keep" } } }))
+    await Bun.write(join(homeDirectory, ".config/opencode/opencode.json"), JSON.stringify({ model: "keep/model", plugins: ["other-plugin"] }))
+    await expect(installSaneAgentContextPackages(options(runtime))).rejects.toThrow("--overwrite")
+    await installSaneAgentContextPackages(options({ ...runtime, overwrite: true, dryRun: true }))
+    expect(await Bun.file(join(homeDirectory, ".claude/settings.json")).json()).toEqual(settings)
+    const result = await installSaneAgentContextPackages(options({ ...runtime, overwrite: true }))
+    expect(result.removed).toEqual([])
+    for (const asset of assets) expect(await readFile(join(homeDirectory, asset), "utf8")).toBe("custom\n")
+    for (const path of retired) expect(await readFile(join(path, "SKILL.md"), "utf8")).toBe("old role\n")
+    const mergedSettings = await Bun.file(join(homeDirectory, ".claude/settings.json")).json()
+    expect(mergedSettings.env).toEqual(settings.env)
+    expect(mergedSettings.hooks.Stop).toEqual(settings.hooks.Stop)
+    expect(mergedSettings.hooks.PreToolUse[0]).toEqual(settings.hooks.PreToolUse[0])
+    expect(mergedSettings.hooks.PreToolUse).toHaveLength(2)
+    expect(await Bun.file(join(homeDirectory, ".claude.json")).json()).toMatchObject({ unrelated: true, mcpServers: { other: { command: "keep" } } })
+    const oc = await Bun.file(join(homeDirectory, ".config/opencode/opencode.json")).json()
+    expect(oc.model).toBe("keep/model")
+    expect(oc.plugins[0]).toBe("other-plugin")
+    expect(oc.plugins[1].options).toEqual({ registrationFile: runtime.registrationFile, appConnectionFile: runtime.appConnectionFile })
+  })
+
+  test("runtime-only CLI and API reject irrelevant combinations before writing", async () => {
+    expect(parseCliArguments(["--runtime-only", "--dry-run"])).toEqual({ runtimeOnly: true, dryRun: true, overwrite: false })
+    expect(parseCliArguments(["--runtime-only", "--app-connection-file", "/fixture/app.json"])).toMatchObject({ appConnectionFile: "/fixture/app.json" })
+    for (const args of [["--runtime-only", "--only", "review-opencode-sessions"], ["--runtime-only", "--model-config", "models.yaml"], ["--binding-root", "/bindings"]]) expect(() => parseCliArguments(args)).toThrow()
+    for (const extra of [{ onlySkill: "review-opencode-sessions" as const }, { modelConfigPath: "missing" }]) await expect(installSaneAgentContextPackages(options({ runtimeOnly: true, ...extra }))).rejects.toThrow("--runtime-only")
+    await expectMissing(homeDirectory)
+  })
+
+  test.each([".claude.json", ".claude/settings.json", ".config/opencode/opencode.json"])("runtime-only rejects invalid config %s before provisioning", async filename => {
+    const path = join(homeDirectory, filename)
+    await mkdir(dirname(path), { recursive: true })
+    await Bun.write(path, "invalid JSON")
+    await expect(installSaneAgentContextPackages(options({ runtimeOnly: true, overwrite: true }))).rejects.toThrow("not valid JSON")
+    expect(await readFile(path, "utf8")).toBe("invalid JSON")
+    await expectMissing(join(homeDirectory, ".config/opencode/plugins"))
   })
 
   test.each(["sane-src", "sane-core"])("obsolete %s closure blocks even overwrite without mutation", async (name) => {

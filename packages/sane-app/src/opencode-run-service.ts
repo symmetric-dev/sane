@@ -6,6 +6,9 @@ import { saneSessionMessageId, snapshotIdentity } from "./agent-launch";
 import { nativeAgentId } from "sane-core/agent-catalog";
 import type { DispatchIdentity } from "../shared/conversation/dispatch-contract";
 import { verifyOpenCodeCompletion, type OperatorCompletionEvidence } from "./opencode-completion-recovery";
+import { prepareContextDelivery, assertContextCurrent, contextReceipt, type ContextProvider } from "./context-delivery";
+import { openCodeExecutionConfiguration } from "./canonical-agent-operations";
+import type { CanonicalExecutionProvider } from "./canonical-execution-store";
 
 /** Private App recovery capability; no Run synthesis or submission hooks. */
 export type OpenCodeRecoveryObservation = Readonly<{
@@ -20,7 +23,7 @@ export type OpenCodeRecoveryObservation = Readonly<{
 }>;
 
 /** Native transport only; owner arbitration and durable writes remain in the bridge. */
-export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel"> & Partial<Pick<OpenCodeAdapter, "history" | "observeCommand" | "promptQueuedHandoff" | "preflightNativeSession" | "deliverSaneSession" | "bindSaneSession" | "boundSaneSession" | "cancelInput">>;
+export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel"> & Partial<Pick<OpenCodeAdapter, "history" | "observeCommand" | "promptQueuedHandoff" | "preflightNativeSession" | "deliverSaneSession" | "deliverContextEntry" | "configureCanonicalExecution" | "bindSaneSession" | "boundSaneSession" | "cancelInput">>;
 export type OpenCodeRunDependencies = {
   oc: OpenCodeRunAdapter;
   closing: () => boolean;
@@ -43,6 +46,8 @@ export type OpenCodeRunDependencies = {
   completionInboxEmpty?: (nativeSessionId: string) => Promise<boolean>;
   /** The startup SANE Session block from current membership, or null. */
   saneSession: (sessionId: string) => Promise<string | null>;
+  canonicalContext?: ContextProvider;
+  canonicalExecution?: CanonicalExecutionProvider;
   sleep: (ms: number) => Promise<unknown>;
 };
 
@@ -55,8 +60,8 @@ export type CompletionReconciliationEvidence = VerifyCompletionRequest & {
 const compactCommand = (text: string) => /^\s*\/compact(?:\s|$)/i.test(text);
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object";
 const configuration = (value: Session) => JSON.stringify([value.sessionId, value.harness, value.authorityId, value.nativeSessionId, value.cwd,
-  value.profileId, value.model, value.effort, value.agent, value.agentKind, value.nativeAgentSelected, value.saneContext, value.attachment]);
-const runConfiguration = (run: Run) => JSON.stringify([run.model, run.effort, run.profileId, run.agent, run.agentKind, run.nativeAgentSelected, run.operation, run.saneContextVersion]);
+  value.profileId, value.model, value.effort, value.agent, value.agentKind, value.nativeAgentSelected, value.saneContext, value.saneExecution, value.attachment]);
+const runConfiguration = (run: Run) => JSON.stringify([run.model, run.effort, run.profileId, run.agent, run.agentKind, run.nativeAgentSelected, run.operation, run.saneContextVersion, run.saneExecution]);
 type HandoffPins = Readonly<{ run: Run; runId: string; sessionId: string; commandId: string; nativeSessionId: string; cwd: string; claim: string; configuration: string; runConfiguration: string }>;
 export type OpenCodePendingCancellation = Readonly<{ ready: false }> | Readonly<{
   ready: true;
@@ -71,7 +76,25 @@ export class OpenCodeRunService {
   // bridge's real claim gate and durable dispatch evidence remain mandatory.
   private readonly handoffPins = new WeakMap<RunOwner, HandoffPins>();
   private readonly completionChecks = new Set<string>();
+  private readonly executionAgents = new WeakMap<RunOwner, string>();
   constructor(private readonly deps: OpenCodeRunDependencies) {}
+  private async configureExecution(owner: RunOwner, guard: () => void) {
+    const run = owner.run, session = this.deps.session(run.sessionId);
+    guard();
+    const snapshot = await this.deps.canonicalExecution?.(run.sessionId);
+    guard();
+    if (!snapshot) return;
+    if (!this.deps.oc.configureCanonicalExecution) throw new Error("Canonical execution integration is unavailable");
+    if (snapshot.policy.spec.name !== `sane/${session.agentKind}/${session.agent}`) throw new Error("Canonical execution role mismatch");
+    const configuration = openCodeExecutionConfiguration({ policy: snapshot.policy, children: snapshot.children, sessionID: session.nativeSessionId!, directory: session.cwd, model: run.model, effort: run.effort });
+    await this.deps.emit(run, "context", { type: "canonical-execution", stage: "prepared", revision: snapshot.revision, configuration });
+    guard();
+    const readOnly = run.nativeDelivery === "queue";
+    await this.deps.oc.configureCanonicalExecution(configuration, guard, readOnly);
+    this.executionAgents.set(owner, configuration.agent);
+    await this.deps.emit(run, "context", { type: "canonical-execution", stage: readOnly ? "verified" : "configured", revision: snapshot.revision, sessionId: session.sessionId, nativeSessionId: session.nativeSessionId });
+    guard();
+  }
   /** Explicit operator repair only. This evidence never certifies automatic continuation. */
   async verifyCompletion(run: Run, request: VerifyCompletionRequest, assertScope: () => void = () => {}): Promise<{ status: Status; evidence: CompletionReconciliationEvidence }> {
     if (!record(request) || request.confirm !== true || typeof request.requestId !== "string"
@@ -291,7 +314,8 @@ export class OpenCodeRunService {
     await this.deps.emit(run, "launch", {
       harness: "opencode", resume, operation: run.operation ?? "prompt", workstreamId: context.workstreamId, workstreamRoot: context.artifactsRoot, implementationRoot: run.cwd,
       agent: run.agent ?? null, saneContextVersion: run.saneContextVersion ?? null,
-      nativeAgent: run.nativeAgentSelected && identity ? nativeAgentId(identity, "opencode") : null, model: compact ? null : run.model ?? null, variant: compact ? null : run.effort ?? null,
+      nativeAgent: this.executionAgents.get(owner) ?? (run.nativeAgentSelected && identity ? nativeAgentId(identity, "opencode") : null), model: compact ? null : run.model ?? null, variant: compact ? null : run.effort ?? null,
+      ...(session.saneExecution ? { executionPolicy: { revision: session.saneExecution.revision, nativeRoleRegistration: false } } : {}),
     });
   }
   async monitorNative(owner: RunOwner) {
@@ -443,11 +467,24 @@ export class OpenCodeRunService {
   }
   async executeNativeCompact(owner: RunOwner) {
     const run = owner.run, session = this.deps.session(run.sessionId);
+    const expected = configuration(session);
+    const guard = () => {
+      if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested || owner.cancelling || owner.settled || this.deps.currentOwner(session.sessionId) !== owner
+        || configuration(this.deps.session(run.sessionId)) !== expected) throw new Error("Compaction context preparation cancelled or changed");
+    };
     let attempted = false;
     try {
       if (this.deps.closing() || owner.stopRequested) throw new Error("Stopped before native compaction submission");
       await this.deps.compactExecution(session);
       await this.deps.oc.assertIdle(session.nativeSessionId!, session.cwd);
+      await this.configureExecution(owner, guard);
+      const canonical = await prepareContextDelivery(session, run, this.deps.canonicalContext, this.deps.emit, guard);
+      if (canonical) {
+        if (!this.deps.oc.deliverContextEntry) throw new Error("OpenCode canonical context delivery is unavailable");
+        await this.deps.oc.deliverContextEntry(session.nativeSessionId!, `${canonical.standing}\n\n${canonical.dynamic}`, true, guard);
+        guard();
+        await this.deps.emit(run, "context", contextReceipt(canonical, "stored-readback", "instruction-entry:sane.context"));
+      }
       await this.launchEvidence(owner, true);
       if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested) throw new Error("Bridge unavailable before native compaction submission");
       run.nativePhase = "sending"; await this.deps.persist();
@@ -455,7 +492,9 @@ export class OpenCodeRunService {
       // Recheck idle immediately before dispatch. No agent/model selection,
       // synthetic user message or ordinary prompt endpoint participates.
       await this.deps.oc.assertIdle(session.nativeSessionId!, session.cwd);
+      await assertContextCurrent(canonical, this.deps.canonicalContext, guard);
       const submission = this.deps.oc.compact(session.nativeSessionId!, run.compact!.nativeRequestId!, () => {
+        guard();
         if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested || this.deps.currentOwner(session.sessionId) !== owner) throw new Error("Compaction withheld before native dispatch");
         attempted = true; owner.nativeDispatched = true;
       });
@@ -540,7 +579,7 @@ export class OpenCodeRunService {
         assertDelivery();
         await this.deps.oc.select(session.nativeSessionId!, run.model, run.effort);
         assertDelivery();
-        if (!resume) {
+        if (!resume && !session.saneContext?.package) {
           const block = await this.deps.saneSession(session.sessionId);
           assertDelivery();
           if (block !== null) {
@@ -550,6 +589,14 @@ export class OpenCodeRunService {
             await this.deps.emit(run, "context", { type: "session-block", changed: true, text: block });
           }
         }
+      }
+      await this.configureExecution(owner, assertDispatchState);
+      const canonical = await prepareContextDelivery(session, run, this.deps.canonicalContext, this.deps.emit, assertDispatchState);
+      if (canonical) {
+        if (!this.deps.oc.deliverContextEntry) throw new Error("OpenCode canonical context delivery is unavailable");
+        await this.deps.oc.deliverContextEntry(nativeSessionId, `${canonical.standing}\n\n${canonical.dynamic}`, !queued, assertDispatchState);
+        assertDispatchState();
+        await this.deps.emit(run, "context", contextReceipt(canonical, "stored-readback", "instruction-entry:sane.context"));
       }
       await this.launchEvidence(owner, resume);
       assertDelivery();
@@ -572,6 +619,7 @@ export class OpenCodeRunService {
       }
       if (handoff) await this.deps.oc.preflightNativeSession!(nativeSessionId, submissionCwd);
       assertDelivery();
+      await assertContextCurrent(canonical, this.deps.canonicalContext, assertDispatchState);
       // Native command ID is durable before the request. A timeout is ambiguous:
       // keep this conversation's slot and reconcile, never replay automatically.
       this.deps.assertWorkerDeliverySubmission(owner);

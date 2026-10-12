@@ -4,10 +4,12 @@ import { linkNativeCaller, nativeCallerContext, nativeShellCaller, nativeLinkSch
 import { handoffNativeCaller, nativeHandoffSchema, nativeHandoffStatusSchema } from "../../../packages/sane-cli/src/native-handoff.ts"
 import { nativeWorkerDescriptions, nativeWorkerOperations, nativeWorkerSchemas } from "../../../packages/sane-cli/src/native-worker-contract.ts"
 import { workerNativeCaller } from "../../../packages/sane-cli/src/native-worker.ts"
+import { registerExecutionOperations } from "./execution.ts"
 
 export const SanePlugin = Plugin.define({
   id: "sane",
   async setup(ctx) {
+    const disposeExecution = await registerExecutionOperations(ctx)
     const registration = ctx.options.registrationFile
     const workerInvocations = new OpenCodeWorkerInvocations()
     // The App delivers framework and Session context separately into startup history.
@@ -59,7 +61,7 @@ export const SanePlugin = Plugin.define({
       const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
       event.input = { ...input, command: `export SANE_CALLER_CONTEXT=${quote(reference)}\nunset SANE_SESSION_ID OPENCODE_SESSION_ID\n${input.command}` }
     })
-    return () => workerInvocations.clear()
+    return async () => { workerInvocations.clear(); await disposeExecution() }
   },
 })
 

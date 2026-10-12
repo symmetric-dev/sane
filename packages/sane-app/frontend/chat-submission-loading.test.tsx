@@ -9,6 +9,7 @@ import { catalog } from "./catalog";
 import { ChatStore, store, type State } from "./store";
 import { messagesWithPendingTurn } from "./transcript";
 import { Thread } from "./thread";
+import { ConversationListing } from "./conversation-listing";
 import type { Conversation, ConversationClient, DiagnosticEvent, RunMetadata, RunStatus } from "./types";
 
 const busyReason = "This conversation already has an active run or reconciliation";
@@ -39,6 +40,10 @@ function fixture() {
     submit: async () => { submissions++; return acceptance.promise; },
   };
   const chat = new ChatStore(client);
+  // Advance the acquisition clock with server snapshots rather than reusing a
+  // fresh pre-transition listing during these immediate, manual polls.
+  let now = 0;
+  (chat as unknown as { conversationListing: ConversationListing }).conversationListing = new ConversationListing(client.conversations, 1000, () => now);
   chat.state = { ...chat.state, phase: "ready", selected: sessionId, conversations: [conversation], connected: true, loading: false,
     availability: { canSend: true } };
   // Isolate submission state from workspace/model discovery, neither of which is under test.
@@ -47,7 +52,7 @@ function fixture() {
   const internal = chat as unknown as { poll(): Promise<void>; stop(): void };
   return {
     chat, client, acceptance,
-    server: (next: RunStatus, hasResponse = false) => { status = next; responded = hasResponse; busy = next === "starting" || next === "running"; },
+    server: (next: RunStatus, hasResponse = false) => { now += 1001; status = next; responded = hasResponse; busy = next === "starting" || next === "running"; },
     reserve: () => { busy = true; },
     counts: () => ({ submissions, reconciliations }),
     poll: async () => { internal.stop(); await internal.poll(); internal.stop(); },
@@ -210,9 +215,9 @@ async function composerFixture(run: (host: HTMLDivElement, root: Root) => Promis
 }
 
 for (const scenario of ["active run", "accepted awaiting history", "submission awaiting server", "reconciliation"] as const) {
-  test(`${scenario} is a neutral status, not an error, in the info panel`, async () => {
+  test(`${scenario} is a neutral status, not an error, in conversation activity`, async () => {
     await composerFixture(async (host, root) => {
-      const reason = scenario === "submission awaiting server" ? "Sending your message…" : busyReason;
+      const reason = { "active run": "Assistant is working…", "accepted awaiting history": "Starting assistant…", "submission awaiting server": "Sending your message…", reconciliation: "Waiting for conversation availability…" }[scenario];
       if (scenario === "accepted awaiting history" || scenario === "submission awaiting server") store.state = { ...store.state,
         pendingTurn: { id: "pending-fixture", conversationId: sessionId, ...(scenario === "accepted awaiting history" ? { runId } : {}), text: "hello", time } };
       if (scenario !== "active run") store.state = { ...store.state, runs: [], sending: scenario === "submission awaiting server" };
@@ -221,9 +226,10 @@ for (const scenario of ["active run", "accepted awaiting history", "submission a
       const help = host.querySelector<HTMLButtonElement>(".composer-help")!;
       expect(help.classList.contains("has-issue")).toBe(false);
       expect(help.querySelector(".composer-help-dot")).toBeNull();
-      await act(async () => help.click());
-      expect(document.querySelector(".composer-help-notes [role=alert]")).toBeNull();
-      expect(document.querySelector(".composer-help-notes .notice[role=status]")?.textContent).toBe(reason);
+      expect(host.querySelector('.composer-status-text[role="status"]')?.textContent).toBe(reason);
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Show activity details"]')!.click());
+      expect(document.querySelector(".composer-status-details [role=alert]")).toBeNull();
+      expect([...document.querySelectorAll('.composer-status-details [aria-label="Activity"] li strong')].map(node => node.textContent)).toContain(reason);
       expect(host.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled).toBe(true);
     });
   });

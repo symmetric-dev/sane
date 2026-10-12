@@ -3,7 +3,6 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { catalog } from "./catalog";
-import { configSection } from "./config-view";
 import { store } from "./store";
 import type { Conversation } from "./types";
 import { publishWorkers, registerWorkerSessions, workersFor } from "./worker-client";
@@ -37,7 +36,7 @@ async function withApp(run: (fixture: Fixture) => Promise<void>, options: { empt
   Object.defineProperty(browser.navigator, "platform", { configurable: true, value: options.mac === false ? "Win32" : "MacIntel" });
   const requests: RequestRecord[] = [], unexpected: string[] = [];
   const restoreStore = preserveOwnFields(store), restoreCatalog = preserveOwnFields(catalog);
-  const previousState = store.state, previousSection = configSection.snapshot();
+  const previousState = store.state;
   const previousWorkers = [live, preview].map(c => [c.id, workersFor(c.id)] as const);
   const nativeSetTimeout = globalThis.setTimeout, nativeClearTimeout = globalThis.clearTimeout;
   const nativeSetInterval = globalThis.setInterval, nativeClearInterval = globalThis.clearInterval;
@@ -61,6 +60,13 @@ async function withApp(run: (fixture: Fixture) => Promise<void>, options: { empt
         return Response.json({ runs: [] });
       }
       if ([live, preview].some(c => url.pathname === `/api/sessions/${c.id}/workers`)) return Response.json({ workers: [], deliveries: [], continuationSuppressed: false });
+      if ([live, preview].some(c => url.pathname === `/api/sessions/${c.id}/handoffs`)) return Response.json({ handoffs: [] });
+      if ([live, preview].some(c => url.pathname === `/api/sessions/${c.id}/native-subagents`)) return Response.json({ subagents: [], revision: "one", nextCursor: null });
+      const compactSession = [live, preview].find(c => url.pathname === `/api/sessions/${c.id}/compact`);
+      if (compactSession) return Response.json({ sessionId: compactSession.id, eligibility: { eligible: true, supportsInstructions: true, nativeActivity: "idle" }, operations: [] });
+      const transcriptSession = [live, preview].find(c => url.pathname === `/api/sessions/${c.id}/transcript`);
+      if (transcriptSession) return Response.json({ sessionId: transcriptSession.id, revision: "one", epoch: "one", usage: null, messages: [], coverage: { firstId: null, lastId: null, firstIndex: null, lastIndex: null, totalMessages: 0, olderCursor: null, newerCursor: null }, continuation: { older: false, newer: false } });
+      if ([live, preview].some(c => url.pathname === `/api/sessions/${c.id}/transcript/meta`)) return Response.json({ items: [], nextCursor: null, metadataRevision: "one" });
       if ([live, preview].some(c => url.pathname === `/api/sessions/${c.id}/native-history`)) return Response.json({ history: null });
       if ([live, preview].some(c => url.pathname === `/api/sessions/${c.id}/interactions`)) return Response.json({ interactions: [] });
       if (url.pathname === "/api/workstreams/overview" && url.searchParams.get("workspaceId") === workspaceId) return Response.json(options.workstreams ?? { repositoryId: "navigation-domain", workstreams: [], conversations: [] });
@@ -85,6 +91,8 @@ async function withApp(run: (fixture: Fixture) => Promise<void>, options: { empt
   const prior = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   let root: Root | undefined;
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  const { configSection } = await import("./config-view");
+  const previousSection = configSection.snapshot();
   try {
     catalog.invalidate();
     catalog.state = { ready: true, loading: false, error: "", workspaces: options.empty ? [] : [{
@@ -97,7 +105,7 @@ async function withApp(run: (fixture: Fixture) => Promise<void>, options: { empt
     // Authentication/startup is outside this checkpoint. Selection and navigation remain real.
     store.start = () => {};
     store.send = async () => { sendCount++; throw new Error("Navigation submitted a message"); };
-    store.state = { ...previousState, phase: "ready", selected: live.id,
+    store.state = { ...previousState, phase: "ready", conversationsReady: true, selected: live.id,
       conversations: options.empty ? [] : [{ ...live, ...(options.replaced ? { replacedBy: preview.id } : {}) }, preview],
       config: { authRequired: false, authenticated: true }, profiles: null, runs: [], messages: [], drafts: {},
       connected: true, loading: false, sending: options.sending ?? false, availability: { canSend: true },
@@ -158,10 +166,9 @@ function expectNavigation(host: HTMLDivElement, labels: string[]) {
 test("App History replaces the main pane with preview; only explicit Open in Chat changes the live conversation", async () => {
   await withApp(async ({ browser, host, requests }) => {
     const toolbarActions = host.querySelector(".composer-actions")!;
-    expect(toolbarActions.firstElementChild?.className).toBe("contextual-navigation");
-    expect(toolbarActions.children[1]?.classList.contains("composer-help")).toBe(true);
-    expect(toolbarActions.lastElementChild?.getAttribute("aria-label")).toBe("Send message");
-    expect((toolbarActions.lastElementChild as HTMLButtonElement).type).toBe("submit");
+    expect(toolbarActions.firstElementChild?.classList.contains("composer-help")).toBe(true);
+    expect(toolbarActions.lastElementChild?.className).toBe("contextual-navigation");
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.type).toBe("submit");
     const input = host.querySelector<HTMLTextAreaElement>("textarea")!;
     input.focus(); input.setSelectionRange(5, 5);
     await act(async () => { input.dispatchEvent(new browser.CompositionEvent("compositionstart", { bubbles: true }) as unknown as Event); });
@@ -181,7 +188,7 @@ test("App History replaces the main pane with preview; only explicit Open in Cha
     expect(host.querySelector("textarea")).toBe(input);
     expect(input.value).toBe("Live 日本 draft\nkeep trailing spaces  "); expect(input.selectionStart).toBe(8);
     expect(requests.some(r => r.path === `/api/sessions/${preview.id}/runs`)).toBe(true);
-    expectNavigation(host, ["Open Chat", "Terminal", "Files", "Settings"]);
+    expectNavigation(host, ["Open Chat", "Terminal", "Files", "Browser", "Settings"]);
     await navigate(host, "Open Chat");
     expect(store.state.selected).toBe(live.id); expect(host.querySelector("textarea")).toBe(input);
     expect(input.value).toContain("日本"); expect(input.selectionStart).toBe(8);
@@ -204,7 +211,7 @@ test("App Terminal Open Chat does not submit or invoke shell actions and preserv
     await navigate(host, "Terminal");
     expect(host.querySelector("main .terminal-view")?.textContent).toContain("Select an available worktree");
     expect(host.querySelector(".terminal-canvas")).toBeNull();
-    expectNavigation(host, ["Open Chat", "Files", "Settings"]);
+    expectNavigation(host, ["Open Chat", "Files", "Browser", "Settings"]);
     expect(host.querySelector("textarea")).toBe(input);
     await navigate(host, "Open Chat");
     expect(catalog.state.navigation.view).toBe("chat"); expect(host.querySelector("textarea")).toBe(input);
@@ -230,10 +237,10 @@ for (const mac of [true, false]) test(`App ${mac ? "Mac" : "Windows"} view hotke
     };
     await hotkey("t", input); expect(catalog.state.navigation.view).toBe("terminal");
     await hotkey("f"); expect(catalog.state.navigation.view).toBe("code");
-    await hotkey("s"); expect(catalog.state.navigation.view).toBe("config");
+    await hotkey("p"); expect(catalog.state.navigation.view).toBe("config");
     await click(host, ".sidebar .config-menu button:last-child");
-    expect(host.querySelector("main .shell-content h2")?.textContent).toBe("Shortcuts");
-    expect(host.querySelector("main .hotkeys-table")?.textContent).toContain("Ctrl+Alt+S");
+    expect(host.querySelector('main .shell-content [aria-label="Shortcuts settings"]')).not.toBeNull();
+    expect(host.querySelector("main .hotkeys-table")?.textContent).toContain("Ctrl+Alt+P");
     await hotkey("c"); expect(catalog.state.navigation.view).toBe("chat");
     // The current destination has no visible button, but its command remains registered.
     await hotkey("c", input);
@@ -248,19 +255,21 @@ test("App Files and Git lead to Settings leaves with the same workspace selector
   await withApp(async ({ host, requests }) => {
     await navigate(host, "Files");
     expect(host.querySelector("main [role='alert']")?.textContent).toBe("Fixture worktree unavailable");
-    expectNavigation(host, ["Chat", "Terminal", "Settings"]);
+    expectNavigation(host, ["Chat", "Terminal", "Browser", "Settings"]);
     await click(host, ".sidebar [aria-label='Files views'] button:last-child");
     expect(catalog.state.navigation.view).toBe("git");
     expect(button(host, ".sidebar [aria-label='Files views'] button:last-child").getAttribute("aria-pressed")).toBe("true");
     await navigate(host, "Settings");
     expect(host.querySelector("main .shell-content h2")?.textContent).toBe("Agents");
-    expect(host.querySelector(".sidebar .shell-sidebar-header .workspace-opener")?.textContent).toContain("Navigation fixture: main");
+    expect(host.querySelector(".sidebar .shell-sidebar-header .workspace-opener-title")?.textContent).toBe("Navigation fixture");
+    expect(host.querySelector(".sidebar .shell-sidebar-header .workspace-opener-checkout")?.textContent).toBe("main");
     await click(host, ".sidebar .config-menu button:nth-child(2)");
     expect(catalog.state.navigation.view).toBe("workstreams");
     expect(host.querySelector("main .shell-content h2")?.textContent).toBe("Workstreams");
     expect(host.querySelector("main .shell-content [role='alert']")?.textContent).toBe("Couldn't load workstreams. Try refreshing.");
     expect(host.querySelector("main .shell-content details")?.textContent).toContain("Repository inspection unavailable");
-    expectNavigation(host, ["Chat", "Terminal", "Files"]);
+    expectNavigation(host, ["Chat", "Terminal", "Files", "Browser"]);
+    await act(async () => { (window as unknown as Window).happyDOM.setWindowSize({ width: 600, height: 800 }); });
     await click(host, "[aria-label='Open workspace navigation']");
     const drawer = host.querySelector<HTMLDialogElement>("dialog.drawer")!;
     expect(drawer.open).toBe(true);
@@ -268,10 +277,13 @@ test("App Files and Git lead to Settings leaves with the same workspace selector
     expect([...drawer.querySelectorAll(".config-menu .history-title")].map(e => e.textContent)).toEqual(["Agents", "Workstreams", "Application", "Shortcuts"]);
     expect(drawer.querySelector(".config-menu [aria-current='page'] .history-title")?.textContent).toBe("Workstreams");
     await click(drawer, ".workspace-opener");
-    const picker = host.querySelector<HTMLDialogElement>("dialog.shell-dialog")!;
-    const select = picker.querySelector<HTMLSelectElement>(".context-worktrees select")!;
-    expect([...select.options].map(o => o.value)).toEqual(["", worktreeId, "other-tree"]);
-    await act(async () => { select.value = "other-tree"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const picker = host.querySelector<HTMLDialogElement>("dialog.workspace-context-dialog")!;
+    await click(picker, ".context-detail-toggle");
+    await click(picker, '.context-selection-modes button:first-child');
+    const choices = [...picker.querySelectorAll<HTMLButtonElement>('[aria-label="Worktree selection"] .context-selection-list button')];
+    expect(choices.map(choice => choice.querySelector(".context-choice-heading")?.textContent)).toEqual(["main", "feature"]);
+    expect(choices.map(choice => choice.getAttribute("aria-pressed"))).toEqual(["true", "false"]);
+    await act(async () => { choices[1]!.click(); });
     expect(catalog.state.navigation.worktreeId).toBe("other-tree");
     expect(host.querySelector(".sidebar .workspace-opener")?.textContent).toContain("feature");
     await click(picker, "[aria-label='Close workspace']");
@@ -292,19 +304,19 @@ test("App empty non-chat views keep contextual navigation and a common selector"
   await withApp(async ({ host }) => {
     await click(host, ".sidebar .history-sidebar-button");
     expect(host.querySelector("main .history-detail")?.textContent).toContain("No session selected");
-    expectNavigation(host, ["Open Chat", "Terminal", "Files", "Settings"]);
+    expectNavigation(host, ["Open Chat", "Terminal", "Files", "Browser", "Settings"]);
     await navigate(host, "Files");
     expect(host.querySelector("main .workspace-empty h2")?.textContent).toBe("Open a workspace");
-    expectNavigation(host, ["Chat", "Terminal", "Settings"]);
+    expectNavigation(host, ["Chat", "Terminal", "Browser", "Settings"]);
     await click(host, ".sidebar [aria-label='Files views'] button:last-child");
     expect(host.querySelector("main .workspace-empty h2")?.textContent).toBe("Open a workspace");
     await navigate(host, "Settings");
     await click(host, ".sidebar .config-menu button:nth-child(2)");
     expect(host.querySelector("main .shell-content")?.textContent).toContain("Select a repository workspace");
-    expectNavigation(host, ["Chat", "Terminal", "Files"]);
+    expectNavigation(host, ["Chat", "Terminal", "Files", "Browser"]);
     expect(host.querySelector(".sidebar .shell-sidebar-header .workspace-opener")?.textContent).toBe("Open workspace");
     await navigate(host, "Terminal");
-    expectNavigation(host, ["Open Chat", "Files", "Settings"]);
+    expectNavigation(host, ["Open Chat", "Files", "Browser", "Settings"]);
     await navigate(host, "Open Chat"); expect(catalog.state.navigation.view).toBe("chat");
   }, { empty: true });
 });
@@ -313,10 +325,10 @@ test("App replaced conversations retain navigation; History errors do not strand
   await withApp(async ({ host }) => {
     expect(host.querySelector("form.composer")).toBeNull();
     expect(host.querySelector(".composer-navigation-only .contextual-navigation")).not.toBeNull();
-    expectNavigation(host, ["Terminal", "Files", "Settings"]);
+    expectNavigation(host, ["Terminal", "Files", "Browser", "Settings"]);
     await click(host, ".sidebar .history-sidebar-button");
     expect(host.querySelector("main .history-detail [role='alert']")?.textContent).toBe("Recorded runs unavailable");
-    expectNavigation(host, ["Open Chat", "Terminal", "Files", "Settings"]);
+    expectNavigation(host, ["Open Chat", "Terminal", "Files", "Browser", "Settings"]);
     await navigate(host, "Files");
     expect(host.querySelector("main [role='alert']")?.textContent).toBe("Fixture worktree unavailable");
     await navigate(host, "Settings");
@@ -338,7 +350,7 @@ test("App Workstreams Open explicitly navigates to selected App conversation and
     expect(catalog.state.navigation.conversationId).toBe(preview.id);
     expect(catalog.state.navigation.workspaceId).toBe(workspaceId); expect(catalog.state.navigation.worktreeId).toBe(worktreeId);
     expect(store.draft(live.id)).toEqual(draft);
-    expect(requests.some(request => request.path === `/api/sessions/${preview.id}/runs`)).toBe(true);
+    expect(requests.some(request => request.path === `/api/sessions/${preview.id}/transcript?limit=100`)).toBe(true);
   }, { workstreams: overview([row(preview.id)]) });
 });
 

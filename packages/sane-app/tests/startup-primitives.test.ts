@@ -14,6 +14,14 @@ function fixture() {
   return { root, pkg, cwd, home, context: { packageDir: pkg, invocationCwd: cwd, home, env: {} } };
 }
 const config = (extra = {}) => ({ format: "sane-app-config", version: 1, ...extra });
+test("canonical context CLI is explicit, strict, and overrides saved startup policy without creating files", () => {
+  const f = fixture();
+  expect(resolveAppConfig([], f.context).config.contextDelivery).toBe("startup");
+  writeFileSync(join(f.pkg, ".config.json"), JSON.stringify(config({ contextDelivery: "startup" })));
+  expect(resolveAppConfig(["--context-delivery", "canonical"], f.context).config.contextDelivery).toBe("canonical");
+  for (const args of [["--context-delivery", "unknown"], ["--context-delivery"], ["--context-delivery", "canonical", "--context-delivery", "startup"]]) expect(() => resolveAppConfig(args, f.context)).toThrow();
+  expect(readdirSync(f.pkg)).toEqual([".config.json"]);
+});
 test("package default, selected config and CLI paths have separate bases; resolution is noncreating", () => {
   const f = fixture(); writeFileSync(join(f.pkg, ".config.json"), JSON.stringify(config({ dataDir: "saved", defaultExecutionCwd: "checkout", native: { claude: { executable: "./bin/claude" } } })));
   const saved = resolveAppConfig([], f.context);

@@ -15,6 +15,7 @@ function fixture() {
   writeFileSync(join(root, "package.json"), '{"type":"module"}');
   writeFileSync(join(pkg, "package.json"), '{"type":"module"}');
   writeFileSync(join(pkg, "frontend/main.tsx"), 'import { value } from "./dependency"; console.log(value);');
+  writeFileSync(join(pkg, "frontend/push-worker.ts"), 'self.addEventListener("push", () => {});');
   writeFileSync(join(pkg, "frontend/dependency.ts"), 'export { value } from "../../../shared";');
   writeFileSync(join(root, "shared.ts"), 'export const value = "one";');
   for (const name of ["asset-build.ts", "installation-ownership.ts"]) copyFileSync(resolve(import.meta.dir, "../src", name), join(pkg, "src", name));

@@ -16,12 +16,12 @@ test("existing bookmark leaves map to the three presentation groups", () => {
 });
 
 test("contextual destinations retain leaf IDs and exclude the current destination", () => {
-  const expected: Record<ActiveView, Array<"chat" | "terminal" | "code" | "browser" | "config">> = {
-    chat: ["terminal", "code", "browser", "config"], terminal: ["chat", "code", "browser", "config"],
-    history: ["chat", "terminal", "code", "browser", "config"],
-    code: ["chat", "terminal", "browser", "config"], git: ["chat", "terminal", "browser", "config"],
-    browser: ["chat", "terminal", "code", "config"],
-    config: ["chat", "terminal", "code", "browser"], workstreams: ["chat", "terminal", "code", "browser"],
+  const expected: Record<ActiveView, Array<"chat" | "code" | "browser" | "config">> = {
+    chat: ["code", "browser", "config"], terminal: ["chat", "code", "browser", "config"],
+    history: ["chat", "code", "browser", "config"],
+    code: ["chat", "browser", "config"], git: ["chat", "browser", "config"],
+    browser: ["chat", "code", "config"],
+    config: ["chat", "code", "browser"], workstreams: ["chat", "code", "browser"],
   };
   for (const [view, destinations] of Object.entries(expected)) {
     expect(contextualDestinations(view as ActiveView).map(item => item.id)).toEqual(destinations);
@@ -135,8 +135,8 @@ test("Files and Git controls navigate without requiring or mutating a file targe
 test("every shell view puts the catalog before sidebar content and never in the topbar", async () => {
   await withDom(async (host, root) => {
     for (const view of ["chat", "history", "terminal", "code", "git", "browser", "config", "workstreams"] as const) {
-      await act(async () => { root.render(<WorkspaceShell view={view} sidebar={<div data-testid="sidebar-content">Content</div>} header={<span>Heading</span>}
-        retryCatalog={() => {}} sidebarOpen={false} openSidebar={() => {}} closeSidebar={() => {}}><div>View</div></WorkspaceShell>); });
+      await act(async () => { root.render(<ApplicationCommandProvider><WorkspaceShell view={view} sidebar={<div data-testid="sidebar-content">Content</div>} header={<span>Heading</span>}
+        retryCatalog={() => {}} sidebarOpen={false} openSidebar={() => {}} closeSidebar={() => {}}><div>View</div></WorkspaceShell></ApplicationCommandProvider>); });
       const sidebar = host.querySelector("aside")!;
       expect(sidebar.firstElementChild?.className).toBe("shell-sidebar-header");
       expect(sidebar.firstElementChild?.querySelector(".workspace-opener")).not.toBeNull();
@@ -144,8 +144,9 @@ test("every shell view puts the catalog before sidebar content and never in the 
       expect(host.querySelector(".topbar .context-switcher")).toBeNull();
       expect(host.querySelector(".workspace-navigation")).toBeNull();
     }
-    await act(async () => { root.render(<WorkspaceShell view="config" sidebar={<div>Settings sections</div>} header={<span>Settings</span>}
-      retryCatalog={() => {}} sidebarOpen openSidebar={() => {}} closeSidebar={() => {}}><div>View</div></WorkspaceShell>); });
+    await act(async () => { (window as unknown as Window).happyDOM.setWindowSize({ width: 600, height: 800 }); });
+    await act(async () => { root.render(<ApplicationCommandProvider><WorkspaceShell view="config" sidebar={<div>Settings sections</div>} header={<span>Settings</span>}
+      retryCatalog={() => {}} sidebarOpen openSidebar={() => {}} closeSidebar={() => {}}><div>View</div></WorkspaceShell></ApplicationCommandProvider>); });
     const drawer = host.querySelector("dialog")!;
     expect(drawer.getAttribute("aria-labelledby")).toBeTruthy();
     expect(drawer.querySelector(".shell-sidebar-header .workspace-opener")).not.toBeNull();

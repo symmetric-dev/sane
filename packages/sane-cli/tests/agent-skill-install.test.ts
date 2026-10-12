@@ -10,6 +10,7 @@ import {
   installSaneAgentContextPackages,
 } from "../src/install-sane-agent-context-packages.ts"
 import { ccAgentFilename } from "../src/agent-serialization.ts"
+import { ASSISTANT_AGENT_IDS, WORKER_AGENT_IDS } from "sane-core/agent-catalog"
 
 /**
  * Offline agent/skill loading confirmation. Installs into an isolated tmp
@@ -34,7 +35,11 @@ describe("agent-skill-install", () => {
   test("real-source CC package loads agents, settings, and skills with source parity", async () => {
     try {
       await freshHome()
-      expect(AGENT_FILENAMES).toHaveLength(15)
+      const installedNames: string[] = [...AGENT_FILENAMES]
+      expect(installedNames.sort()).toEqual([
+        ...ASSISTANT_AGENT_IDS.map(role => `sane/assistant/${role}.md`),
+        ...WORKER_AGENT_IDS.map(role => `sane/worker/${role}.md`),
+      ].sort())
       for (const filename of AGENT_FILENAMES) {
         const agentName = filename.slice(0, -3)
         const ccName = ccAgentFilename(agentName)
