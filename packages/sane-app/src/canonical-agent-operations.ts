@@ -2,6 +2,7 @@ import { ccAgentName, parseSaneAgent, type SaneAgentSpec } from "../../sane-cli/
 import { injectAgentModel, type AgentModelOverride } from "../../sane-cli/src/agent-model-config";
 import { WORKER_AGENT_IDS } from "sane-core/agent-catalog";
 import { createHash } from "node:crypto";
+import { managedScoutCrew } from "./scout-crew-lifecycle";
 
 export type OperationPermission = { action: string; resource: string; effect: "allow" | "ask" | "deny" };
 export type OperationModel = { providerID: string; id: string; variant?: string };
@@ -21,6 +22,7 @@ export type OpenCodeExecutionConfiguration = {
   executionAgent: string;
   permissions: OperationPermission[];
   model?: OperationModel;
+  /** Legacy wire/storage field only. New renders omit authored temperature. */
   temperature?: number;
   nativeChildren: { id: string; canonicalId: string; description: string; system: string; permissions: OperationPermission[]; model?: OperationModel; temperature?: number; children: string[] }[];
   delegation: Record<string, string>;
@@ -123,12 +125,12 @@ export function openCodeExecutionConfiguration(input: {
   });
   const nativeChildren = children.map(child => ({ id: delegation[child.spec.name]!, canonicalId: child.spec.name, description: child.spec.description,
     system: rewriteOperationDelegation(child.spec.body, delegation), permissions: rewritePermissions(child.permissions),
-    ...(child.model ? { model: child.model } : {}), ...(child.temperature === undefined ? {} : { temperature: child.temperature }),
+    ...(child.model ? { model: child.model } : {}),
     children: requiredNativeChildren(child).map(id => delegation[id]!) }));
   const executionAgent = `sane-execution-${createHash("sha256").update(JSON.stringify([input.sessionID, input.directory, policy, children])).digest("hex")}`;
   return { sessionID: input.sessionID, directory: input.directory, agent: executionAgent, executionAgent, permissions: rewritePermissions(policy.permissions), nativeChildren, delegation,
     directChildren: requiredNativeChildren(policy).map(id => delegation[id]!),
-    ...(model ? { model: { ...model } } : {}), ...(policy.temperature === undefined ? {} : { temperature: policy.temperature }) };
+    ...(model ? { model: { ...model } } : {}) };
 }
 
 export type ClaudeChildProfile = { model?: string; effort?: "low" | "medium" | "high" | "xhigh" | "max" };
@@ -219,7 +221,7 @@ function claudeChildRestrictions(child: CanonicalAgentOperations, diagnostics: C
       message: rule.action === "subagent" ? "Claude cannot enforce a nested Agent(type) allowlist. The entire Agent tool is disabled for this child, including allowed exceptions."
         : `Claude child definitions cannot enforce this resource rule independently. Disabled the whole ${tools.join("/")} tool, including otherwise allowed resources.` });
   }
-  if (child.temperature !== undefined) diagnostics.push({ agent: child.spec.name, code: "temperature-unavailable", message: `Claude --agents has no documented temperature field; authored temperature ${child.temperature} is not applied.` });
+  if (child.temperature !== undefined) diagnostics.push({ agent: child.spec.name, code: "temperature-unavailable", message: `App-managed execution does not send temperature; authored temperature ${child.temperature} is retained only in the policy snapshot.` });
   return { disallowedTools: [...disallowed].sort(), restrictions };
 }
 
@@ -252,6 +254,10 @@ export function claudeExecutionConfiguration(input: {
   agents[agent] = { description: "App-managed execution", prompt: "" };
   const { allow, ask, deny } = policy.spec.ccPermissions;
   const permissions = { allow: [...new Set([...allow, ...ask])], ...(deny.length ? { deny: [...deny] } : {}) };
+  if (managedScoutCrew(policy)) {
+    permissions.deny = [...new Set([...(permissions.deny ?? []), "Agent", "Task"])];
+    permissions.allow.push(...["start", "status", "wait", "acknowledge", "cancel", "cancel_all"].map(operation => `mcp__sane__sane_worker_${operation}`));
+  }
   const args = ["--agents", JSON.stringify(agents), "--agent", agent];
   if (input.model) args.push("--model", input.model);
   if (input.effort) args.push("--effort", input.effort);

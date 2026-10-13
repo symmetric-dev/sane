@@ -109,7 +109,7 @@ export interface AgentContextPackageInstallationOptions {
   modelConfigPath?: string
   dryRun?: boolean
   overwrite?: boolean
-  /** Provision executable integrations without publishing or retiring native agents/skills. */
+  /** Provision executable integrations without publishing or retiring native agents/skills (default unless modelConfigPath/onlySkill is supplied). Set false for legacy assets. */
   runtimeOnly?: boolean
   registrationFile?: string
   appConnectionFile?: string
@@ -436,6 +436,7 @@ async function loadRuntimeConfigurationEntries(homeDirectory: string, sourceRoot
     return object[key]
   }
   const entries: LoadedInstallationEntry[] = []
+  let claudeCommand = configuration.claudeMcp.mcpServers.sane.command
   for (const [filename, merge] of [
     [".config/opencode/opencode.json", (existing: Record<string, unknown>) => {
       const plugin = configuration.opencode.plugins[0]!
@@ -445,20 +446,54 @@ async function loadRuntimeConfigurationEntries(homeDirectory: string, sourceRoot
       if (index < 0) merged.push(plugin)
       else {
         const previous = plugins[index]
-        merged[index] = isPlainObject(previous) ? { ...previous, ...plugin, options: { ...objectField(previous, "options"), ...plugin.options } } : plugin
+        merged[index] = isPlainObject(previous) ? { ...previous, ...plugin, options: {
+          ...plugin.options,
+          ...objectField(previous, "options"),
+          ...(options.registrationFile === undefined ? {} : { registrationFile: options.registrationFile }),
+          ...(options.appConnectionFile === undefined ? {} : { appConnectionFile: options.appConnectionFile }),
+        } } : plugin
       }
       return { ...existing, plugins: merged }
     }],
-    [".claude.json", (existing: Record<string, unknown>) => ({ ...existing, mcpServers: { ...objectField(existing, "mcpServers"), ...configuration.claudeMcp.mcpServers } })],
+    [".claude.json", (existing: Record<string, unknown>) => {
+      const servers = objectField(existing, "mcpServers")
+      const previous = objectField(servers, "sane")
+      const required = configuration.claudeMcp.mcpServers.sane
+      const args = Array.isArray(previous.args) && previous.args[0] === required.args[0] ? previous.args : []
+      claudeCommand = options.bunExecutable ?? (typeof previous.command === "string" ? previous.command : required.command)
+      return { ...existing, mcpServers: { ...servers, sane: {
+        ...previous, ...required,
+        command: claudeCommand,
+        args: [required.args[0], args[1] ?? required.args[1], options.bindingRoot ?? args[2] ?? required.args[2], options.appConnectionFile ?? args[3] ?? required.args[3]],
+      } } }
+    }],
     [".claude/settings.json", (existing: Record<string, unknown>) => {
       const hooks = objectField(existing, "hooks")
       const preToolUse = arrayField(hooks, "PreToolUse")
+      const hookPath = join(homeDirectory, ".config/opencode/plugins/sane/runtime/packages/sane-cli/src/native-claude-hook.ts")
+      const ownsHook = (hook: unknown): hook is Record<string, unknown> & { command: string } =>
+        isPlainObject(hook) && hook.type === "command" && typeof hook.command === "string" &&
+        (hook.command.includes(`'${hookPath}'`) || hook.command.includes(`"${hookPath}"`) || hook.command.includes(`${hookPath} `))
+      const installedCommands = new Set(preToolUse.flatMap(entry =>
+        isPlainObject(entry) && Array.isArray(entry.hooks) ? entry.hooks.filter(ownsHook).map(hook => hook.command) : []))
+      if (installedCommands.size > 1 && options.bindingRoot === undefined) {
+        throw new AgentContextPackageInstallationError("Conflicting installed SANE hook commands; specify --binding-root to normalize this installation's hooks.")
+      }
+      if (installedCommands.size && options.bunExecutable !== undefined && options.bindingRoot === undefined) {
+        throw new AgentContextPackageInstallationError("Updating an installed SANE hook executable requires --binding-root to retain an explicit binding destination.")
+      }
       const required = configuration.claudeSettings.hooks.PreToolUse[0]!
+      if (options.bunExecutable === undefined) {
+        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+        required.hooks[0]!.command = required.hooks[0]!.command.replace(quote(process.execPath), quote(claudeCommand))
+      }
       const command = required.hooks[0]!.command
       // Replace only this installation's hook; keep unrelated commands/groups.
       const retained = preToolUse.flatMap(entry => {
         if (!isPlainObject(entry) || !Array.isArray(entry.hooks)) return [entry]
-        const remaining = entry.hooks.filter(hook => !isPlainObject(hook) || hook.command !== command)
+        const remaining = entry.hooks.filter(hook => !isPlainObject(hook) || typeof hook.command !== "string" || (
+          hook.command !== command && !ownsHook(hook)
+        ))
         return remaining.length === entry.hooks.length ? [entry] : remaining.length ? [{ ...entry, hooks: remaining }] : []
       })
       return { ...existing, hooks: { ...hooks, PreToolUse: [...retained, required] } }
@@ -475,6 +510,13 @@ async function loadRuntimeConfigurationEntries(homeDirectory: string, sourceRoot
     }
     if (!isPlainObject(parsed)) throw new AgentContextPackageInstallationError(`Existing native configuration is not a JSON object: ${destination}`)
     const merged = merge(parsed)
+    if (filename === ".claude/settings.json" && options.bindingRoot === undefined && options.bunExecutable === undefined) {
+      const preserved = await loadClaudeHookSettingsEntries(homeDirectory)
+      if (preserved.length) {
+        entries.push(...preserved)
+        continue
+      }
+    }
     entries.push({ source: "generated:native-integration", destination, content: existing !== undefined && JSON.stringify(parsed) === JSON.stringify(merged) ? existing : `${JSON.stringify(merged, null, 2)}\n` })
   }
   return entries
@@ -589,13 +631,14 @@ async function loadConfigPackageEntry(
 }
 
 /**
- * Install all Alpha OpenCode agents, role skills, and the SANE plugin.
+ * Install executable integrations by default; legacy role assets require an explicit opt-in.
  * All source, destination, and removal checks finish before any mutation.
  * Retired skills are removed only after installation writes succeed.
  */
 export async function installSaneAgentContextPackages(
   options: AgentContextPackageInstallationOptions = {},
 ): Promise<AgentContextPackageInstallationResult> {
+  options = { ...options, runtimeOnly: options.runtimeOnly ?? (options.modelConfigPath === undefined && options.onlySkill === undefined) }
   validateInstallationOptions(options)
   const write = options.write ?? console.log
   const homeDirectory = resolveHomeDirectory(options.homeDirectory)

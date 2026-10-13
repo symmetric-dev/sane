@@ -14,6 +14,8 @@ export type WorkerRecord = {
   parent: { sessionId: string; runId: string; toolCallId: string; native: ConversationRef; invocation?: WorkerCaller["invocation"] };
   input: WorkerStart; checkout: string; launch: ResolvedAgentLaunch; child: ConversationRef | null;
   state: WorkerState; createdAt: string; updatedAt: string; cancelRequestedAt?: string; error?: string;
+  /** Opted in by the immutable launch policy; legacy/pinned crews retain their lifecycle. */
+  coordination?: "scouts";
   /** A later ordinary continuation never rewrites the initial worker outcome. */
   continuationCancellation?: { requestedAt: string; error?: string };
   continuation?: { runId: string; state: WorkerState; error?: string };

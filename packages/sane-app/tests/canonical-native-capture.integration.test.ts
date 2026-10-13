@@ -165,8 +165,8 @@ test.skipIf(!armed)("real OpenCode session instructions reach a local mock provi
     const generatedRoot = await api(`/api/agent/${operations.executionAgent}`); save("execution-agent.json", generatedRoot);
     expect(generatedRoot.system).toBe(""); expect(generatedRoot.permissions.slice(0, operations.permissions.length)).toEqual(operations.permissions);
     await request("execution-configured-request", [], ["SANE_CAPTURE_"]);
-    expect(captures.at(-1).body.temperature).toBe(0.23);
-    record("execution-configure", "Repository plugin selected declared empty-system execution agent from initial build session; user overrides preserved, agent policy/model readback and actual request temperature verified.");
+    expect(captures.at(-1).body.temperature).toBeUndefined();
+    record("execution-configure", "Repository plugin selected declared empty-system execution agent from initial build session; user overrides preserved, agent policy/model readback and omitted request temperature verified.");
     phase = "read-only-verification";
     const readonlyBefore = await api(`/api/session/${sessionID}`);
     save("readonly-before.json", readonlyBefore);
@@ -209,7 +209,7 @@ test.skipIf(!armed)("real OpenCode session instructions reach a local mock provi
     await rpc("configure", { ...operations, readOnly: true });
     expect((await api(`/api/session/${sessionID}`)).agent).toBe(executionAgent);
     await request("execution-restored-request", [], ["SANE_CAPTURE_"]);
-    expect(captures.at(-1).body.temperature).toBe(0.23);
+    expect(captures.at(-1).body.temperature).toBeUndefined();
     record("execution-restart-restored", "Fresh process restored durable execution binding and generated definitions; readOnly succeeded without reconfiguration.");
     const procedure = "SANE_PARENT_PROCEDURE_MUST_NOT_REACH_CHILD";
     await put("parent-procedure", procedure);
@@ -228,12 +228,12 @@ test.skipIf(!armed)("real OpenCode session instructions reach a local mock provi
       expect(child.permissions ?? []).toEqual(baselinePermissions);
       const system = capture.body.messages.filter((m: any) => m.role === "system").map((m: any) => m.content).join("\n");
       expect(system.split(childRole).length - 1).toBe(1); expect(JSON.stringify(capture.body.messages)).not.toContain(procedure);
-      expect(capture.body.temperature).toBe(0.31);
+      expect(capture.body.temperature).toBeUndefined();
       expect(capture.body.tools.some((t: any) => ["edit", "write", "patch"].includes(t.function?.name))).toBe(false);
       observations.push({ stage: "effective-model-request", evidenceKind: "fixture", observer: `real OpenCode ${version} loopback HTTP capture; native hook session header`, evidenceRef: join(root, "requests.json"), requestId: capture.requestId, runId: "native-child-capture", sessionId: capture.sessionID, channel: "system", source: "repository execution plugin verified native child role", reason: "Role-only child request, no parent procedure", text: system, sha256: sha(system) });
       save("child-trace.json", { schema: 1, runId: "native-child-capture", sessionId: capture.sessionID, status: "completed", records: [] });
     }
-    record("native-child-invocation", "Native subagent tool invoked generated hidden child; actual child request contains role once, no parent procedure, child temperature and pre-snapshot denied edit tools verified.");
+    record("native-child-invocation", "Native subagent tool invoked generated hidden child; actual child request contains role once, no parent procedure, omitted child temperature and pre-snapshot denied edit tools verified.");
     phase = "native-parent-identity-fencing";
     const rogue = await api("/api/session", "POST", { title: "Wrong-parent fixture", agent: childID, model: operations.model, location: { directory: cwd } });
     const beforeRogue = captures.length;

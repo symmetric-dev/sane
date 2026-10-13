@@ -80,7 +80,7 @@ describe("install-sane-agent-context-packages", () => {
   })
 
   function options(extra: AgentContextPackageInstallationOptions = {}) {
-    return { homeDirectory, sourceRoot, write: () => {}, ...extra }
+    return { homeDirectory, sourceRoot, runtimeOnly: false, write: () => {}, ...extra }
   }
 
   const retiredNames = ["sane-design-assistant-role", "sane-engineering-assistant-role", "sane-planning-assistant-role", "sane-execution-assistant-role", "sane-research-assistant-role"]
@@ -229,16 +229,22 @@ describe("install-sane-agent-context-packages", () => {
   test.each([false, true])("actual repository packaging loads the shared-domain native closure (runtime-only: %s)", async runtimeOnly => {
     await installSaneAgentContextPackages({ homeDirectory, runtimeOnly, write: () => {} })
     const installed = join(homeDirectory, ".config", "opencode", "plugins", "sane")
+    // Bundlers do not traverse the URL-based repository reader worker entrypoint.
+    const reader = await readFile(join(installed, "runtime/packages/sane-core/src/repository-reader.ts"), "utf8")
+    expect(reader).toContain("repository-reader-worker.ts")
     const content = await readFile(join(installed, "index.ts"), "utf8")
     expect(content).toBe(rewritePluginImports(await readFile(join(import.meta.dir, "../../../opencode/plugins/sane/index.ts"), "utf8")))
     expect(content).not.toMatch(/sane-db|sane-src|sane-handoff-tool/)
     await expectMissing(join(installed, "sane-src"))
     await expectMissing(join(installed, "sane-core"))
-    await mkdir(join(homeDirectory, "node_modules/@opencode"), { recursive: true })
-    await mkdir(join(homeDirectory, "node_modules/@modelcontextprotocol"), { recursive: true })
-    await symlink(join(import.meta.dir, "../../../node_modules/@opencode/plugin"), join(homeDirectory, "node_modules/@opencode/plugin"))
-    await symlink(join(import.meta.dir, "../node_modules/@opencode/client"), join(homeDirectory, "node_modules/@opencode/client"))
-    await symlink(join(import.meta.dir, "../node_modules/@modelcontextprotocol/sdk"), join(homeDirectory, "node_modules/@modelcontextprotocol/sdk"))
+    const modules = join(homeDirectory, ".config/opencode/node_modules")
+    await mkdir(join(modules, "@opencode"), { recursive: true })
+    await mkdir(join(modules, "@modelcontextprotocol"), { recursive: true })
+    await symlink(join(import.meta.dir, "../../../node_modules/@opencode/plugin"), join(modules, "@opencode/plugin"))
+    await symlink(join(import.meta.dir, "../node_modules/@opencode/client"), join(modules, "@opencode/client"))
+    await symlink(join(import.meta.dir, "../node_modules/@modelcontextprotocol/sdk"), join(modules, "@modelcontextprotocol/sdk"))
+    const workerBuild = await Bun.build({ entrypoints: [join(installed, "runtime/packages/sane-core/src/repository-reader-worker.ts")], target: "bun" })
+    expect(workerBuild.success).toBe(true)
     const { SanePlugin } = await import(join(installed, "index.ts"))
     expect(typeof SanePlugin.setup).toBe("function")
     const execution = await import(join(installed, "execution.ts"))
@@ -276,6 +282,57 @@ describe("install-sane-agent-context-packages", () => {
     expect(await installSaneAgentContextPackages(options({ runtimeOnly: true }))).toMatchObject({ created: [], updated: [], removed: [] })
   })
 
+  test("ordinary API and CLI defaults publish no markdown and preserve custom integration paths on repeat", async () => {
+    const custom = {
+      runtimeOnly: true,
+      registrationFile: join(temporaryDirectory, "custom/service.json"),
+      appConnectionFile: join(sourceRoot, "packages/sane-app/.data-fresh/native-handoff.json"),
+      bindingRoot: join(temporaryDirectory, "custom/bindings"),
+      bunExecutable: "/custom/bun",
+    }
+    await installSaneAgentContextPackages(options(custom))
+    const paths = [".config/opencode/opencode.json", ".claude.json", ".claude/settings.json"]
+    const before = await Promise.all(paths.map(path => readFile(join(homeDirectory, path), "utf8")))
+    for (const defaults of [{ runtimeOnly: undefined }, parseCliArguments([])]) {
+      expect(await installSaneAgentContextPackages(options(defaults))).toMatchObject({ created: [], updated: [], removed: [] })
+      expect(await Promise.all(paths.map(path => readFile(join(homeDirectory, path), "utf8")))).toEqual(before)
+    }
+    await expectMissing(join(homeDirectory, ".config/opencode/agents"))
+    await expectMissing(join(homeDirectory, ".agents"))
+    await expectMissing(join(homeDirectory, ".claude/agents"))
+    const replacement = join(temporaryDirectory, "replacement/native-handoff.json")
+    await installSaneAgentContextPackages(options({ runtimeOnly: true, appConnectionFile: replacement, overwrite: true }))
+    expect(JSON.parse(await readFile(join(homeDirectory, paths[0]!), "utf8")).plugins[0].options.appConnectionFile).toBe(replacement)
+    expect(JSON.parse(await readFile(join(homeDirectory, paths[1]!), "utf8")).mcpServers.sane.args[3]).toBe(replacement)
+    expect(await readFile(join(homeDirectory, paths[2]!), "utf8")).toBe(before[2])
+    const bindingRoot = join(temporaryDirectory, "replacement/bindings")
+    await installSaneAgentContextPackages(options({ runtimeOnly: true, bindingRoot, overwrite: true }))
+    const hooks = JSON.parse(await readFile(join(homeDirectory, paths[2]!), "utf8")).hooks.PreToolUse
+    expect(hooks).toHaveLength(1)
+    expect(hooks[0].hooks[0].command).toContain(bindingRoot)
+    expect(await installSaneAgentContextPackages(options({ runtimeOnly: undefined }))).toMatchObject({ created: [], updated: [], removed: [] })
+  })
+
+  test("conflicting installed hook roots require an explicit root and normalize only owned hooks", async () => {
+    await installSaneAgentContextPackages(options({ runtimeOnly: true }))
+    const path = join(homeDirectory, ".claude/settings.json")
+    const settings = JSON.parse(await readFile(path, "utf8"))
+    const old = settings.hooks.PreToolUse[0]
+    const unrelated = { matcher: "Bash", hooks: [{ type: "command", command: "/custom/unknown-hook" }] }
+    settings.hooks.PreToolUse.push({ ...old, hooks: [{ ...old.hooks[0], command: old.hooks[0].command.replace(join(homeDirectory, ".claude/sane-bindings"), join(homeDirectory, ".data-fresh/native-bindings")) }] }, unrelated)
+    const before = JSON.stringify(settings)
+    await Bun.write(path, before)
+    await expect(installSaneAgentContextPackages(options({ runtimeOnly: true, overwrite: true }))).rejects.toThrow("Conflicting installed SANE hook")
+    expect(await readFile(path, "utf8")).toBe(before)
+    const bindingRoot = join(homeDirectory, ".data-fresh/native-bindings")
+    await installSaneAgentContextPackages(options({ runtimeOnly: true, bindingRoot, overwrite: true }))
+    const hooks = JSON.parse(await readFile(path, "utf8")).hooks.PreToolUse
+    expect(hooks).toHaveLength(2)
+    expect(hooks[0]).toEqual(unrelated)
+    expect(hooks[1].hooks[0].command).toContain(bindingRoot)
+    expect(await installSaneAgentContextPackages(options({ runtimeOnly: true }))).toMatchObject({ created: [], updated: [], removed: [] })
+  })
+
   test("runtime-only dry-run creates no home and preserves existing assets and unrelated configuration", async () => {
     const runtime = { runtimeOnly: true, registrationFile: join(temporaryDirectory, "registration.json"), appConnectionFile: join(temporaryDirectory, "app/native-handoff.json") }
     const dry = await installSaneAgentContextPackages(options({ ...runtime, dryRun: true }))
@@ -310,7 +367,8 @@ describe("install-sane-agent-context-packages", () => {
   test("runtime-only CLI and API reject irrelevant combinations before writing", async () => {
     expect(parseCliArguments(["--runtime-only", "--dry-run"])).toEqual({ runtimeOnly: true, dryRun: true, overwrite: false })
     expect(parseCliArguments(["--runtime-only", "--app-connection-file", "/fixture/app.json"])).toMatchObject({ appConnectionFile: "/fixture/app.json" })
-    for (const args of [["--runtime-only", "--only", "review-opencode-sessions"], ["--runtime-only", "--model-config", "models.yaml"], ["--binding-root", "/bindings"]]) expect(() => parseCliArguments(args)).toThrow()
+    expect(parseCliArguments(["--binding-root", "/bindings"])).toMatchObject({ runtimeOnly: true, bindingRoot: "/bindings" })
+    for (const args of [["--runtime-only", "--only", "review-opencode-sessions"], ["--runtime-only", "--model-config", "models.yaml"], ["--legacy-assets", "--binding-root", "/bindings"]]) expect(() => parseCliArguments(args)).toThrow()
     for (const extra of [{ onlySkill: "review-opencode-sessions" as const }, { modelConfigPath: "missing" }]) await expect(installSaneAgentContextPackages(options({ runtimeOnly: true, ...extra }))).rejects.toThrow("--runtime-only")
     await expectMissing(homeDirectory)
   })
@@ -410,7 +468,7 @@ describe("install-sane-agent-context-packages", () => {
     const previousSaneHome = process.env.SANE_HOME
     process.env.SANE_HOME = homeDirectory
     try {
-      await installSaneAgentContextPackages({ sourceRoot, write: () => {} })
+      await installSaneAgentContextPackages({ sourceRoot, runtimeOnly: false, write: () => {} })
     } finally {
       if (previousSaneHome === undefined) delete process.env.SANE_HOME
       else process.env.SANE_HOME = previousSaneHome
@@ -649,14 +707,14 @@ describe("install-sane-agent-context-packages", () => {
   })
 
   test("validates CLI options and rejects positional arguments", () => {
-    expect(parseCliArguments([])).toEqual({ dryRun: false, overwrite: false })
-    expect(parseCliArguments(["--model-config", "two words.yaml", "--dry-run"])).toEqual({ dryRun: true, overwrite: false, modelConfigPath: "two words.yaml" })
+    expect(parseCliArguments([])).toEqual({ dryRun: false, overwrite: false, runtimeOnly: true })
+    expect(parseCliArguments(["--model-config", "two words.yaml", "--dry-run"])).toEqual({ dryRun: true, overwrite: false, runtimeOnly: false, modelConfigPath: "two words.yaml" })
     for (const args of [["--model-config"], ["--model-config", "--overwrite"], ["--model-config", ""], ["--model-config", "a", "--model-config", "b"]]) {
       expect(() => parseCliArguments(args)).toThrow("--model-config")
     }
-    expect(parseCliArguments(["--dry-run", "--overwrite"])).toEqual({ dryRun: true, overwrite: true })
+    expect(parseCliArguments(["--dry-run", "--overwrite"])).toEqual({ dryRun: true, overwrite: true, runtimeOnly: true })
     expect(parseCliArguments(["--only", "review-opencode-sessions", "--dry-run"]))
-      .toEqual({ dryRun: true, overwrite: false, onlySkill: "review-opencode-sessions" })
+      .toEqual({ dryRun: true, overwrite: false, runtimeOnly: false, onlySkill: "review-opencode-sessions" })
     expect(() => parseCliArguments(["--only", "other-skill"])).toThrow("--only requires")
     expect(() => parseCliArguments(["--only", "review-opencode-sessions", "--model-config", "models.yaml"]))
       .toThrow("cannot be combined")

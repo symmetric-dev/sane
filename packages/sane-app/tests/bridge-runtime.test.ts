@@ -4504,12 +4504,22 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
           { ...base, type: "assistant", uuid: answer.uuid, parentUuid: user, message: { ...answer.message, id: "msg_fixture" } },
         ].map(row => JSON.stringify(row)).join("\n") + "\n");
         renameSync(retired, backup); retiredFixture = true;
+        const queued = queueWire(source, "offline queued missing installed role");
+        await app.pendingInputs.enqueue(source.sessionId, queued);
+        const withheld = await settledInput(app, source.sessionId, queued.requestId);
+        expect(withheld.claim?.evidence).toMatchObject({ submission: "not-submitted", nativeAcceptance: "not-accepted" });
+        expect(withheld.claim?.possibleNative).toBe(false);
+        expect(app.pendingInputs.store.inspect(source.sessionId).pause?.code).not.toBe("acceptance-unknown");
+        expect((await api("/api/sessions")).body.availability.canSend).toBe(true);
         const failed = await api("/api/sessions", { sessionId: source.sessionId, prompt: "offline missing installed role" });
         expect([202, 503]).toContain(failed.status); await waitIdle(source.sessionId);
         source = stored(source.sessionId);
         expect(source.lastStatus).toBe("failed");
         const failureEvents = (await api(`/api/runs/${source.lastRunId}/events`)).body.events;
         expect(failureEvents.some((e: any) => e.kind === "launch")).toBe(false);
+        expect((await api("/api/sessions")).body.availability.canSend).toBe(true);
+        const pending = app.pendingInputs.store.inspect(source.sessionId);
+        expect(pending.pause?.code).not.toBe("acceptance-unknown");
       }
       await app.close(); app = await start({ ...selected, contextDelivery: "canonical" }); await login();
       const firstMessage = "Continue the current implementation stage. Branch summary: preserve the earlier decisions.";
@@ -4604,6 +4614,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       expect(upgradedEvents[0].data.delivery.binding.nativeSessionId).toBe(base.body.nativeSessionId);
       expect(upgradedEvents[0].data.delivery.binding.sessionId).not.toBe(delivery.binding.sessionId);
       expect(contextEntries.get(created.body.nativeSessionId)).toBe(`${delivery.standing}\n\n${delivery.dynamic}`);
+      const writesBeforeBranch = calls.filter(c => c.method === "PUT").length;
       const branch = await api(`/api/sessions/${created.body.sessionId}/branch`, { requestId: crypto.randomUUID(), runId: resumed.body.runId, replace: false, prompt: "canonical child turn" });
       expect(branch).toMatchObject({ status: 201 });
       const childId = branch.body.sessionId;
@@ -4613,6 +4624,10 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       const childEvents = (await api(`/api/runs/${child.lastRunId}/events`)).body.events.filter((e: any) => e.data?.type === "canonical-context");
       expect(childEvents[0].data.delivery.packageRevision).toBe(delivery.packageRevision);
       expect(childEvents[0].data.delivery.binding).toMatchObject({ sessionId: childId, nativeSessionId: child.nativeSessionId });
+      expect(childEvents[0].data.delivery.standing).toBe(delivery.standing);
+      expect(childEvents[0].data.delivery.dynamic).toBe(delivery.dynamic);
+      expect(contextEntries.get(child.nativeSessionId!)).toBe(contextEntries.get(created.body.nativeSessionId));
+      expect(calls.filter(c => c.method === "PUT")).toHaveLength(writesBeforeBranch);
       expect(contextEntries.get(created.body.nativeSessionId)).toBe(`${delivery.standing}\n\n${delivery.dynamic}`);
       captureContextEvidence("bridge-oc-restart-base-upgrade", { initial, resumed: resumedEvents, upgraded: upgradedEvents, branch: childEvents });
     } finally {

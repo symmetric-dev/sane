@@ -10,7 +10,7 @@ import { start, type Options } from "../src/bridge";
 import { initializeAppStore, atomicAppRecord } from "../src/app-store";
 import { acquireData, acquireInstallation, validateOwnershipPaths } from "../src/installation-ownership";
 import type { Session, Run } from "../src/history";
-import type { WorkerDelivery } from "../src/worker-contract";
+import type { WorkerDelivery, WorkerRecord } from "../src/worker-contract";
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 function assets(packageDir: string) {
@@ -155,6 +155,83 @@ test("restart recognizes exact acceptance once while parent run is still running
     expect(f.app.workerOutbox.list()).toHaveLength(1);
     expect(f.app.workers.store.get(f.id)!.latestResult!.notification.state).toBe("delivered");
     expect(f.submissions).toHaveLength(2);
+  } finally { await f.cleanup(); }
+}, 30000);
+
+async function coordinatedCrew(f: Awaited<ReturnType<typeof fixture>>) {
+  const outer = await f.api("/api/sessions", { harness: "opencode", prompt: "outer seed", cwd: f.session.cwd });
+  await until("outer idle", () => f.disk("metadata.json").runs.find((r: Run) => r.runId === outer.runId)?.status === "completed");
+  const session = f.disk("metadata.json").sessions.find((s: Session) => s.sessionId === outer.sessionId) as Session;
+  const seed = f.app.workers.store.get(f.id)!;
+  f.app.workers.store.update(seed.id, { input: { ...seed.input, worker: "scout" } });
+  const crew: WorkerRecord = { ...seed, id: crypto.randomUUID(), sessionId: f.session.sessionId, runId: f.session.lastRunId!,
+    parent: { sessionId: outer.sessionId, runId: outer.runId, toolCallId: "crew-start", native: { harness: "oc", authorityId: session.authorityId!, nativeId: session.nativeSessionId! } },
+    input: { requestId: "crew", worker: "scout-crew", prompt: "coordinate scouts" }, coordination: "scouts", state: "running",
+    outcome: undefined, notification: undefined, results: [], latestResult: undefined };
+  f.app.workers.store.insert(crew);
+  return { crew, outer: session };
+}
+
+function finishNative(f: Awaited<ReturnType<typeof fixture>>, nativeId: string, text: string) {
+  const native = f.sessions.get(nativeId)!, now = Date.now();
+  native.messages.push({ id: `answer_${crypto.randomUUID()}`, type: "assistant", time: { created: now, completed: now + 1 }, content: [{ type: "text", text }] }, { id: `idle_${crypto.randomUUID()}`, type: "idle", time: { created: now + 2 }, outcome: "succeeded" });
+  native.active = false;
+}
+
+test("coordinated crew survives idle restart, waits for all children, synthesizes once and delivers only final result", async () => {
+  const f = await fixture();
+  try {
+    const { crew, outer } = await coordinatedCrew(f);
+    const failed = f.app.workers.store.get(f.id)!;
+    const failure = { ...failed.outcome!, status: "failed" as const, summary: "Scout could not inspect its assigned package" };
+    f.app.workers.store.update(failed.id, { state: "failed", outcome: failure, results: failed.results!.map(result => ({ ...result, outcome: failure })) });
+    const child = await f.api("/api/sessions", { harness: "opencode", prompt: "Worker Outcome pending scout", cwd: f.session.cwd });
+    const childSession = f.disk("metadata.json").sessions.find((s: Session) => s.sessionId === child.sessionId) as Session;
+    const seed = f.app.workers.store.get(f.id)!;
+    const childId = crypto.randomUUID();
+    f.app.workers.store.insert({ ...seed, id: childId, sessionId: child.sessionId, runId: child.runId,
+      input: { requestId: "second-scout", worker: "scout", prompt: "inspect" }, state: "running", outcome: undefined, notification: undefined, results: [], latestResult: undefined });
+    await f.app.workers.refresh(crew);
+    expect(f.app.workers.store.get(crew.id)).toMatchObject({ state: "waiting", results: [] });
+    expect(f.app.workers.store.get(crew.id)!.outcome).toBeUndefined();
+    f.tick(); await Bun.sleep(100);
+    expect(f.app.workerOutbox.list()).toHaveLength(0);
+    await f.stop(); await f.boot();
+    await f.app.workers.refresh(f.app.workers.store.get(crew.id)!);
+    expect(f.app.workers.store.get(crew.id)).toMatchObject({ state: "waiting", coordination: "scouts", results: [] });
+    finishNative(f, childSession.nativeSessionId!, "second scout findings");
+    await until("scout ended", () => f.disk("metadata.json").runs.find((r: Run) => r.runId === child.runId)?.status === "completed");
+    f.tick();
+    await until("crew resumed", () => f.app.workerOutbox.list().some(d => d.parentSessionId === crew.sessionId));
+    const delivery = f.app.workerOutbox.list().find(d => d.parentSessionId === crew.sessionId)!;
+    await until("crew report accepted", async () => { await f.app.workerOutbox.reconcile(delivery.id); return f.app.workerOutbox.list().find(d => d.id === delivery.id)?.state === "delivered"; });
+    expect(delivery.workerIds.sort()).toEqual([f.id, childId].sort());
+    expect(f.submissions.find(s => s.id === delivery.commandId).text).toContain(failure.summary);
+    expect(f.app.workers.store.get(crew.id)!.outcome).toBeUndefined();
+    finishNative(f, f.session.nativeSessionId!, "FINAL CREW SYNTHESIS");
+    await until("crew synthesis ended", () => f.disk("metadata.json").runs.find((r: Run) => r.runId === delivery.run.runId)?.status === "completed");
+    f.tick();
+    await until("final delivered to outer", () => f.app.workerOutbox.list().some(d => d.parentSessionId === outer.sessionId));
+    const result = f.app.workers.store.get(crew.id)!;
+    expect(result.results).toHaveLength(1);
+    expect(result.outcome?.summary).toBe("FINAL CREW SYNTHESIS");
+    expect(result.outcome?.log?.runId).toBe(delivery.run.runId);
+    expect(f.app.workerOutbox.list().filter(d => d.parentSessionId === crew.sessionId)).toHaveLength(1);
+  } finally { await f.cleanup(); }
+}, 30000);
+
+test("cancelling an idle coordinated crew is terminal and suppresses late child continuation across restart", async () => {
+  const f = await fixture();
+  try {
+    const { crew } = await coordinatedCrew(f);
+    await f.app.workers.refresh(crew);
+    expect(f.app.workers.store.get(crew.id)!.state).toBe("waiting");
+    await f.app.workers.cancelForSession(crew.parent.sessionId, [crew.id]);
+    expect(f.app.workers.store.get(crew.id)).toMatchObject({ state: "interrupted", outcome: { status: "interrupted" } });
+    await f.stop(); await f.boot(); f.tick(); await Bun.sleep(100);
+    expect(f.app.workers.store.suppressed(crew.sessionId)).toBe(true);
+    expect(f.app.workerOutbox.list().filter(d => d.parentSessionId === crew.sessionId)).toHaveLength(0);
+    expect(f.app.workers.store.get(crew.id)!.results).toHaveLength(1);
   } finally { await f.cleanup(); }
 }, 30000);
 

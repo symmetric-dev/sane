@@ -50,6 +50,18 @@ function ref(w: WorkerRecord, revision = 1) {
 }
 
 describe("App-managed worker service and durable outbox", () => {
+  test("an authenticated nested crew can start scouts but cannot admit another role", async () => {
+    const f = fixture();
+    const crew = await f.service.start(f.caller, { requestId: "crew", worker: "scout-crew", prompt: "map" });
+    Object.assign(f.parent, { sessionId: crew.sessionId, runId: id(), scoutOnly: true });
+    f.caller.runId = f.parent.runId;
+    const scout = await f.service.start(f.caller, { requestId: "scout", worker: "scout", prompt: "inspect" });
+    expect(scout.parent.sessionId).toBe(crew.sessionId);
+    expect(f.service.tree(crew.parent.sessionId).map(w => w.id)).toEqual([crew.id, scout.id]);
+    await expect(f.service.start(f.caller, { requestId: "denied", worker: "researcher", prompt: "inspect" })).rejects.toMatchObject({ code: "worker-role-denied" });
+    expect(f.store.list()).toHaveLength(2);
+    expect(new WorkerStore(f.dir).get(scout.id)!.parent.sessionId).toBe(crew.sessionId);
+  });
   test("selection predicates and executor callbacks cannot mutate durable worker snapshots", async () => {
     const f = fixture(), w = await f.complete(await f.start());
     const original = f.store.list(), revision = f.store.revision;

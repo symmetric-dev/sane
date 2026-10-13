@@ -6,7 +6,12 @@ import type { NativeCaller } from "./native-caller.ts"
 
 export const claudeNativeTools = ["sane_link", "sane_context", "sane_handoff", "sane_handoff_status", "sane_worker_start", "sane_worker_status", "sane_worker_wait", "sane_worker_acknowledge", "sane_worker_cancel", "sane_worker_cancel_all"] as const
 type ClaudeTool = typeof claudeNativeTools[number]
-function unavailable(): never { throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Claude native caller binding is missing, invalid, expired or already consumed.") }
+type BindingFailure = "invalid-context" | "missing-token" | "invalid-token" | "binding-not-found" | "unsafe-binding" | "invalid-binding" | "tool-mismatch" | "body-mismatch" | "expired-binding" | "future-binding" | "profile-mismatch" | "binding-read-failed"
+class ClaudeBindingError extends DomainError {}
+function unavailable(reason: BindingFailure = "invalid-context"): never {
+  // Fixed reason codes only: never expose tokens, bodies, filesystem paths or raw IO errors.
+  throw new ClaudeBindingError("NATIVE_CONTEXT_UNAVAILABLE", `Claude native caller binding is missing, invalid, expired or already consumed. [${reason}]`)
+}
 function object(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) return unavailable()
   return input as Record<string, unknown>
@@ -44,17 +49,28 @@ export function issueClaudeInvocation(root: string, profileRoot: string, input: 
 export function consumeClaudeInvocation(root: string, profileRoot: string, tool: ClaudeTool, input: unknown): { caller: NativeCaller; input: Record<string, unknown> } {
   const body = { ...object(input) }, token = body._invocation
   delete body._invocation
-  if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) return unavailable()
+  if (token === undefined) return unavailable("missing-token")
+  if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) return unavailable("invalid-token")
   const key = createHash("sha256").update(token).digest("hex"), directory = bindingRoot(root)
   const path = join(directory, `${key}.json`), used = join(directory, `${key}.${randomUUID()}.used`)
   let moved = false
   try {
     const stat = lstatSync(path)
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.()) return unavailable()
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.()) return unavailable("unsafe-binding")
     renameSync(path, used); moved = true
     const binding = JSON.parse(readFileSync(used, "utf8"))
     const source = normalizeNativeSource({ version: 1, harness: "cc", kind: "local-profile", profileRoot })
-    if (binding.version !== 1 || binding.tool !== tool || binding.body !== canonical(body) || !Number.isFinite(binding.issuedAt) || Date.now() - binding.issuedAt > 300000 || binding.issuedAt > Date.now() || binding.caller?.authorityId !== source.authorityId || canonical(binding.caller.source) !== canonical(source.descriptor)) return unavailable()
+    if (!binding || binding.version !== 1 || !Number.isFinite(binding.issuedAt)) return unavailable("invalid-binding")
+    if (binding.tool !== tool) return unavailable("tool-mismatch")
+    if (binding.body !== canonical(body)) return unavailable("body-mismatch")
+    const now = Date.now()
+    if (now - binding.issuedAt > 300000) return unavailable("expired-binding")
+    if (binding.issuedAt > now) return unavailable("future-binding")
+    if (binding.caller?.authorityId !== source.authorityId || canonical(binding.caller.source) !== canonical(source.descriptor)) return unavailable("profile-mismatch")
     return { caller: binding.caller, input: body }
-  } catch { return unavailable() } finally { if (moved) unlinkSync(used) }
+  } catch (error) {
+    if (error instanceof ClaudeBindingError) throw error
+    if (!moved && (error as NodeJS.ErrnoException)?.code === "ENOENT") return unavailable("binding-not-found")
+    return unavailable("binding-read-failed")
+  } finally { if (moved) unlinkSync(used) }
 }

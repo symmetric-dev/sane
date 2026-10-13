@@ -5,6 +5,11 @@ import { claudeExecutionConfiguration, openCodeExecutionConfiguration, openCodeE
 import { executionModelMatches, executionPermissionsMatch, registerExecutionOperations } from "../../../opencode/plugins/sane/execution";
 
 const source = async (role: string, kind = "worker") => parseCanonicalAgentOperations(await readFile(new URL(`../../../opencode/agents/sane/${kind}/${role}.md`, import.meta.url), "utf8"), `sane/${kind}/${role}`);
+// Retained native-delegation packages must keep working after the crew migration.
+const nativeCrew = async () => {
+  const policy = await source("scout-crew");
+  return parseCanonicalAgentOperations(policy.source.markdown.replace("  sane_worker_start: allow", '    "sane/worker/scout": allow'), policy.spec.name);
+};
 
 describe("canonical execution policy", () => {
   test("all current authored definitions parse without installed config", async () => {
@@ -34,6 +39,30 @@ describe("canonical execution policy", () => {
     expect(parseCanonicalAgentOperations(text, "sane/worker/scout", { model: "openai/test", variant: "high" }).model).toEqual({ providerID: "openai", id: "test", variant: "high" });
     expect(parseCanonicalAgentOperations(text, "sane/worker/scout", "openai/test").source).toEqual({ markdown: text, modelOverride: "openai/test" });
     expect(() => parseCanonicalAgentOperations(text.replace("temperature: 0.1", "steps: 2"), "sane/worker/scout")).toThrow("Unsupported canonical execution field");
+  });
+  test("pinned authored temperature stays in evidence but neither harness renders it", async () => {
+    const authored = await source("implementer"), childSources = await Promise.all([source("scout"), source("researcher")]);
+    const policy = parseCanonicalAgentOperations(authored.source.markdown.replace(/temperature: [^\n]+/, "temperature: 0.87"), authored.spec.name);
+    const children = childSources.map(child => parseCanonicalAgentOperations(child.source.markdown.replace(/temperature: [^\n]+/, "temperature: 0.63"), child.spec.name,
+      { model: "anthropic/claude-sonnet-4-6", variant: "high" }));
+    const pinned = structuredClone({ policy, children });
+    const oc = openCodeExecutionConfiguration({ ...pinned, sessionID: "one", directory: "/repo", model: "openai/gpt-6-astra", effort: "low" });
+    expect(oc).not.toHaveProperty("temperature");
+    expect(oc.model).toEqual({ providerID: "openai", id: "gpt-6-astra", variant: "low" });
+    for (const child of oc.nativeChildren) {
+      expect(child).not.toHaveProperty("temperature");
+      expect(child.model).toEqual({ providerID: "anthropic", id: "claude-sonnet-4-6", variant: "high" });
+    }
+    expect(JSON.stringify(openCodeExecutionRpcRequest(oc).body)).not.toContain('"temperature"');
+    const cc = claudeExecutionConfiguration({ ...pinned, model: "opus", effort: "high" });
+    expect(JSON.stringify(cc.agents)).not.toContain('"temperature"');
+    expect(cc.args).toEqual(expect.arrayContaining(["--model", "opus", "--effort", "high"]));
+    expect(cc.agents["sane-worker-scout"]).toMatchObject({ model: "claude-sonnet-4-6", effort: "high" });
+    expect(cc.permissions.allow).toContain("Agent(sane-worker-scout)");
+    expect(cc.policyTranslation.diagnostics.filter(item => item.code === "temperature-unavailable")).toHaveLength(2);
+    expect(pinned).toEqual({ policy, children });
+    expect(pinned.policy.temperature).toBe(0.87);
+    expect(pinned.children.map(child => child.temperature)).toEqual([0.63, 0.63]);
   });
   test("CC launch-local child prompts are authored roles, selected role injected once", async () => {
     const policy = await source("implementer"), children = await Promise.all([source("scout"), source("researcher")]);
@@ -66,7 +95,7 @@ describe("canonical execution policy", () => {
     expect(result.policyTranslation.diagnostics).toContainEqual(expect.objectContaining({ agent: scout.spec.name, code: "resource-deny-widened", tools: ["Skill"] }));
   });
   test("CC unsupported pinned provider/variant fail rather than inheriting parent selection", async () => {
-    const policy = await source("scout-crew"), scout = await source("scout");
+    const policy = await nativeCrew(), scout = await source("scout");
     scout.model = { providerID: "openai", id: "gpt-example", variant: "high" };
     expect(() => claudeExecutionConfiguration({ policy, children: [scout] })).toThrow("cannot map pinned openai");
     scout.model = { providerID: "anthropic", id: "claude-sonnet-4-6", variant: "adaptive-budget" };
@@ -79,7 +108,7 @@ describe("canonical execution policy", () => {
     expect(() => claudeExecutionConfiguration({ policy, children: [scout], childProfiles: { [scout.spec.name]: { model: "openai/gpt-example" } } })).toThrow("unsupported explicit Claude model");
   });
   test("CC resource-level denies conservatively remove a whole tool and report the difference", async () => {
-    const policy = await source("scout-crew"), scout = await source("scout");
+    const policy = await nativeCrew(), scout = await source("scout");
     scout.permissions = [{ action: "shell", resource: "*", effect: "allow" }, { action: "shell", resource: "rm *", effect: "deny" }];
     const result = claudeExecutionConfiguration({ policy, children: [scout] });
     expect(result.agents["sane-worker-scout"]?.disallowedTools).toEqual(["Bash", "PowerShell"]);
@@ -91,7 +120,7 @@ describe("canonical execution policy", () => {
     expect(() => claudeExecutionConfiguration({ policy, children: [scout] })).toThrow("cannot enforce denied external_directory");
   });
   test("CC nested child allowlists disable Agent explicitly instead of claiming Agent(type) works", async () => {
-    const policy = await source("implementer"), crew = await source("scout-crew"), scout = await source("scout");
+    const policy = await source("implementer"), crew = await nativeCrew(), scout = await source("scout");
     policy.permissions = [{ action: "subagent", resource: "sane/worker/scout-crew", effect: "allow" }];
     const result = claudeExecutionConfiguration({ policy, children: [crew, scout] });
     expect(result.agents["sane-worker-scout-crew"]?.disallowedTools).toContain("Agent");
@@ -156,6 +185,36 @@ function runtime(options: { old?: boolean; directory?: string; missingCreate?: b
 const event = (sessionID: string, agent = "build"): Event => ({ sessionID, agent, options: {}, system: [] });
 
 describe("OC private execution RPC", () => {
+  test("legacy temperatures are ignored for root/children and ready bindings recover read-only", async () => {
+    const fake = runtime(), dispose = await registerExecutionOperations(fake.ctx);
+    const config = openCodeExecutionConfiguration({ policy: await source("implementer"), children: await Promise.all([source("scout"), source("researcher")]),
+      sessionID: "one", directory: "/repo", model: "openai/gpt-6-astra", effort: "low" });
+    const legacy = { ...config, temperature: 0.87, nativeChildren: config.nativeChildren.map(child => ({ ...child, temperature: 0.63 })) };
+    await fake.configure(legacy);
+    const id = config.delegation["sane/worker/scout"]!;
+    fake.child("child", "one", id);
+    for (const [sessionID, agent] of [["one", config.agent], ["child", id]]) {
+      const request = event(sessionID!, agent!);
+      await fake.hook(request);
+      expect(request.options).not.toHaveProperty("temperature");
+      expect(fake.catalog().get(agent!)).not.toHaveProperty("temperature");
+    }
+    expect(fake.sessions.get("one")!.model).toEqual(config.model);
+    expect(fake.inventory("child")).toBe("deny");
+    // Reproduce a pre-fix persisted binding, not just a new normalized write.
+    for (const [key, value] of fake.storage) fake.storage.set(key, { ...(value as object), configuration: legacy });
+    await dispose();
+    const resumed = await registerExecutionOperations(fake.ctx);
+    fake.calls.length = 0;
+    await fake.configure({ ...config, readOnly: true });
+    await fake.configure({ ...legacy, readOnly: true });
+    const request = event("one", config.agent), childRequest = event("child", id);
+    await fake.hook(request); await fake.hook(childRequest);
+    expect(request.options).toEqual({}); expect(childRequest.options).toEqual({});
+    expect(fake.calls).not.toContain("storage");
+    expect(fake.calls).not.toContain("permissions");
+    await resumed();
+  });
   test("first inventory uses each agent's policy and child overrides survive continuations", async () => {
     const fake = runtime(), dispose = await registerExecutionOperations(fake.ctx);
     const policy = await source("implementer"), children = [await source("scout"), await source("researcher")];
@@ -236,7 +295,7 @@ describe("OC private execution RPC", () => {
     session.permissions = retired;
     session.metadata = { saneCanonicalExecution: { schema: 1, root: "one", permissions: [] }, saneCanonicalPermissions: retired };
     const dispose = await registerExecutionOperations(fake.ctx);
-    const config = openCodeExecutionConfiguration({ policy: await source("scout-crew"), children: [await source("scout")], sessionID: "one", directory: "/repo" });
+    const config = openCodeExecutionConfiguration({ policy: await nativeCrew(), children: [await source("scout")], sessionID: "one", directory: "/repo" });
     await fake.configure(config);
     const id = config.nativeChildren[0]!.id;
     fake.child("old-child", "one", id); fake.sessions.get("old-child")!.permissions = structuredClone(retired);
@@ -248,7 +307,7 @@ describe("OC private execution RPC", () => {
   });
   test("invalid native-child aliases fail before session or registry mutations", async () => {
     const fake = runtime(), dispose = await registerExecutionOperations(fake.ctx);
-    const config = openCodeExecutionConfiguration({ policy: await source("scout-crew"), children: [await source("scout")], sessionID: "one", directory: "/repo" });
+    const config = openCodeExecutionConfiguration({ policy: await nativeCrew(), children: [await source("scout")], sessionID: "one", directory: "/repo" });
     config.nativeChildren[0]!.id = "build";
     await expect(fake.configure(config)).rejects.toThrow("native-child identifier");
     expect(fake.calls).toEqual([]);
@@ -274,7 +333,7 @@ describe("OC private execution RPC", () => {
     await fake.configure(config);
     const owned = event("one", config.executionAgent), ordinary = event("two");
     await fake.hook(owned); await fake.hook(ordinary);
-    expect(owned.options).toEqual({ temperature: 0.1 }); expect(ordinary.options).toEqual({});
+    expect(owned.options).toEqual({}); expect(ordinary.options).toEqual({});
     expect(fake.calls).toEqual(["storage", "agent", "model", "storage"]);
     await dispose();
     expect(fake.calls.slice(-2)).toEqual(["dispose-hook", "dispose-rpc"]);
@@ -289,7 +348,7 @@ describe("OC private execution RPC", () => {
   });
   test("creates/replays empty native child definitions without replacing user agents", async () => {
     const fake = runtime(), dispose = await registerExecutionOperations(fake.ctx);
-    const policy = await source("scout-crew"), children = [await source("scout")];
+    const policy = await nativeCrew(), children = [await source("scout")];
     children[0]!.model = { providerID: "openai", id: "child-model", variant: "high" };
     const config = openCodeExecutionConfiguration({ policy, children, sessionID: "one", directory: "/repo" });
     await fake.configure(config); await fake.reload();
@@ -328,7 +387,7 @@ describe("OC private execution RPC", () => {
     await resumed();
   });
   test("cancelled configuration and missing agent creation fail closed", async () => {
-    const config = openCodeExecutionConfiguration({ policy: await source("scout-crew"), children: [await source("scout")], sessionID: "one", directory: "/repo" });
+    const config = openCodeExecutionConfiguration({ policy: await nativeCrew(), children: [await source("scout")], sessionID: "one", directory: "/repo" });
     const fake = runtime({ missingCreate: true }), dispose = await registerExecutionOperations(fake.ctx);
     const aborted = new AbortController(); aborted.abort();
     await expect(fake.configure(config, aborted.signal)).rejects.toThrow(); expect(fake.calls).toEqual([]);
@@ -337,7 +396,7 @@ describe("OC private execution RPC", () => {
     expect(fake.catalog().size).toBe(2); await dispose();
   });
   test("alias collisions preserve existing catalogs and raw HTTP uses the authenticated RPC envelope", async () => {
-    const config = openCodeExecutionConfiguration({ policy: await source("scout-crew"), children: [await source("scout")], sessionID: "one", directory: "/repo" });
+    const config = openCodeExecutionConfiguration({ policy: await nativeCrew(), children: [await source("scout")], sessionID: "one", directory: "/repo" });
     const fake = runtime(); fake.original.set(config.nativeChildren[0]!.id, { system: "Existing" });
     const dispose = await registerExecutionOperations(fake.ctx);
     await expect(fake.configure(config)).rejects.toThrow("alias collision");
@@ -359,7 +418,7 @@ describe("OC private execution RPC", () => {
     await resumed();
   });
   test("nested native children require every actual parent edge and receive only their own role", async () => {
-    const policy = await source("implementer"), crew = await source("scout-crew"), scout = await source("scout");
+    const policy = await source("implementer"), crew = await nativeCrew(), scout = await source("scout");
     policy.permissions = [{ action: "subagent", resource: "*", effect: "deny" }, { action: "subagent", resource: "sane/worker/scout-crew", effect: "allow" }];
     const config = openCodeExecutionConfiguration({ policy, children: [crew, scout], sessionID: "one", directory: "/repo" });
     const fake = runtime(), dispose = await registerExecutionOperations(fake.ctx);

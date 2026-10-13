@@ -298,6 +298,22 @@ test("installed agent error is returned as launchError rather than a generic fai
   expect(f.owner.launchError).toBe("reinstall design"); expect(statusData(f).at(-1)?.reason).toBe("reinstall design"); expect(f.spawned()).toBeUndefined();
 });
 
+test("missing installed worker report agent proves non-submission without poisoning storage", async () => {
+  const f = fixture(); f.run.agent = "design"; f.owner.workerDeliveryId = "missing-agent-delivery";
+  f.runtime.agentSettings = async () => { throw new AgentLaunchConfigurationError("Missing installed agent definition"); };
+  const outcomes: unknown[] = [];
+  const evidence = createDispatchEvidence({ runId: f.run.runId, nativeCommandId: null, source: { harnessId: "claude-code", sessionId: f.run.sessionId, authorityId: "fixture", nativeSessionId: nativeId, cwd: f.run.cwd } }, {
+    beforeNative: () => { throw new Error("Must not cross native boundary"); }, outcome: value => { outcomes.push(value); },
+  }, f.deps.failClosed);
+  f.owner.dispatchEvidence = evidence;
+  await f.service().execute(f.owner, "worker report", true, f.accepted); evidence.finish();
+  expect(f.run.status).toBe("failed"); expect(f.spawned()).toBeUndefined();
+  expect(evidence.snapshot()).toMatchObject({ submission: "not-submitted", nativeAcceptance: "not-accepted" });
+  expect(outcomes).toHaveLength(1);
+  expect(statusData(f).at(-1)).toEqual({ status: "failed", workerDeliveryNotSubmitted: "missing-agent-delivery" });
+  expect(f.state.storageFailed).toBe(false);
+});
+
 test("ready resolves at spawn, not completion; prelaunch terminate is not cached", async () => {
   const f = fixture(), preparation = pending<string>(), exit = pending<number>(), launched = pending<void>();
   f.deps.execution = () => preparation.promise; Object.assign(f.child, { exited: exit.promise });

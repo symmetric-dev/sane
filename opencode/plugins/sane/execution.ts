@@ -9,6 +9,14 @@ const ruleEqual = (a: OperationPermission, b: OperationPermission) => a.action =
 const prefix = (actual: readonly OperationPermission[], expected: readonly OperationPermission[]) => actual.length >= expected.length && expected.every((rule, i) => ruleEqual(actual[i]!, rule))
 const permissionRules = (value: unknown): value is OperationPermission[] => Array.isArray(value) && value.every(rule => rule && typeof rule.action === "string" && typeof rule.resource === "string" && ["allow", "ask", "deny"].includes(rule.effect))
 
+/** Normalize legacy bindings and retry payloads without changing generated IDs
+ * or durable authored snapshots. Read-only recovery accepts the same policy
+ * rendered without the retired sampling control. */
+function withoutTemperature(input: Configuration): Configuration {
+  const { temperature: _temperature, nativeChildren, ...configuration } = input
+  return { ...configuration, nativeChildren: nativeChildren.map(({ temperature: _temperature, ...child }) => child) }
+}
+
 /** OC 2.0.26 materializes an omitted variant as `default`. Never accept another
  * provider/model or normalize an explicitly requested non-default variant. */
 export const executionModelMatches = (actual: OperationModel | undefined, expected: OperationModel | undefined) =>
@@ -59,6 +67,7 @@ export async function registerExecutionOperations(ctx: Context) {
         const binding = entry.value as unknown as Binding
         if (binding.schema !== 2 || !["ready", "pending"].includes(binding.state)) throw new Error("Invalid canonical execution storage binding")
         validate(binding.configuration, ctx.location.directory)
+        binding.configuration = withoutTemperature(binding.configuration)
         if (entry.key !== key(binding.configuration.sessionID)) throw new Error("Canonical execution storage identity mismatch")
         bindings.set(binding.configuration.sessionID, binding)
         if (binding.state === "ready") active.set(binding.configuration.sessionID, binding.configuration)
@@ -145,9 +154,10 @@ export async function registerExecutionOperations(ctx: Context) {
   const registration = await ctx.rpc.register(SaneExecution, {
     configure: async (raw, call) => {
       const { readOnly = false, ...configuration } = structuredClone(raw) as Configuration & { readOnly?: boolean }
-      const input = configuration as Configuration
+      let input = configuration as Configuration
       if (!supported) throw new Error("Canonical execution requires OpenCode 2.0.26+ agent transforms and durable plugin storage")
       validate(input, ctx.location.directory)
+      input = withoutTemperature(input)
       call.signal.throwIfAborted()
       await ensureAgents()
       call.signal.throwIfAborted()
@@ -218,7 +228,8 @@ export async function registerExecutionOperations(ctx: Context) {
       if (event.agent !== input.executionAgent) throw new Error("Canonical execution selection changed")
       await verifySelection(input)
       await verifyDefinitions(input)
-      if (input.temperature !== undefined) event.options.temperature = input.temperature
+      // Authored temperature in older durable bindings is retained as evidence,
+      // but App-managed execution leaves sampling to the native provider.
       if (input.directChildren.length) event.system.push({ type: "text", text: delegationText(input.directChildren, input) })
       return
     }
@@ -251,7 +262,6 @@ export async function registerExecutionOperations(ctx: Context) {
     await verifyDefinitions(root)
     // No session-policy mutation here: inventory already reflects this child's
     // generated agent plus its inherited/individually granted user overrides.
-    if (definition.temperature !== undefined) event.options.temperature = definition.temperature
     event.system.push({ type: "text", text: definition.system })
     if (definition.children.length) event.system.push({ type: "text", text: delegationText(definition.children, root) })
   })
