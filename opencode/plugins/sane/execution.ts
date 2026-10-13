@@ -22,10 +22,28 @@ function withoutTemperature(input: Configuration): Configuration {
 export const executionModelMatches = (actual: OperationModel | undefined, expected: OperationModel | undefined) =>
   actual?.providerID === expected?.providerID && actual?.id === expected?.id && (actual?.variant ?? "default") === (expected?.variant ?? "default")
 
-/** Exact authored prefix, followed only by the observed native browser safety
- * restriction. Extra allows, reordered rules, or arbitrary other denies fail. */
+/** Restore OC V2's ordered base policy at the runtime boundary, not in durable
+ * authored snapshots (or generated IDs). Replacing draft.permissions with only
+ * authored restrictions otherwise makes every unmatched normal/MCP action ask.
+ * https://opencode.ai/v2/docs/permissions#defaults
+ * Do not copy build/global policy: canonical agents must remain role-isolated. */
+function executionPermissions(authored: readonly OperationPermission[]): OperationPermission[] {
+  return [
+    { action: "*", resource: "*", effect: "allow" },
+    { action: "external_directory", resource: "*", effect: "ask" },
+    { action: "read", resource: "*.env", effect: "ask" },
+    { action: "read", resource: "*.env.*", effect: "ask" },
+    { action: "read", resource: "*.env.example", effect: "allow" },
+    ...structuredClone(authored),
+    { action: "browser", resource: "*", effect: "deny" },
+  ]
+}
+
+/** Exact runtime baseline + authored policy + browser restriction. Only duplicate
+ * native browser denies may follow; missing baseline or arbitrary suffixes fail. */
 export function executionPermissionsMatch(actual: readonly OperationPermission[], expected: readonly OperationPermission[]) {
-  return prefix(actual, expected) && actual.slice(expected.length).every(rule => rule.action === "browser" && rule.resource === "*" && rule.effect === "deny")
+  const rendered = executionPermissions(expected)
+  return prefix(actual, rendered) && actual.slice(rendered.length).every(rule => rule.action === "browser" && rule.resource === "*" && rule.effect === "deny")
 }
 
 function validate(input: Configuration, directory: string) {
@@ -89,7 +107,7 @@ export async function registerExecutionOperations(ctx: Context) {
           // Native BrowserConnection normally appends this restriction after
           // setup. Late-created agents must retain it too; browser connections
           // grant access using genuine session overrides.
-          draft.permissions = [...structuredClone(definition.permissions), { action: "browser", resource: "*", effect: "deny" }]
+          draft.permissions = executionPermissions(definition.permissions)
           draft.model = definition.model as typeof draft.model
         })
       }
