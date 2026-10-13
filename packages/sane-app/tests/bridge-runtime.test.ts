@@ -213,11 +213,11 @@ async function fakeNative(req: Request) {
   }
 }
 
-async function api(path: string, data?: unknown, overrides: { method?: string; headers?: Record<string, string>; anonymous?: boolean } = {}) {
+async function api(path: string, data?: unknown, overrides: { method?: string; headers?: Record<string, string>; anonymous?: boolean; timeoutMs?: number } = {}) {
   const res = await fetch(`${app!.origin}${path}`, {
     method: overrides.method ?? (data === undefined ? "GET" : "POST"),
     headers: { "content-type": "application/json", origin: app!.origin, ...(!overrides.anonymous && cookie ? { cookie } : {}), ...overrides.headers },
-    ...(data === undefined ? {} : { body: JSON.stringify(data) }), redirect: "error", signal: AbortSignal.timeout(5000),
+    ...(data === undefined ? {} : { body: JSON.stringify(data) }), redirect: "error", signal: AbortSignal.timeout(overrides.timeoutMs ?? 5000),
   });
   return { status: res.status, body: await res.json() as any, headers: res.headers };
 }
@@ -574,14 +574,16 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     const stub = join(root, "claude-stub.mjs");
     writeFileSync(stub, [
       `#!${process.execPath}`,
-      `import { appendFileSync, existsSync } from "node:fs";`,
-      `const args = process.argv.slice(2), prompt = await Bun.stdin.text();`,
+      `import { appendFileSync, existsSync, readFileSync } from "node:fs";`,
+      `const args = process.argv.slice(2); if (args.includes("--version")) { console.log("2.1.281 (offline fixture)"); process.exit(0); } const prompt = await Bun.stdin.text();`,
       `const i = args.findIndex(a => a === "--session-id" || a === "--resume"), session_id = args[i + 1];`,
       `const payload = { hook_event_name: "UserPromptSubmit", session_id, prompt };`,
       `const probe = async (secret, value, event = "UserPromptSubmit") => { const r = await fetch(process.env.CC_WEB_HOOK_URL + "/hooks/" + event, { method: "POST", headers: { "content-type": "application/json", "x-cc-web-secret": secret, host: "untrusted.invalid", origin: "https://untrusted.invalid" }, body: JSON.stringify({ runId: process.env.CC_WEB_RUN_ID, payload: value }), signal: AbortSignal.timeout(5000) }); return r.status; };`,
       `const hookStatuses = [await probe("wrong", payload), await probe(process.env.CC_WEB_HOOK_SECRET, { ...payload, session_id: "wrong" }), await probe(process.env.CC_WEB_HOOK_SECRET, { ...payload, hook_event_name: "Stop" }), await probe(process.env.CC_WEB_HOOK_SECRET, payload)];`,
       `appendFileSync(${JSON.stringify(cliLog)}, JSON.stringify({ args, prompt, cwd: process.cwd(), profileRoot: process.env.CLAUDE_CONFIG_DIR, runId: process.env.CC_WEB_RUN_ID, hookStatuses, leakedPassword: process.env.SANE_APP_PASSWORD ?? null, leakedToken: process.env.OPENCODE_TOKEN ?? null }) + "\\n");`,
+      `if (prompt === "offline legacy branch source") { const path = args[args.indexOf("--settings") + 1].replace(/\\.settings\\.json$/, ".session-start.md"); if (existsSync(path)) console.log(JSON.stringify({ type: "system", subtype: "hook_response", hook_event: "SessionStart", outcome: "success", session_id, exit_code: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: readFileSync(path, "utf8") } }) })); }`,
       `console.log(JSON.stringify({ type: "system", subtype: "init", session_id }));`,
+      `if (args.includes("--include-hook-events")) { const path = args[args.indexOf("--settings") + 1].replace(/\\.settings\\.json$/, ".sane-session.md"); if (existsSync(path)) console.log(JSON.stringify({ type: "system", subtype: "hook_response", hook_event: "UserPromptSubmit", outcome: "success", session_id, exit_code: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: readFileSync(path, "utf8") } }) })); }`,
       `console.log(JSON.stringify({ type: "assistant", uuid: crypto.randomUUID(), session_id, message: { role: "assistant", content: [{ type: "text", text: "offline Claude answer: " + prompt }] } }));`,
       `const resultFailure = prompt.startsWith("Phase5c1 result failure") || prompt.startsWith("Phase5c1 execution-result failure");`,
       `console.log(JSON.stringify({ type: "result", subtype: resultFailure ? "error_during_execution" : "success", is_error: resultFailure, session_id, result: resultFailure ? "offline native result command failed" : "offline Claude OK" }));`,
@@ -4406,6 +4408,153 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     expect(sideEffects()).toEqual(before);
   }, TIMEOUT);
 
+  test("canonical Planning ordinary followup passes queue preflight without poisoning storage", async () => {
+    await app!.close(); app = undefined;
+    const selected = { ...startupFixture("canonical-planning-preflight"), contextDelivery: "canonical" as const };
+    const stored = (id: string): Session => JSON.parse(readFileSync(join(selected.dataDir, "metadata.json"), "utf8")).sessions.find((s: Session) => s.sessionId === id);
+    try {
+      app = await start(selected); await login();
+      const created = await api("/api/sessions", { harness: "opencode", agent: "planning", model: "fixture/offline", cwd: repoDir, prompt: "offline canonical Planning kickoff" });
+      expect(created.status).toBe(202);
+      await waitIdle(created.body.sessionId);
+      const prior = stored(created.body.sessionId);
+      expect(prior.lastStatus).toBe("completed");
+      expect(prior.saneExecution?.revision).toMatch(/^[a-f0-9]{64}$/);
+      expect(prior.saneContext?.package?.revision).toMatch(/^[a-f0-9]{64}$/);
+      // Ordinary send calls queuePreflight even when there is no waiting chain.
+      const resumed = await api("/api/sessions", { sessionId: prior.sessionId, prompt: "offline explicit Planning followup" });
+      expect(resumed.status).toBe(202);
+      await waitIdle(prior.sessionId);
+      const current = stored(prior.sessionId);
+      expect(current.lastStatus).toBe("completed");
+      expect(current.nativeSessionId).toBe(prior.nativeSessionId);
+      expect(current.saneExecution).toEqual(prior.saneExecution);
+      expect(current.saneContext).toEqual(prior.saneContext);
+      const queued = await api(queuePath(current.sessionId), queueWire(current, "offline pinned Planning queue"));
+      expect(queued.status).toBe(202);
+      const pins = app.pendingInputs.store.readRecords().conversations.find(c => c.conversationId === current.sessionId)!.chain!.pins;
+      expect(pins.configuration.saneExecution).toEqual(prior.saneExecution);
+      expect(pins.launch.saneContext).toEqual(prior.saneContext);
+      const unrelated = await api("/api/sessions", { harness: "opencode", model: "fixture/offline", prompt: "offline storage remains writable" });
+      expect(unrelated.status).toBe(202); await waitIdle(unrelated.body.sessionId);
+    } finally {
+      await app?.close(); app = await start(options); await login();
+    }
+  }, TIMEOUT);
+
+  test("canonical branch recovery retains reserved activation and first-message draft across flag changes", async () => {
+    await app!.close(); app = undefined;
+    const selected = startupFixture("canonical-branch-recovery");
+    let restore: (() => void) | undefined;
+    try {
+      app = await start(selected); await login();
+      const source = await api("/api/sessions", { harness: "opencode", agent: "engineering", model: "fixture/offline", prompt: "offline legacy recovery source" });
+      expect(source.status).toBe(202); await waitIdle(source.body.sessionId);
+      await app.close(); app = await start({ ...selected, contextDelivery: "canonical" }); await login();
+      const history = OpenCodeAdapter.prototype.history;
+      const failure = spyOn(OpenCodeAdapter.prototype, "history").mockImplementation(async function(this: OpenCodeAdapter, id, cwd) {
+        if (id !== source.body.nativeSessionId) throw new Error("offline destination observation unavailable");
+        return history.call(this, id, cwd);
+      });
+      restore = () => failure.mockRestore();
+      const branch = await api(`/api/sessions/${source.body.sessionId}/branch`, { requestId: crypto.randomUUID(), runId: source.body.runId, replace: false, prompt: "preserved migration summary" });
+      expect(branch.status).toBe(409); expect(branch.body.operation.state).toBe("confirmed");
+      const file = join(selected.dataDir, "activations", branch.body.sessionId, "activation.json");
+      const reserved = readFileSync(file, "utf8");
+      restore(); restore = undefined;
+      await app.close(); app = await start({ ...selected, contextDelivery: "startup" }); await login();
+      let recovered: any;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        recovered = (await api("/api/sessions")).body.sessions.find((s: Session) => s.sessionId === branch.body.sessionId);
+        if (recovered?.branchDraft) break;
+        await Bun.sleep(20);
+      }
+      expect(recovered.branchDraft).toBe("preserved migration summary");
+      expect(recovered.lastRunId).toBeNull();
+      expect(readFileSync(file, "utf8")).toBe(reserved);
+      const resumed = await api("/api/sessions", { sessionId: recovered.sessionId, prompt: "explicitly continue recovered branch" });
+      expect(resumed.status).toBe(202); expect((await waitIdle(recovered.sessionId)).lastStatus).toBe("completed");
+      expect(executionConfigurations.has(recovered.nativeSessionId)).toBe(true);
+    } finally {
+      restore?.(); await app?.close(); app = await start(options); await login();
+    }
+  }, TIMEOUT);
+
+  for (const harness of ["opencode", "claude-code"] as const) test(`legacy ${harness} branch reserves canonical execution and continues copied history`, async () => {
+    await app!.close(); app = undefined;
+    const selected = startupFixture(`legacy-branch-${harness}`);
+    const stored = (id: string): Session => JSON.parse(readFileSync(join(selected.dataDir, "metadata.json"), "utf8")).sessions.find((s: Session) => s.sessionId === id);
+    const retired = join(process.env.CLAUDE_CONFIG_DIR!, "agents"), backup = retired + ".branch-test-backup";
+    let retiredFixture = false;
+    try {
+      app = await start(selected); await login();
+      const created = await api("/api/sessions", { harness, agent: "engineering", model: harness === "opencode" ? "fixture/offline" : "sonnet", effort: harness === "opencode" ? "bounded" : "high", cwd: repoDir, prompt: "offline legacy branch source" });
+      expect(created.status).toBe(202); await waitIdle(created.body.sessionId);
+      let source = stored(created.body.sessionId);
+      if (source.lastStatus !== "completed") throw new Error(JSON.stringify((await api(`/api/runs/${created.body.runId}/events`)).body));
+      expect(source.saneExecution).toBeUndefined();
+      if (harness === "claude-code") {
+        const logs = (await api(`/api/runs/${created.body.runId}/events`)).body.events;
+        const answer = logs.findLast((e: any) => e.kind === "stdout" && e.data?.type === "assistant").data;
+        const project = join(process.env.CLAUDE_CONFIG_DIR!, "projects", repoDir.replace(/[^a-zA-Z0-9]/g, "-"));
+        mkdirSync(project, { recursive: true });
+        const user = crypto.randomUUID(), base = { sessionId: source.nativeSessionId, cwd: repoDir, version: "2.1.0", timestamp: new Date().toISOString(), isSidechain: false };
+        writeFileSync(join(project, `${source.nativeSessionId}.jsonl`), [
+          { ...base, type: "user", uuid: user, parentUuid: null, message: { role: "user", content: "offline legacy branch source" } },
+          { ...base, type: "assistant", uuid: answer.uuid, parentUuid: user, message: { ...answer.message, id: "msg_fixture" } },
+        ].map(row => JSON.stringify(row)).join("\n") + "\n");
+        renameSync(retired, backup); retiredFixture = true;
+        const failed = await api("/api/sessions", { sessionId: source.sessionId, prompt: "offline missing installed role" });
+        expect([202, 503]).toContain(failed.status); await waitIdle(source.sessionId);
+        source = stored(source.sessionId);
+        expect(source.lastStatus).toBe("failed");
+        const failureEvents = (await api(`/api/runs/${source.lastRunId}/events`)).body.events;
+        expect(failureEvents.some((e: any) => e.kind === "launch")).toBe(false);
+      }
+      await app.close(); app = await start({ ...selected, contextDelivery: "canonical" }); await login();
+      const firstMessage = "Continue the current implementation stage. Branch summary: preserve the earlier decisions.";
+      const branch = await api(`/api/sessions/${source.sessionId}/branch`, { requestId: crypto.randomUUID(), runId: created.body.runId, replace: false, prompt: firstMessage }, { timeoutMs: 20000 });
+      if (branch.status !== 201) throw new Error(JSON.stringify(branch.body));
+      expect(branch.status).toBe(201);
+      await waitIdle(branch.body.sessionId);
+      const child = stored(branch.body.sessionId);
+      if (child.lastStatus !== "completed") throw new Error(JSON.stringify((await api(`/api/runs/${child.lastRunId}/events`)).body));
+      expect(child.lastStatus).toBe("completed");
+      expect(child).toMatchObject({ agent: source.agent, model: source.model, effort: source.effort, nativeAgentSelected: false, saneContext: { package: { activation: "upgrade" } } });
+      expect(child.saneExecution?.revision).toMatch(/^[a-f0-9]{64}$/);
+      expect(stored(source.sessionId)).toEqual(source);
+      const reservation = JSON.parse(readFileSync(join(selected.dataDir, "activations", child.sessionId, "activation.json"), "utf8"));
+      expect(reservation.activation).toEqual({ saneContext: child.saneContext, saneExecution: child.saneExecution });
+      expect(branch.body.operation).toMatchObject({ canonicalActivation: true, firstMessage });
+      if (harness === "opencode") {
+        expect(sessions.get(child.nativeSessionId!)!.messages.slice(0, sessions.get(source.nativeSessionId!)!.messages.length)).toEqual(sessions.get(source.nativeSessionId!)!.messages);
+        expect(contextEntries.get(child.nativeSessionId!)).toContain("This is a branch continuation");
+        expect(executionConfigurations.has(child.nativeSessionId!)).toBe(true);
+      } else {
+        const launch = JSON.parse(readFileSync(cliLog, "utf8").trim().split("\n").at(-1)!);
+        expect(launch.args).not.toContain("sane-assistant-engineering");
+        expect(launch.args).toContain("sane-app-execution");
+        expect(launch.args).toContain("--system-prompt-snapshot");
+        expect(launch.args[launch.args.indexOf("--system-prompt-snapshot") + 1]).toBe("off");
+        expect(launch.prompt).toBe(firstMessage);
+      }
+      await app.close(); app = await start({ ...selected, contextDelivery: "startup" }); await login();
+      const followup = await api("/api/sessions", { sessionId: child.sessionId, prompt: "offline branch continuation after restart" });
+      expect(followup.status).toBe(202); await waitIdle(child.sessionId);
+      expect(stored(child.sessionId).saneExecution).toEqual(child.saneExecution);
+      if (harness === "claude-code") expect(JSON.parse(readFileSync(cliLog, "utf8").trim().split("\n").at(-1)!).args).toContain("--system-prompt-snapshot");
+      if (harness === "claude-code") {
+        const failed = await api("/api/sessions", { sessionId: child.sessionId, prompt: "fail for FIFO consumer after branch" });
+        expect(failed.status).toBe(202); await waitIdle(child.sessionId);
+        const blocked = await api(`/api/sessions/${child.sessionId}/branch?runId=${followup.body.runId}`);
+        expect(blocked.body).toMatchObject({ eligible: false, reason: "Complete-turn/idle evidence is unavailable after a possibly launched failure" });
+      }
+    } finally {
+      if (retiredFixture) renameSync(backup, retired);
+      await app?.close(); app = await start(options); await login();
+    }
+  }, TIMEOUT);
+
   test("canonical bridge persists pinned package across restart, resumes, Base upgrade and isolated native bindings", async () => {
     await app!.close(); app = undefined;
     const canonicalOptions = { ...startupFixture("canonical-context"), contextDelivery: "canonical" as const };
@@ -4442,6 +4591,11 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       expect(executionConfigurations.has(base.body.nativeSessionId)).toBe(false);
       const baseEvents = (await api(`/api/runs/${base.body.runId}/events`)).body.events;
       expect(baseEvents.some((e: any) => e.data?.type === "canonical-context")).toBe(false);
+      const baseBranch = await api(`/api/sessions/${base.body.sessionId}/branch`, { requestId: crypto.randomUUID(), runId: base.body.runId, replace: false, prompt: "" });
+      expect(baseBranch.status).toBe(201);
+      const baseChild = JSON.parse(readFileSync(join(canonicalOptions.dataDir, "metadata.json"), "utf8")).sessions.find((s: Session) => s.sessionId === baseBranch.body.sessionId);
+      expect(baseChild.saneExecution).toBeUndefined(); expect(baseChild.saneContext).toBeUndefined();
+      expect(baseBranch.body.operation.canonicalActivation).toBeUndefined();
       const profile = await api("/api/agents", { fromId: "template:engineering", label: "Canonical OC Engineering", harness: "opencode", model: "fixture/offline" });
       expect(profile.status).toBe(200);
       const upgraded = await api("/api/sessions", { sessionId: base.body.sessionId, profileId: profile.body.profile.id, prompt: "explicit upgrade" });

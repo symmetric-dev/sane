@@ -515,6 +515,7 @@ export class ClaudeRunService {
       await prepare(() => deps.enqueue(() => runtime.writeSettings(settingsPath, settings)));
       if (deps.closing() || deps.storageFailed() || owner.stopRequested) throw new Error("Closing before launch");
       const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", nativeSessionId!, "--settings", settingsPath];
+      if (canonical) args.push("--include-hook-events");
       if (privateExecution) args.push(...privateExecution.args);
       else if (ccAgent !== undefined) args.push("--agent", ccAgent);
       if (appendPath) args.push("--append-system-prompt-file", appendPath);

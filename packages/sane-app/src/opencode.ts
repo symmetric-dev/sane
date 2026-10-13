@@ -206,7 +206,11 @@ export class OpenCodeAdapter {
       const auth = response.status === 401 || response.status === 403;
       if (auth || response.status >= 500) this.invalidate(connection);
       const Failure = auth || response.status >= 500 || response.status === 408 || response.status === 429 ? OpenCodeUnavailableError : OpenCodeError;
-      throw new Failure(auth ? this.explicit ? "OpenCode authentication rejected; configure OPENCODE_TOKEN for the explicit URL" : "OpenCode managed authentication rejected; discovery will refresh on the next request" : `OpenCode API returned HTTP ${response.status}`, response.status);
+      // This fixed route identifies configuration failures without exposing query
+      // strings, credentials, prompts, or untrusted server response bodies.
+      const diagnostic = method === "POST" && path.split("?")[0] === "/api/rpc/sane-execution/configure"
+        ? " (POST /api/rpc/sane-execution/configure; inspect the OpenCode server log for the configuration failure)" : "";
+      throw new Failure(auth ? this.explicit ? "OpenCode authentication rejected; configure OPENCODE_TOKEN for the explicit URL" : "OpenCode managed authentication rejected; discovery will refresh on the next request" : `OpenCode API returned HTTP ${response.status}${diagnostic}`, response.status);
     }
     if (response.status === 204) return undefined as T;
     // Headers do not prove that the body arrived. A failed read is unavailable

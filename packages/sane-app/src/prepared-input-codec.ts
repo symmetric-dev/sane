@@ -47,14 +47,20 @@ export function validateBinding(v: unknown) {
   if ("nativeSessionId" in v) requireRecord(v.harness === "opencode" ? typeof v.nativeSessionId === "string" && /^ses[a-zA-Z0-9_-]{1,200}$/.test(v.nativeSessionId) : uuid(v.nativeSessionId));
 }
 export function validateConfiguration(v: unknown, harness: string) {
-  shape(v, ["profileId"], ["model", "effort", "agent", "agentKind", "nativeAgentSelected", "saneContext", "attachment"]);
+  shape(v, ["profileId"], ["model", "effort", "agent", "agentKind", "nativeAgentSelected", "saneExecution", "saneContext", "attachment"]);
+  if ("saneExecution" in v) shape(v.saneExecution, ["schema", "revision"]);
   requireRecord(validProfileId(v.profileId) && validAgentSnapshot(v));
   if ("model" in v) requireRecord(validModel(v.model));
   if ("effort" in v) requireRecord(harness === "opencode" ? validVariant(v.effort) && !/\x7f/.test(v.effort) : validEffort(v.effort));
-  if ("saneContext" in v) { shape(v.saneContext, ["version", "framework"], ["assignment"]); requireRecord(positive(v.saneContext.version) && typeof v.saneContext.framework === "string" && !!v.saneContext.framework && (!("assignment" in v.saneContext) || typeof v.saneContext.assignment === "string" && !!v.saneContext.assignment && v.agentKind === "worker")); }
+  if ("saneContext" in v) {
+    shape(v.saneContext, ["version", "framework"], ["assignment", "package"]);
+    if ("package" in v.saneContext) shape(v.saneContext.package, ["schema", "revision", "delivery"], ["activation"]);
+    requireRecord(positive(v.saneContext.version) && typeof v.saneContext.framework === "string" && !!v.saneContext.framework && (!("assignment" in v.saneContext) || typeof v.saneContext.assignment === "string" && !!v.saneContext.assignment && v.agentKind === "worker"));
+  }
   if ("attachment" in v) { shape(v.attachment, ["state", "source"], ["error"]); requireRecord(["pending", "ready"].includes(v.attachment.state) && token(v.attachment.source) && (!("error" in v.attachment) || typeof v.attachment.error === "string")); }
   // Existing actual metadata validator remains authoritative for nested agent,
-  // framework and attachment relationships; the synthetic row has no run.
+  // framework, canonical reference schemas/pairing and attachment relationships;
+  // the synthetic row has no run. Ref bytes remain part of exact pin equality.
   try { validateMetadata({ sessions: [{ ...v, sessionId: "00000000-0000-4000-8000-000000000001", harness, authorityId: `sane-native-v1:${harness === "opencode" ? "oc" : "cc"}:${"a".repeat(64)}`, nativeSessionId: harness === "opencode" ? "ses_codec" : "00000000-0000-4000-8000-000000000002", cwd: "/codec", lastStatus: "unknown", lastRunId: null }], runs: [], reconciliationRequired: false }); }
   catch { throw new PendingInputCodecError("Invalid prepared configuration"); }
 }

@@ -445,7 +445,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const current = meta.sessions.find(s => s.sessionId === sessionId);
     if (!current || pin !== JSON.stringify([current.harness, current.authorityId, current.nativeSessionId, current.cwd, current.agent, current.agentKind, current.nativeAgentSelected, current.saneContext, current.saneExecution])) throw new Error("Context binding changed during preparation");
     assertAdmission();
-    const dynamic = saneSessionText(session, context) ?? `# SANE Session\n\nWorkstream: none\nImplementation root: ${context.executionCheckout}`;
+    let dynamic = saneSessionText(session, context) ?? `# SANE Session\n\nWorkstream: none\nImplementation root: ${context.executionCheckout}`;
+    if (branches.list().some(op => op.destinationId === sessionId && op.canonicalActivation && op.state === "completed")) dynamic += "\n\nThis is a branch continuation. Preserve the lifecycle stage and task state evidenced by the copied conversation and the user's branch message. Do not restart Pickup merely because canonical context was activated. Copied SANE startup instructions and role snapshots are historical; use the current pinned role and private procedure index for execution.";
     return { bundle, binding: { sessionId, harness: session.harness!, authorityId: session.authorityId!, nativeSessionId: session.nativeSessionId!, cwd: session.cwd }, paths, dynamic, assignment: session.saneContext.assignment, injectRole: !!session.saneExecution || session.harness === "opencode" && !session.nativeAgentSelected };
   };
   const canonicalContext: ContextProvider = async sessionId => {
@@ -902,7 +903,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return next;
   }
   const sessionProfileId = (s: Session) => s.profileId ?? legacyProfileId(s.harness ?? "claude-code", s.agent);
-  function failClosed() {
+  function failClosed(error?: unknown, stage = "unspecified") {
+    if (!storageFailed) {
+      // Log independently of App storage: the journal itself may be unavailable.
+      // Capture a call site even when an older callback supplies no exception.
+      const redact = (text: string) => text
+        .replace(/(Bearer\s+)[^\s"']+/gi, "$1[REDACTED]")
+        .replace(/((?:token|password|secret|api[_-]?key|authorization)["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi, "$1[REDACTED]")
+        .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, "$1[REDACTED]@");
+      const describe = (value: unknown, depth = 0): string => value instanceof Error
+        ? `${value.stack ?? value.message}${depth < 3 && value.cause !== undefined ? `\nCaused by: ${describe(value.cause, depth + 1)}` : ""}`
+        : value === undefined ? "No exception supplied" : String(value);
+      try {
+        console.error("[SANE storage fail-closed]", JSON.stringify({ time: new Date().toISOString(), stage,
+          error: redact(describe(error)), callSite: new Error("First storage failure").stack }));
+      } catch { /* Diagnostics must never prevent ownership retention. */ }
+    }
     storageFailed = true; retainOwner = true; meta.reconciliationRequired = true;
     pendingInputWake?.close();
     // Ownership records are the durable sentinel even if every later disk
@@ -924,7 +940,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!pendingInputAutomationHealthy()) throw new Error("Pending input wake did not start safely");
       }
       if (!ownsStorage() || storageFailed || closing || retainOwner) throw new Error("Pending input activation failed closed");
-    } catch (error) { failClosed(); throw error; }
+    } catch (error) { failClosed(error, "pending-input-wake-start"); throw error; }
   }
   function notifyPendingInput(kind: PendingInputWakeKind) {
     try {
@@ -935,7 +951,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       synchronousDispatchHook(() => pendingInputWake!.notify(kind));
       if (storageFailed) throw new Error("Queue wake failed closed");
     } catch (error) {
-      failClosed();
+      failClosed(error, "pending-input-notify");
       throw new PendingInputStorageError("Pending input notification failed; reconcile original identities", error);
     }
   }
@@ -948,7 +964,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     available: () => !closing && !storageFailed && startupReady, failClosed });
   function enqueue(fn: () => Promise<void>) {
     const next = serial.then(async () => { if (storageFailed) throw new Error("Storage unavailable; operator reconciliation required"); await fn(); });
-    serial = next.catch(() => { failClosed(); });
+    serial = next.catch(error => { failClosed(error, "serialized-storage-write"); });
     return next;
   }
   function groupAlive(owner: Owner): boolean {
@@ -1086,8 +1102,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       "claude-code": async () => {
         if (!run) throw new Error("Branching on this harness requires a SANE-recorded completed run");
         const assistant = (id: string) => (events.get(id) ?? []).filter(e => e.kind === "stdout" && isClaudeRootRecord(e.data) && (e.data as any)?.session_id === source.nativeSessionId && (e.data as any)?.type === "assistant").at(-1)?.data as any;
-        const selected = assistant(run.runId), latest = source.lastRunId && assistant(source.lastRunId);
-        if (source.lastStatus !== "completed" || !uuid(selected?.uuid) || !uuid(latest?.uuid) || selected.message?.content?.some((p: any) => p.type === "tool_use")) throw new Error("Complete-turn/idle evidence is unavailable for this harness");
+        let latestRunId = source.lastRunId;
+        if (source.lastStatus === "failed") {
+          // A missing installed role can fail preparation before native launch.
+          // Only those failures may retain the preceding completed-turn proof;
+          // any launch/stream/hook evidence makes native acceptance uncertain.
+          const runs = meta.runs.filter(r => r.sessionId === source.sessionId);
+          const completed = runs.findLastIndex(r => r.status === "completed" && r.operation !== "compact");
+          const failures = runs.slice(completed + 1);
+          if (completed < 0 || !failures.length || failures.at(-1)?.runId !== source.lastRunId || failures.some(r => {
+            const log = events.get(r.runId) ?? [];
+            return r.status !== "failed" || !log.some(e => e.kind === "status" && (e.data as any)?.status === "failed") || log.some(e => ["launch", "stdout", "hook"].includes(e.kind));
+          })) throw new Error("Complete-turn/idle evidence is unavailable after a possibly launched failure");
+          latestRunId = runs[completed]!.runId;
+        } else if (source.lastStatus !== "completed") throw new Error("Complete-turn/idle evidence is unavailable for this harness");
+        const selected = assistant(run.runId), latest = latestRunId && assistant(latestRunId);
+        if (!uuid(selected?.uuid) || !uuid(latest?.uuid) || selected.message?.content?.some((p: any) => p.type === "tool_use")) throw new Error("Complete-turn/idle evidence is unavailable for this harness");
         const native = await readClaudeHistory(source.nativeSessionId!, source.cwd, claudeRoot);
         if (native.at(-1)?.messageId !== latest.uuid || !native.some(m => m.messageId === selected.uuid)) throw new Error("Native history differs from SANE's completed run evidence; external activity must be reconciled");
         return { boundary: selected.uuid as string, before: undefined, sourceFingerprint: branchFingerprint(native) };
@@ -1104,9 +1134,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const sourceDomain = original.binding.domain, destinationDomain = admission.binding.domain;
     if (sourceDomain.mode !== destinationDomain.mode || sourceDomain.mode === "repository" && (destinationDomain.mode !== "repository" || sourceDomain.repositoryId !== destinationDomain.repositoryId || sourceDomain.primaryCheckout !== destinationDomain.primaryCheckout) || admission.source.authorityId !== original.source.authorityId || admission.source.descriptor.harness !== original.source.descriptor.harness || admission.binding.executionCheckout !== original.binding.executionCheckout || admission.binding.workspaceId !== original.binding.workspaceId || admission.binding.worktreeId !== original.binding.worktreeId) throw new Error("Branch source and destination admission domains or execution bindings differ");
     let destination = meta.sessions.find(s => s.sessionId === op.destinationId);
+    let activation: ActivationSnapshot | undefined;
+    if (op.canonicalActivation) {
+      if (source.agentKind !== "assistant" || !isAssistantAgentId(source.agent)) throw new Error("Branch canonical role identity differs from its source");
+      activation = await executionReservation(op.destinationId, { kind: "assistant", role: source.agent });
+      if (!activation.saneExecution || !activation.saneContext?.package) throw new Error("Branch requires a paired canonical activation");
+    }
+    if (destination && (destination.nativeSessionId !== op.nativeId || destination.authorityId !== source.authorityId || destination.harness !== source.harness || destination.cwd !== source.cwd || destination.agent !== source.agent || destination.agentKind !== source.agentKind || destination.model !== source.model || destination.effort !== source.effort || activation && (destination.nativeAgentSelected !== false || canonicalJSON({ saneExecution: destination.saneExecution, saneContext: destination.saneContext }) !== canonicalJSON(activation)))) throw new Error("Branch destination identity or activation differs from its reservation");
     if (!destination) {
-      // Forks inherit startup framework and Session context in native history.
+      // Preserve actual forked history. A reserved activation supersedes its
+      // historical startup role; it does not rewrite the source or the transcript.
       destination = { ...source, sessionId: op.destinationId, nativeSessionId: op.nativeId, lastStatus: "unknown", lastRunId: null, title: `${(displayTitle(source) ?? "Conversation").slice(0, 185)} · Branch` };
+      if (activation) Object.assign(destination, activation, { nativeAgentSelected: false });
       delete destination.attachment; delete destination.hidden;
       meta.sessions.push(destination);
     }
@@ -1280,7 +1319,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         await emit(run, "status", { status: "running", operation: "compact", compactionLifecycle: "requested" });
         await persist();
       } catch (error) { owner.settled = true; finished.resolve(); throw error; }
-      void executeCompact(owner, input.instructions).catch(async () => { failClosed(); await terminate(owner); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
+      void executeCompact(owner, input.instructions).catch(async error => { failClosed(error, "compaction"); await terminate(owner); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
       return { sessionId: session.sessionId, runId: run.runId, operation: projectCompactions(session, [run], events.get(run.runId) ?? [])[0]! };
     } finally { coordinator.releaseAdmission(lease); }
   }
@@ -2063,7 +2102,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const claimed = workerStore.claimDelivery({ id: crypto.randomUUID(), parentSessionId, native: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: session.nativeSessionId! }, run, commandId, createdAt: now, updatedAt: now });
         if (claimed) workerStore.advanceDelivery(claimed.id, "acceptance-unknown");
         return claimed;
-      } catch (error) { failClosed(); throw error; } })();
+      } catch (error) { failClosed(error, "handoff-claim"); throw error; } })();
       if (!d) return;
       if (workerParent) workerStore.update(workerParent.id, { state: "running", continuation: { runId: run.runId, state: "running" }, continuationCancellation: undefined });
       const prompt = workerReportPrompt(d, workerStore.listForDelivery(d));
@@ -2117,7 +2156,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         || (error instanceof DomainError || error instanceof WorkstreamAdapterError) && ["STORAGE_ERROR", "CORRUPT_STORE", "INCOMPLETE_INITIALIZATION"].includes(error.code);
       const refusal = error instanceof DomainError || error instanceof WorkstreamAdapterError || error instanceof PendingInputDomainError
         || error instanceof AppStoreError && error.code === "APP_SOURCE_MISMATCH";
-      if (storage || !refusal) failClosed();
+      if (storage || !refusal) failClosed(error, "handoff-dispatch");
       throw error;
     }
   }
@@ -2875,7 +2914,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const adapter = await branchDomain(source, true), state = adapter?.domain.branchState(adapter.reference(source));
           if (state?.phases.length && !input.replace) throw new Error("Active phase assignments require Replace original");
           op = { id: input.requestId, sourceId: source.sessionId, destinationId: crypto.randomUUID(), ...boundary, selector, replace: input.replace, state: "reserved", createdAt: new Date().toISOString(), ...(input.prompt.trim() ? { firstMessage: input.prompt } : {}) };
+          if ((canonicalContextEnabled || source.saneExecution) && source.agentKind === "assistant" && isAssistantAgentId(source.agent)) op.canonicalActivation = true;
           branches.save(op);
+          if (op.canonicalActivation) await executionReservation(op.destinationId, { kind: "assistant", role: source.agent as import("sane-core/agent-catalog").AssistantAgentId }, async () => {
+            const pair = source.saneExecution
+              ? structuredClone({ saneExecution: source.saneExecution, saneContext: source.saneContext })
+              : await createCanonicalActivation({ kind: "assistant", role: source.agent as import("sane-core/agent-catalog").AssistantAgentId }, activationStores);
+            if (!pair.saneContext?.package) throw new Error("Branch canonical execution requires paired source context");
+            pair.saneContext.package.activation = "upgrade";
+            return pair;
+          });
           const extension = coordinator.extendAdmission(lease, [op.destinationId]);
           if (!extension.ready) throw new WorkstreamAdapterError(extension.code === "capacity" ? 429 : 409, extension.code, extension.reason);
           if (adapter) adapter.domain.reserveBranch(adapter.reference(source), op.id, op.replace, branchContext(op.id));
@@ -2894,7 +2942,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             const run: Run = { runId: crypto.randomUUID(), sessionId: destination.sessionId, cwd: destination.cwd, status: "running", createdAt: new Date().toISOString(), model: destination.model, effort: destination.effort, agent: destination.agent, agentKind: destination.agentKind, nativeAgentSelected: destination.nativeAgentSelected, profileId: sessionProfileId(destination), ...saneContextSnapshot(destination) };
             branches.save({ ...branches.get(op.id)!, firstRunId: run.runId });
             if (sessionHarness(destination) === "opencode") { run.nativeCommandId = `msg_${crypto.randomUUID().replaceAll("-", "")}`; run.nativePhase = "preparing"; }
-            const effectivePrompt = sessionHarness(destination) === "opencode" && isStoredAssistantAgentId(destination.agent) && !destination.nativeAgentSelected ? `[SANE role: ${storedAssistantLabel(destination.agent)} assistant. Follow the SANE ${storedAssistantLabel(destination.agent)} assistant procedures for this conversation.]\n\n${input.prompt}` : input.prompt;
+            const effectivePrompt = sessionHarness(destination) === "opencode" && !destination.saneContext?.package && isStoredAssistantAgentId(destination.agent) && !destination.nativeAgentSelected ? `[SANE role: ${storedAssistantLabel(destination.agent)} assistant. Follow the SANE ${storedAssistantLabel(destination.agent)} assistant procedures for this conversation.]\n\n${input.prompt}` : input.prompt;
             const lifecycle = executePrompt(lease, destination, run, effectivePrompt, true, "user");
             await lifecycle.admission;
           }
@@ -3494,10 +3542,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // Capture EVERY original synchronously before the first source/context await,
   // including journals whose Run metadata is missing. Reads never lazily repin.
   try { for (const item of recoveredInputClaims) originalJournals.capture(item); }
-  catch (error) { failClosed(); throw error; }
+  catch (error) { failClosed(error, "pending-input-initialization"); throw error; }
   const originalJournal = (original: PendingInputStoredItem) => {
     try { return originalJournals.read(original); }
-    catch (error) { failClosed(); throw error instanceof PendingInputStorageError ? error : new PendingInputStorageError("Original App journal authority lost", error); }
+    catch (error) { failClosed(error, "original-journal-authority"); throw error instanceof PendingInputStorageError ? error : new PendingInputStorageError("Original App journal authority lost", error); }
   };
   for (const item of recoveredInputClaims) recoveredInputConversations.add(item.claim!.identity.source.sessionId);
   // Publish capacity/policy barriers before ANY native legacy owner adoption or
@@ -3678,7 +3726,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       "claude-code": () => { throw new HarnessOperationError("Claude process ownership cannot be recovered", 501, "unsupported-harness-operation"); },
       opencode: () => recovering.operation === "compact" ? ocRuns.recoverNativeCompact(owner) : recovering.nativePhase === "preparing" ? ocRuns.finishNative(owner, "failed", "Bridge restarted before native submission") : ocRuns.monitorNative(owner),
     }))
-      .catch(() => { recoveryHealthy = false; failClosed(); }).finally(async () => {
+      .catch(error => { recoveryHealthy = false; failClosed(error, "startup-recovery"); }).finally(async () => {
         // Acquire the exact barrier while still owning. Release and done are not
         // proof that the worker/domain reconciliation has completed.
         try {
@@ -3694,7 +3742,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (!coordinator.endReconciliation(token)) throw new Error("Recovered source reconciliation barrier is no longer current");
           }
         }
-        catch { recoveryHealthy = false; failClosed(); }
+        catch (error) { recoveryHealthy = false; failClosed(error, "startup-recovery-finalize"); }
         finally { finished.resolve(); }
       });
     dispatchTasks.add(recoveryTask);
@@ -3736,19 +3784,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   // Startup-only reconciliation, after run ownership and worker recovery are known.
   // The admission locks and attachment task set also coordinate request/shutdown races.
-  for (const op of branches.list()) void reconcileBranch(op).catch(() => { failClosed(); });
+  for (const op of branches.list()) void reconcileBranch(op).catch(error => { failClosed(error, "branch-reconciliation"); });
   const handoffTimer = setInterval(() => {
     if (closing || storageFailed || handoffTask) return;
-    handoffTask = consumeHandoffs().catch(() => { failClosed(); }).finally(() => { handoffTask = undefined; });
+    handoffTask = consumeHandoffs().catch(error => { failClosed(error, "handoff-consumer"); }).finally(() => { handoffTask = undefined; });
   }, 500);
   const workerOutboxTimer = setInterval(() => {
     if (closing || storageFailed || workerOutboxTask) return;
-    workerOutboxTask = consumeWorkerReports().catch(() => { failClosed(); }).finally(() => { workerOutboxTask = undefined; });
+    workerOutboxTask = consumeWorkerReports().catch(error => { failClosed(error, "worker-outbox"); }).finally(() => { workerOutboxTask = undefined; });
   }, 500);
   let inputRecoveryTask: Promise<void> | undefined;
   const inputRecoveryTimer = setInterval(() => {
     if (closing || storageFailed || inputRecoveryTask || !recoveredInputConversations.size) return;
-    const task = pendingInputRecovery!.refresh().catch(() => { failClosed(); }).finally(() => {
+    const task = pendingInputRecovery!.refresh().catch(error => { failClosed(error, "pending-input-recovery-refresh"); }).finally(() => {
       dispatchTasks.delete(task); inputRecoveryTask = undefined;
     });
     inputRecoveryTask = task; dispatchTasks.add(task);
@@ -3793,7 +3841,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await creationDrain;
     await boundedStartupCleanup(() => scienceDrain);
     await nativeSubagentDrain;
-    try { await workers.drainLaunches(); } catch { failClosed(); }
+    try { await workers.drainLaunches(); } catch (error) { failClosed(error, "shutdown-worker-drain"); }
     await workerOutboxTask;
     await handoffTask;
     await Promise.all(handoffDispatches.values());
@@ -3842,7 +3890,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
     if (retainOwner && !storageFailed) {
       // Best effort only: ownership remains if storage is broken or blocked.
-      await Promise.race([persist().catch(() => { failClosed(); }), Bun.sleep(500)]);
+      await Promise.race([persist().catch(error => { failClosed(error, "shutdown-persist"); }), Bun.sleep(500)]);
     }
     const flushed = await Promise.race([serial.then(() => true), Bun.sleep(500).then(() => false)]);
     if (!flushed) retainOwner = true;

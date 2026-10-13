@@ -9,6 +9,7 @@ export type BranchOperation = {
   state: "reserved" | "creation_unknown" | "confirmed" | "completed" | "failed";
   createdAt: string; error?: string;
   firstMessage?: string; firstRunId?: string;
+  canonicalActivation?: true;
 };
 /** Publish before every irreversible step. Unknown native creation is never replayed. */
 export class BranchStore {
@@ -21,6 +22,7 @@ export class BranchStore {
     for (const op of data.operations) {
       if (!uuid(op.id) || ids.has(op.id) || !uuid(op.sourceId) || !uuid(op.destinationId) || op.sourceId === op.destinationId || typeof op.boundary !== "string" || !op.boundary || typeof op.replace !== "boolean" || !["reserved", "creation_unknown", "confirmed", "completed", "failed"].includes(op.state) || !Number.isFinite(Date.parse(op.createdAt)) || op.nativeId !== undefined && typeof op.nativeId !== "string" || op.before !== undefined && typeof op.before !== "string" || op.error !== undefined && typeof op.error !== "string") throw new Error("Invalid branch operation journal");
       ids.add(op.id);
+      if (op.canonicalActivation !== undefined && op.canonicalActivation !== true) throw new Error("Invalid branch activation reservation");
       if (!/^[a-f0-9]{64}$/.test(op.sourceFingerprint) || ["confirmed", "completed"].includes(op.state) && !op.nativeId) throw new Error("Invalid branch native evidence");
       if (typeof op.selector !== "string" || !/^(run|message):.+$/.test(op.selector)) throw new Error("Invalid branch selector");
       if (op.firstMessage !== undefined && (typeof op.firstMessage !== "string" || !op.firstMessage.trim() || op.firstMessage.length > 100000) || op.firstRunId !== undefined && (!uuid(op.firstRunId) || !op.firstMessage)) throw new Error("Invalid branch first-message reservation");
@@ -34,7 +36,7 @@ export class BranchStore {
   save(operation: BranchOperation) {
     const old = this.records.find(op => op.id === operation.id);
     if (old) {
-      for (const key of ["sourceId", "destinationId", "boundary", "before", "sourceFingerprint", "selector", "replace", "createdAt", "firstMessage"] as const) if (old[key] !== operation[key]) throw new Error("Branch operation identity is immutable");
+      for (const key of ["sourceId", "destinationId", "boundary", "before", "sourceFingerprint", "selector", "replace", "createdAt", "firstMessage", "canonicalActivation"] as const) if (old[key] !== operation[key]) throw new Error("Branch operation identity is immutable");
       if (old.nativeId && old.nativeId !== operation.nativeId) throw new Error("Branch native identity is immutable");
       if (old.firstRunId && old.firstRunId !== operation.firstRunId) throw new Error("Branch first run is immutable");
       const transitions: Record<BranchOperation["state"], BranchOperation["state"][]> = { reserved: ["reserved", "creation_unknown", "failed"], creation_unknown: ["creation_unknown", "confirmed"], confirmed: ["confirmed", "completed"], completed: ["completed"], failed: ["failed"] };

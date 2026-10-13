@@ -14,7 +14,7 @@ Run bun run setup:app first to save config and initialize fresh App state.
   --opencode-registration PATH  Managed-local OpenCode registration file
   --max-concurrent-runs N    1–256 (default: 16)
   --no-build                Validate and serve the existing asset generation
-  --context-delivery MODE   startup (default) or canonical for new SANE activations
+  --context-delivery MODE   canonical (default) or startup for new SANE activations
   --reconcile-interrupted   Explicitly reclaim proven-dead ownership
 CLI overrides saved settings; CLI paths are invocation-relative, saved paths
 are config-relative. No native services are installed or started.

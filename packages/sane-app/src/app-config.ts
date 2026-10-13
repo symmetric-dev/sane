@@ -98,7 +98,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   if (server.port !== undefined) integer(server.port, 0, 65535, "port");
   if (raw.maxConcurrentRuns !== undefined) integer(raw.maxConcurrentRuns, 1, 256, "concurrency");
   if (raw.contextDelivery !== undefined && raw.contextDelivery !== "startup" && raw.contextDelivery !== "canonical") invalid("Invalid contextDelivery");
-  const contextDelivery = choose("contextDelivery", raw.contextDelivery, "startup");
+  const contextDelivery = choose("contextDelivery", raw.contextDelivery, "canonical");
   if (contextDelivery !== "startup" && contextDelivery !== "canonical") invalid("Invalid contextDelivery");
   if (server.allowRemote !== undefined && typeof server.allowRemote !== "boolean") invalid("Invalid allowRemote");
   if (server.publicOrigin !== undefined && server.publicOrigin !== null) text(server.publicOrigin, "publicOrigin");

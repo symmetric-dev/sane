@@ -36,8 +36,10 @@ function validate(input: Configuration, directory: string) {
  * registry snapshot/tool inventory. Session permissions remain genuine user
  * overrides and are never rewritten by a context hook.
  * Storage is plugin-private durable binding state, not a published agent file.
- * Ready records restore at setup before native continuation; pending records
- * block until idle configure retries the idempotent selection/readback protocol.
+ * Ready IDs restore at setup; configure/prompt admission restores precedence
+ * before inventory. Pending records block until idle configure retries the
+ * idempotent selection/readback protocol. A bare native continuation after reload
+ * still fails closed if it bypasses those early boundaries and readback differs.
  * OC 2.0.26: agent.update creates IDs; native subagent resolves hidden IDs and
  * establishes parentID. Native execution owns child cancellation and depth limits. */
 export async function registerExecutionOperations(ctx: Context) {
@@ -64,7 +66,7 @@ export async function registerExecutionOperations(ctx: Context) {
       after = page.next
     } while (after)
   }
-  const agents = supported ? await ctx.agent.transform(editor => {
+  const defineAgents: Parameters<Context["agent"]["transform"]>[0] = editor => {
     for (const configuration of active.values()) {
       const definitions = [{ id: configuration.executionAgent, description: "App-managed execution", permissions: configuration.permissions, model: configuration.model, mode: "primary" as const },
         ...configuration.nativeChildren.map(child => ({ ...child, mode: "subagent" as const }))]
@@ -75,18 +77,45 @@ export async function registerExecutionOperations(ctx: Context) {
           draft.mode = definition.mode
           draft.hidden = true
           draft.system = ""
-          draft.permissions = structuredClone(definition.permissions)
+          // Native BrowserConnection normally appends this restriction after
+          // setup. Late-created agents must retain it too; browser connections
+          // grant access using genuine session overrides.
+          draft.permissions = [...structuredClone(definition.permissions), { action: "browser", resource: "*", effect: "deny" }]
           draft.model = definition.model as typeof draft.model
         })
       }
     }
-  }) : undefined
+  }
+  // ConfigAgentPlugin is a native *post* plugin in OC 2.0.26: setup-time
+  // registrations run before it, regardless of the configured plugin order.
+  // Register at the configure boundary (after location activation), so canonical
+  // agents are created after global config has been applied to ordinary agents.
+  // Restore IDs immediately for native session selection. Re-register once at
+  // configure or prompt admission, after native post plugins, BEFORE inventory.
+  // Never repair policy from the late context hook: inventory is already captured.
+  let agents = supported ? await ctx.agent.transform(defineAgents) : undefined
+  let agentsPromoted = false
+  let installingAgents: Promise<void> | undefined
+  const ensureAgents = async () => {
+    if (agentsPromoted) return
+    if (!installingAgents) installingAgents = (async () => {
+      await agents?.dispose()
+      agents = await ctx.agent.transform(defineAgents)
+      agentsPromoted = true
+    })().finally(() => { installingAgents = undefined })
+    await installingAgents
+  }
 
   const verifyDefinitions = async (input: Configuration) => {
     for (const definition of [{ id: input.executionAgent, mode: "primary", permissions: input.permissions, model: input.model }, ...input.nativeChildren.map(child => ({ ...child, mode: "subagent" }))]) {
       const actual = (await ctx.agent.get({ agentID: definition.id })).data
-      if (actual.system !== "" || actual.mode !== definition.mode || !actual.hidden || !executionPermissionsMatch(actual.permissions, definition.permissions)
-        || !executionModelMatches(actual.model, definition.model)) throw new Error("Canonical in-memory agent verification failed")
+      if (!executionPermissionsMatch(actual.permissions, definition.permissions)) {
+        // Do not accept arbitrary native suffixes: configuration rules appended
+        // after this transform can override the canonical role's denies.
+        throw new Error("Canonical in-memory agent verification failed: permissions differ; OpenCode configuration permissions may be appended after the canonical policy")
+      }
+      if (actual.system !== "" || actual.mode !== definition.mode || !actual.hidden
+        || !executionModelMatches(actual.model, definition.model)) throw new Error("Canonical in-memory agent verification failed: system, mode, visibility, or model differs")
     }
   }
   const verifySelection = async (input: Configuration) => {
@@ -119,8 +148,10 @@ export async function registerExecutionOperations(ctx: Context) {
       const input = configuration as Configuration
       if (!supported) throw new Error("Canonical execution requires OpenCode 2.0.26+ agent transforms and durable plugin storage")
       validate(input, ctx.location.directory)
-      if (configuring.has(input.sessionID)) throw new Error("Canonical execution configuration already in progress")
       call.signal.throwIfAborted()
+      await ensureAgents()
+      call.signal.throwIfAborted()
+      if (configuring.has(input.sessionID)) throw new Error("Canonical execution configuration already in progress")
       if (readOnly) {
         const binding = bindings.get(input.sessionID)
         if (binding?.state !== "ready" || !equal(binding.configuration, input)) throw new Error("Canonical execution requires idle reconfiguration before queued dispatch")
@@ -171,6 +202,14 @@ export async function registerExecutionOperations(ctx: Context) {
       } finally { configuring.delete(input.sessionID) }
     },
   })
+  const admission = await ctx.session.hook("prompt", async event => {
+    // Prompt hooks run after location activation and before agent selection.
+    // This also restores precedence for durable bindings after plugin reload.
+    if (!supported || !bindings.size) return
+    const binding = bindings.get(event.sessionID)
+    if (binding?.state === "pending" || configuring.has(event.sessionID)) throw new Error("Canonical execution configuration is incomplete; idle configure can retry")
+    await ensureAgents()
+  })
   const hook = await ctx.session.hook("context", async event => {
     const binding = bindings.get(event.sessionID)
     if (binding) {
@@ -216,7 +255,7 @@ export async function registerExecutionOperations(ctx: Context) {
     event.system.push({ type: "text", text: definition.system })
     if (definition.children.length) event.system.push({ type: "text", text: delegationText(definition.children, root) })
   })
-  return async () => { bindings.clear(); active.clear(); await hook.dispose(); await registration.dispose(); await agents?.dispose() }
+  return async () => { bindings.clear(); active.clear(); await admission.dispose(); await hook.dispose(); await registration.dispose(); await agents?.dispose() }
 }
 
 function delegationText(ids: string[], configuration: Configuration) {

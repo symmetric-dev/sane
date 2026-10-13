@@ -62,7 +62,7 @@ const RETIRED_ROLE_SKILL_NAMES = [
 
 export const PLUGIN_SRC_FILES: readonly string[] = ["cli-arguments.ts", "native-caller.ts", "native-opencode.ts", "native-claude.ts", "native-claude-hook.ts", "native-claude-mcp.ts", "native-configuration.ts", "native-handoff.ts", "native-worker-contract.ts", "native-worker.ts"]
 
-export const PLUGIN_CORE_SRC_FILES: readonly string[] = ["agent-catalog.ts", "artifact-lock.ts", "bootstrap-registry.ts", "bootstrap-validation.ts", "confined-lifecycle-filesystem.ts", "contracts.ts", "document-catalog.ts", "errors.ts", "execution-report-validation.ts", "handoff.ts", "job-policy.ts", "lifecycle-filesystem.ts", "lifecycle.ts", "native-source.ts", "provision.ts", "repository.ts", "schema.ts", "schema-upgrade.ts", "server.ts", "slots.ts", "validation.ts", "workstream-type.ts"]
+export const PLUGIN_CORE_SRC_FILES: readonly string[] = ["agent-catalog.ts", "artifact-lock.ts", "bootstrap-registry.ts", "bootstrap-validation.ts", "confined-lifecycle-filesystem.ts", "contracts.ts", "document-catalog.ts", "errors.ts", "execution-report-validation.ts", "handoff.ts", "job-policy.ts", "lifecycle-filesystem.ts", "lifecycle.ts", "native-source.ts", "provision.ts", "repository.ts", "repository-reader.ts", "repository-reader-worker.ts", "schema.ts", "schema-upgrade.ts", "server.ts", "slots.ts", "validation.ts", "workstream-type.ts"]
 
 export const PLUGIN_FILENAMES = [
   "sane/index.ts",
@@ -702,7 +702,7 @@ export async function installSaneAgentContextPackages(
 }
 
 export const USAGE =
-  "Usage: sane install context-packages [--dry-run] [--overwrite] [--model-config <path> | --only <global-support-skill> | --runtime-only [--registration-file <path>] [--app-connection-file <path>] [--binding-root <path>] [--bun-executable <path>]]"
+  "Usage: sane install context-packages [--dry-run] [--overwrite] [--runtime-only (default) | --legacy-assets | --model-config <path> | --only <global-support-skill>] [--registration-file <path>] [--app-connection-file <path>] [--binding-root <path>] [--bun-executable <path>]"
 
 export function parseCliArguments(args: string[]): AgentContextPackageInstallationOptions & { dryRun: boolean; overwrite: boolean } {
   let dryRun = false
@@ -722,7 +722,11 @@ export function parseCliArguments(args: string[]): AgentContextPackageInstallati
     } else if (parseOptions && argument === "--overwrite") {
       overwrite = true
     } else if (parseOptions && argument === "--runtime-only") {
+      if (runtime.runtimeOnly === false) throw new AgentContextPackageInstallationError("--runtime-only cannot be combined with --legacy-assets.")
       runtime.runtimeOnly = true
+    } else if (parseOptions && argument === "--legacy-assets") {
+      if (runtime.runtimeOnly === true) throw new AgentContextPackageInstallationError("--legacy-assets cannot be combined with --runtime-only.")
+      runtime.runtimeOnly = false
     } else if (parseOptions && ["--registration-file", "--app-connection-file", "--binding-root", "--bun-executable"].includes(argument)) {
       const key = { "--registration-file": "registrationFile", "--app-connection-file": "appConnectionFile", "--binding-root": "bindingRoot", "--bun-executable": "bunExecutable" }[argument] as "registrationFile" | "appConnectionFile" | "bindingRoot" | "bunExecutable"
       const value = args[++index]
@@ -758,7 +762,7 @@ export function parseCliArguments(args: string[]): AgentContextPackageInstallati
   if (onlySkill !== undefined && modelConfigPath !== undefined) {
     throw new AgentContextPackageInstallationError("--only cannot be combined with --model-config.")
   }
-  const options = { dryRun, overwrite, ...runtime, ...(modelConfigPath === undefined ? {} : { modelConfigPath }), ...(onlySkill === undefined ? {} : { onlySkill }) }
+  const options = { dryRun, overwrite, ...runtime, runtimeOnly: runtime.runtimeOnly ?? (modelConfigPath === undefined && onlySkill === undefined), ...(modelConfigPath === undefined ? {} : { modelConfigPath }), ...(onlySkill === undefined ? {} : { onlySkill }) }
   validateInstallationOptions(options)
   return options
 }

@@ -11,6 +11,56 @@ import { prepareUserInput, type PreparedUserInput } from "./user-input-preparati
 import type { Session } from "./history";
 
 const TEMP = "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode";
+const canonicalPlanning: Partial<Session> = {
+  profileId: "template:planning", agent: "planning", agentKind: "assistant", nativeAgentSelected: true,
+  saneExecution: { schema: 1, revision: "a".repeat(64) },
+  saneContext: { version: 1, framework: "framework", package: { schema: 1, revision: "b".repeat(64), delivery: "standing-native-role" } },
+};
+for (const harness of ["claude-code", "opencode"] as const) test(`${harness} canonical queue pins preserve paired refs and immutable exact comparisons`, async () => {
+  const f = await pendingFixture(harness, {}, canonicalPlanning);
+  const raw = JSON.parse(JSON.stringify(f.snapshot)), decoded = decodePendingInputSnapshot(raw);
+  expect(decoded).toEqual(f.snapshot);
+  expect(Object.isFrozen(decoded.prepared.configuration.saneExecution)).toBe(true);
+  expect(Object.isFrozen(decoded.pins.configuration.saneContext!.package)).toBe(true);
+  raw.pins.configuration.saneContext!.package!.revision = "c".repeat(64);
+  expect(decoded.pins.configuration.saneContext!.package!.revision).toBe("b".repeat(64));
+  expect(() => decodePendingInputSnapshot(raw)).toThrow(PendingInputCodecError);
+  for (const ref of ["saneExecution", "saneContext"] as const) {
+    const changed = structuredClone(f.snapshot) as any;
+    const value = ref === "saneExecution" ? changed.prepared.configuration.saneExecution : changed.prepared.configuration.saneContext.package;
+    value.revision = "c".repeat(64);
+    expect(() => decodePendingInputSnapshot(changed)).toThrow("prior/effective configuration mismatch");
+  }
+});
+test("context-package-only legacy activation remains queue compatible", async () => {
+  const legacy = { ...canonicalPlanning }; delete legacy.saneExecution;
+  const f = await pendingFixture("claude-code", {}, legacy);
+  expect(decodePendingInputSnapshot(f.snapshot)).toEqual(f.snapshot);
+});
+const malformedCanonical: Record<string, (c: any) => void> = {
+  executionUnknown: c => c.saneExecution.extra = true,
+  executionSchema: c => c.saneExecution.schema = 2,
+  executionRevision: c => c.saneExecution.revision = "not-a-revision",
+  executionMissing: c => delete c.saneExecution.revision,
+  executionArray: c => c.saneExecution = [],
+  unpairedExecution: c => delete c.saneContext.package,
+  missingIdentity: c => delete c.agent,
+  packageUnknown: c => c.saneContext.package.extra = true,
+  packageSchema: c => c.saneContext.package.schema = 2,
+  packageRevision: c => c.saneContext.package.revision = "not-a-revision",
+  packageDelivery: c => c.saneContext.package.delivery = "inline",
+  packageActivation: c => c.saneContext.package.activation = "unknown",
+  packageMissing: c => delete c.saneContext.package.delivery,
+  packageArray: c => c.saneContext.package = [],
+};
+for (const [name, mutate] of Object.entries(malformedCanonical)) test(`strict canonical queue refs reject ${name}`, async () => {
+  const f = await pendingFixture("claude-code", {}, canonicalPlanning), raw = structuredClone(f.snapshot) as any;
+  // Mutate every copy together so rejection proves schema/pair validation,
+  // rather than merely detecting unequal prior/launch pins.
+  for (const c of [raw.prepared.configuration, raw.prepared.expectedPrior.configuration, raw.pins.configuration, raw.pins.launch]) mutate(c);
+  expect(() => decodePreparedUserInput(raw.prepared)).toThrow(PendingInputCodecError);
+  expect(() => decodePendingInputPins(raw.pins)).toThrow(PendingInputCodecError);
+});
 test("actual prepared resume roundtrips with omission and immutable nested clones", async () => {
   const f = await pendingFixture("opencode", {}, { model: "provider/model", effort: "native thinking", agent: "engineering", agentKind: "assistant", nativeAgentSelected: true, saneContext: { version: 1, framework: "framework" } });
   const raw = JSON.parse(JSON.stringify(f.snapshot.prepared)), decoded = decodePreparedUserInput(raw);
