@@ -1,4 +1,4 @@
-import { isWorkerAgentId, workerJobsProblem } from "sane-core/agent-catalog";
+import { isWorkerAgentId, workerJobsProblem, type WorkerAgentId } from "sane-core/agent-catalog";
 import type { ConversationRef } from "sane-core/contracts";
 import { resolveWorkerProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { WorkerStore, workerSelection, type WorkerSelection } from "./worker-store";
@@ -8,7 +8,7 @@ import { synchronousDispatchHook } from "./dispatch-evidence";
 import { PendingInputStorageError } from "./pending-input-contract";
 
 /** holdsExecution: the parent currently holds its workstream's execution slot. */
-export type WorkerParent = { sessionId: string; runId: string; native: ConversationRef; checkout: string; profileId?: string; holdsExecution: boolean; scoutOnly?: boolean };
+export type WorkerParent = { sessionId: string; runId: string; native: ConversationRef; checkout: string; profileId?: string; holdsExecution: boolean; scoutOnly?: boolean; allowedWorkerRoles?: readonly WorkerAgentId[] };
 export type WorkerExecutor = {
   parent(caller: WorkerCaller, starting: boolean): Promise<WorkerParent>;
   assertCurrentParent(parent: WorkerParent): void;
@@ -73,6 +73,7 @@ export class WorkerService {
     }
     parent = await this.executor.parent(caller, true);
     if (parent.scoutOnly && input.worker !== "scout") error("worker-role-denied", "Scout Crew may delegate only App-managed scout workers");
+    if (parent.allowedWorkerRoles && !parent.allowedWorkerRoles.includes(input.worker)) error("worker-role-denied", `Pinned parent policy permits only App-managed ${parent.allowedWorkerRoles.join(" or ")} workers`);
     const concurrent = this.store.getByRequest(parent.sessionId, input.requestId);
     if (concurrent) {
       if (JSON.stringify(concurrent.input) !== JSON.stringify(payload) || concurrent.parent.runId !== parent.runId || concurrent.parent.toolCallId !== caller.toolCallId || JSON.stringify(concurrent.parent.invocation?.opencode) !== JSON.stringify(caller.invocation?.opencode)) error("worker-request-conflict", "Request ID already bound to another invocation/payload");

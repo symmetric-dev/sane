@@ -71,7 +71,7 @@ import { workerTerminationUncertainty } from "./worker-recovery";
 import { workerDeliveryEvidence, workerReportPrompt } from "./worker-outbox";
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery } from "./worker-contract";
-import { managedScoutCrew, scoutCrewWaiting } from "./scout-crew-lifecycle";
+import { managedWorkerCoordination, managedWorkerRoles, managedWorkerWaiting } from "./scout-crew-lifecycle";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
 import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneContextText, saneFrameworkMessageId, saneSessionContext, saneSessionText, sha256, workerAssignment } from "./agent-launch";
 import { ContextPackageStore } from "./context-package-store";
@@ -1882,7 +1882,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const domain = (await router!.forAdmission(a))!.domain, workstream = domain.resolveContext(native).workstream;
       const holdsExecution = !!workstream && domain.getWorkstreamStatus(workstream.id).activePhases.some(p => equivalentSlots(p.phase, "execution") && p.ref.harness === native.harness && p.ref.authorityId === native.authorityId && p.ref.nativeId === native.nativeId);
       const parent: WorkerParent = { sessionId: session.sessionId, runId: run.runId, native, checkout, profileId: sessionProfileId(session), holdsExecution };
-      if (session.saneExecution) parent.scoutOnly = managedScoutCrew((await executionPackages.load(session.saneExecution)).policy);
+      if (session.saneExecution) parent.allowedWorkerRoles = managedWorkerRoles((await executionPackages.load(session.saneExecution)).policy);
       if (continuation) {
         if (starting) await emit(run, "context", { type: "native-worker-continuation", ...continuation.evidence });
         await continuation.refresh();
@@ -1925,7 +1925,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!w.launch.identity) throw new Error("Worker activation requires an identity");
         const pinnedContext = await executionReservation(w.sessionId, w.launch.identity, () => prepareSaneContext(w.launch.identity));
         const policy = pinnedContext.saneExecution ? (await executionPackages.load(pinnedContext.saneExecution)).policy : undefined;
-        if (managedScoutCrew(policy)) workerStore.update(w.id, { coordination: "scouts" });
+        const coordination = managedWorkerCoordination(policy);
+        if (coordination) workerStore.update(w.id, { coordination });
         if (policy && policy.spec.name !== `sane/${w.launch.identity?.kind}/${w.launch.identity?.role}`) throw new Error("Reserved worker execution policy role changed");
         let nativeLaunch = harness === "opencode" ? await oc.resolveLaunch(w.checkout, { agent: policy ? "build" : w.launch.agent, model: w.launch.model ?? (policy?.model ? `${policy.model.providerID}/${policy.model.id}` : undefined), effort: w.launch.effort ?? (!w.launch.model ? policy?.model?.variant : undefined) }) : undefined;
         if (harness === "claude-code" && !policy) await claudeAgentSettings(claudeRoot, w.launch.identity!);
@@ -1980,7 +1981,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const candidates = meta.runs.filter(r => r.sessionId === w.sessionId && r.operation !== "compact" && (!continuationDeliveries.some(d => d.run.runId === r.runId) || continuationIds.has(r.runId)));
       // Coordinated idle turns are checkpoints, not results. The latest accepted
       // continuation supersedes them; durable run/outbox evidence survives restart.
-      const run = w.coordination === "scouts" ? candidates.at(-1) : candidates.find(r => !results.some(result => result.runId === r.runId)) ?? candidates.at(-1);
+      const run = w.coordination ? candidates.at(-1) : candidates.find(r => !results.some(result => result.runId === r.runId)) ?? candidates.at(-1);
       if (run && results.some(result => result.runId === run.runId)) {
         const skipped = continuationDeliveries.find(d => d.run.runId === w.continuation?.runId && !continuationIds.has(d.run.runId));
         return skipped && w.state !== results.at(-1)!.outcome.status ? { state: results.at(-1)!.outcome.status, continuation: { runId: skipped.run.runId, state: "failed", error: "Continuation was not submitted; child notifications remain pending" } } : {};
@@ -2016,9 +2017,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (uncertain || retainOwner) return { ...(continuation ? { continuation: { ...continuation, state: "uncertain" as const, error: "Execution ownership or termination unconfirmed" } } : {}), state: "uncertain", error: uncertain && w.launch.harness === "claude-code" ? "CLI termination is unconfirmed. Verify the previous CLI process has stopped, then restart with --reconcile-interrupted to persist confirmation and release this reservation." : "Execution ownership or termination remains unconfirmed; reconcile the original native run without resubmitting." };
       if (run.status !== "running") {
         if (owners.get(w.sessionId)?.settled === false) return {}; // Finish log/metadata publication before recording an outcome.
-        if (w.coordination === "scouts" && !w.outcome && run.status === "completed") {
-          if (w.cancelRequestedAt) return { state: "interrupted", error: undefined, outcome: { status: "interrupted", at: w.cancelRequestedAt, summary: "Scout Crew cancelled while awaiting findings", log: { sessionId: w.sessionId, runId: run.runId } } };
-          if (scoutCrewWaiting(workerStore.listMatching(child => child.parent.sessionId === w.sessionId))) return { state: "waiting", ...(continuation ? { continuation } : {}) };
+        if (w.coordination && !w.outcome && run.status === "completed") {
+          if (w.cancelRequestedAt) return { state: "interrupted", error: undefined, outcome: { status: "interrupted", at: w.cancelRequestedAt, summary: `${w.coordination === "scouts" ? "Scout Crew" : "Implementer"} cancelled while awaiting findings`, log: { sessionId: w.sessionId, runId: run.runId } } };
+          if (managedWorkerWaiting(workerStore.listMatching(child => child.parent.sessionId === w.sessionId))) return { state: "waiting", ...(continuation ? { continuation } : {}) };
         }
         // The log is authoritative; transport the full final response, not a UI preview.
         return { ...(continuation ? { continuation } : {}), state: run.status, error: undefined, outcome: { status: run.status, at: run.endedAt!, summary: workerOutput(records) ?? String((records.filter(e => e.kind === "status").at(-1)?.data as any)?.reason ?? run.status), log: { sessionId: w.sessionId, runId: run.runId } } };
@@ -2033,12 +2034,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
     beforeCancel(selected) {
       const captured = new Map(selected.map(w => [w.sessionId, pendingInputControls.stop(w.sessionId)]));
-      const idleCrews = new Set(selected.filter(w => w.coordination === "scouts" && !w.outcome && !captured.get(w.sessionId)
+      const idleParents = new Set(selected.filter(w => w.coordination && !w.outcome && !captured.get(w.sessionId)
         && !workerStore.hasActiveDelivery(w.sessionId)
         && meta.runs.filter(r => r.sessionId === w.sessionId && r.operation !== "compact").at(-1)?.status === "completed").map(w => w.sessionId));
       return async w => {
         const owner = captured.get(w.sessionId);
-        if (!owner) { if (idleCrews.has(w.sessionId) || !w.runId && admitting.has(w.sessionId)) return; throw new Error("No active App owner; termination requires native reconciliation"); }
+        if (!owner) { if (idleParents.has(w.sessionId) || !w.runId && admitting.has(w.sessionId)) return; throw new Error("No active App owner; termination requires native reconciliation"); }
         await cancelOwner(owner);
       };
     },
@@ -2091,10 +2092,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const a = admissions.get(parentSessionId);
     if (!a || a.state !== "ready" || a.binding.domain.mode !== "repository" || session.attachment || !session.nativeSessionId || !session.lastRunId) return problem("Report recipient must remain an enrolled App-owned conversation with a known native run");
     const pending = workerStore.listMatching(w => w.parent.sessionId === parentSessionId).filter(w => workerResults(w).some(r => r.notification.state === "pending"));
-    const crew = workerStore.getBySession(parentSessionId);
-    if (crew?.coordination === "scouts") {
-      if (crew.outcome) return problem("Scout Crew already ended; child outcomes retained for inspection");
-      if (workerStore.listMatching(w => w.parent.sessionId === parentSessionId).some(w => !w.outcome)) return problem("Scout Crew is awaiting the remaining child outcomes");
+    const coordinatedParent = workerStore.getBySession(parentSessionId);
+    if (coordinatedParent?.coordination) {
+      if (coordinatedParent.outcome) return problem("Coordinating worker already ended; child outcomes retained for inspection");
+      if (workerStore.listMatching(w => w.parent.sessionId === parentSessionId).some(w => !w.outcome)) return problem("Coordinating worker is awaiting the remaining child outcomes");
     }
     if (pending.some(w => w.parent.native.nativeId !== a.nativeId || w.parent.native.authorityId !== a.source.authorityId || w.parent.native.harness !== a.source.descriptor.harness)) return problem("Report recipient native identity changed; reconcile the original parent binding");
     const snapshot = dispatchSnapshot(session);

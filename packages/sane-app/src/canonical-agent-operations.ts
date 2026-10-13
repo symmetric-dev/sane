@@ -2,7 +2,7 @@ import { ccAgentName, parseSaneAgent, type SaneAgentSpec } from "../../sane-cli/
 import { injectAgentModel, type AgentModelOverride } from "../../sane-cli/src/agent-model-config";
 import { WORKER_AGENT_IDS } from "sane-core/agent-catalog";
 import { createHash } from "node:crypto";
-import { managedScoutCrew } from "./scout-crew-lifecycle";
+import { managedWorkerRoles } from "./scout-crew-lifecycle";
 
 export type OperationPermission = { action: string; resource: string; effect: "allow" | "ask" | "deny" };
 export type OperationModel = { providerID: string; id: string; variant?: string };
@@ -119,6 +119,8 @@ export function openCodeExecutionConfiguration(input: {
   const prefix = createHash("sha256").update(JSON.stringify([input.sessionID, input.directory, children])).digest("hex");
   const delegation = Object.fromEntries(children.map(child => [child.spec.name, `sane-private-${prefix}-${child.spec.name.split("/").at(-1)}`]));
   const rewritePermissions = (rules: OperationPermission[]) => rules.flatMap(rule => {
+    // Translate at launch so existing immutable policies also deny the native tool.
+    if (rule.action === "ask") return [{ ...rule, action: "question" }];
     if (rule.action !== "subagent" || !rule.resource.startsWith("sane/worker/")) return [{ ...rule }];
     const aliases = Object.entries(delegation).filter(([id]) => matches(rule.resource, id)).map(([, id]) => ({ ...rule, resource: id }));
     return rule.effect === "deny" ? [{ ...rule }, ...aliases] : aliases;
@@ -254,7 +256,7 @@ export function claudeExecutionConfiguration(input: {
   agents[agent] = { description: "App-managed execution", prompt: "" };
   const { allow, ask, deny } = policy.spec.ccPermissions;
   const permissions = { allow: [...new Set([...allow, ...ask])], ...(deny.length ? { deny: [...deny] } : {}) };
-  if (managedScoutCrew(policy)) {
+  if (managedWorkerRoles(policy)) {
     permissions.deny = [...new Set([...(permissions.deny ?? []), "Agent", "Task"])];
     permissions.allow.push(...["start", "status", "wait", "acknowledge", "cancel", "cancel_all"].map(operation => `mcp__sane__sane_worker_${operation}`));
   }

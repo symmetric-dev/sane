@@ -50,7 +50,9 @@ export function settleCommandInterval(messages: readonly NativeMessage[], comman
     if (message.type === "user" && !sealed) return;
     if (message.type === "idle" && !["succeeded", "failed", "interrupted"].includes(message.outcome ?? "")) return;
     if (!["user", "assistant", "synthetic", "compaction", "idle", "system", "model-switched", "tool"].includes(message.type)) return;
-    if (["assistant", "tool", "compaction"].includes(message.type) && message.time.completed === undefined) return;
+    // V2 compaction messages expose terminal status, not time.completed.
+    // Their status is checked below within the sealed, idle interval.
+    if (["assistant", "tool"].includes(message.type) && message.time.completed === undefined) return;
     if (message.type === "compaction" && !["completed", "failed", "skipped"].includes(message.status ?? "")) return;
     if (message.type === "tool" && !["completed", "failed", "error"].includes(message.status ?? "")) return;
     if (message.content !== undefined && (!Array.isArray(message.content) || message.content.some(part => !part || typeof part.type !== "string"
