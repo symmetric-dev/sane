@@ -43,13 +43,24 @@ function Viewer({ root }: { root: WorkerRecord }) {
         const currentWorker = parents.workers.find(record => record.id === selected.id) ?? selected;
         const childHarness = getHarnessDescriptor(selected.launch.harness)?.nativeHarness;
         const nativeSessionId = childHarness && currentWorker.child?.harness === childHarness ? currentWorker.child.nativeId : undefined;
-        for (const meta of metadata.sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+        const ordered = metadata.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        const latestId = ordered.at(-1)?.id;
+        for (const meta of ordered) {
           meta.harness = selected.launch.harness;
           // Only the admitted child's identity (or explicit run metadata) scopes
           // CLI evidence. Never substitute the parent's native conversation.
           if (nativeSessionId) meta.nativeSessionId = nativeSessionId;
           const previous = map.get(meta.id);
           const identityChanged = previous && nativeSessionId && previous.nativeSessionId !== nativeSessionId;
+          // Settled runs (terminal, metadata-identical, not the latest) can
+          // never grow events; the map already holds them, so skip the read.
+          const settled = !identityChanged && !!previous && meta.id !== latestId
+            && (previous.status === "completed" || previous.status === "failed" || previous.status === "interrupted")
+            && meta.status === previous.status
+            && meta.harness === previous.harness && (meta.nativeSessionId ?? undefined) === (previous.nativeSessionId ?? undefined)
+            && (Object.keys(meta) as (keyof typeof meta)[]).every(key => key === "status" || key === "harness" || key === "nativeSessionId"
+              || (key === "compact" ? JSON.stringify(meta[key]) === JSON.stringify(previous[key]) : meta[key] === previous[key]));
+          if (settled) continue;
           const run = !previous || identityChanged ? createRun(meta) : previous;
           if (previous && identityChanged) {
             // If admission identity arrived after the first read, replay the
@@ -68,7 +79,8 @@ function Viewer({ root }: { root: WorkerRecord }) {
         const compactions = nativeSessionId ? compactionsFor({ id: selected.sessionId, harness: selected.launch.harness, nativeSessionId }, runs) : [];
         if (current) setView({ sessionId: selected.sessionId, runs, messages: runs.flatMap(messagesForRun), compactions, error: "", loading: false });
       } catch (e) { if (current) setView(v => ({ ...v, loading: false, error: e instanceof Error ? e.message : "Worker transcript unavailable" })); }
-      finally { if (current) timer = setTimeout(() => void poll(), 1500); }
+      // A static read-only transcript (all runs terminal) backs off to 15s.
+      finally { if (current) timer = setTimeout(() => void poll(), map.size > 0 && [...map.values()].every(run => !active(run.status)) ? 15000 : 1500); }
     };
     void poll();
     return () => { current = false; controller.abort(); clearTimeout(timer); };

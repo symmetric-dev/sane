@@ -131,6 +131,8 @@ export class ChatStore {
   private pendingInputStorageError = "";
   private pendingInputConfig?: Config;
   private pendingInputConfigEpoch = 0;
+  private pendingInputVerifiedKey = "";
+  private pendingInputVerifiedAt = 0;
   private pendingInputOrigin = () => typeof location === "undefined" ? "local" : location.origin;
   private pendingInputSource = (id = this.state.selected) => {
     const c = this.state.conversations.find(c => c.id === id);
@@ -157,6 +159,15 @@ export class ChatStore {
   /** Boot config is a namespace selection, not permission to replay into whatever
    * App later occupies the same origin. Never switch the original ledger here. */
   private async verifyPendingInputContext(namespace: string, fence: string): Promise<boolean> {
+    // Consecutive verifications for unchanged state share one config read.
+    // refreshPendingInputs verifies before and after its queue read, which
+    // would otherwise issue two identical config requests back to back.
+    const cacheKey = `${namespace}|${fence}`;
+    if (cacheKey === this.pendingInputVerifiedKey && Date.now() - this.pendingInputVerifiedAt < 5000) {
+      // Skip only the network read. The synchronous fence check still runs:
+      // state that moved on since the cached verification must not publish.
+      return fence === this.pendingInputFence() && namespace === this.pendingInputKey();
+    }
     try {
       const config = await this.client.config();
       if (fence !== this.pendingInputFence() || namespace !== this.pendingInputKey()) return false;
@@ -164,8 +175,10 @@ export class ChatStore {
         || pendingInputLedgerKey(this.pendingInputOrigin(), config.storeId) !== namespace
         || !isPendingInputCapability(config.pendingInputCapability)) throw new Error("The authenticated App store changed or queue support is unavailable. Original operations remain unconfirmed; nothing was redirected.");
       this.pendingInputContextFailure = "";
+      this.pendingInputVerifiedKey = cacheKey; this.pendingInputVerifiedAt = Date.now();
       return true;
     } catch (cause) {
+      if (cacheKey === this.pendingInputVerifiedKey) this.pendingInputVerifiedKey = "";
       if (fence === this.pendingInputFence() && namespace === this.pendingInputKey()) {
         this.invalidatePendingInputContext(namespace, cause instanceof Error ? cause.message : "Fresh App store identification is unavailable. Nothing was sent.");
       }
@@ -173,6 +186,7 @@ export class ChatStore {
     }
   }
   private invalidatePendingInputContext(namespace: string, error: string) {
+    this.pendingInputVerifiedKey = "";
     this.pendingInputContextFailure = namespace; this.pendingInputFresh = "";
     for (const [id, view] of this.pendingInputViews) if (view.presentation.chainLocked) this.pendingInputConfirmedChains.add(id);
     this.pendingInputViews.clear();
@@ -1217,7 +1231,7 @@ export class ChatStore {
       if (current() && !this.expired(error)) notificationStore.setFeedError("storage-error");
     } finally {
       if (this.notificationController === controller) this.notificationController = undefined;
-      if (current()) this.notificationTimer = setTimeout(() => { this.notificationTimer = undefined; void this.pollNotifications(); }, healthy ? 1500 : 5000);
+      if (current()) this.notificationTimer = setTimeout(() => { this.notificationTimer = undefined; void this.pollNotifications(); }, !healthy ? 5000 : this.pollBusy() ? 1500 : 15000);
     }
   }
   private loginRequired() {
@@ -1488,6 +1502,11 @@ export class ChatStore {
       this.scienceTimer = setTimeout(() => { this.scienceTimer = undefined; this.sciencePolling(); }, pending ? 3000 : 15000);
     });
   }
+  /** Live sessions (running work or pending submission state) poll fast; static opened sessions back off. */
+  private pollBusy() {
+    return this.state.loading || this.state.sending || !!this.state.pendingTurn || this.state.actionBusy
+      || this.state.runs.some(run => run.status === "running" || run.status === "starting");
+  }
   private async poll() {
     if (this.state.phase !== "ready") return;
     this.pendingInputPolling();
@@ -1553,11 +1572,22 @@ export class ChatStore {
         if (!current()) return;
         controller.signal.throwIfAborted();
         const ordered = [...metadata].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        const latestId = ordered.at(-1)?.id;
         for (const meta of ordered) {
           if (meta.conversationId !== selected) throw new Error("Run identity does not match the selected conversation.");
           meta.harness = currentConversation?.harness ?? "claude-code";
           meta.nativeSessionId = currentConversation?.nativeSessionId;
           const previous = this.runMap.get(meta.id);
+          // Settled runs (terminal, metadata-identical, not the latest) can
+          // never grow events; only active, new, changed, or latest runs need
+          // an events read. "unknown" is deliberately not settled: it may resolve.
+          const settled = !!previous && meta.id !== latestId
+            && (previous.status === "completed" || previous.status === "failed" || previous.status === "interrupted")
+            && meta.status === previous.status
+            && meta.harness === previous.harness && meta.nativeSessionId === previous.nativeSessionId
+            && (Object.keys(meta) as (keyof typeof meta)[]).every(key => key === "status" || key === "harness" || key === "nativeSessionId"
+              || (key === "compact" ? JSON.stringify(meta[key]) === JSON.stringify(previous[key]) : meta[key] === previous[key]));
+          if (settled) { runMap.set(previous.id, previous); continue; }
           let run = previous ?? createRun(meta);
           // The client uses only id/cursor for this GET; it never consumes events.
           const page = await this.client.events(run, controller.signal);
@@ -1651,7 +1681,10 @@ export class ChatStore {
       this.update({ connected: false, loading: false, connectionError: `${error instanceof Error ? error.message : "Connection lost."} History will reconnect automatically.` });
     } finally {
       clearTimeout(deadline);
-      if (lifecycleCurrent() && this.state.phase === "ready") this.timer = setTimeout(() => void this.poll(), this.state.connected ? 1500 : 5000);
+      if (lifecycleCurrent() && this.state.phase === "ready") {
+        // A static opened session backs off to 15s; live sessions keep the 1.5s cadence.
+        this.timer = setTimeout(() => void this.poll(), !this.state.connected ? 5000 : this.pollBusy() ? 1500 : 15000);
+      }
     }
   }
   canQueueInput = (state: State = this.state): boolean => {

@@ -1,12 +1,13 @@
 import type { WorkspaceList, WorkspaceFile, WorkspaceGit, WorkspaceDiff, GitComparison, WorkspaceSearch, WorkspaceSearchInput, WorkspacePaths, WorkspacePathsInput } from "../src/workspace-contract";
 import type { WorktreeResolution } from "../src/catalog-contract";
+import { coalescedFetch } from "./request-coalescing";
 
 export class WorkspaceError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
 }
 async function request<T>(conversationId: string, route = "", init: RequestInit = {}): Promise<T> {
   const [workspaceId, worktreeId] = JSON.parse(conversationId) as [string, string];
-  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/worktrees/${encodeURIComponent(worktreeId)}${route}`, {
+  const response = await coalescedFetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/worktrees/${encodeURIComponent(worktreeId)}${route}`, {
     credentials: "same-origin", cache: "no-store", ...init,
     headers: { "Content-Type": "application/json", ...init.headers }, signal: init.signal ?? AbortSignal.timeout(25000),
   });

@@ -1,5 +1,6 @@
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { sameAssignment } from "./assignment-semantics";
+import { coalescedFetch } from "./request-coalescing";
 import { WorkspaceError } from "./workspace-client";
 import { workspaceEpoch, workspaceFailure } from "./workspace-store";
 
@@ -12,7 +13,7 @@ export function subscribeWorkstreamMutations(listener: (mutation: WorkstreamMuta
 }
 export async function workstreamRequest<T>(workspaceId: string, operation: string, input?: unknown, signal?: AbortSignal): Promise<T> {
   const auth = workspaceEpoch();
-  const response = await fetch(`/api/workstreams${operation ? `/${operation}` : ""}?workspaceId=${encodeURIComponent(workspaceId)}`, {
+  const response = await coalescedFetch(`/api/workstreams${operation ? `/${operation}` : ""}?workspaceId=${encodeURIComponent(workspaceId)}`, {
     credentials: "same-origin", cache: "no-store", signal: signal ?? AbortSignal.timeout(25000),
     ...(input === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) }),
   });

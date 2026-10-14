@@ -1,3 +1,4 @@
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { FIXED_EFFORT_VALUES } from "../shared/conversation/harness-capabilities";
 import type { CompactRequest, CompactionMetadata, Harness } from "./oc-contract";
@@ -139,6 +140,58 @@ export function validateMetadata(value: unknown): Metadata {
   return value as Metadata;
 }
 
+/** Last complete record's seq. Undefined when the tail is torn, missing, or larger than the read window. */
+export function lastJournalSeq(path: string): number | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    if (!size) return undefined;
+    const window = Math.min(size, 256 * 1024);
+    const buf = Buffer.alloc(window);
+    readSync(fd, buf, 0, window, size - window);
+    let text = buf.toString("utf8");
+    if (size > window) {
+      const newline = text.indexOf("\n");
+      if (newline < 0) return undefined;
+      text = text.slice(newline + 1);
+    }
+    const lines = text.split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    const last = lines.at(-1);
+    if (!last) return undefined;
+    const event = JSON.parse(last) as { seq?: unknown };
+    return Number.isSafeInteger(event?.seq) ? event.seq as number : undefined;
+  } catch { return undefined; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
+/** First submission line, capped so a huge opening record cannot become a startup scan. */
+export function firstSubmissionTitle(path: string): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const buf = Buffer.alloc(64 * 1024);
+    let offset = 0, carry = "";
+    while (offset < size && offset < 256 * 1024) {
+      const n = readSync(fd, buf, 0, buf.length, offset);
+      if (n <= 0) break;
+      offset += n;
+      const lines = (carry + buf.toString("utf8", 0, n)).split("\n");
+      carry = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.includes('"submission"')) continue;
+        let event: { kind?: unknown; data?: { text?: unknown } };
+        try { event = JSON.parse(line); } catch { continue; }
+        if (event.kind !== "submission" || typeof event.data?.text !== "string") continue;
+        const title = event.data.text.split("\n")[0]!.trim().slice(0, 200);
+        if (title) return title;
+      }
+    }
+    return undefined;
+  } catch { return undefined; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
 export function decodeLog(raw: string, run: Run): { events: Event[]; repaired?: string } {
   const events: Event[] = [];
   const lines = raw.split("\n");

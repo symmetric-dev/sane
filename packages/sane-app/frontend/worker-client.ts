@@ -61,12 +61,16 @@ export function useWorkerViewer() { return useSyncExternalStore(subscribe, () =>
 export function useWorkerPolling(id: string | null) {
   useEffect(() => {
     if (!id) return;
-    let current = true, timer: ReturnType<typeof setTimeout>;
+    let current = true, timer: ReturnType<typeof setTimeout>, delay = 1500;
     const controller = new AbortController();
     const poll = async () => {
-      try { const result = await workerClient.list(id, controller.signal); if (current) publishWorkers(id, result); }
-      catch (e) { if (current) publishWorkers(id, { ...workersFor(id), error: e instanceof Error ? e.message : "Worker status unavailable" }); }
-      finally { if (current) timer = setTimeout(() => void poll(), 1500); }
+      try {
+        const result = await workerClient.list(id, controller.signal);
+        // Static worker lists back off to 15s; changing lists stay at 1.5s.
+        if (current) { delay = JSON.stringify(workersFor(id)) === JSON.stringify(result) ? Math.min(delay * 2, 15000) : 1500; publishWorkers(id, result); }
+      }
+      catch (e) { if (current) { delay = 1500; publishWorkers(id, { ...workersFor(id), error: e instanceof Error ? e.message : "Worker status unavailable" }); } }
+      finally { if (current) timer = setTimeout(() => void poll(), delay); }
     };
     void poll();
     return () => { current = false; controller.abort(); clearTimeout(timer); };

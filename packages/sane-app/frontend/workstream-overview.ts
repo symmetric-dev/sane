@@ -10,7 +10,7 @@ type OverviewState = { overview: WorkstreamOverview | null; loading: boolean; er
 type Owner = {
   workspaceId: string; auth: number; key: string; leases: number; disposed: boolean;
   listeners: Set<() => void>; state: OverviewState; serialized: string;
-  revision: number; resultRevision: number; settledAt: number;
+  revision: number; resultRevision: number; settledAt: number; unchangedPolls: number;
   promise?: Promise<WorkstreamOverview>; controller?: AbortController; automatic: boolean; paused: boolean;
   timer?: ReturnType<typeof setTimeout>; unsubscribe: () => void;
 };
@@ -44,10 +44,13 @@ function dispose(owner: Owner) {
 function schedule(owner: Owner) {
   clearTimeout(owner.timer); owner.timer = undefined;
   if (!current(owner) || owner.paused || !owner.listeners.size) return;
+  // Static overviews back off (1.5s → 3s → 6s → 12s → 24s);
+  // any change resets to the live 1.5s cadence.
+  const delay = Math.min(POLL_MS * 2 ** Math.min(owner.unchangedPolls, 4), 30_000);
   owner.timer = setTimeout(() => {
     owner.timer = undefined;
     refreshAutomatically(owner, true);
-  }, POLL_MS);
+  }, delay);
 }
 
 function refreshAutomatically(owner: Owner, force: boolean) {
@@ -89,6 +92,7 @@ function refresh(owner: Owner, force: boolean, automatic = false): Promise<Works
           if (!valid()) throw error;
           if (revision !== owner.revision) continue;
           owner.settledAt = Date.now();
+          owner.unchangedPolls = 0;
           publish(owner, { overview: owner.state.overview, loading: false, error: error instanceof Error ? error.message : "Workstreams are unavailable." });
           if (valid() && revision !== owner.revision) continue;
           throw error;
@@ -96,8 +100,10 @@ function refresh(owner: Owner, force: boolean, automatic = false): Promise<Works
         if (!valid()) throw unavailable();
         if (revision !== owner.revision) continue;
         const serialized = JSON.stringify(overview);
-        const result = owner.state.overview && serialized === owner.serialized ? owner.state.overview : overview;
+        const changed = serialized !== owner.serialized || revision !== owner.resultRevision;
+        const result = owner.state.overview && !changed ? owner.state.overview : overview;
         owner.serialized = serialized;
+        owner.unchangedPolls = changed ? 0 : owner.unchangedPolls + 1;
         owner.resultRevision = revision; owner.settledAt = Date.now();
         publish(owner, { overview: result, loading: false, error: "" });
         if (!valid()) throw unavailable();
@@ -122,7 +128,7 @@ function acquire(workspaceId: string) {
   let owner = registry.get(key);
   if (!owner) {
     owner = { workspaceId, auth: workspaceEpoch(), key, leases: 0, disposed: false,
-      listeners: new Set(), state: initial, serialized: "", revision: 0, resultRevision: -1, settledAt: 0,
+      listeners: new Set(), state: initial, serialized: "", revision: 0, resultRevision: -1, settledAt: 0, unchangedPolls: 0,
       automatic: false, paused: automaticPaused(), unsubscribe: () => {} };
     registry.set(key, owner);
     const entry = owner;

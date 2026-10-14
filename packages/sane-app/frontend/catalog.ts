@@ -1,5 +1,6 @@
 import type { CatalogResponse, NavigationBookmark, RegistrationResponse, WorkspaceRecord, WorkspaceCreationInput } from "../src/catalog-contract";
 import { WorkspaceError } from "./workspace-client";
+import { coalescedFetch } from "./request-coalescing";
 import { workspaceEpoch, workspaceFailure } from "./workspace-store";
 
 const empty = (): NavigationBookmark => ({ revision: 0, workspaceId: null, worktreeId: null, conversationId: null, view: "chat", filePath: null, comparison: null });
@@ -7,7 +8,7 @@ const empty = (): NavigationBookmark => ({ revision: 0, workspaceId: null, workt
 export type CatalogNavigation = Omit<NavigationBookmark, "view"> & { view: NavigationBookmark["view"] | "browser" };
 type CatalogState = { workspaces: WorkspaceRecord[]; navigation: CatalogNavigation; ready: boolean; loading: boolean; error: string };
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(25000), ...init, headers: { "Content-Type": "application/json" } });
+  const response = await coalescedFetch(path, { credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(25000), ...init, headers: { "Content-Type": "application/json" } });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new WorkspaceError(body.error || `Request failed (${response.status}).`, response.status, body.code);
   return body;

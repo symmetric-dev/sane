@@ -12,16 +12,17 @@ export function useHandoffs(sessionId: string, enabled = true): HandoffProjectio
   const [projection, setProjection] = useState<{ sessionId: string; revision: number; value: HandoffProjection }>({ sessionId: "", revision: -1, value: empty });
   useEffect(() => {
     if (!sessionId || !enabled) return;
-    let current = true, timer: ReturnType<typeof setTimeout>;
+    let current = true, timer: ReturnType<typeof setTimeout>, delay = 1500, lastSerialized = "";
     const controller = new AbortController();
     const isCurrent = () => current && scope.current.revision === revision;
     const poll = async () => {
       try {
         const value: HandoffProjection = await request(`/api/sessions/${encodeURIComponent(sessionId)}/handoffs`, { signal: controller.signal });
-        if (isCurrent()) setProjection(previous => previous.sessionId === sessionId && previous.revision === revision && JSON.stringify(previous.value) === JSON.stringify(value) ? previous : { sessionId, revision, value });
+        // Static handoff state backs off to 15s; changing state stays at 1.5s.
+        if (isCurrent()) { const serialized = JSON.stringify(value); delay = serialized === lastSerialized ? Math.min(delay * 2, 15000) : 1500; lastSerialized = serialized; setProjection(previous => previous.sessionId === sessionId && previous.revision === revision && JSON.stringify(previous.value) === serialized ? previous : { sessionId, revision, value }); }
       } catch (error) {
-        if (isCurrent()) setProjection(previous => ({ sessionId, revision, value: { ...(previous.sessionId === sessionId ? previous.value : empty), error: error instanceof Error ? error.message : "Handoff status unavailable" } }));
-      } finally { if (isCurrent()) timer = setTimeout(() => void poll(), 1500); }
+        if (isCurrent()) { delay = 1500; setProjection(previous => ({ sessionId, revision, value: { ...(previous.sessionId === sessionId ? previous.value : empty), error: error instanceof Error ? error.message : "Handoff status unavailable" } })); }
+      } finally { if (isCurrent()) timer = setTimeout(() => void poll(), delay); }
     };
     void poll();
     return () => { current = false; controller.abort(); clearTimeout(timer); };

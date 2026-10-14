@@ -1,4 +1,5 @@
 import type { ConversationClient, RunMetadata, RunStatus } from "./types";
+import { coalescedFetch } from "./request-coalescing";
 import { isConversationUpdateFeedRequest, isConversationUpdatePage } from "../shared/conversation/conversation-updates";
 import { nativeNotificationSource } from "./notification-source";
 import { SESSION_REFRESH_ERROR } from "./notification-presentation";
@@ -8,7 +9,7 @@ export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
 }
 export async function request(path: string, init: RequestInit = {}) {
-  const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...init,
+  const response = await coalescedFetch(path, { credentials: "same-origin", cache: "no-store", ...init,
     headers: { "Content-Type": "application/json", ...init.headers },
     signal: init.signal ?? AbortSignal.timeout(25000) });
   const body = await response.json().catch(() => ({}));

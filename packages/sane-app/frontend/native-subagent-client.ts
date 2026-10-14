@@ -21,6 +21,8 @@ export class NativeSubagentClient {
   private active: NativeSubagentKey | null = null;
   private listTimer?: ReturnType<typeof setTimeout>;
   private detailTimer?: ReturnType<typeof setTimeout>;
+  private listDelay = 2000;
+  private detailDelay = 1500;
   private running = false;
   constructor(readonly sessionId: string) {}
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
@@ -89,15 +91,17 @@ export class NativeSubagentClient {
         } catch (error) { if (!reset(error) || attempt === 2) throw error; }
       }
       if (!controller.signal.aborted && complete) {
+        // A static subagent list backs off to 30s; a changed revision stays live.
+        this.listDelay = complete.revision !== undefined && complete.revision === this.state.revision ? Math.min(this.listDelay * 2, 30000) : 2000;
         this.listPages = Math.max(this.listPages, complete.pages);
         this.listKeys = complete.subagents.map(nativeSubagentId);
         this.publish({ summaries: this.mergeSummaries(complete.subagents, generation), revision: complete.revision, nextCursor: complete.nextCursor, error: undefined });
       }
-    } catch (error) { if (!controller.signal.aborted) this.publish({ error: failure(error) }); }
+    } catch (error) { if (!controller.signal.aborted) { this.listDelay = 2000; this.publish({ error: failure(error) }); } }
     finally {
       if (!controller.signal.aborted) {
         this.publish({ loading: false });
-        if (this.running) this.listTimer = setTimeout(() => void this.refreshList(), 2000);
+        if (this.running) this.listTimer = setTimeout(() => void this.refreshList(), this.listDelay);
       }
     }
   }
@@ -144,15 +148,17 @@ export class NativeSubagentClient {
         } catch (error) { if (!reset(error) || attempt === 2) throw error; }
       }
       if (!controller.signal.aborted && complete) {
+        // A static subagent detail backs off to 15s; a changed revision stays live.
+        this.detailDelay = previous && complete.revision === previous.revision ? Math.min(this.detailDelay * 2, 15000) : 1500;
         this.desiredPages = Math.max(this.desiredPages, complete.pages);
         const details = new Map(this.state.details); details.set(id, complete);
         this.publish({ summaries: this.mergeSummaries([complete.subagent], generation), details, detailError: undefined });
       }
-    } catch (error) { if (!controller.signal.aborted) this.publish({ detailError: failure(error) }); }
+    } catch (error) { if (!controller.signal.aborted) { this.detailDelay = 1500; this.publish({ detailError: failure(error) }); } }
     finally {
       if (!controller.signal.aborted) {
         this.publish({ detailLoading: false });
-        if (this.running && this.active) this.detailTimer = setTimeout(() => void this.refreshDetail(), 1500);
+        if (this.running && this.active) this.detailTimer = setTimeout(() => void this.refreshDetail(), this.detailDelay);
       }
     }
   }

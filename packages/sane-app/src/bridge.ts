@@ -1,5 +1,5 @@
 import { readFile, writeFile, rename, appendFile, stat, readdir, realpath, open, mkdir } from "node:fs/promises";
-import { constants } from "node:fs";
+import { constants, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve, dirname, join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -8,10 +8,10 @@ import { body, equal, json, loopback } from "./bridge-http";
 import { ClaudeRunService, hookEvents } from "./claude-run-service";
 import { projectClaudeFollowups } from "./claude-followup-projection";
 import { resolveAppConfig } from "./app-config";
-import { buildAssets, validateAssets } from "./asset-build";
+import { AssetBuildError, buildAssets, validateAssets } from "./asset-build";
 import { acquireInstallation, acquireData, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
 import { claudeSourceRoot } from "./claude-source";
-import { decodeLog, validCompactRequest, uuid, efforts, type SaneSessionContext, type Session, type Run, type Event, type Metadata, type TerminationUncertainty } from "./history";
+import { decodeLog, firstSubmissionTitle, lastJournalSeq, validCompactRequest, uuid, efforts, type SaneSessionContext, type Session, type Run, type Event, type Metadata, type TerminationUncertainty } from "./history";
 import { projectCompactions } from "./compaction";
 import type { CompactEligibility, CompactRequest, CompactResponse } from "./oc-contract";
 import { OpenCodeAdapter, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeUnavailableError } from "./opencode";
@@ -184,7 +184,9 @@ export async function start(options: Options) {
     options = { ...options, dataDir: paths.dataDir! };
     assertSourceConfiguration(validateAppStore(options.dataDir).sources, options.nativeSources);
     installation.update("build");
-    const assets = options.noBuild ? validateAssets({ packageDir: paths.packageDir }) : await buildAssets({ packageDir: paths.packageDir, ownership: installation });
+    let assets: ReturnType<typeof validateAssets> | undefined;
+    if (!options.noBuild) { try { assets = validateAssets({ packageDir: paths.packageDir }); } catch (error) { if (!(error instanceof AssetBuildError)) throw error; } }
+    assets ??= options.noBuild ? validateAssets({ packageDir: paths.packageDir }) : await buildAssets({ packageDir: paths.packageDir, ownership: installation });
     installation.update("starting");
     bridge = await startOwned(options, assets.assetsDir, paths.packageDir, retain, () => storageOwnershipHeld && !retentionRequired);
     const listener = { host: options.host, port: bridge.port! };
@@ -364,6 +366,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const session = meta.sessions.find(s => s.sessionId === id);
     if (!session) return false;
     try {
+      ensureSessionJournals(id);
       const page = await transcripts.page(session, new URLSearchParams({ targetMessageId: messageId, limit: "1" }));
       // Native aliases may locate a page, but only its exact canonical ID is an anchor.
       return page.target?.messageId === messageId;
@@ -514,6 +517,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return { binding, validate, dispose: lease.dispose };
   });
   const events = new Map<string, Event[]>();
+  const deferredJournals = new Set<string>();
+  const startupTitles = new Map<string, string>();
+  let materializeDeferred: ((runId: string) => Event[]) | undefined;
+  function journalEvents(id: string): Event[] {
+    return events.get(id) ?? materializeDeferred?.(id) ?? [];
+  }
+  let ensureSessionJournals = (sessionId: string) => { for (const run of meta.runs) if (run.sessionId === sessionId) journalEvents(run.runId); };
   const updateStore = new ConversationUpdateStore(options.dataDir, store.manifest.storeId);
   updateStore.load(); // Optional derived storage: failure never blocks execution.
   const updateEligible = (session: Session, run?: Run) => session.agentKind !== "worker" && !workerStore.getBySession(session.sessionId) && run?.operation !== "compact";
@@ -526,7 +536,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       reason: "App-owned Claude Code results only; external activity is not observed",
     })), ...(replyIntegration?.coverage() ?? [])],
   });
-  const nativeSubagents = new NativeSubagentService(() => meta.sessions, () => meta.runs, id => events.get(id) ?? []);
+  const nativeSubagents = new NativeSubagentService(() => meta.sessions, () => meta.runs, id => journalEvents(id));
   const nativeHistories = new NativeHistoryCache(options.dataDir);
   const nativeObservations = new OpenCodeObservationService(oc);
   const nativeSubagentRecorder = new OpenCodeSubagentRecorder(oc, id => events.get(id) ?? [], emit, () => closing || storageFailed);
@@ -721,7 +731,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }, {
     session: id => meta.sessions.find(s => s.sessionId === id),
     run: id => meta.runs.find(r => r.runId === id),
-    events: id => events.get(id) ?? [],
+    events: id => journalEvents(id),
     owns: owner => owners.get(owner.run.sessionId) === owner,
     closing: () => closing, storageFailed: () => storageFailed, retained: () => retainOwner,
     requireReconciliation: () => { retainOwner = true; meta.reconciliationRequired = true; },
@@ -988,6 +998,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return claudeRuns.terminate(owner);
   }
   function emit(run: Run, kind: Event["kind"], data: unknown) {
+    if (!events.has(run.runId) && deferredJournals.has(run.runId)) journalEvents(run.runId);
     const list = events.get(run.runId)!;
     const event: Event = { seq: (list.at(-1)?.seq ?? 0) + 1, time: new Date().toISOString(), runId: run.runId, sessionId: run.sessionId, kind, data };
     list.push(event);
@@ -1017,9 +1028,41 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const line = prompt.split("\n")[0]!.trim().slice(0, 200);
     return line ? line : undefined;
   };
-  const displayTitle = (session: Session) => sessionDisplayTitle(session, meta.runs, events);
+  const displayTitle = (session: Session) => session.title ?? startupTitles.get(session.sessionId) ?? sessionDisplayTitle(session, meta.runs, events);
+  const followupSessions = new Set(meta.runs.filter(run => run.queuedFollowupId).map(run => run.sessionId));
+  materializeDeferred = runId => {
+    if (!deferredJournals.has(runId)) return [];
+    const run = meta.runs.find(item => item.runId === runId);
+    if (!run) return [];
+    deferredJournals.delete(runId);
+    try {
+      const logPath = join(options.dataDir, `${run.runId}.jsonl`);
+      let raw: string;
+      try { raw = readFileSync(logPath, "utf8"); } catch (e: any) { throw new Error(`Cannot load historical event log for ${run.runId}: ${e.code === "ENOENT" ? "missing file" : "read failed"}`); }
+      const decoded = decodeLog(raw, run);
+      if (decoded.repaired !== undefined) writeFileSync(logPath, decoded.repaired, { mode: 0o600 });
+      events.set(run.runId, decoded.events);
+      replyJournalThrough.set(run.runId, decoded.events.at(-1)?.seq ?? 0);
+      transcripts.ingest(run, decoded.events);
+      return decoded.events;
+    } catch (error) { deferredJournals.add(runId); throw error; }
+  };
   for (const run of meta.runs) {
     const logPath = join(options.dataDir, `${run.runId}.jsonl`);
+    const sessionForRun = meta.sessions.find(session => session.sessionId === run.sessionId)!;
+    const mustRead = run.status === "running" || options.reconcileInterrupted && sessionForRun.harness === "claude-code" || followupSessions.has(run.sessionId);
+    let present = false;
+    if (!mustRead) { try { present = statSync(logPath).isFile(); } catch { present = false; } }
+    // Terminal workers have no update replay. Covered assistant journals are already checkpointed.
+    // A missing file still falls through so the existing read reports it.
+    if (present && (!updateEligible(sessionForRun, run) || updates.replaySettled(sessionForRun, run, lastJournalSeq(logPath) ?? -1))) {
+      deferredJournals.add(run.runId);
+      if (!sessionForRun.title && !startupTitles.has(sessionForRun.sessionId)) {
+        const title = firstSubmissionTitle(logPath);
+        if (title) startupTitles.set(sessionForRun.sessionId, title);
+      }
+      continue;
+    }
     let raw: string;
     try { raw = await readFile(logPath, "utf8"); } catch (e: any) { throw new Error(`Cannot load historical event log for ${run.runId}: ${e.code === "ENOENT" ? "missing file" : "read failed"}`); }
     const decoded = decodeLog(raw, run); const list = decoded.events;
@@ -1035,7 +1078,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       await emit(run, "status", { status: "interrupted", reason: "server restarted; verify old CLI process has stopped", termination: { kind: "unconfirmed", cause: "server-restart" } satisfies TerminationUncertainty });
     }
     if (options.reconcileInterrupted && meta.sessions.find(s => s.sessionId === run.sessionId)?.harness === "claude-code") {
-      const uncertainty = workerTerminationUncertainty(events.get(run.runId) ?? []);
+      const uncertainty = workerTerminationUncertainty(journalEvents(run.runId));
       if (uncertainty) await emit(run, "status", { status: run.status, reason: "Operator confirmed previous CLI termination with --reconcile-interrupted", reconciliation: { kind: "termination-confirmed", throughSeq: uncertainty.seq } });
     }
   }
@@ -1115,7 +1158,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       },
       "claude-code": async () => {
         if (!run) throw new Error("Branching on this harness requires a SANE-recorded completed run");
-        const assistant = (id: string) => (events.get(id) ?? []).filter(e => e.kind === "stdout" && isClaudeRootRecord(e.data) && (e.data as any)?.session_id === source.nativeSessionId && (e.data as any)?.type === "assistant").at(-1)?.data as any;
+        const assistant = (id: string) => (journalEvents(id)).filter(e => e.kind === "stdout" && isClaudeRootRecord(e.data) && (e.data as any)?.session_id === source.nativeSessionId && (e.data as any)?.type === "assistant").at(-1)?.data as any;
         let latestRunId = source.lastRunId;
         if (source.lastStatus === "failed") {
           // A missing installed role can fail preparation before native launch.
@@ -1125,7 +1168,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const completed = runs.findLastIndex(r => r.status === "completed" && r.operation !== "compact");
           const failures = runs.slice(completed + 1);
           if (completed < 0 || !failures.length || failures.at(-1)?.runId !== source.lastRunId || failures.some(r => {
-            const log = events.get(r.runId) ?? [];
+            const log = journalEvents(r.runId);
             return r.status !== "failed" || !log.some(e => e.kind === "status" && (e.data as any)?.status === "failed") || log.some(e => ["launch", "stdout", "hook"].includes(e.kind));
           })) throw new Error("Complete-turn/idle evidence is unavailable after a possibly launched failure");
           latestRunId = runs[completed]!.runId;
@@ -1268,7 +1311,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   async function compactOperations(session: Session) {
     const history = session.harness === "opencode" ? nativeObservations.peek(session) ?? await storedNativeHistory(session) : await storedNativeHistory(session);
-    const logs = meta.runs.filter(r => r.sessionId === session.sessionId).flatMap(r => events.get(r.runId) ?? []);
+    const logs = meta.runs.filter(r => r.sessionId === session.sessionId).flatMap(r => journalEvents(r.runId));
     // A cached pre-compaction snapshot must not regress newer live evidence if
     // the optional history refresh fails. A newer explicit reconciliation can
     // still improve an older live snapshot; importedAt is App observation time.
@@ -1334,7 +1377,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         await persist();
       } catch (error) { owner.settled = true; finished.resolve(); throw error; }
       void executeCompact(owner, input.instructions).catch(async error => { failClosed(error, "compaction"); await terminate(owner); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
-      return { sessionId: session.sessionId, runId: run.runId, operation: projectCompactions(session, [run], events.get(run.runId) ?? [])[0]! };
+      return { sessionId: session.sessionId, runId: run.runId, operation: projectCompactions(session, [run], journalEvents(run.runId))[0]! };
     } finally { coordinator.releaseAdmission(lease); }
   }
   function ownedSession(owner: Owner) {
@@ -1352,7 +1395,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     oc, closing: () => closing, storageFailed: () => storageFailed,
     currentOwner: sessionId => owners.get(sessionId),
     session: sessionId => meta.sessions.find(s => s.sessionId === sessionId)!,
-    events: runId => events.get(runId) ?? [], emit, persist, execution, executionContext,
+    events: runId => journalEvents(runId), emit, persist, execution, executionContext,
     takeFrameworkDelivery: sessionId => { const delivery = frameworkDeliveries.get(sessionId); frameworkDeliveries.delete(sessionId); return delivery; },
     compactExecution, refreshCompactHistory, assertWorkerDeliverySubmission,
     workerHasRun: runId => workerStore.hasExecutionRun(runId), sleep: ms => Bun.sleep(ms), saneSession, canonicalContext, canonicalExecution,
@@ -1420,7 +1463,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     exactCommand: async (_owner, source, commandId) => {
       // Operator reconciliation releases a stuck owner, but is deliberately
       // weaker than exact-command evidence for automatic queued continuation.
-      if ((events.get(_owner.run.runId) ?? []).some(event => event.kind === "context" && event.data && typeof event.data === "object" && "type" in event.data && "proofKind" in event.data
+      if (journalEvents(_owner.run.runId).some(event => event.kind === "context" && event.data && typeof event.data === "object" && "type" in event.data && "proofKind" in event.data
         && event.data.type === "completion-reconciliation" && event.data.proofKind === "operator-verified")) return { commandId, outcome: "unknown" };
       const assertSource = () => {
         const session = meta.sessions.find(s => s.sessionId === source.sessionId);
@@ -1792,7 +1835,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     for (let attempt = 0; run && attempt < 3 && !evidenced; attempt++) {
       current();
       if (e.source.harness === "cc") {
-        evidenced = (events.get(run.runId) ?? []).some(event => {
+        evidenced = (journalEvents(run.runId)).some(event => {
           const data = event.data as any;
           if (event.kind === "hook") return data?.event === "PreToolUse" && isClaudeRootRecord(data.payload) && data.payload?.session_id === e.nativeId && data.payload?.tool_use_id === request.invocation.toolCallId && matchesName(data.payload?.tool_name);
           return event.kind === "stdout" && isClaudeRootRecord(data) && data?.type === "assistant" && data.session_id === e.nativeId && Array.isArray(data.message?.content) && data.message.content.some((part: any) => part.type === "tool_use" && part.id === request.invocation.toolCallId && matchesName(part.name));
@@ -1866,7 +1909,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const messageGrant = (permissions: { action?: unknown; effect?: unknown; resource?: unknown }[]) => permissions.some(rule => rule.action === "sane_worker_message" && rule.effect === "allow" && (rule.resource === "*" || rule.resource === undefined));
   /** Latest canonical-execution permissions or launch settings for this parent run. A stale earlier allow is not a current grant. */
   const parentCanMessage = async (parentRunId: string): Promise<boolean> => {
-    const records = events.get(parentRunId) ?? [];
+    const records = journalEvents(parentRunId);
     for (let index = records.length - 1; index >= 0; index -= 1) {
       const event = records[index]!;
       if (event.kind === "context" && event.data && typeof event.data === "object") {
@@ -2066,13 +2109,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       } finally { coordinator.releaseAdmission(lease); }
     },
     async observe(w) {
-      const restored = restoreWorkerOutput(w, runId => events.get(runId) ?? []);
+      const continuationSettled = !w.continuation || ["completed", "failed", "interrupted"].includes(w.continuation.state);
+      // Restart must not reread every finished worker journal just to rediscover an outcome already stored.
+      if (w.outcome && ["completed", "failed", "interrupted"].includes(w.state) && continuationSettled && !workerStore.deliveriesForParent(w.sessionId).some(d => d.state === "claimed" || d.state === "acceptance-unknown")) return {};
+      const restored = restoreWorkerOutput(w, runId => journalEvents(runId));
       if (restored) w = workerStore.update(w.id, restored);
       if (isExplicitWorker(w)) return observeExplicit(w);
       const results = workerResults(w);
       // Durable delivery run identity recovers continuations after restart without replay.
       const continuationDeliveries = workerStore.deliveriesForParent(w.sessionId);
-      const continuationIds = new Set(continuationDeliveries.filter(d => d.state !== "not-submitted" && workerDeliveryEvidence(d, meta.runs.find(r => r.runId === d.run.runId), events.get(d.run.runId) ?? []) !== "not-submitted").map(d => d.run.runId));
+      const continuationIds = new Set(continuationDeliveries.filter(d => d.state !== "not-submitted" && workerDeliveryEvidence(d, meta.runs.find(r => r.runId === d.run.runId), journalEvents(d.run.runId)) !== "not-submitted").map(d => d.run.runId));
       const candidates = meta.runs.filter(r => r.sessionId === w.sessionId && r.operation !== "compact" && (!continuationDeliveries.some(d => d.run.runId === r.runId) || continuationIds.has(r.runId)));
       // Coordinated idle turns are checkpoints, not results. The latest accepted
       // continuation supersedes them; durable run/outbox evidence survives restart.
@@ -2107,7 +2153,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const summary = "Worker preparation ended before durable run publication; native work was not submitted. Original request is closed and will not be replayed.";
         return { state: status, error: undefined, outcome: { status, at: new Date().toISOString(), summary, log: null } };
       }
-      const records = events.get(run.runId) ?? [];
+      const records = journalEvents(run.runId);
       const uncertain = workerTerminationUncertainty(records);
       if (uncertain || retainOwner) return { ...(continuation ? { continuation: { ...continuation, state: "uncertain" as const, error: "Execution ownership or termination unconfirmed" } } : {}), state: "uncertain", error: uncertain && w.launch.harness === "claude-code" ? "CLI termination is unconfirmed. Verify the previous CLI process has stopped, then restart with --reconcile-interrupted to persist confirmation and release this reservation." : "Execution ownership or termination remains unconfirmed; reconcile the original native run without resubmitting." };
       if (run.status !== "running") {
@@ -2160,7 +2206,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") return workerStore.advanceDelivery(d.id, "acceptance-unknown", "Delivery log unreadable; repair/reconcile original run before retry. No automatic resend."); }
       return workerStore.advanceDelivery(d.id, "not-submitted", "Bridge stopped before continuation run publication; outcomes remain pending");
     }
-    const evidence = workerDeliveryEvidence(d, run, events.get(run.runId) ?? []);
+    const evidence = workerDeliveryEvidence(d, run, journalEvents(run.runId));
     if (evidence === "accepted") {
       // Native evidence may arrive while execution continues. The run owner still
       // holds capacity; delivered means accepted, not finished or comprehended.
@@ -2229,7 +2275,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
 
   async function observeExplicit(w: WorkerRecord): Promise<Partial<WorkerRecord>> {
     const continuationDeliveries = workerStore.deliveriesForParent(w.sessionId);
-    const continuationIds = new Set(continuationDeliveries.filter(d => d.state !== "not-submitted" && workerDeliveryEvidence(d, meta.runs.find(r => r.runId === d.run.runId), events.get(d.run.runId) ?? []) !== "not-submitted").map(d => d.run.runId));
+    const continuationIds = new Set(continuationDeliveries.filter(d => d.state !== "not-submitted" && workerDeliveryEvidence(d, meta.runs.find(r => r.runId === d.run.runId), journalEvents(d.run.runId)) !== "not-submitted").map(d => d.run.runId));
     const candidates = meta.runs.filter(r => r.sessionId === w.sessionId && r.operation !== "compact" && (!continuationDeliveries.some(d => d.run.runId === r.runId) || continuationIds.has(r.runId)));
     const run = candidates.at(-1);
     const owner = owners.get(w.sessionId);
@@ -2255,7 +2301,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const status = cancelRequested ? "interrupted" as const : "failed" as const;
       return explicitObservationChange(w, { run: null, ownerPresent: false, ownerSettled: true, terminationUncertain: false, cancelRequested, preparationOutcome: { status, summary: "Worker preparation ended before durable run publication; native work was not submitted. Original request is closed and will not be replayed." } });
     }
-    const records = events.get(run.runId) ?? [];
+    const records = journalEvents(run.runId);
     return explicitObservationChange(w, {
       run: { runId: run.runId, status: run.status, endedAt: run.endedAt }, ownerPresent, ownerSettled,
       terminationUncertain: !!workerTerminationUncertainty(records) || retainOwner, cancelRequested,
@@ -2275,7 +2321,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") return workerStore.advanceExchange(exchange.id, "acceptance-unknown", "Exchange log unreadable; no automatic resend"); }
       return workerStore.advanceExchange(exchange.id, "not-submitted", "Exchange was not submitted; it can be retried");
     }
-    const evidence = exchangeDeliveryEvidence({ id: delivery.deliveryId, commandId: delivery.commandId, native: exchange.recipient.native, sessionId: exchange.recipient.sessionId, runId: delivery.runId }, run, events.get(run.runId) ?? []);
+    const evidence = exchangeDeliveryEvidence({ id: delivery.deliveryId, commandId: delivery.commandId, native: exchange.recipient.native, sessionId: exchange.recipient.sessionId, runId: delivery.runId }, run, journalEvents(run.runId));
     if (evidence === "accepted") return workerStore.advanceExchange(exchange.id, "accepted");
     if (evidence === "not-submitted" && owners.get(exchange.recipient.sessionId)?.settled !== false) return workerStore.advanceExchange(exchange.id, "not-submitted", "Exchange did not submit; it can be retried");
     const problem = run.status === "running" ? "Waiting for correlated native acceptance; exchange will not be resent" : "Run ended without proof of acceptance or non-submission. No automatic resend.";
@@ -2388,7 +2434,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (h.recipient.ownerId !== store.manifest.storeId || !h.runId || ["queued", "completed", "failed"].includes(h.status)) return h;
     const run = meta.runs.find(r => r.runId === h.runId && r.sessionId === h.recipient.sessionId);
     if (!run || run.operation === "compact") return h;
-    const records = events.get(run.runId) ?? [];
+    const records = journalEvents(run.runId);
     const accepted = h.recipient.harness === "oc" ? run.nativeCommandId === h.nativeCommandId && run.nativePhase === "accepted" : records.some(e => e.kind === "stdout" && isClaudeRootRecord(e.data) && (e.data as any)?.session_id === h.recipient.ref?.nativeId && ((e.data as any)?.type === "result" || (e.data as any)?.type === "system" && (e.data as any)?.subtype === "init"));
     const advance = (status: typeof h.status, evidence: string) => { h = handoffMutation(() => domain.advanceHandoff(h.id, h.revision, { status, evidence }, { actor: { kind: "system" }, correlationId: h.id })); };
     if (h.status === "acceptance_unknown" && accepted) advance("accepted", `Native acceptance recorded in App run ${run.runId}`);
@@ -2515,7 +2561,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (session.hidden) throw new PendingInputDomainError("pending-input-hidden", "Unhide the conversation before adding/resuming waiting input");
     if (sessionHarness(session) === "claude-code" && session.attachment) throw new PendingInputDomainError("pending-input-attached-cc", "Attached Claude input requires a fresh external-stopped acknowledgement; queued automation is not supported");
     // Legacy immediate/followup reservations cannot race the new FIFO domain.
-    if (admitting.has(sessionId) || projectClaudeFollowups(sessionId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)).some(r => claudeRuns.followupPending(r.requestId))) throw new PendingInputDomainError("pending-input-legacy-reservation", "Finish the existing admission/legacy followup before starting a FIFO chain");
+    if (admitting.has(sessionId) || projectClaudeFollowups(sessionId, meta.runs, id => journalEvents(id), id => claudeRuns.followupPending(id)).some(r => claudeRuns.followupPending(r.requestId))) throw new PendingInputDomainError("pending-input-legacy-reservation", "Finish the existing admission/legacy followup before starting a FIFO chain");
     const ready = coordinator.inspectReadiness({ conversationId: sessionId, intent: { kind: "user-prompt" }, phase: "enqueue" });
     if (!ready.ready) throw new PendingInputDomainError(ready.code, ready.reason, ["storage-unavailable", "startup-classifying", "bridge-closing"].includes(ready.code) ? 503 : 409);
   }
@@ -3352,7 +3398,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           }).catch(() => { /* Queue/launch journals retain the outcome; never auto-retry. */ }).finally(() => {
             coordinator.releaseAdmission(lease); task.resolve(); queuedInputTasks.delete(task.promise);
           });
-          const receipt = projectClaudeFollowups(conversationId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)).find(r => r.requestId === queued.requestId)!;
+          const receipt = projectClaudeFollowups(conversationId, meta.runs, id => journalEvents(id), id => claudeRuns.followupPending(id)).find(r => r.requestId === queued.requestId)!;
           return json({ sessionId: conversationId, queued: true, receipt }, 202);
         }
         const task = Promise.withResolvers<void>(); attachmentTasks.add(task.promise);
@@ -3451,8 +3497,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const session = meta.sessions.find(s => s.sessionId === transcript[1]);
         if (!session) return json({ error: "Unknown session" }, 404);
         try {
-          if (!transcript[2] && req.method === "GET") return json(await transcripts.page(session, url.searchParams));
-          if (transcript[2] === "meta" && req.method === "GET") return json(await transcripts.metadataPage(session, url.searchParams));
+          if (!transcript[2] && req.method === "GET") { ensureSessionJournals(session.sessionId); return json(await transcripts.page(session, url.searchParams)); }
+          if (transcript[2] === "meta" && req.method === "GET") { ensureSessionJournals(session.sessionId); return json(await transcripts.metadataPage(session, url.searchParams)); }
           if (transcript[2] === "refresh" && req.method === "POST") {
             if (url.searchParams.size) return json({ error: "Refresh does not accept query selectors", code: "transcript-input" }, 400);
             let input: unknown;
@@ -3586,13 +3632,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const runsMatch = /^\/api\/sessions\/([^/]+)\/runs$/.exec(path);
       if (runsMatch && req.method === "GET") { if (!meta.sessions.some(s => s.sessionId === runsMatch[1])) return json({ error: "Unknown session" }, 404); return json({ runs: meta.runs.filter(r => r.sessionId === runsMatch[1]) }); }
       const eventMatch = /^\/api\/runs\/([^/]+)\/events$/.exec(path);
-      if (eventMatch && req.method === "GET") { const run = meta.runs.find(r => r.runId === eventMatch[1]); if (!run) return json({ error: "Unknown run" }, 404); const after = Number(url.searchParams.get("after") ?? 0); if (!Number.isSafeInteger(after) || after < 0) return json({ error: "Invalid cursor" }, 400); const list = events.get(run.runId)!.filter(e => e.seq > after); return json({ events: list, nextCursor: list.at(-1)?.seq ?? after, status: run.status }); }
+      if (eventMatch && req.method === "GET") { const run = meta.runs.find(r => r.runId === eventMatch[1]); if (!run) return json({ error: "Unknown run" }, 404); const after = Number(url.searchParams.get("after") ?? 0); if (!Number.isSafeInteger(after) || after < 0) return json({ error: "Invalid cursor" }, 400); const list = journalEvents(run.runId).filter(e => e.seq > after); return json({ events: list, nextCursor: list.at(-1)?.seq ?? after, status: run.status }); }
       const contextMatch = /^\/api\/runs\/([^/]+)\/context$/.exec(path);
       if (contextMatch && req.method === "GET") {
         const run = meta.runs.find(r => r.runId === contextMatch[1]);
         if (!run) return json({ error: "Unknown run" }, 404);
         return json({ schema: 1, runId: run.runId, sessionId: run.sessionId, status: run.status,
-          records: (events.get(run.runId) ?? []).filter(event => event.kind === "context" || event.kind === "launch"),
+          records: (journalEvents(run.runId)).filter(event => event.kind === "context" || event.kind === "launch"),
           evidence: "Prepared segments and transport receipts; model-request observation is not implied" });
       }
       if (path === "/api/sessions/search" && req.method === "GET") {
@@ -3654,7 +3700,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const runs = meta.runs.filter(r => r.sessionId === session.sessionId).slice(-20);
           for (const run of runs) {
             if (results.length >= limit) break;
-            const list = (events.get(run.runId) ?? []).slice(-500);
+            const list = (journalEvents(run.runId)).slice(-500);
             for (const event of list) {
               if (results.length >= limit) break;
               if (event.kind !== "submission" && event.kind !== "message" && event.kind !== "stdout") continue;
@@ -3868,7 +3914,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (session.lastRunId === identity.runId) meta.sessions.find(row => row.sessionId === session.sessionId)!.lastStatus = status;
       try { replyIntegration?.metadataPublished(JSON.stringify(candidate)); } catch {}
       if (event) {
-        events.get(run.runId)!.push(event);
+        journalEvents(run.runId).push(event);
         replyJournalThrough.set(run.runId, event.seq);
         transcripts.ingest(run, [event]);
       }
@@ -3900,7 +3946,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         validate(); originalJournal(original);
         // Publish only after the marker is durable. No transcript/lifecycle,
         // completion, wake, accepted evidence or metadata repair is performed.
-        events.get(identity.runId)?.push(event);
+        (events.has(identity.runId) || deferredJournals.has(identity.runId) ? journalEvents(identity.runId) : undefined)?.push(event);
       } finally { await file.close(); }
       validate(); originalJournal(original);
     }), settled: original => {

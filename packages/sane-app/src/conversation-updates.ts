@@ -187,12 +187,28 @@ export class ConversationUpdates<State = UpdateJson> {
       // App status timestamps are not authoritative native boundary timestamps.
       occurredAt: null, ...(sourceSequence === undefined ? {} : { sourceSequence }) };
   }
+  /** Tail seq already committed, including a failed/interrupted terminal marker. Startup uses this to avoid rereading a settled journal. */
+  replaySettled(session: Session, run: Run, lastSeq: number): boolean {
+    const source = sessionSource(session);
+    if (!source || !Number.isSafeInteger(lastSeq) || lastSeq < 1) return false;
+    const prior = this.store.getCheckpoint(appRunUpdateCheckpointKey(source, run.runId));
+    if (!prior || prior.through !== lastSeq) return false;
+    try {
+      const state = runState(prior.state, source.harness === "claude-code" ? this.options.projector : undefined);
+      return run.status !== "failed" && run.status !== "interrupted" || state.terminalIndexed;
+    } catch { return false; }
+  }
   /** Startup replay requires the complete contiguous journal; durable per-run through/state
    * makes replay idempotent even after all rows for the run have been pruned. */
   replayRun(session: Session, run: Run, events: readonly Event[]): Promise<boolean> {
     try {
-      const captured = structuredClone({ session, run, events: [...events] }), source = sessionSource(captured.session);
+      const source = sessionSource(session);
       if (!source) return Promise.resolve(false);
+      const last = events.at(-1);
+      // Contiguous 1..n already at the checkpoint has nothing to project. A missing
+      // terminal marker still falls through so failed/interrupted recovery can commit it.
+      if (last && events[0]?.seq === 1 && events.length === last.seq && this.replaySettled(session, run, last.seq)) return Promise.resolve(true);
+      const captured = structuredClone({ session, run, events: [...events] });
       return this.enqueue(async () => {
         if (captured.session.sessionId !== captured.run.sessionId) throw new Error("Unqualified replay run");
         const key = appRunUpdateCheckpointKey(source, captured.run.runId), prior = this.store.getCheckpoint(key);
