@@ -3,10 +3,10 @@ import {
   isConversationUpdate, isConversationUpdateCursor, isConversationUpdatePage, isConversationUpdateSource,
   updateSourceKey, isConversationUpdateCoverage,
   type ConversationUpdate, type ConversationUpdateCursor,
-  type ConversationUpdateCoverage,
+  type ConversationUpdateCoverage, type OutstandingWorkerAttention,
 } from "../shared/conversation/conversation-updates";
 import { NotificationDatabase, type NotificationRows } from "./notification-db";
-import { appNotificationSource, nativeNotificationSource,
+import { appNotificationSource, currentNotificationSource, nativeNotificationSource,
   notificationContextKey, notificationSourceMatches } from "./notification-source";
 import { notificationFeedMessage, type NotificationFeedStatus } from "./notification-presentation";
 import {
@@ -15,9 +15,11 @@ import {
   type LegacyItem, type LegacyState,
 } from "./notifications-legacy";
 
-export type NotificationItem = LegacyItem & {
-  kind?: "reply" | "failed" | "interrupted" | "legacy";
+export type NotificationItem = Omit<LegacyItem, "status"> & {
+  status: LegacyItem["status"] | "attention";
+  kind?: "reply" | "failed" | "interrupted" | "legacy" | "worker-attention";
   sourceKey?: string; groupId?: string; contextKey?: string; occurrenceSequence?: number; observedAt?: string;
+  jobs?: string[]; intent?: "informational" | "request"; workerId?: string; role?: string;
 };
 export type NotificationSnapshot = { items: NotificationItem[]; unreadCount: number; storageError: string; feedError?: string; deliveryIssues?: readonly string[] };
 export type NotificationCapture = Readonly<{
@@ -30,7 +32,7 @@ type EventRecord = { update: ConversationUpdate; eligible: boolean; attentionAt?
 type Accepted = { conversationId: string; runId: string; sourceKey?: string; nativeSourceKey?: string; acceptedAt: number };
 type ResumeState = NotificationResume & {
   storeId?: string; baselines: [string, number][]; activeRunIds: string[]; activeBindings: [string, string][];
-  coverage: ConversationUpdateCoverage[];
+  coverage: ConversationUpdateCoverage[]; outstandingWorkerAttention?: OutstandingWorkerAttention[];
 };
 type Memory = {
   events: Map<string, EventRecord>; reads: Map<string, number>; accepted: Map<string, Accepted>;
@@ -43,7 +45,35 @@ const LEGACY_ERROR = "Legacy notification history could not be imported. Its bro
 const sameCursor = (a?: ConversationUpdateCursor | null, b?: ConversationUpdateCursor | null) =>
   (a?.epoch ?? null) === (b?.epoch ?? null) && (a?.after ?? null) === (b?.after ?? null);
 const acceptedKey = (r: Pick<Accepted, "conversationId" | "runId">) => JSON.stringify([r.conversationId, r.runId]);
-const eligible = (c: Conversation) => !c.worker && c.agentKind !== "worker" && !c.hidden && !c.replacedBy;
+const workerConversation = (c: Conversation) => !!c.worker || c.agentKind === "worker";
+/** Ordinary worker turns stay silent. Only worker-attention may surface a worker session. */
+const eligible = (c: Conversation, kind?: string) => !c.hidden && !c.replacedBy && (!workerConversation(c) || kind === "worker-attention");
+function workerAttentionRequestId(update: Pick<ConversationUpdate, "id" | "kind" | "conversationId">): string | undefined {
+  if (update.kind !== "worker-attention") return;
+  try {
+    const tuple: unknown = JSON.parse(update.id);
+    if (!Array.isArray(tuple) || tuple.length !== 2 || typeof tuple[1] !== "string") return;
+    const prefix = `worker-attention:${update.conversationId}:`;
+    return tuple[1].startsWith(prefix) ? tuple[1].slice(prefix.length) : undefined;
+  } catch { return; }
+}
+function outstandingList(value: unknown): value is OutstandingWorkerAttention[] {
+  if (!Array.isArray(value) || value.length > 64) return false;
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (!object(item) || !text(item.workerId) || !text(item.workerSessionId) || !text(item.parentSessionId) || !text(item.requestId, 200)) return false;
+    const id = JSON.stringify([item.workerSessionId, item.requestId]);
+    if (seen.has(id)) return false;
+    seen.add(id);
+  }
+  return true;
+}
+const syntheticAttentionId = (attention: OutstandingWorkerAttention) => JSON.stringify(["outstanding-worker-attention", attention.workerSessionId, attention.requestId]);
+function matchesOutstanding(outstanding: readonly OutstandingWorkerAttention[] | undefined, update: ConversationUpdate): boolean {
+  if (update.kind !== "worker-attention" || !outstanding?.length) return false;
+  const requestId = workerAttentionRequestId(update);
+  return !!requestId && outstanding.some(item => item.workerSessionId === update.conversationId && item.requestId === requestId && (!update.workerId || item.workerId === update.workerId));
+}
 
 /** Different sources have no shared source-sequence clock. Revisions do not move attention. */
 function compareItems(a: NotificationItem, b: NotificationItem): number {
@@ -73,7 +103,8 @@ function decode(rows: NotificationRows): Memory {
       || !Array.isArray(meta.activeRunIds) || !meta.activeRunIds.every(id => text(id)) || new Set(meta.activeRunIds).size !== meta.activeRunIds.length
       || !Array.isArray(meta.baselines) || meta.baselines.some(p => !Array.isArray(p) || p.length !== 2 || !validSourceKey(p[0]) || !integer(p[1]))
       || !Array.isArray(meta.activeBindings) || meta.activeBindings.some(p => !Array.isArray(p) || p.length !== 2 || !text(p[0]) || !validSourceKey(p[1]))
-      || !Array.isArray(meta.coverage) || !meta.coverage.every(isConversationUpdateCoverage)) {
+      || !Array.isArray(meta.coverage) || !meta.coverage.every(isConversationUpdateCoverage)
+      || meta.outstandingWorkerAttention !== undefined && !outstandingList(meta.outstandingWorkerAttention)) {
       throw new Error("Invalid notification resume state");
     }
     m.resume = meta as ResumeState;
@@ -120,6 +151,8 @@ function union(m: Memory, other: Memory): void {
   const bindings = new Map(other.resume.activeBindings);
   for (const [runId, sourceKey] of m.resume.activeBindings) bindings.set(runId, sourceKey);
   m.resume.activeBindings = [...bindings];
+  if (m.resume.outstandingWorkerAttention === undefined && other.resume.outstandingWorkerAttention !== undefined)
+    m.resume.outstandingWorkerAttention = other.resume.outstandingWorkerAttention;
   for (const [id, at] of other.reads) m.reads.set(id, Math.max(at, m.reads.get(id) ?? 0));
   for (const [key, receipt] of other.accepted) {
     const previous = m.accepted.get(key);
@@ -169,16 +202,41 @@ class NotificationStore {
   private enqueue<T>(work: () => Promise<T>): Promise<T> {
     const result = this.queue.then(work, work); this.queue = result.catch(() => undefined); return result;
   }
-  private sourceVisible(conversationId: string, sourceKey?: string, identity?: string): boolean {
+  private sourceVisible(conversationId: string, sourceKey?: string, identity?: string, kind?: string): boolean {
     if (!this.catalog) return false;
     const c = this.catalog.get(conversationId);
-    if (!c || !eligible(c)) return false;
+    if (!c || !eligible(c, kind)) return false;
     if (identity) return identity === legacyIdentity(c);
     return !!sourceKey && notificationSourceMatches(c, sourceKey);
   }
   private unreadEvents() {
     return [...this.memory.events.values()].filter(r => r.eligible && !this.memory.reads.has(r.update.id)
-      && this.sourceVisible(r.update.conversationId, updateSourceKey(r.update.source)));
+      && this.sourceVisible(r.update.conversationId, updateSourceKey(r.update.source), undefined, r.update.kind));
+  }
+  private syntheticAttention(): NotificationItem[] {
+    if (!this.catalog) return [];
+    const covered = new Set([...this.memory.events.values()].flatMap(record => {
+      const requestId = workerAttentionRequestId(record.update);
+      return requestId ? [JSON.stringify([record.update.conversationId, requestId])] : [];
+    }));
+    return (this.memory.resume.outstandingWorkerAttention ?? []).flatMap(attention => {
+      const key = JSON.stringify([attention.workerSessionId, attention.requestId]);
+      const id = syntheticAttentionId(attention);
+      if (covered.has(key) || this.memory.reads.has(id)) return [];
+      const c = this.catalog!.get(attention.workerSessionId);
+      if (!c || !eligible(c, "worker-attention")) return [];
+      const source = currentNotificationSource(c);
+      if (!source) return [];
+      const sourceKey = updateSourceKey(source);
+      if (!notificationSourceMatches(c, sourceKey)) return [];
+      const groupId = notificationContextKey(c);
+      return [{ id, conversationId: attention.workerSessionId, runId: attention.requestId,
+        title: c.title?.trim().slice(0, 256) || "Worker", kind: "worker-attention" as const, status: "attention" as const,
+        intent: "request" as const, workerId: attention.workerId, time: "", observedAt: "1970-01-01T00:00:00.000Z",
+        sourceKey, groupId, contextKey: groupId,
+        ...(c.workspaceId !== undefined ? { workspaceId: c.workspaceId } : {}),
+        ...(c.worktreeId !== undefined ? { worktreeId: c.worktreeId } : {}) }];
+    });
   }
   private unreadLegacy() {
     return [...this.memory.legacy.records.values()].filter(r => r.item && r.observedActive && !r.readAt
@@ -193,9 +251,10 @@ class NotificationStore {
         const u = r.update, sourceKey = updateSourceKey(u.source), c = this.catalog!.get(u.conversationId)!;
         const groupId = notificationContextKey(c);
         const item: NotificationItem = { id: u.id, conversationId: u.conversationId, runId: u.runId ?? u.id,
-          title: c?.title?.trim().slice(0, 256) || "Conversation", kind: u.kind,
-          status: u.kind === "reply" ? "completed" : u.kind, time: u.occurredAt ?? u.observedAt,
+          title: c?.title?.trim().slice(0, 256) || (u.kind === "worker-attention" ? "Worker" : "Conversation"), kind: u.kind,
+          status: u.kind === "worker-attention" ? "attention" : u.kind === "reply" ? "completed" : u.kind, time: u.occurredAt ?? u.observedAt,
           sourceKey, groupId, contextKey: groupId, occurrenceSequence: u.occurrenceSequence, observedAt: r.attentionAt ?? u.observedAt,
+          ...(u.kind === "worker-attention" ? { jobs: u.jobs, intent: u.intent, workerId: u.workerId, role: u.role } : {}),
           ...(c?.workspaceId !== undefined ? { workspaceId: c.workspaceId } : {}),
           ...(c?.worktreeId !== undefined ? { worktreeId: c.worktreeId } : {}) };
         // First choose the latest actual occurrence within each exact source.
@@ -204,6 +263,10 @@ class NotificationStore {
         if (!old || old.occurrenceSequence! < u.occurrenceSequence) sources.set(key, item);
       }
       for (const item of sources.values()) {
+        const old = grouped.get(item.groupId!);
+        if (!old || compareItems(item, old) > 0) grouped.set(item.groupId!, item);
+      }
+      for (const item of this.syntheticAttention()) {
         const old = grouped.get(item.groupId!);
         if (!old || compareItems(item, old) > 0) grouped.set(item.groupId!, item);
       }
@@ -420,7 +483,8 @@ class NotificationStore {
         if (reset) {
           m.resume = { seeding: true, baselines: wire.bootstrap!.sourceBaselines.map(b => [b.sourceKey, b.through]),
             activeRunIds: [...new Set([...m.resume.activeRunIds, ...wire.bootstrap!.activeRunIds])],
-            activeBindings: m.resume.activeBindings, storeId: wire.storeId, coverage: m.resume.coverage };
+            activeBindings: m.resume.activeBindings, storeId: wire.storeId, coverage: m.resume.coverage,
+            outstandingWorkerAttention: wire.bootstrap!.outstandingWorkerAttention ?? [] };
         }
         const coverage = new Map(m.resume.coverage.map(c => [c.sourceKey, c]));
         for (const c of wire.coverage) coverage.set(c.sourceKey, c);
@@ -437,9 +501,19 @@ class NotificationStore {
           const baseline = baselines.get(sourceKey);
           const historical = m.resume.seeding || u.historical === true
             || baseline !== undefined && (u.sourceSequence === undefined || u.sourceSequence <= baseline);
+          const outstanding = matchesOutstanding(m.resume.outstandingWorkerAttention, u);
+          const requestId = workerAttentionRequestId(u);
+          if (requestId) {
+            const readAt = m.reads.get(syntheticAttentionId({ workerId: u.workerId ?? "", workerSessionId: u.conversationId, parentSessionId: u.parentSessionId ?? "", requestId }));
+            if (readAt) m.reads.set(u.id, Math.max(readAt, m.reads.get(u.id) ?? 0));
+          }
+          // A revision keeps the first attention time. Outstanding user waits stay visible through historical suppression.
+          const eligible = u.kind === "worker-attention"
+            ? outstanding || (old ? old.eligible : !historical)
+            : old ? old.eligible : !historical;
           m.events.set(u.id, { update: old && old.update.revision === u.revision ? old.update : u,
             attentionAt: old?.attentionAt ?? old?.update.observedAt ?? u.observedAt,
-            eligible: old ? old.eligible : !historical });
+            eligible });
         }
         m.resume.baselines = [...baselines]; m.resume.cursor = { ...wire.nextCursor };
         m.resume.storeId = wire.storeId; m.resume.through = wire.hasMore ? wire.through : undefined;
@@ -513,23 +587,29 @@ class NotificationStore {
   captureOpen = (conversationId: string): NotificationCapture | null => {
     if (this.scope === null) return null;
     const c = this.catalog?.get(conversationId), context = this.contexts.get(conversationId);
-    if (!c || !eligible(c) || !context || context.key !== notificationContextKey(c)) return null;
-    const events = this.unreadEvents().filter(r => r.update.conversationId === conversationId);
-    const legacy = this.unreadLegacy().filter(r => r.conversationId === conversationId);
+    if (!c || !context || context.key !== notificationContextKey(c) || !eligible(c, workerConversation(c) ? "worker-attention" : undefined)) return null;
+    const events = this.unreadEvents().filter(r => r.update.conversationId === conversationId && (!workerConversation(c) || r.update.kind === "worker-attention"));
+    const synthetic = workerConversation(c) ? this.syntheticAttention().filter(item => item.conversationId === conversationId) : [];
+    const legacy = workerConversation(c) ? [] : this.unreadLegacy().filter(r => r.conversationId === conversationId);
+    if (workerConversation(c) && !events.length && !synthetic.length) return null;
     return Object.freeze({ owner: this.scope, binding: this.binding, conversationId,
       contextKey: context.key, contextRevision: context.revision,
-      sources: Object.freeze([...new Set([...events.map(r => updateSourceKey(r.update.source)), ...legacy.map(r => r.identity)])]),
-      ids: Object.freeze(events.map(r => r.update.id)), legacyIds: Object.freeze(legacy.map(legacyKey)) });
+      sources: Object.freeze([...new Set([...events.map(r => updateSourceKey(r.update.source)), ...synthetic.flatMap(item => item.sourceKey ? [item.sourceKey] : []), ...legacy.map(r => r.identity)])]),
+      ids: Object.freeze([...events.map(r => r.update.id), ...synthetic.map(item => item.id)]), legacyIds: Object.freeze(legacy.map(legacyKey)) });
   };
   private acknowledgeInMemory(capture: NotificationCapture | null, at: number): boolean {
     if (!capture || !this.current(capture.owner, capture.binding)) return false;
     const c = this.catalog?.get(capture.conversationId), context = this.contexts.get(capture.conversationId);
-    if (!c || !eligible(c) || !context || capture.contextKey !== context.key
-      || capture.contextKey !== notificationContextKey(c) || capture.contextRevision !== context.revision) return false;
+    if (!c || !context || capture.contextKey !== context.key
+      || capture.contextKey !== notificationContextKey(c) || capture.contextRevision !== context.revision
+      || !eligible(c, workerConversation(c) ? "worker-attention" : undefined)) return false;
     for (const id of capture.ids) {
       const r = this.memory.events.get(id);
-      if (r && r.update.conversationId === capture.conversationId && capture.sources.includes(updateSourceKey(r.update.source))
-        && this.sourceVisible(capture.conversationId, updateSourceKey(r.update.source))) this.memory.reads.set(id, Math.max(at, this.memory.reads.get(id) ?? 0));
+      if (r && r.update.conversationId === capture.conversationId && (!workerConversation(c) || r.update.kind === "worker-attention")
+        && capture.sources.includes(updateSourceKey(r.update.source))
+        && this.sourceVisible(capture.conversationId, updateSourceKey(r.update.source), undefined, r.update.kind)) this.memory.reads.set(id, Math.max(at, this.memory.reads.get(id) ?? 0));
+      else if (this.syntheticAttention().some(item => item.id === id && item.conversationId === capture.conversationId && !!item.sourceKey && capture.sources.includes(item.sourceKey)))
+        this.memory.reads.set(id, Math.max(at, this.memory.reads.get(id) ?? 0));
     }
     for (const id of capture.legacyIds) {
       // The record may already have migrated to a canonical event since capture.

@@ -17,6 +17,7 @@ import { prepareContextDelivery, assertContextCurrent, contextReceipt, type Cont
 import type { ContextDelivery } from "./context-package";
 import { claudeExecutionConfiguration } from "./canonical-agent-operations";
 import type { CanonicalExecutionProvider } from "./canonical-execution-store";
+import type { WorkerProtocolPin } from "./worker-contract";
 import { execFile } from "node:child_process";
 
 export const hookEvents = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged"] as const;
@@ -57,6 +58,8 @@ export type ClaudeRunDependencies = {
   saneSession: (sessionId: string) => Promise<string | null>;
   canonicalContext?: ContextProvider;
   canonicalExecution?: CanonicalExecutionProvider;
+  /** Recorded worker pin only. Absent must not upgrade an unpinned resume. */
+  explicitProtocol?: (sessionId: string) => WorkerProtocolPin | undefined;
 };
 
 type SpawnOptions = {
@@ -491,7 +494,7 @@ export class ClaudeRunService {
       }
       const executionPolicy = await prepare(async () => await deps.canonicalExecution?.(sessionId) ?? null);
       if (executionPolicy && (!identity || executionPolicy.policy.spec.name !== `sane/${identity.kind}/${identity.role}`)) throw new Error("Canonical execution role differs from the run");
-      const privateExecution = executionPolicy ? claudeExecutionConfiguration({ policy: executionPolicy.policy, children: executionPolicy.children }) : undefined;
+      const privateExecution = executionPolicy ? claudeExecutionConfiguration({ policy: executionPolicy.policy, children: executionPolicy.children, protocol: deps.explicitProtocol?.(sessionId) }) : undefined;
       let claudeVersion: string | null = null;
       if (privateExecution) {
         claudeVersion = await prepare(() => runtime.version!(this.options.claudeBin));

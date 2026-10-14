@@ -12,7 +12,7 @@ Check assigned solution specs against their template and run `sane validate engi
 ## Suggested Adversarial Review
 
 1. Suggest that the user run critic workers to perform adversarial reviews of the specs. Recommend a few related specs per critic to focus on their relationships. Explain the proposed groupings and review focus, and wait for the user's agreement before launching.
-2. When agreed, launch `sane_worker_start` (`worker: "critic"`) for each group. Give each critic a self-contained assignment with absolute paths to its specs, the relevant approved SDD and other authoritative references, known decisions or deferrals, and the relationships to examine. Include shared boundary specs where needed to cover relationships across groups. Ask critics to return evidence-backed findings and suggested improvements inline. Finish independent work and end your turn; background results resume this conversation.
+2. When agreed, launch `sane_worker_start` (`worker: "critic"`) for each group. Give each critic a self-contained assignment with absolute paths to its specs, the relevant approved SDD and other authoritative references, known decisions or deferrals, and the relationships to examine. Include shared boundary specs where needed to cover relationships across groups. Ask critics to return evidence-backed findings and suggested improvements inline. Finish independent work and end your turn; background results resume this conversation. Ending a worker's turn does not by itself complete its assignment or deliver its result.
 3. Present returned findings to the user, distinguish supported corrections from optional suggestions or unresolved decisions, and return to Assistance for agreed revisions.
 
 ## User Review and Approval

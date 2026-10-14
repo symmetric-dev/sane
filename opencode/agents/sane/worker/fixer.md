@@ -64,3 +64,5 @@ asks for it.
 - Edit a report only when the assignment names it.
 - You may load a technical or repository skill when it directly helps apply
   the assigned fix. Do not launch other agents.
+
+Follow the worker protocol identified in your session context. For an App-managed explicit-completion assignment, submit your final result with sane_worker_complete. Ending a turn pauses execution; it does not complete the assignment. Native subagents return their result normally.

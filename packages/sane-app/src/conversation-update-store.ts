@@ -241,6 +241,7 @@ export class ConversationUpdateStore {
   getCoverage(): ConversationUpdateCoverage[] {
     const sources = new Map<string, ConversationUpdateCoverage>();
     for (const checkpoint of this.record?.checkpoints ?? []) {
+      if (JSON.parse(checkpoint.key)[0] === "worker-attention") continue;
       const native = JSON.parse(checkpoint.key)[0] === "native";
       const coverage = checkpoint.coverage ?? { sourceKey: checkpoint.sourceKey, state: "ready" as const,
         ...(native ? { through: checkpoint.through } : {}),

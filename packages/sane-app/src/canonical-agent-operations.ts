@@ -3,6 +3,7 @@ import { injectAgentModel, type AgentModelOverride } from "../../sane-cli/src/ag
 import { WORKER_AGENT_IDS } from "sane-core/agent-catalog";
 import { createHash } from "node:crypto";
 import { managedWorkerRoles } from "./scout-crew-lifecycle";
+import type { WorkerProtocolPin } from "./worker-contract";
 
 export type OperationPermission = { action: string; resource: string; effect: "allow" | "ask" | "deny" };
 export type OperationModel = { providerID: string; id: string; variant?: string };
@@ -105,9 +106,29 @@ function childClosure(policy: CanonicalAgentOperations, supplied: CanonicalAgent
 }
 /** Generated IDs are root/policy-specific and never replace existing native IDs.
  * Empty catalog prompts are populated only after verifying native ancestry. */
+const explicitSelfTool = { complete: "sane_worker_complete", notify: "sane_worker_notify", "message-parent": "sane_worker_message_parent" } as const
+const explicitChildDeniedTools = ["sane_worker_complete", "sane_worker_notify", "sane_worker_message_parent", "sane_worker_message"] as const
+function denyExplicitChildTools(): OperationPermission[] {
+  return explicitChildDeniedTools.map(action => ({ action, resource: "*", effect: "deny" }))
+}
+/** Self-tools come only from the recorded pin. Absent pin must not upgrade a resume. */
+function explicitSelfTools(protocol: WorkerProtocolPin | undefined): string[] {
+  if (!protocol || protocol.id !== "explicit-v1") return []
+  return protocol.operations.flatMap(operation => operation === "message-child" ? [] : [explicitSelfTool[operation]])
+}
+/** Launching parents only. Not inferred from sane_worker_start or managedWorkerRoles. */
+function grantsWorkerMessage(policy: CanonicalAgentOperations): boolean {
+  return policy.spec.name.startsWith("sane/assistant/") || policy.spec.name === "sane/worker/implementer" || policy.spec.name === "sane/worker/scout-crew"
+}
+function executionToolPermissions(policy: CanonicalAgentOperations, protocol: WorkerProtocolPin | undefined): OperationPermission[] {
+  return [...explicitSelfTools(protocol), ...(grantsWorkerMessage(policy) ? ["sane_worker_message"] : [])].map(action => ({ action, resource: "*", effect: "allow" as const }))
+}
+
 export function openCodeExecutionConfiguration(input: {
   policy: CanonicalAgentOperations; sessionID: string; directory: string;
   children?: CanonicalAgentOperations[]; model?: string; effort?: string; defaultModel?: OperationModel;
+  /** Recorded worker pin. Absent means do not add complete/notify/message_parent. */
+  protocol?: WorkerProtocolPin;
 }): OpenCodeExecutionConfiguration {
   const { policy } = input;
   let model = input.model ? operationModel(input.model, input.effort) : policy.model ?? input.defaultModel;
@@ -126,11 +147,13 @@ export function openCodeExecutionConfiguration(input: {
     return rule.effect === "deny" ? [{ ...rule }, ...aliases] : aliases;
   });
   const nativeChildren = children.map(child => ({ id: delegation[child.spec.name]!, canonicalId: child.spec.name, description: child.spec.description,
-    system: rewriteOperationDelegation(child.spec.body, delegation), permissions: rewritePermissions(child.permissions),
+    system: rewriteOperationDelegation(child.spec.body, delegation),
+    // Denies are last so they override a broad child allow. Do not copy executionToolPermissions onto native children.
+    permissions: [...rewritePermissions(child.permissions), ...denyExplicitChildTools()],
     ...(child.model ? { model: child.model } : {}),
     children: requiredNativeChildren(child).map(id => delegation[id]!) }));
   const executionAgent = `sane-execution-${createHash("sha256").update(JSON.stringify([input.sessionID, input.directory, policy, children])).digest("hex")}`;
-  return { sessionID: input.sessionID, directory: input.directory, agent: executionAgent, executionAgent, permissions: rewritePermissions(policy.permissions), nativeChildren, delegation,
+  return { sessionID: input.sessionID, directory: input.directory, agent: executionAgent, executionAgent, permissions: [...rewritePermissions(policy.permissions), ...executionToolPermissions(policy, input.protocol)], nativeChildren, delegation,
     directChildren: requiredNativeChildren(policy).map(id => delegation[id]!),
     ...(model ? { model: { ...model } } : {}) };
 }
@@ -234,6 +257,8 @@ function claudeChildRestrictions(child: CanonicalAgentOperations, diagnostics: C
 export function claudeExecutionConfiguration(input: {
   policy: CanonicalAgentOperations; children?: CanonicalAgentOperations[]; model?: string; effort?: string;
   childProfiles?: Record<string, ClaudeChildProfile>;
+  /** Recorded worker pin. Absent means do not add complete/notify/message_parent. */
+  protocol?: WorkerProtocolPin;
 }) {
   const { policy } = input;
   const agents: Record<string, { description: string; prompt: string; model?: string; effort?: string; disallowedTools?: string[] }> = {};
@@ -260,6 +285,7 @@ export function claudeExecutionConfiguration(input: {
     permissions.deny = [...new Set([...(permissions.deny ?? []), "Agent", "Task"])];
     permissions.allow.push(...["start", "status", "wait", "acknowledge", "cancel", "cancel_all"].map(operation => `mcp__sane__sane_worker_${operation}`));
   }
+  permissions.allow.push(...executionToolPermissions(policy, input.protocol).map(rule => `mcp__sane__${rule.action}`));
   const args = ["--agents", JSON.stringify(agents), "--agent", agent];
   if (input.model) args.push("--model", input.model);
   if (input.effort) args.push("--effort", input.effort);

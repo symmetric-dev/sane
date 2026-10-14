@@ -1,8 +1,9 @@
 import { parseNativeWorkerRequest, projectNativeWorkerReply, type NativeWorkerRequest, type NativeWorkerResultRef, type NativeWorkerAcknowledgement } from "../../sane-cli/src/native-worker-contract";
-import { workerTerminal, type WorkerCaller, type WorkerRecord, type WorkerStart } from "./worker-contract";
+import { type WorkerCaller, type WorkerRecord, type WorkerStart } from "./worker-contract";
 import { AgentProfileResolutionError } from "./agent-profiles-contract";
 import { WorkstreamAdapterError } from "./workstreams";
-import { WorkerCapacityError } from "./workers";
+import { WorkerCapacityError, WorkerCompletionBlockedError, WorkerUnfinishedCapacityError } from "./workers";
+import { completionBlockedMessage, workerWaitUnsettled } from "./worker-protocol";
 
 /** Request cancellation belongs only to qualification/wait, never worker execution. */
 export type NativeWorkerRequestContext = {
@@ -50,6 +51,24 @@ export type NativeWorkerCallerResolver = (
  * (after asynchronous parent qualification). Do not pass the request signal to
  * launch/executor cancellation: an admitted worker outlives this HTTP request.
  */
+/**
+ * Explicit protocol handlers. The CLI contract admits these operations; the
+ * switch maps free-text tool input onto these WorkerService calls. Bridge wires
+ * them. Do not change the service method signatures.
+ */
+export type ExplicitWorkerOperationInput = {
+  complete: { requestId: string; outcome: { status: "completed" | "failed" | "interrupted"; summary: string } };
+  notify: { requestId: string; text: string; intent: "informational" | "request" };
+  messageParent: { requestId: string; text: string; awaitReply: boolean };
+  messageChild: { requestId: string; workerId: string; text: string };
+};
+export type ExplicitWorkerOperations = {
+  complete(caller: WorkerCaller, input: ExplicitWorkerOperationInput["complete"], context: NativeWorkerRequestContext): Promise<{ completion: { state: "accepted"; revision: number } }>;
+  notify(caller: WorkerCaller, input: ExplicitWorkerOperationInput["notify"], context: NativeWorkerRequestContext): Promise<{ attention: { state: "accepted"; revision: number; occurrenceId: string } }>;
+  messageParent(caller: WorkerCaller, input: ExplicitWorkerOperationInput["messageParent"], context: NativeWorkerRequestContext): Promise<{ exchange: { id: string; state: "accepted"; revision: number; correlationId: string } }>;
+  messageChild(caller: WorkerCaller, input: ExplicitWorkerOperationInput["messageChild"], context: NativeWorkerRequestContext): Promise<{ exchange: { id: string; state: "accepted"; revision: number; correlationId: string } }>;
+};
+
 export type NativeWorkerOperations = {
   start(caller: WorkerCaller, input: WorkerStart, context: NativeWorkerRequestContext): Promise<WorkerRecord>;
   status(caller: WorkerCaller, ids: string[] | undefined, context: NativeWorkerRequestContext): Promise<WorkerRecord[]>;
@@ -61,6 +80,10 @@ export type NativeWorkerOperations = {
 export type NativeWorkerHandlerDependencies = {
   resolveCaller: NativeWorkerCallerResolver;
   operations: NativeWorkerOperations;
+  /** Dispatched after CLI schema admission. Bridge wires these to WorkerService. */
+  explicit?: ExplicitWorkerOperations;
+  /** Current native-turn occupancy. Explicit wait stops without it once the record is settled. */
+  nativeTurnActive?: (worker: WorkerRecord) => boolean;
   /** Absolute deadline established at bridge ingress; always capped to 16s. */
   deadline?: (request: Request) => number;
 };
@@ -78,6 +101,12 @@ const publicWorkerErrors: Readonly<Record<string, string>> = {
   "worker-scope": "Requested workers must belong to this caller's descendant tree. Use sane_worker_status without IDs to discover visible workers; cancellation requires explicit worker IDs.",
   "worker-wait": "Worker wait requires IDs and a timeout from 0 to 10 seconds; acknowledgement requires exact worker ID, result revision and notification ID from status or wait.",
   "worker-notification-recipient": "Only a worker's immediate parent may acknowledge its result. Ancestors may inspect results without consuming that parent's notifications.",
+  "protocol-unavailable": "This assignment does not include that explicit protocol operation. Inspect sane_worker_status and use only the operations pinned for this worker. Do not invent a completion or send the operation to a different worker.",
+  "completion-blocked": "Completion is blocked by descendants, consultation, uncertain execution, or undelivered findings. Resolve the blocker, then retry the same completion request. This request did not complete the assignment.",
+  "wait-conflict": "A user or parent wait is already open. Resolve that wait before opening another. This request did not replace it.",
+  "worker-terminal": "This assignment is already terminal, or cancellation already committed. Retry only an identical existing request. Do not start a replacement assignment for the same work.",
+  "worker-relationship": "Messaging requires the recorded immediate parent and an explicit direct child. Sibling, unrelated, or caller-supplied identities are rejected.",
+  "unfinished-capacity": "Checkout unfinished explicit worker capacity is reached. Idle explicit assignments still count until they complete or are cancelled. This request did not admit a worker. Inspect sane_worker_status before retrying only a missing assignment. Do not relaunch through native subagents.",
 };
 
 function context(signal: AbortSignal, deadline: number): NativeWorkerRequestContext {
@@ -149,15 +178,27 @@ export function createNativeWorkerHandler(deps: NativeWorkerHandlerDependencies)
           case "acknowledge": return { receipts: await op.acknowledge(caller, input.input.refs, ctx) };
           case "cancel": return { workers: await op.cancel(caller, input.input.ids, input.input.includeDescendants ?? false, ctx) };
           case "cancel_all": return { workers: await op.cancelAll(caller, { parentSessionId: resolved.sessionId }, ctx) };
+          case "complete":
+          case "notify":
+          case "message_parent":
+          case "message": {
+            const explicit = deps.explicit;
+            if (!explicit) throw new NativeWorkerRequestError(503, "protocol-unavailable", publicWorkerErrors["protocol-unavailable"]!);
+            if (input.operation === "complete") return explicit.complete(caller, { requestId: input.input.requestId, outcome: { status: "completed", summary: input.input.outcome } }, ctx);
+            if (input.operation === "notify") return explicit.notify(caller, { requestId: input.input.requestId, text: input.input.text, intent: input.input.intent }, ctx);
+            if (input.operation === "message_parent") return explicit.messageParent(caller, { requestId: input.input.requestId, text: input.input.text, awaitReply: input.input.awaitReply }, ctx);
+            return explicit.messageChild(caller, { requestId: input.input.requestId, workerId: input.input.workerId, text: input.input.text }, ctx);
+          }
           case "wait": {
             const { ids, timeoutSec } = input.input;
             const end = Math.min(deadline, Date.now() + timeoutSec * 1000);
+            const pending = (rows: WorkerRecord[]) => rows.some(worker => workerWaitUnsettled(worker, deps.nativeTurnActive?.(worker) ?? false));
             let workers = await bounded(ctx, () => op.status(caller, ids, ctx));
-            while (workers.some(w => !workerTerminal(w)) && Date.now() < end) {
+            while (pending(workers) && Date.now() < end) {
               await pause(ctx, Math.min(200, end - Date.now()));
               workers = await bounded(ctx, () => op.status(caller, ids, ctx));
             }
-            return { workers, timedOut: workers.some(w => !workerTerminal(w)) };
+            return { workers, timedOut: pending(workers) };
           }
         }
       });
@@ -165,7 +206,8 @@ export function createNativeWorkerHandler(deps: NativeWorkerHandlerDependencies)
       return Response.json(projectNativeWorkerReply(result));
     } catch (error) {
       if (error instanceof NativeWorkerRequestError) return Response.json({ error: error.message.slice(0, 4000), code: error.code }, { status: error.status });
-      if (error instanceof WorkerCapacityError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
+      if (error instanceof WorkerCapacityError || error instanceof WorkerUnfinishedCapacityError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
+      if (error instanceof WorkerCompletionBlockedError) return Response.json({ error: completionBlockedMessage(error.blockers), code: error.code }, { status: error.status });
       if (error instanceof WorkstreamAdapterError && Object.hasOwn(publicWorkerErrors, error.code)) return Response.json({ error: publicWorkerErrors[error.code], code: error.code }, { status: error.status });
       if (error instanceof AgentProfileResolutionError) return Response.json({ error: "Worker profile configuration is invalid or missing. Configure the caller's workerProfiles or App workerDefaults with a compatible worker profile for this role. This request did not admit a worker; other starts in the same batch may have succeeded. Inspect sane_worker_status before retrying only missing assignments.", code: "worker-profile" }, { status: 409 });
       // Never serialize arbitrary executor/storage errors, prompts or credentials.

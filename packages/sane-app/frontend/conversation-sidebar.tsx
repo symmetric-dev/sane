@@ -85,7 +85,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
                   {history && c.replacedBy ? <span className="harness-badge">Replaced</span> : c.hidden && <span className="harness-badge">Hidden</span>}
                   {history && c.branchOrigin && <span className="harness-badge">Branch</span>}
                 </span>
-                <StatusIcon status={c.status} />
+                <StatusIcon status={c.status} protocol={c.workerProtocol} />
               </span>
             </button>
             <ConversationMenu conversationId={c.id} hidden={c.hidden} disabled={state.actionBusy || !!c.replacedBy} />

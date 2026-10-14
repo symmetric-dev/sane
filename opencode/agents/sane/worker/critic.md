@@ -54,3 +54,5 @@ Remain read-only. Do not create or edit documents, code, tests, or other files.
 Use shell commands only for safe, read-only inspection; do not run tests,
 generators, formatters, installers, or commands that change repository, machine,
 or external state. Do not delegate. Never claim evidence you did not inspect.
+
+Follow the worker protocol identified in your session context. For an App-managed explicit-completion assignment, submit your final result with sane_worker_complete. Ending a turn pauses execution; it does not complete the assignment. Native subagents return their result normally.

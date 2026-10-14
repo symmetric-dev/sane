@@ -11,7 +11,7 @@ export type PushPayload = {
   version: 1;
   storeId: string;
   id: string;
-  kind: "reply" | "completed" | "failed" | "interrupted" | "test";
+  kind: "reply" | "completed" | "failed" | "interrupted" | "worker-attention" | "test";
   createdAt: number;
   conversationId?: string;
   source?: ConversationUpdateSource;
@@ -47,7 +47,7 @@ export function isPushPayload(value: unknown): value is PushPayload {
   if (p.sessionTitle !== undefined && !label(p.sessionTitle, PUSH_SESSION_TITLE_MAX_CHARACTERS)
     || p.workspaceName !== undefined && !label(p.workspaceName, PUSH_WORKSPACE_NAME_MAX_CHARACTERS)) return false;
   if (p.kind === "test" ? p.conversationId !== undefined || p.source !== undefined
-    : !["reply", "completed", "failed", "interrupted"].includes(p.kind as string) || !text(p.conversationId) || !isConversationUpdateSource(p.source)) return false;
+    : !["reply", "completed", "failed", "interrupted", "worker-attention"].includes(p.kind as string) || !text(p.conversationId) || !isConversationUpdateSource(p.source)) return false;
   try { return encoder.encode(JSON.stringify(p)).byteLength <= PUSH_PAYLOAD_MAX_BYTES; } catch { return false; }
 }
 
@@ -67,6 +67,7 @@ export function pushNotificationTitle(payload: PushPayload): string {
     case "completed": return "Response";
     case "failed": return "Run failed";
     case "interrupted": return "Run interrupted";
+    case "worker-attention": return "Worker attention";
     case "test": return "Test notification";
   }
 }

@@ -63,7 +63,9 @@ export function PushNavigation({ state, inbox, hydrationReady, openNotification 
     if (payload.kind === "test") { finish(); return; }
     if (!hydrationReady || !catalog.snapshot().ready || catalog.snapshot().loading || !current.conversationsReady || current.sending) return;
     const target = current.conversations.find(conversation => conversation.id === payload.conversationId);
-    if (!target || target.hidden || target.replacedBy || target.worker || target.agentKind === "worker"
+    const workerAttention = payload.kind === "worker-attention";
+    if (!target || target.hidden || target.replacedBy || !workerAttention && (target.worker || target.agentKind === "worker")
+      || workerAttention && !target.worker && target.agentKind !== "worker"
       || !payload.source || !notificationSourceMatches(target, updateSourceKey(payload.source))) {
       finish("This notification’s conversation is no longer available."); return;
     }

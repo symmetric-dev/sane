@@ -66,7 +66,7 @@ async function fixture(harness: "claude-code" | "opencode" = "claude-code", capa
     },
   });
   const adapter: HarnessDispatchAdapter = {
-    id: harness, automation: { "queued-user": { supported: true }, "worker-report": { supported: true }, handoff: { supported: true } },
+    id: harness, automation: { "queued-user": { supported: true }, "worker-report": { supported: true }, "worker-exchange": { supported: true }, handoff: { supported: true } },
     readiness: async source => ({ source, readiness: { ready: true } }),
     execute: async (owner, _prompt, _resume, ready) => {
       const launch = launches.find(l => l.lifecycle.owner === owner)!;

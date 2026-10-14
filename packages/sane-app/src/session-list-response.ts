@@ -83,6 +83,7 @@ export function sessionListResponse(input: SessionListResponseInput, followups: 
       replacedBy: indexes.replaced.get(session.sessionId)?.destinationId,
       ...(indexes.replaced.has(session.sessionId) ? { hidden: true } : {}),
       ...(indexes.workerSessions.has(session.sessionId) ? { worker: indexes.workerSessions.get(session.sessionId) } : {}),
+      ...(indexes.workerProtocol.has(session.sessionId) ? { workerProtocol: indexes.workerProtocol.get(session.sessionId) } : {}),
       directWorkerCount: indexes.workerCounts.get(session.sessionId) ?? 0,
       profileId: session.profileId ?? legacyProfileId(session.harness ?? "claude-code", session.agent),
       title: sessionDisplayTitle(session, runs, events),

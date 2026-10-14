@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { WorkerDelivery, WorkerRecord } from "../src/worker-contract";
-import { useWorkers, openWorker, workerReference } from "./worker-client";
+import { useWorkers, useWorkerPolling, openWorker, workerReference } from "./worker-client";
 import { WorkerCard, WorkerOutcomeReport, WorkerSection } from "./worker-ui";
-import { workerReportDelivery } from "./worker-presentation";
+import { workerExchanges, workerReportDelivery } from "./worker-presentation";
 import type { Harness, PendingTurn, ToolPart } from "./types";
 import { AssistantRuntimeProvider, MessagePrimitive, ThreadPrimitive, useAuiState, useExternalStoreRuntime } from "@assistant-ui/react";
 import { ChatComposer } from "./chat-composer";
@@ -146,7 +146,7 @@ function ChatMessageBody() {
   const turnEndKnown = island && context.pageState?.transcript && source ? turnBoundaryKnown(context.pageState.transcript, island, source) : !island;
   const capabilities = store.capabilities(harness);
    const canBranch = !context.readOnly && capabilities.branch && context.branchEnabled && turnEndKnown && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? capabilities.branchFromNativeMessage && source.status === "completed" : context.runs.some(r => r.operation !== "compact" && r.id === source.runId && r.status === "completed"));
-  const delivery = !context.readOnly && source && workerReportDelivery(source, context.deliveries ?? []);
+  const delivery = !context.readOnly && source && workerReportDelivery(source, context.deliveries ?? [], workerExchanges(context.workers));
   if (harness === "opencode" && source?.role === "system" && source.nativeSubagentResult) return <MessagePrimitive.Root className="message native-subagent-result-message"><NativeSubagentResult source={source} /></MessagePrimitive.Root>;
   if (harness === "opencode" && source?.role === "system" && source.nativeShellResult) return <MessagePrimitive.Root className="message native-shell-result-message"><NativeShellResult source={source} /></MessagePrimitive.Root>;
   if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} /></MessagePrimitive.Root>;
@@ -199,6 +199,8 @@ function SendTranscriptReady({ sessionId, messages }: { sessionId: string; messa
 export function Thread({ state, active: isActive = true, navigation, reviewRequest, reviewRequestHandled, scienceIntegration }: { state: State; active?: boolean; navigation?: ReactNode; reviewRequest?: DocumentReviewRequest | null; reviewRequestHandled?: (requestId: number) => void; scienceIntegration?: ScienceChatIntegration }) {
   const searchRoot = useRef<HTMLDivElement>(null);
   const projection = useWorkers(state.selected);
+  const parentForStatus = workerReference(state.selected)?.parent.sessionId;
+  useWorkerPolling(parentForStatus && parentForStatus !== state.selected ? parentForStatus : null);
   const nativeSubagents = useNativeSubagents();
   const handoffs = useHandoffs(state.selected, isActive && state.connected);
   const workers = projection.workers;

@@ -1,5 +1,28 @@
+import type { WorkerExchange } from "../src/worker-contract";
+import { knownWorker, workersFor } from "./worker-client";
 import { store, type State } from "./store";
 import "./pending-input.css";
+
+/** Parent guidance is an authoritative exchange, not a user-queue slot. */
+function parentGuidanceIds(state: State): Set<string> {
+  const ids = new Set<string>();
+  const add = (exchange: WorkerExchange) => {
+    if (exchange.direction !== "parent-to-child" || exchange.recipient.sessionId !== state.selected) return;
+    ids.add(exchange.id);
+    ids.add(exchange.requestId);
+    if (exchange.delivery.commandId) ids.add(exchange.delivery.commandId);
+    if (exchange.delivery.runId) ids.add(exchange.delivery.runId);
+    if (exchange.correlationId) ids.add(exchange.correlationId);
+  };
+  const self = knownWorker(state.selected);
+  for (const exchange of self?.exchanges ?? []) add(exchange);
+  const parent = self?.parent.sessionId;
+  if (parent) for (const worker of workersFor(parent).workers) if (worker.sessionId === state.selected) for (const exchange of worker.exchanges ?? []) add(exchange);
+  return ids;
+}
+function matchesParentGuidance(ids: Set<string>, item: { itemId: string; requestId: string; runId?: string | null }): boolean {
+  return ids.has(item.itemId) || ids.has(item.requestId) || !!item.runId && ids.has(item.runId);
+}
 
 export function pendingInputStopAction({ chainLocked, appRunning, cancelRun, nativeQueueWaiting, disabled, cancel }: {
   chainLocked: boolean;
@@ -11,9 +34,13 @@ export function pendingInputStopAction({ chainLocked, appRunning, cancelRun, nat
 }) {
   if (!chainLocked && !(appRunning && cancelRun)) return null;
   const stopRun = appRunning && cancelRun;
-  return <button type="button" className="text-button composer-status-stop" disabled={disabled}
-    title={chainLocked ? "Pauses waiting messages in the current server chain; does not remove claimed work or confirm native interruption. Unconfirmed admissions may not yet belong to that chain." : undefined}
-    onClick={cancel}>{chainLocked ? stopRun ? "Stop run and pause waiting" : "Pause waiting messages" : nativeQueueWaiting ? "Cancel queued message" : "Stop run"}</button>;
+  const guidance = parentGuidanceIds(store.snapshot());
+  const waiting = store.snapshot().pendingInputs?.snapshot.items.filter(item => item.state === "waiting") ?? [];
+  const guidanceHeld = chainLocked && waiting.some(item => matchesParentGuidance(guidance, item));
+  if (guidanceHeld && !stopRun) return null;
+  return <button type="button" className="text-button composer-status-stop" disabled={disabled || guidanceHeld}
+    title={guidanceHeld ? "Pause would hold parent guidance. Parent guidance is not a user queue item." : chainLocked ? "Pauses waiting messages in the current server chain; does not remove claimed work or confirm native interruption. Unconfirmed admissions may not yet belong to that chain." : undefined}
+    onClick={guidanceHeld ? undefined : cancel}>{chainLocked ? stopRun ? "Stop run and pause waiting" : "Pause waiting messages" : nativeQueueWaiting ? "Cancel queued message" : "Stop run"}</button>;
 }
 
 export function pendingInputOperationsFor(state: State) {
@@ -34,7 +61,10 @@ export function PendingInputDetails({ state, active, busy, operate }: {
   const authenticated = state.phase === "ready" && state.config?.authenticated === true;
   const disabled = !active || !authenticated || busy || state.actionBusy || state.sending || state.loading || !!state.pendingInputLoading;
   const mutationsDisabled = disabled || !!state.pendingInputError || unconfirmed;
+  const guidance = parentGuidanceIds(state);
   const waiting = view?.snapshot.items.filter(item => item.state === "waiting") ?? [];
+  const userWaiting = waiting.filter(item => !matchesParentGuidance(guidance, item));
+  const heldGuidance = waiting.filter(item => matchesParentGuidance(guidance, item));
   const head = view?.snapshot.items.find(item => item.state !== "waiting");
   // Public projection only: no private admission ledger, payload dump or staged
   // settings. These are the pinned identities/configuration of this chain.
@@ -55,16 +85,18 @@ export function PendingInputDetails({ state, active, busy, operate }: {
   };
   return <section className="pending-input-details" aria-label="Queue">
     <h3>Queue</h3>
-    <div className="pending-input-heading"><strong>Waiting {waiting.length}/3</strong>
+    <div className="pending-input-heading"><strong>Waiting {userWaiting.length}/3</strong>
       <span className="muted">App queue · not native acceptance</span></div>
     {!view && <p className="muted">{state.pendingInputLoading ? "Checking queue status…" : "Queue status is unavailable."}</p>}
-    {view && !waiting.length && !head && <p className="muted">No waiting messages.</p>}
+    {view && !userWaiting.length && !heldGuidance.length && !head && <p className="muted">No waiting messages.</p>}
+    {!!guidance.size && <p className="muted">Parent guidance is delivered in the conversation. It is not added to this queue, and Remove or Pause does not apply to it.</p>}
     {head && <div className="pending-input-head">
       <strong>{view?.presentation.unresolved?.classification === "uncertain" ? "Uncertain (reconciliation needed)" : head.state === "run-linked" ? "Run linked" : "Claimed"}</strong>
       <pre className="pending-input-text" tabIndex={0}>{head.text}</pre>
       <p className="muted">This unresolved input is not a waiting slot. Reconcile its original request and run identity; do not submit it again.</p>
     </div>}
-    {!!waiting.length && <ol className="pending-input-list" aria-label="Waiting messages">{waiting.map((item, index) => {
+    {!!heldGuidance.length && <p className="muted">Parent guidance is in the server chain and is not a removable user message. Pause is unavailable so it is not held.</p>}
+    {!!userWaiting.length && <ol className="pending-input-list" aria-label="Waiting messages">{userWaiting.map((item, index) => {
       const removal = view?.presentation.removals.find(removal => removal.itemId === item.itemId);
       return <li key={item.itemId}><div className="pending-input-row"><span>Waiting {index + 1}</span>
         <button type="button" className="text-button" disabled={mutationsDisabled || !view?.presentation.removalAllowed || !removal?.allowed}

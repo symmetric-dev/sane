@@ -1,10 +1,15 @@
 import type { BranchOperation } from "./branches";
 import type { ConversationReadiness } from "./conversation-coordinator";
-import type { WorkerDelivery, WorkerRecord } from "./worker-contract";
+import { workerProtocolStatus, type WorkerDelivery, type WorkerProtocolStatus, type WorkerRecord } from "./worker-contract";
 
 /** One synchronous response's detached store reads. Never an execution authority. */
 export function sessionListProjection(workers: readonly WorkerRecord[], deliveries: readonly WorkerDelivery[], branches: readonly BranchOperation[], otherOccupancy: Iterable<string>) {
   const workerSessions = new Map(workers.map(w => [w.sessionId, { id: w.id, parent: { sessionId: w.parent.sessionId, runId: w.parent.runId, toolCallId: w.parent.toolCallId } }]));
+  const workerProtocol = new Map<string, WorkerProtocolStatus>();
+  for (const worker of workers) {
+    const status = workerProtocolStatus(worker);
+    if (status) workerProtocol.set(worker.sessionId, status);
+  }
   const workerCounts = new Map<string, number>(), children = new Map<string, string[]>();
   const occupancy = new Set(otherOccupancy), deliveryParents = new Set<string>();
   for (const worker of workers) {
@@ -34,7 +39,7 @@ export function sessionListProjection(workers: readonly WorkerRecord[], deliveri
       seen.add(child); queue.push(child); branchParents.add(child);
     }
   }
-  return { workerSessions, workerCounts, branches, pending, replaced, origins, branchParents, deliveryParents, occupancy };
+  return { workerSessions, workerProtocol, workerCounts, branches, pending, replaced, origins, branchParents, deliveryParents, occupancy };
 }
 
 export type SessionListProjection = ReturnType<typeof sessionListProjection>;

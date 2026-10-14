@@ -1,4 +1,18 @@
 import type { Event, TerminationUncertainty } from "./history";
+import type { WorkerRecord } from "./worker-contract";
+
+/** Initial, continuation, and exchange-delivery runs. Result history is not current occupancy. */
+export function workerExecutionRunIds(worker: WorkerRecord): string[] {
+  const ids = new Set<string>();
+  if (worker.runId) ids.add(worker.runId);
+  if (worker.continuation?.runId) ids.add(worker.continuation.runId);
+  for (const exchange of worker.exchanges ?? []) if (exchange.delivery.runId) ids.add(exchange.delivery.runId);
+  return [...ids];
+}
+
+export function workerOwnsExecutionRun(worker: WorkerRecord, runId: string): boolean {
+  return workerExecutionRunIds(worker).includes(runId);
+}
 
 function historicalTerminationUncertainty(reason: unknown): boolean {
   return reason === "server restarted; verify old CLI process has stopped"

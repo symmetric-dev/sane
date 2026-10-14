@@ -11,7 +11,8 @@ export type ConversationUpdateSource = {
   nativeSessionId: string;
   incarnation?: string;
 };
-export type ConversationUpdateKind = "reply" | "failed" | "interrupted";
+export type ConversationUpdateKind = "reply" | "failed" | "interrupted" | "worker-attention";
+export type WorkerAttentionIntent = "informational" | "request";
 export type ConversationUpdate = {
   id: string;
   /** Durable transport change order, including revisions to existing occurrences. */
@@ -33,6 +34,13 @@ export type ConversationUpdate = {
   /** Only an evidenced EXACT one-to-one legacy run alias, never inferred from runId.
    * Producers must ensure uniqueness across occurrences; a page cannot prove it. */
   legacyRunId?: string;
+  /** Worker-attention metadata only. Never message text, transcript bodies, or URLs. */
+  workerId?: string;
+  parentSessionId?: string;
+  role?: string;
+  jobs?: string[];
+  intent?: WorkerAttentionIntent;
+  action?: "open-worker";
 };
 export type ConversationUpdateCandidate = Omit<ConversationUpdate, "sequence" | "occurrenceSequence" | "revision" | "observedAt"> & {
   observedAt?: string;
@@ -51,9 +59,17 @@ export type ConversationUpdateFeedRequest = {
   through?: number;
   limit?: number;
 };
+export type OutstandingWorkerAttention = {
+  workerId: string;
+  workerSessionId: string;
+  parentSessionId: string;
+  requestId: string;
+};
 export type ConversationUpdateBootstrap = {
   activeRunIds: string[];
   sourceBaselines: { sourceKey: string; through: number }[];
+  /** Unresolved user-attention requests. Not historical, even if the feed row was pruned. */
+  outstandingWorkerAttention?: OutstandingWorkerAttention[];
 };
 export type ConversationUpdatePage = {
   storeId: string;
@@ -163,10 +179,21 @@ function occurrenceId(value: unknown, source: ConversationUpdateSource): boolean
 }
 
 const candidateKeys = ["id", "conversationId", "source", "kind", "occurredAt", "observedAt", "runId",
-  "nativeBoundaryId", "messageId", "historical", "sourceSequence", "legacyRunId"];
+  "nativeBoundaryId", "messageId", "historical", "sourceSequence", "legacyRunId",
+  "workerId", "parentSessionId", "role", "jobs", "intent", "action"];
+const attentionKeys = ["workerId", "parentSessionId", "role", "jobs", "intent", "action"];
+function jobList(value: unknown): boolean {
+  return Array.isArray(value) && value.length <= 64 && value.every(item => text(item, 200));
+}
 function candidateFields(value: ObjectValue): boolean {
+  const ordinary = value.kind === "reply" || value.kind === "failed" || value.kind === "interrupted";
+  const attention = value.kind === "worker-attention";
+  if (!ordinary && !attention) return false;
+  if (ordinary && attentionKeys.some(key => value[key] !== undefined)) return false;
+  if (attention && (!text(value.workerId) || !text(value.parentSessionId) || !text(value.role, 200)
+    || (value.intent !== "informational" && value.intent !== "request") || value.action !== "open-worker"
+    || value.jobs !== undefined && !jobList(value.jobs))) return false;
   return text(value.conversationId) && isConversationUpdateSource(value.source) && occurrenceId(value.id, value.source)
-    && (value.kind === "reply" || value.kind === "failed" || value.kind === "interrupted")
     && (value.occurredAt === null || timestamp(value.occurredAt))
     && optional(value, "observedAt", timestamp)
     && ["runId", "nativeBoundaryId", "messageId", "legacyRunId"].every(key => optional(value, key, text))
@@ -201,8 +228,12 @@ export function isConversationUpdateCoverage(value: unknown): value is Conversat
     && (value.baselineThrough === undefined || value.through === undefined
       || (value.baselineThrough as number) <= (value.through as number));
 }
+function outstandingAttention(value: unknown): value is OutstandingWorkerAttention {
+  return object(value) && keys(value, ["workerId", "workerSessionId", "parentSessionId", "requestId"])
+    && text(value.workerId) && text(value.workerSessionId) && text(value.parentSessionId) && text(value.requestId, 200);
+}
 export function isConversationUpdateBootstrap(value: unknown): value is ConversationUpdateBootstrap {
-  if (!object(value) || !keys(value, ["activeRunIds", "sourceBaselines"])
+  if (!object(value) || !keys(value, ["activeRunIds", "sourceBaselines", "outstandingWorkerAttention"])
     || !Array.isArray(value.activeRunIds) || value.activeRunIds.length > CONVERSATION_UPDATE_MAX_BYTES
     || !Array.isArray(value.sourceBaselines) || value.sourceBaselines.length > CONVERSATION_UPDATE_MAX_BYTES) return false;
   const runs = new Set<string>();
@@ -215,6 +246,16 @@ export function isConversationUpdateBootstrap(value: unknown): value is Conversa
     if (!object(baseline) || !keys(baseline, ["sourceKey", "through"])
       || !sourceKey(baseline.sourceKey) || !integer(baseline.through) || sources.has(baseline.sourceKey)) return false;
     sources.add(baseline.sourceKey);
+  }
+  if (value.outstandingWorkerAttention !== undefined) {
+    if (!Array.isArray(value.outstandingWorkerAttention) || value.outstandingWorkerAttention.length > 64) return false;
+    const requests = new Set<string>();
+    for (const attention of value.outstandingWorkerAttention) {
+      if (!outstandingAttention(attention)) return false;
+      const id = JSON.stringify([attention.workerSessionId, attention.requestId]);
+      if (requests.has(id)) return false;
+      requests.add(id);
+    }
   }
   return boundedJson(value);
 }

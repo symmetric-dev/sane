@@ -255,7 +255,7 @@ describe("delayed prepared-input revalidation", () => {
       if (!reservation.ready) throw new Error(reservation.reason);
       let publications = 0, executions = 0;
       registry.register({ id: prepared.binding.harness,
-        automation: { "queued-user": { supported: true }, "worker-report": { supported: true }, handoff: { supported: true } },
+        automation: { "queued-user": { supported: true }, "worker-report": { supported: true }, "worker-exchange": { supported: true }, handoff: { supported: true } },
         readiness: async source => ({ source, readiness: { ready: true } }),
         execute: async () => { executions++; }, successfulSettlement: async () => ({ ready: true }),
       });

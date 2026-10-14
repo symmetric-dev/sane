@@ -1,5 +1,6 @@
+import type { ConversationRef } from "sane-core/contracts";
 import type { Event, Run } from "./history";
-import { workerResults, type WorkerDelivery, type WorkerRecord } from "./worker-contract";
+import { workerResults, type WorkerDelivery, type WorkerExchange, type WorkerRecord } from "./worker-contract";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
 
 export function workerReportPrompt(delivery: WorkerDelivery, workers: WorkerRecord[]) {
@@ -9,6 +10,27 @@ export function workerReportPrompt(delivery: WorkerDelivery, workers: WorkerReco
     const result = workerResults(w).find(r => r.revision === ref.revision && r.notification.id === ref.notificationId)!;
     return { ...ref, role: w.input.worker, sessionId: w.sessionId, outcome: result.outcome };
   }))].join("\n\n");
+}
+
+/** Consultation/guidance prompt. This is not a WorkerResult and must not be claimed as one. */
+export function workerExchangePrompt(exchange: WorkerExchange) {
+  return ["Worker Exchange", `Exchange: ${exchange.id}`, JSON.stringify({
+    id: exchange.id, direction: exchange.direction, kind: exchange.kind, correlationId: exchange.correlationId,
+    sequence: exchange.sequence, protocol: exchange.protocol, text: exchange.text,
+    sender: exchange.sender, recipient: exchange.recipient,
+  })].join("\n\n");
+}
+
+export function exchangeDeliveryEvidence(delivery: { id: string; commandId?: string; native: ConversationRef; sessionId: string; runId?: string }, run: Run | undefined, events: Event[]): "accepted" | "not-submitted" | "unknown" {
+  if (!run || !delivery.runId || run.runId !== delivery.runId || run.sessionId !== delivery.sessionId) return "unknown";
+  if (delivery.native.harness === "oc" && delivery.commandId && run.nativeCommandId === delivery.commandId && run.nativePhase === "accepted") return "accepted";
+  if (delivery.native.harness === "cc" && events.some(event => {
+    const data = event.data as { session_id?: string; type?: string };
+    return event.kind === "stdout" && isClaudeRootRecord(event.data) && data.session_id === delivery.native.nativeId && (data.type === "assistant" || data.type === "result");
+  })) return "accepted";
+  if (events.some(event => event.kind === "status" && (event.data as { workerDeliveryNotSubmitted?: string } | null)?.workerDeliveryNotSubmitted === delivery.id)) return "not-submitted";
+  if (delivery.native.harness === "oc" && run.nativePhase === "preparing" && run.status !== "running") return "not-submitted";
+  return "unknown";
 }
 
 /** Accepted continuation is the delivery milestone, not comprehension or successful completion. */

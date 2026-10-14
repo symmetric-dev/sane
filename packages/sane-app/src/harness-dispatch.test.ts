@@ -11,7 +11,7 @@ import type { RunOwner } from "./run-owner";
 import { ConversationCoordinator, type ConversationAdmissionLease } from "./conversation-coordinator";
 import { DispatchPreNativeRefusal } from "./dispatch-evidence";
 
-const automation = { "queued-user": { supported: true }, "worker-report": { supported: true }, handoff: { supported: true } } as const;
+const automation = { "queued-user": { supported: true }, "worker-report": { supported: true }, "worker-exchange": { supported: true }, handoff: { supported: true } } as const;
 const source: DispatchSource = { harnessId: "third-harness", sessionId: "conversation", authorityId: "authority", nativeSessionId: "native", cwd: "/checkout" };
 const request = (patch: Partial<HarnessDispatchRequest> = {}): HarnessDispatchRequest => ({ source, origin: "user", prompt: "prompt", resume: true, ...patch });
 const pending = <T>() => Promise.withResolvers<T>();
@@ -682,7 +682,7 @@ test("OpenCode rechecks live guards after each awaited observation", async () =>
 });
 
 test("automation declarations cannot be widened by mutating the original registration", async () => {
-  for (const origin of ["queued-user", "worker-report", "handoff"] as const) {
+  for (const origin of ["queued-user", "worker-report", "worker-exchange", "handoff"] as const) {
     const f = fixture(), registry = new HarnessDispatchRegistry();
     const support = { supported: false as boolean, reason: "No automation" };
     const mutable = { ...automation, [origin]: support } as HarnessDispatchAdapter["automation"];

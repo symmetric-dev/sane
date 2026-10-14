@@ -8,6 +8,7 @@ import { Facts } from "./thread";
 import { worktreeDisplay } from "./catalog-selector";
 import { workerReference as knownWorker, knownWorker as hydratedWorker, openWorkerSession, useWorkerDiscovery, useWorkerPolling } from "./worker-client";
 import { WorkerCard, WorkerSection } from "./worker-ui";
+import { workerStatusLabel } from "./worker-presentation";
 import { BranchLinks } from "./branch-ui";
 import { usePreviewRuns, useWorkstreamOverview } from "./conversation-hooks";
 import { ConversationSidebarList, useConversationSidebarModel } from "./conversation-sidebar";
@@ -46,9 +47,9 @@ export function HistoryDetail({ state, previewId, onOpen }: { state: State; prev
   const snapshot = savedProfileSnapshot(conversation, runs[0]);
   const profile = displayProfile(store.profileSet(), snapshot);
   return <section className="history-detail" aria-label="Session preview">
-    <p className="eyebrow">{worker ? "WORKER SESSION · READ-ONLY" : "SESSION PREVIEW"}</p>
+    <p className="eyebrow">{worker ? "WORKER SESSION · PREVIEW" : "SESSION PREVIEW"}</p>
     {worker && <p><button type="button" onClick={() => { if (knownWorker(worker.parent.sessionId)) void openWorkerSession(worker.parent.sessionId); else onOpen(worker.parent.sessionId); }}>Parent conversation</button> · Parent run {worker.parent.runId}</p>}
-    <div className="history-detail-header"><h2 title={conversation.title || undefined}>{formatTitle(conversation.title, basename(conversation.cwd))}</h2><span className={`status ${conversation.status}`}>{conversation.status}</span>{conversation.hidden && <span className="harness-badge">Hidden</span>}</div>
+    <div className="history-detail-header"><h2 title={conversation.title || undefined}>{formatTitle(conversation.title, basename(conversation.cwd))}</h2><span className={`status ${conversation.workerProtocol ?? conversation.status}`}>{conversation.workerProtocol ? workerStatusLabel(conversation.workerProtocol, conversation.status) : conversation.status}</span>{conversation.hidden && <span className="harness-badge">Hidden</span>}</div>
     <BranchLinks key={conversation.id} conversation={conversation} />
     <div className="history-detail-actions"><button type="button" className="primary-button" disabled={state.sending} onClick={() => worker ? void openWorkerSession(conversation.id) : onOpen(conversation.id)}>{worker ? "Open worker" : conversation.replacedBy ? "Open read-only transcript" : "Open in Chat"}</button>{!conversation.replacedBy && <button type="button" className="text-button" disabled={state.actionBusy} onClick={() => void (conversation.hidden ? store.unhide(conversation.id) : store.hide(conversation.id))}>{conversation.hidden ? "Unhide" : "Hide"}</button>}</div>
     {record && <WorkerCard worker={record} />}

@@ -391,7 +391,7 @@ for (const mode of ["partial", "invalid"] as const) test(`${mode} exact read-onl
     guards: () => ({ settled: true, released: true, status: "completed", cancelling: false, stopRequested: false, stopping: false, closing: false, storageFailed, reconciliationRequired: storageFailed }),
   };
   registry.register(createOpenCodeDispatchAdapter({
-    automation: { "queued-user": { supported: false, reason: "Idle-only offline fixture" }, "worker-report": { supported: true }, handoff: { supported: true } },
+    automation: { "queued-user": { supported: false, reason: "Idle-only offline fixture" }, "worker-report": { supported: true }, "worker-exchange": { supported: true }, handoff: { supported: true } },
     readiness: async expected => ({ source: expected, readiness: { ready: true } }),
     execute: async (owner, _prompt, _resume, ready) => { ready(true); owner.run.status = "completed"; },
     exactCommand: async (_owner, expected, commandId) => {

@@ -1,6 +1,9 @@
 import { completionVerificationTarget, store, type State } from "./store";
-import { active, type CompletionVerificationTarget } from "./types";
+import { active, type CompletionVerificationTarget, type Conversation } from "./types";
 import { pendingInteractions } from "./interaction-presentation";
+import { knownWorker, workersFor } from "./worker-client";
+import { workerProtocolStatus, type WorkerProtocolStatus, type WorkerRecord } from "../src/worker-contract";
+import { workerStatusLabel } from "./worker-presentation";
 
 export type ChatStatus = { id: string; text: string; detail?: string; busy?: boolean; action?: "reconnect" | "models" | "verify-completion"; verificationTarget?: CompletionVerificationTarget; priority?: number; observedAt?: string; startedAt?: string };
 export type ChatStatusContext = { workspaceReady: boolean; handoffLoading?: boolean; handoffError?: string; workerError?: string; nativeSubagentLoading?: boolean };
@@ -11,7 +14,7 @@ const priorities: Record<string, number> = {
   availability: 80, "input-request": 88, "compact-request": 75, sending: 70, "followup-queue": 65,
   run: 60, "native-queue": 55, "history-refresh": 45, action: 40,
   conversation: 25, workspace: 25, "history-page": 20,
-  handoffs: 15, workers: 15, "native-subagents": 15, "missing-model": 10, "action-notice": 5,
+  handoffs: 15, workers: 15, "worker-protocol": 62, "native-subagents": 15, "missing-model": 10, "action-notice": 5,
 };
 
 /** Semantic priority, never polling/arrival order, selects the activity lid. */
@@ -26,11 +29,15 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
   const statuses: ChatStatus[] = [];
   const add = (id: string, text: string, detail?: string, busy = false, action?: ChatStatus["action"], observation?: Pick<ChatStatus, "priority" | "observedAt">) => statuses.push({ id, text, detail, busy, action, ...observation });
   const conversation = state.conversations.find(item => item.id === state.selected);
+  const protocolWorker = conversation ? liveWorker(conversation) : undefined;
+  const protocol = protocolWorker ? workerProtocolStatus(protocolWorker) : conversation?.workerProtocol;
+  const protocolBusy = !protocol || protocol === "running" || protocol === "uncertain" || protocol === "closing";
   const activity = conversation?.activity && (!conversation.activity.runId || conversation.activity.runId === conversation.lastRunId) ? conversation.activity : undefined;
   const capabilities = store.capabilities();
   const requests = pendingInteractions(state, capabilities);
   const appRunning = state.runs.some(run => active(run.status));
-  const running = appRunning || active(conversation?.status ?? "completed") || (!!activity && activity.phase !== "refreshing");
+  // Explicit idle and protocol waits are not native occupancy. Permission prompts stay on input-request.
+  const running = appRunning || protocolBusy && (active(conversation?.status ?? "completed") || (!!activity && activity.phase !== "refreshing"));
   const nativeContinuing = conversation?.nativeActivity === "active" && !appRunning;
   const latestRun = state.runs.at(-1);
   const nativeQueueWaiting = active(latestRun?.status ?? "completed") && latestRun?.nativeDelivery === "queue"
@@ -116,5 +123,30 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
   if (state.selected && conversationLoading) add("conversation", "Loading conversation…", undefined, true);
   if (state.connectionError) add("connection", running || compacting ? "Connection lost · run status unknown" : "Reconnecting to the bridge…", state.connectionError, true, "reconnect");
   if (state.sending) add("sending", "Sending your message…", undefined, true);
+  const protocolIdle = protocol === "idle" || protocol === "awaiting-user" || protocol === "awaiting-parent" || protocol === "awaiting-children";
+  if (protocol && protocol !== "running" && !(appRunning && protocolIdle)) add("worker-protocol", workerStatusLabel(protocol, protocolOutcome(protocolWorker, protocol, conversation)), protocolDetail(protocol), protocol === "closing" || protocol === "uncertain");
+  const awaitingParent = state.selected ? workersFor(state.selected).workers.filter(worker => workerProtocolStatus(worker) === "awaiting-parent") : [];
+  if (awaitingParent.length && protocol !== "awaiting-parent") add("worker-awaiting-parent", awaitingParent.length === 1 ? "Worker awaiting parent" : `${awaitingParent.length} workers awaiting parent`, "A consultation is not a completed result. Reply in chat; reading a notification does not resolve the wait.", false, undefined, { priority: 58 });
   return statuses;
+}
+
+function liveWorker(conversation: Conversation): WorkerRecord | undefined {
+  const record = knownWorker(conversation.id);
+  return record && "state" in record ? record : undefined;
+}
+function protocolOutcome(worker: WorkerRecord | undefined, protocol: WorkerProtocolStatus, conversation?: Conversation): string | undefined {
+  if (protocol !== "terminal") return worker?.outcome?.status;
+  return worker?.outcome?.status ?? (conversation?.status === "failed" || conversation?.status === "interrupted" || conversation?.status === "completed" ? conversation.status : undefined);
+}
+function protocolDetail(protocol: WorkerProtocolStatus): string {
+  switch (protocol) {
+    case "idle": return "The assignment is unfinished. Ending a turn did not complete it.";
+    case "awaiting-user": return "This worker is waiting for you. This is not a permission prompt, and opening a notification does not resolve the wait.";
+    case "awaiting-parent": return "This worker is waiting for its parent. A consultation is not a completed result.";
+    case "awaiting-children": return "This worker is waiting for child workers.";
+    case "closing": return "Completion was accepted and is still settling.";
+    case "terminal": return "The assignment is finished.";
+    case "uncertain": return "Execution is unconfirmed. Stop remains available.";
+    case "running": return "This worker assignment is executing.";
+  }
 }

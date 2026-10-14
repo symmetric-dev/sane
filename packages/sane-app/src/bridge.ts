@@ -25,7 +25,7 @@ import { ConversationUpdates } from "./conversation-updates";
 import { createClaudeUpdateState, projectClaudeCommittedEvent, type ClaudeConversationUpdateState } from "./claude-conversation-updates";
 import { conversationUpdateRoute } from "./conversation-update-routes";
 import { ChromePushService } from "./chrome-push";
-import { updateSourceKey } from "../shared/conversation/conversation-updates";
+import { isConversationUpdateSource, updateOccurrenceId, updateSourceKey } from "../shared/conversation/conversation-updates";
 import type { RunOwner as Owner } from "./run-owner";
 import { ConversationCoordinator, type ConversationAdmissionLease, type ConversationOperationIntent, type ConversationReadinessOptions } from "./conversation-coordinator";
 import { sessionListProjection, SessionListReadinessScope, type SessionListProjection } from "./session-list-projection";
@@ -65,13 +65,16 @@ import { DomainError, canonicalSlot, equivalentSlots, normalizeNativeSource, rev
 import { classifyCaller } from "../../sane-cli/src/cli-arguments";
 import { WorkerStore } from "./worker-store";
 import { WorkerService, type WorkerParent } from "./workers";
+import type { ExplicitWorkerOperations } from "./native-workers";
 import { createNativeWorkerHandler, NativeWorkerRequestError, type NativeWorkerCallerResolver } from "./native-workers";
 import { matchesOpenCodeWorkerPart, nativeWorkerInput, projectNativeWorkerReply, type NativeWorkerInvocation } from "../../sane-cli/src/native-worker-contract";
+import { proveInstalledExplicitWorkerRuntime } from "../../sane-cli/src/install-sane-agent-context-packages";
 import { workerTerminationUncertainty } from "./worker-recovery";
-import { workerDeliveryEvidence, workerReportPrompt } from "./worker-outbox";
+import { exchangeDeliveryEvidence, workerDeliveryEvidence, workerExchangePrompt, workerReportPrompt } from "./worker-outbox";
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
-import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery } from "./worker-contract";
-import { managedWorkerCoordination, managedWorkerRoles, managedWorkerWaiting } from "./scout-crew-lifecycle";
+import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery, type WorkerProtocolOperation, type WorkerProtocolPin, type WorkerRecord } from "./worker-contract";
+import { explicitObservationChange, isExplicitWorker } from "./worker-protocol";
+import { managedWorkerCoordination, managedWorkerRoles, managedWorkerWaiting, workerBlocksParentGate } from "./scout-crew-lifecycle";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
 import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneContextText, saneFrameworkMessageId, saneSessionContext, saneSessionText, sha256, workerAssignment } from "./agent-launch";
 import { ContextPackageStore } from "./context-package-store";
@@ -430,6 +433,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
     return result;
   };
+  const explicitProtocolDynamic = (sessionId: string, dynamic: string): string => {
+    const worker = workerStore.getBySession(sessionId);
+    if (worker?.protocol?.id !== "explicit-v1") return dynamic;
+    const waiting = worker.wait?.reason ?? "none";
+    const correlation = worker.wait?.correlationId;
+    return `${dynamic}\n\nWorker protocol: explicit-v1.\nPermitted operations: ${worker.protocol.operations.join(", ")}.\nWaiting: ${waiting}.${correlation ? `\nMessage correlation: ${correlation}.` : ""}\nFollow the worker protocol identified in your session context. For an App-managed explicit-completion assignment, submit your final result with sane_worker_complete. Ending a turn pauses execution; it does not complete the assignment.\nIncoming messages are attributed updates, not a new assignment.`;
+  };
   const canonicalComposition = async (sessionId: string): Promise<ContextComposition | null> => {
     const session = meta.sessions.find(s => s.sessionId === sessionId);
     if (!session?.saneContext?.package) return null;
@@ -447,7 +457,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const current = meta.sessions.find(s => s.sessionId === sessionId);
     if (!current || pin !== JSON.stringify([current.harness, current.authorityId, current.nativeSessionId, current.cwd, current.agent, current.agentKind, current.nativeAgentSelected, current.saneContext, current.saneExecution])) throw new Error("Context binding changed during preparation");
     assertAdmission();
-    const dynamic = branchContextDynamic(sessionId, saneSessionText(session, context) ?? `# SANE Session\n\nWorkstream: none\nImplementation root: ${context.executionCheckout}`, branches.list(), meta.sessions);
+    const dynamic = explicitProtocolDynamic(sessionId, branchContextDynamic(sessionId, saneSessionText(session, context) ?? `# SANE Session\n\nWorkstream: none\nImplementation root: ${context.executionCheckout}`, branches.list(), meta.sessions));
     return { bundle, binding: { sessionId, harness: session.harness!, authorityId: session.authorityId!, nativeSessionId: session.nativeSessionId!, cwd: session.cwd }, paths, dynamic, assignment: session.saneContext.assignment, injectRole: !!session.saneExecution || session.harness === "opencode" && !session.nativeAgentSelected };
   };
   const canonicalContext: ContextProvider = async sessionId => {
@@ -509,7 +519,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const updateEligible = (session: Session, run?: Run) => session.agentKind !== "worker" && !workerStore.getBySession(session.sessionId) && run?.operation !== "compact";
   const updates = updateService = new ConversationUpdates(updateStore, {
     projector: { createState: createClaudeUpdateState, project: projectClaudeCommittedEvent },
-    bootstrap: () => ({ activeRunIds: meta.runs.filter(run => run.status === "running" && updateEligible(meta.sessions.find(session => session.sessionId === run.sessionId)!, run)).map(run => run.runId), sourceBaselines: replyIntegration?.sourceBaselines() ?? [] }),
+    bootstrap: () => ({ activeRunIds: meta.runs.filter(run => run.status === "running" && updateEligible(meta.sessions.find(session => session.sessionId === run.sessionId)!, run)).map(run => run.runId), sourceBaselines: replyIntegration?.sourceBaselines() ?? [], outstandingWorkerAttention: workerStore.list().flatMap(worker => worker.protocol?.id === "explicit-v1" && worker.wait?.reason === "user" && worker.wait.correlationId ? [{ workerId: worker.id, workerSessionId: worker.sessionId, parentSessionId: worker.parent.sessionId, requestId: worker.wait.correlationId }] : []).slice(0, 64) }),
     coverage: () => [...meta.sessions.filter(session => updateEligible(session) && session.harness !== "opencode").map(session => ({
       sourceKey: updateSourceKey({ harness: session.harness!, authorityId: session.authorityId!, nativeSessionId: session.nativeSessionId! }),
       state: "ready" as const,
@@ -625,7 +635,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       ...branches.list().filter(branch => !["completed", "failed"].includes(branch.state)).map(branch => branch.sourceId),
     ]);
     // Workers inherit their parent's repository even before child admission exists.
-    if ([...busy].some(sessionId => relevant(sessionId)) || workers.active().some(worker => relevant(worker.parent.sessionId) || relevant(worker.sessionId, false))) throw new WorkstreamAdapterError(409, "bridge-busy", `${scope.phaseRelevant ? "Selected phase" : "Repository"} has active or unconfirmed App execution; wait for runs and workers to finish`);
+    if ([...busy].some(sessionId => relevant(sessionId)) || workers.executionOccupants().some(worker => relevant(worker.parent.sessionId) || relevant(worker.sessionId, false))) throw new WorkstreamAdapterError(409, "bridge-busy", `${scope.phaseRelevant ? "Selected phase" : "Repository"} has active or unconfirmed App execution; wait for runs and workers to finish`);
   }
   function releaseOwner(owner: Owner) {
     if (owner.completionTerminalization && owner.completionTerminalization.state !== "committed") return;
@@ -669,9 +679,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     dataDir: options.dataDir, storeId: store.manifest.storeId, feed: updateStore,
     subject: options.publicOrigin?.startsWith("https:") && !loopback(new URL(options.publicOrigin).hostname)
       ? options.publicOrigin : "mailto:notifications@localhost",
-    eligible: (id, source) => {
+    eligible: (id, source, kind) => {
       const session = meta.sessions.find(session => session.sessionId === id);
-      if (closing || storageFailed || !session || session.hidden || !updateEligible(session) || branches.replaced(id)
+      const workerAttention = kind === "worker-attention" && !!session && (session.agentKind === "worker" || !!workerStore.getBySession(session.sessionId));
+      if (closing || storageFailed || !session || session.hidden || (!updateEligible(session) && !workerAttention) || branches.replaced(id)
         || session.attachment?.state === "pending" || session.harness !== source.harness
         || session.authorityId !== source.authorityId || session.nativeSessionId !== source.nativeSessionId) return false;
       return source.incarnation === undefined || updateSourceKey(replyIntegration!.updateSource(id) ?? {
@@ -716,6 +727,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     requireReconciliation: () => { retainOwner = true; meta.reconciliationRequired = true; },
     failClosed, emit, persist, enqueue, execution, executionContext, compactExecution,
     refreshCompactHistory, assertWorkerDeliverySubmission, saneSession, canonicalContext, canonicalExecution,
+    explicitProtocol: sessionId => workerStore.getBySession(sessionId)?.protocol,
   });
   const handoffs = new HandoffService(admissions, catalog, router, store.sources, () => meta.sessions, () => {
     if (closing || storageFailed || meta.reconciliationRequired) throw new WorkstreamAdapterError(503, "handoff-owner-unavailable", "App execution owner is unavailable");
@@ -858,6 +870,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (meta.reconciliationRequired) return { ready: false as const, reason: "Operator reconciliation required: restart with --reconcile-interrupted after verifying previous CLI processes are stopped", code: "reconciliation-required" };
     if (closing) return { ready: false as const, reason: "Bridge is shutting down", code: "bridge-closing" };
     if (sessionId && !(intent.kind === "worker-report" && phase === "dispatch" && lease) && (read ? read.deliveryParents.has(sessionId) : workerStore.hasActiveDelivery(sessionId))) return { ready: false as const, reason: "Worker report continuation is reserved or acceptance is unconfirmed; inspect worker delivery evidence", code: "worker-delivery-pending" };
+    if (sessionId && !(intent.kind === "worker-exchange" && phase === "dispatch" && lease) && workerStore.hasActiveExchange(sessionId)) return { ready: false as const, reason: "Worker exchange delivery is reserved or acceptance is unconfirmed; it will not be resent", code: "worker-exchange-pending" };
     if (sessionId && !delivery && (handoffReservations.has(sessionId) || handoffDispatches.has(sessionId))) return { ready: false as const, reason: "Recipient has an active or uncertain handoff", code: "handoff-pending" };
     const admission = sessionId ? admissions.get(sessionId) : undefined;
     if (admission && admission.state !== "ready" && !(preparation && (["retry-admission", "enroll", "attach"].includes(intent.kind) || admission.state === "identity_known" && admission.nativeId))) return { ready: false as const, reason: "Admission pending; explicit known-identity retry is required", code: "admission-pending" };
@@ -867,7 +880,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Read-only inspection and a source-owned child launch do not compete for
     // this recipient's turn. Every mutating recipient intent does, independently
     // of delivery origin or a copied queue request ID.
-    if (sessionId && phase !== "enqueue" && ["user-prompt", "worker-report", "handoff", "prepare-recipient", "branch", "compact", "branch-recovery", "enroll", "retry-admission", "attach"].includes(intent.kind) && pendingInputs?.hasChain(sessionId)
+    if (sessionId && phase !== "enqueue" && ["user-prompt", "worker-report", "worker-exchange", "handoff", "prepare-recipient", "branch", "compact", "branch-recovery", "enroll", "retry-admission", "attach"].includes(intent.kind) && pendingInputs?.hasChain(sessionId)
       && !pendingInputBridge?.allowsReadiness(options)) return { ready: false as const, reason: "A durable input chain is active; use the explicit pending-inputs API", code: "pending-input-chain-active" };
     return undefined;
   }
@@ -1072,7 +1085,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const descriptor = requireOperation(sessionHarness(source), "branch");
     if (closing || storageFailed || meta.reconciliationRequired || owners.has(source.sessionId) || admitting.has(source.sessionId) || coordinator.hasReconciliation(source.sessionId) || handoffReservations.has(source.sessionId) || handoffDispatches.has(source.sessionId)) throw new Error("Source must be idle, with no pending admission or handoff");
     if (source.agentKind === "worker" || workerStore.hasSession(source.sessionId)) throw new Error("Worker conversations cannot be branched");
-    if (workers.tree(source.sessionId).some(w => !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || workerResults(w).some(r => ["pending", "claimed", "acceptance-unknown"].includes(r.notification.state))) || workerStore.hasActiveDelivery(source.sessionId)) throw new Error("Finish outstanding workers and worker report deliveries before branching");
+    if (workers.tree(source.sessionId).some(workerBlocksParentGate) || workerStore.hasActiveDelivery(source.sessionId) || workerStore.hasActiveExchange(source.sessionId)) throw new Error("Finish outstanding workers and worker report deliveries before branching");
     if (branches.replaced(source.sessionId)) throw new Error("Replaced conversations are read-only");
     if (!descriptor.policies.branchAttachedConversation && source.attachment) throw new Error("This imported conversation lacks trustworthy complete-turn and idle evidence; branching is unavailable");
   }
@@ -1221,7 +1234,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!descriptor) return "Compaction requires a known native harness";
     if (!descriptor.operations.compact.supported) return descriptor.operations.compact.reason;
     if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId)) return "Worker conversations cannot be compacted manually";
-    if (workers.tree(session.sessionId).some(w => !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || workerResults(w).some(r => ["pending", "claimed", "acceptance-unknown"].includes(r.notification.state))) || workerStore.hasActiveDelivery(session.sessionId)) return "Finish outstanding workers and worker report deliveries before compacting";
+    if (workers.tree(session.sessionId).some(workerBlocksParentGate) || workerStore.hasActiveDelivery(session.sessionId) || workerStore.hasActiveExchange(session.sessionId)) return "Finish outstanding workers and worker report deliveries before compacting";
     if (!session.nativeSessionId || !session.harness) return "Compaction requires an existing native conversation";
     if (session.harness === "claude-code" && !session.lastRunId && !session.attachment && !branches.list().some(op => op.destinationId === session.sessionId && op.state === "completed")) return "Start the native conversation before compacting";
     return undefined;
@@ -1342,7 +1355,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     events: runId => events.get(runId) ?? [], emit, persist, execution, executionContext,
     takeFrameworkDelivery: sessionId => { const delivery = frameworkDeliveries.get(sessionId); frameworkDeliveries.delete(sessionId); return delivery; },
     compactExecution, refreshCompactHistory, assertWorkerDeliverySubmission,
-    workerHasRun: runId => workerStore.hasRun(runId), sleep: ms => Bun.sleep(ms), saneSession, canonicalContext, canonicalExecution,
+    workerHasRun: runId => workerStore.hasExecutionRun(runId), sleep: ms => Bun.sleep(ms), saneSession, canonicalContext, canonicalExecution,
+    explicitProtocol: sessionId => workerStore.getBySession(sessionId)?.protocol,
     completionInboxEmpty: async id => {
       const result = await oc.request<{ data: unknown[] }>(oc.path(id) + "/inbox");
       return Array.isArray(result?.data) && result.data.length === 0;
@@ -1386,7 +1400,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       throw error;
     }
   }
-  const automation = { "queued-user": { supported: true as const }, "worker-report": { supported: true as const }, handoff: { supported: true as const } };
+  const automation = { "queued-user": { supported: true as const }, "worker-report": { supported: true as const }, "worker-exchange": { supported: true as const }, handoff: { supported: true as const } };
   dispatchRegistry.register(createClaudeDispatchAdapter({
     automation,
     readiness: async source => ({ source, readiness: { ready: false, reason: "Claude automatic readiness requires the exact completed process lifecycle", code: "dispatch-proof-unproven" } }),
@@ -1420,7 +1434,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     nativeReadiness: pinnedNativeReadiness,
   }));
   function executePrompt(lease: ConversationAdmissionLease, session: Session, run: Run, prompt: string, resume: boolean, origin: DispatchOrigin,
-    options: { requestId?: string; validate?: () => void; link?: () => void; configure?: () => void; evidence?: DispatchEvidenceHooks; delivery?: PreparedAdmissionContext["delivery"]; nativeQueuedHandoff?: DispatchIdentity; publish?: PreparedAdmissionOptions["publish"]; workerDeliveryId?: string; beforeSend?: () => void; reconciliation?: Omit<NonNullable<DispatchLifecycleHooks<Owner>["reconciliation"]>, "begin"> } = {}) {
+    options: { requestId?: string; coordinatorIntent?: ConversationOperationIntent["kind"]; validate?: () => void; link?: () => void; configure?: () => void; evidence?: DispatchEvidenceHooks; delivery?: PreparedAdmissionContext["delivery"]; nativeQueuedHandoff?: DispatchIdentity; publish?: PreparedAdmissionOptions["publish"]; workerDeliveryId?: string; beforeSend?: () => void; reconciliation?: Omit<NonNullable<DispatchLifecycleHooks<Owner>["reconciliation"]>, "begin"> } = {}) {
     let snapshot = dispatchSnapshot(session);
     requireOperation(sessionHarness(session), "prompt");
     let published = false;
@@ -1477,7 +1491,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           }
         }
         const ownLease = coordinator.holdsAdmission(lease, current.sessionId);
-        const intent: ConversationOperationIntent = { kind: origin === "handoff" ? "handoff" : origin === "worker-report" ? "worker-report" : "user-prompt", requestId: options.requestId };
+        const intent: ConversationOperationIntent = { kind: options.coordinatorIntent ?? (origin === "handoff" ? "handoff" : origin === "worker-report" ? "worker-report" : origin === "worker-exchange" ? "worker-exchange" : "user-prompt"), requestId: options.requestId };
         const input = { conversationId: current.sessionId, intent, phase: "dispatch" as const, ...(ownLease ? { lease } : {}) };
         const ready = pendingInputBridge!.releasedReadiness(owner, input);
         return { source: dispatchSource(current), installation: JSON.stringify([dispatchSnapshot(current), admission, association, repository]),
@@ -1575,7 +1589,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if ((receipt.intent.version === 2 ? receipt.intent.rolePrefix : "") !== ordinaryRolePrefix(prepared)) throw new UserInputPreparationError("Science dispatch role instructions changed", 409);
     }
     if (context && (context.delivery !== "idle-only" && context.delivery !== "native-queued-handoff"
-      || !["user", "queued-user", "worker-report", "handoff"].includes(context.origin))) throw new UserInputPreparationError("Explicit admission requires a known delivery policy and origin", 409);
+      || !["user", "queued-user", "worker-report", "worker-exchange", "handoff"].includes(context.origin))) throw new UserInputPreparationError("Explicit admission requires a known delivery policy and origin", 409);
     if (publish !== undefined && typeof publish !== "function") throw new UserInputPreparationError("Lifecycle publisher must be a function", 409);
     const nativeHandoff = context?.delivery === "native-queued-handoff";
     if (nativeHandoff && (harness !== "opencode" || context.origin !== "queued-user" || context.intent.kind !== "user-prompt"
@@ -1718,6 +1732,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!("model" in configured)) delete session!.model;
         if (!("effort" in configured)) delete session!.effort;
         workerStore.suppress(conversationId, false);
+        // Install accepts the user prompt. Capture the user-wait correlation and clear it here, not on read or open.
+        if (origin === "user" || origin === "queued-user") {
+          const accepted = workerStore.getBySession(conversationId);
+          const correlationId = accepted?.protocol?.id === "explicit-v1" && accepted.wait?.reason === "user" ? accepted.wait.correlationId : undefined;
+          if (correlationId) workerStore.resolveAcceptedUserWait(conversationId, correlationId);
+        }
       },
       beforeSend: () => {
         assertPreparedUserInputCurrent(prepared, preparationState(), installedSnapshot);
@@ -1840,8 +1860,47 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!run) return reject();
     return { sessionId: session.sessionId, caller: { envelope: e, runId: run.runId, toolCallId: request.invocation.toolCallId, invocation: request.invocation } };
   };
+  const failWorkerBeforeSubmit = (workerId: string, summary: string) => {
+    workerStore.update(workerId, { state: "failed", error: summary, outcome: { status: "failed", at: new Date().toISOString(), summary, log: null }, notification: { id: `worker-outcome:${workerId}`, state: "pending" } });
+  };
+  const messageGrant = (permissions: { action?: unknown; effect?: unknown; resource?: unknown }[]) => permissions.some(rule => rule.action === "sane_worker_message" && rule.effect === "allow" && (rule.resource === "*" || rule.resource === undefined));
+  /** Latest canonical-execution permissions or launch settings for this parent run. A stale earlier allow is not a current grant. */
+  const parentCanMessage = async (parentRunId: string): Promise<boolean> => {
+    const records = events.get(parentRunId) ?? [];
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const event = records[index]!;
+      if (event.kind === "context" && event.data && typeof event.data === "object") {
+        const data = event.data as { type?: unknown; configuration?: { permissions?: { action?: unknown; effect?: unknown; resource?: unknown }[] } };
+        if (data.type === "canonical-execution" && Array.isArray(data.configuration?.permissions)) return messageGrant(data.configuration.permissions);
+      }
+      if (event.kind !== "launch" || !event.data || typeof event.data !== "object") continue;
+      const settings = (event.data as { settings?: { path?: unknown; sha256?: unknown } }).settings;
+      if (!settings || typeof settings.path !== "string" || typeof settings.sha256 !== "string") continue;
+      try {
+        const text = await readFile(settings.path, "utf8");
+        if (createHash("sha256").update(text).digest("hex") !== settings.sha256) return false;
+        const parsed = JSON.parse(text) as { permissions?: { allow?: unknown } };
+        return Array.isArray(parsed.permissions?.allow) && parsed.permissions.allow.includes("mcp__sane__sane_worker_message");
+      } catch { return false; }
+    }
+    return false;
+  };
+  const admitExplicitWorker = async (worker: WorkerRecord, pinned: { saneExecution?: CanonicalExecutionRef; saneContext?: SaneSessionContext }): Promise<{ pin?: WorkerProtocolPin; reject?: string }> => {
+    const packageRef = pinned.saneContext?.package;
+    const executionRevision = pinned.saneExecution?.revision;
+    if (!canonicalContextEnabled || !packageRef || !executionRevision) return {};
+    const { bundle } = await contextPackages.load(packageRef);
+    if (!bundle.assets.some(asset => asset.text.includes("submit your final result with sane_worker_complete"))) return {};
+    const tools = await proveInstalledExplicitWorkerRuntime(claudeRoot);
+    if (!tools || !await parentCanMessage(worker.parent.runId)) return { reject: "Explicit completion instructions are selected, but the installed runtime or the launching parent's messaging tool is not proven. This launch was not submitted." };
+    const operations: WorkerProtocolOperation[] = ["complete"];
+    if (worker.input.worker === "implementer" || worker.input.worker === "scout-crew") operations.push("notify", "message-parent");
+    return { pin: { id: "explicit-v1", operations, executionRevision, contextRevision: packageRef.revision, runtimeCapabilities: [...tools] } };
+  };
+  const nativeTurnActive = (worker: { sessionId: string }) => owners.has(worker.sessionId) || workerStore.hasActiveDelivery(worker.sessionId) || workerStore.hasActiveExchange(worker.sessionId);
   const workerHandler = createNativeWorkerHandler({
     resolveCaller: resolveTrustedWorkerInvocation,
+    nativeTurnActive,
     operations: {
       start: (caller, input, context) => workers.start(caller, input, () => context.assertActive()),
       status: (caller, ids, context) => { context.assertActive(); return workers.status(caller, ids); },
@@ -1849,6 +1908,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       cancel: (caller, ids, descendants, context) => { context.assertActive(); return workers.cancel(caller, ids, descendants); },
       cancelAll: (caller, scope, context) => { context.assertActive(); return workers.cancelAll(caller, scope); },
     },
+    explicit: {
+      complete: (caller, input, context) => { context.assertActive(); return workers.complete(caller, { outcome: input.outcome }, input.requestId); },
+      notify: (caller, input, context) => { context.assertActive(); return workers.notify(caller, { text: input.text, intent: input.intent }, input.requestId); },
+      messageParent: (caller, input, context) => { context.assertActive(); return workers.messageParent(caller, { text: input.text, awaitReply: input.awaitReply }, input.requestId); },
+      messageChild: (caller, input, context) => { context.assertActive(); return workers.messageChild(caller, { workerId: input.workerId, text: input.text }, input.requestId); },
+    } satisfies ExplicitWorkerOperations,
   });
   async function nativeWorker(req: Request) {
     if (req.method !== "POST" || req.headers.has("origin") || !equal(req.headers.get("authorization") ?? "", `Bearer ${handoffToken}`)) return json({ error: "Native authorization required" }, 401);
@@ -1896,7 +1961,23 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const owner = owners.get(parent.sessionId);
       if (!owner || owner.run.runId !== parent.runId || owner.run.status !== "running" || owner.run.operation === "compact" || owner.settled || owner.stopRequested || owner.cancelling) throw new WorkstreamAdapterError(409, "worker-parent", "Parent prompt run ended or stopped during worker qualification; no worker was reserved");
     },
-    hasActiveExecution(w) { return owners.has(w.sessionId) || workerStore.hasActiveDelivery(w.sessionId); },
+    hasActiveExecution: nativeTurnActive,
+    cancellationCommitted(w) {
+      const owner = owners.get(w.sessionId);
+      return !!w.cancelRequestedAt || w.state === "cancelling" || !!owner?.stopRequested || !!owner?.cancelling;
+    },
+    publishAttention(worker, attention) {
+      const child = worker.child;
+      const harness = child?.harness === "oc" ? "opencode" : child?.harness === "cc" ? "claude-code" : undefined;
+      const source = child && harness && { harness, authorityId: child.authorityId, nativeSessionId: child.nativeId };
+      if (!child || !isConversationUpdateSource(source)) return;
+      const occurrence = updateOccurrenceId(source, attention.occurrenceBoundary);
+      void updates.publishWorkerAttention({
+        id: occurrence, conversationId: worker.sessionId, source, kind: "worker-attention", occurredAt: null,
+        workerId: worker.id, parentSessionId: worker.parent.sessionId, role: worker.input.worker,
+        ...(worker.input.jobs ? { jobs: [...worker.input.jobs] } : {}), intent: attention.intent, action: "open-worker",
+      });
+    },
     observationKey(w) {
       // Only terminal, owner-free observations are cached by WorkerService. The
       // no-run admission/orphan recovery branch is unreachable with an outcome.
@@ -1927,6 +2008,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const policy = pinnedContext.saneExecution ? (await executionPackages.load(pinnedContext.saneExecution)).policy : undefined;
         const coordination = managedWorkerCoordination(policy);
         if (coordination) workerStore.update(w.id, { coordination });
+        // Explicit protocol is pinned only after the installed-runtime gate, immediately before first submission.
         if (policy && policy.spec.name !== `sane/${w.launch.identity?.kind}/${w.launch.identity?.role}`) throw new Error("Reserved worker execution policy role changed");
         let nativeLaunch = harness === "opencode" ? await oc.resolveLaunch(w.checkout, { agent: policy ? "build" : w.launch.agent, model: w.launch.model ?? (policy?.model ? `${policy.model.providerID}/${policy.model.id}` : undefined), effort: w.launch.effort ?? (!w.launch.model ? policy?.model?.variant : undefined) }) : undefined;
         if (harness === "claude-code" && !policy) await claudeAgentSettings(claudeRoot, w.launch.identity!);
@@ -1956,6 +2038,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           throw e;
         }
         await persist();
+        const explicitAdmission = await admitExplicitWorker(w, pinnedContext);
+        if (explicitAdmission.reject) {
+          failWorkerBeforeSubmit(w.id, explicitAdmission.reject);
+          throw new Error(explicitAdmission.reject);
+        }
+        if (explicitAdmission.pin) {
+          try { workers.pinExplicitProtocol(w.id, explicitAdmission.pin); }
+          catch (error) {
+            if (!workerStore.get(w.id)?.outcome) failWorkerBeforeSubmit(w.id, error instanceof WorkstreamAdapterError ? error.message : "Explicit protocol could not be pinned. This launch was not submitted.");
+            throw error;
+          }
+        }
         const run: Run = { runId: crypto.randomUUID(), sessionId: w.sessionId, cwd: w.checkout, status: "running", createdAt: new Date().toISOString(), agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, saneExecution: session.saneExecution, profileId: session.profileId, model: session.model, effort: session.effort, ...saneContextSnapshot(session), ...(harness === "opencode" ? { nativeCommandId: `msg_${crypto.randomUUID().replaceAll("-", "")}`, nativePhase: "preparing" as const } : {}) };
         workerStore.update(w.id, { runId: run.runId, state: "running" });
         const prompt = w.input.context === undefined ? w.input.prompt : `${w.input.prompt}\n\nSupplied context:\n${w.input.context}`;
@@ -1974,6 +2068,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     async observe(w) {
       const restored = restoreWorkerOutput(w, runId => events.get(runId) ?? []);
       if (restored) w = workerStore.update(w.id, restored);
+      if (isExplicitWorker(w)) return observeExplicit(w);
       const results = workerResults(w);
       // Durable delivery run identity recovers continuations after restart without replay.
       const continuationDeliveries = workerStore.deliveriesForParent(w.sessionId);
@@ -2034,12 +2129,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
     beforeCancel(selected) {
       const captured = new Map(selected.map(w => [w.sessionId, pendingInputControls.stop(w.sessionId)]));
-      const idleParents = new Set(selected.filter(w => w.coordination && !w.outcome && !captured.get(w.sessionId)
-        && !workerStore.hasActiveDelivery(w.sessionId)
-        && meta.runs.filter(r => r.sessionId === w.sessionId && r.operation !== "compact").at(-1)?.status === "completed").map(w => w.sessionId));
+      const idleParents = new Set(selected.filter(w => !captured.get(w.sessionId) && !workerStore.hasActiveDelivery(w.sessionId) && !workerStore.hasActiveExchange(w.sessionId)
+        && (w.coordination && !w.outcome && meta.runs.filter(r => r.sessionId === w.sessionId && r.operation !== "compact").at(-1)?.status === "completed"
+          || isExplicitWorker(w) && (w.state === "idle" || !owners.has(w.sessionId)))).map(w => w.sessionId));
       return async w => {
         const owner = captured.get(w.sessionId);
-        if (!owner) { if (idleParents.has(w.sessionId) || !w.runId && admitting.has(w.sessionId)) return; throw new Error("No active App owner; termination requires native reconciliation"); }
+        if (!owner) { if (idleParents.has(w.sessionId) || isExplicitWorker(w) && !workerStore.hasActiveExchange(w.sessionId) || !w.runId && admitting.has(w.sessionId)) return; throw new Error("No active App owner; termination requires native reconciliation"); }
         await cancelOwner(owner);
       };
     },
@@ -2108,7 +2203,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     assertDispatchSnapshot(parentSessionId, snapshot);
     if (session.hidden || workerStore.suppressed(parentSessionId)) return problem("Parent hidden or stopped during preparation; outcomes remain pending");
     const workerParent = workerStore.getBySession(parentSessionId);
-    if (workerParent && workers.active().filter(w => w.checkout === cwd && w.sessionId !== parentSessionId).length >= maxWorkersPerCheckout) return problem(`Checkout worker capacity reached (${maxWorkersPerCheckout}); continuation remains pending`);
+    if (workerParent && workers.executionCount(cwd, parentSessionId) >= maxWorkersPerCheckout) return problem(`Checkout worker capacity reached (${maxWorkersPerCheckout}); continuation remains pending`);
     const now = new Date().toISOString();
     const run: Run = { runId: crypto.randomUUID(), sessionId: parentSessionId, cwd, status: "running", createdAt: now, agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, profileId: session.profileId, model: session.model, effort: session.effort, ...saneContextSnapshot(session) };
     const commandId = session.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : `${run.runId}:user`;
@@ -2132,13 +2227,113 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     } finally { coordinator.releaseAdmission(lease); }
   }
 
+  async function observeExplicit(w: WorkerRecord): Promise<Partial<WorkerRecord>> {
+    const continuationDeliveries = workerStore.deliveriesForParent(w.sessionId);
+    const continuationIds = new Set(continuationDeliveries.filter(d => d.state !== "not-submitted" && workerDeliveryEvidence(d, meta.runs.find(r => r.runId === d.run.runId), events.get(d.run.runId) ?? []) !== "not-submitted").map(d => d.run.runId));
+    const candidates = meta.runs.filter(r => r.sessionId === w.sessionId && r.operation !== "compact" && (!continuationDeliveries.some(d => d.run.runId === r.runId) || continuationIds.has(r.runId)));
+    const run = candidates.at(-1);
+    const owner = owners.get(w.sessionId);
+    const ownerPresent = !!owner || admitting.has(w.sessionId);
+    const ownerSettled = !owner || owner.settled !== false;
+    const cancelRequested = !!w.cancelRequestedAt;
+    if (!run) {
+      if (ownerPresent) return explicitObservationChange(w, { run: null, ownerPresent, ownerSettled, terminationUncertain: false, cancelRequested });
+      const uncertain = (reason: string) => explicitObservationChange(w, { run: null, ownerPresent: false, ownerSettled: true, terminationUncertain: true, cancelRequested, nativeSummary: reason });
+      if (storageFailed || retainOwner) return uncertain("App storage or execution ownership is unconfirmed");
+      if (meta.runs.some(r => r.sessionId === w.sessionId)) return uncertain("Worker run reference disagrees with session run metadata");
+      const admission = admissions.get(w.sessionId);
+      if (admission?.state === "native_creation_unknown") return uncertain("Native session creation acknowledgement was lost");
+      if (!admission && (w.child || meta.sessions.some(s => s.sessionId === w.sessionId)) || admission && (admission.operation !== "create" || admission.binding.executionCheckout !== w.checkout || w.child && (w.child.nativeId !== admission.nativeId || w.child.authorityId !== admission.source.authorityId))) return uncertain("Worker and admission identity evidence disagree");
+      if (w.runId) {
+        try {
+          const raw = await readFile(join(options.dataDir, `${w.runId}.jsonl`), "utf8");
+          const orphan = raw.length ? decodeLog(raw, { runId: w.runId, sessionId: w.sessionId } as Run).events : [];
+          if (orphan.some(e => e.kind !== "submission" && !(e.kind === "status" && (e.data as { status?: string } | null)?.status === "running" && Object.keys((e.data ?? {}) as object).length === 1))) return uncertain("Orphan log contains evidence beyond the pre-submission publication boundary");
+        } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") return uncertain("Orphan run log is unreadable or cannot prove non-submission"); }
+      }
+      if (admitting.has(w.sessionId) || owners.has(w.sessionId)) return {};
+      const status = cancelRequested ? "interrupted" as const : "failed" as const;
+      return explicitObservationChange(w, { run: null, ownerPresent: false, ownerSettled: true, terminationUncertain: false, cancelRequested, preparationOutcome: { status, summary: "Worker preparation ended before durable run publication; native work was not submitted. Original request is closed and will not be replayed." } });
+    }
+    const records = events.get(run.runId) ?? [];
+    return explicitObservationChange(w, {
+      run: { runId: run.runId, status: run.status, endedAt: run.endedAt }, ownerPresent, ownerSettled,
+      terminationUncertain: !!workerTerminationUncertainty(records) || retainOwner, cancelRequested,
+      nativeSummary: workerOutput(records) ?? String((records.filter(e => e.kind === "status").at(-1)?.data as { reason?: unknown } | undefined)?.reason ?? run.status),
+    });
+  }
+  async function reconcileExchange(exchange: import("./worker-contract").WorkerExchange) {
+    const delivery = exchange.delivery;
+    if (delivery.state !== "claimed" && delivery.state !== "acceptance-unknown" || !delivery.deliveryId || !delivery.runId) return;
+    const run = meta.runs.find(r => r.runId === delivery.runId && r.sessionId === exchange.recipient.sessionId);
+    if (!run) {
+      if (owners.has(exchange.recipient.sessionId) || admitting.has(exchange.recipient.sessionId) || storageFailed) return;
+      try {
+        const raw = await readFile(join(options.dataDir, `${delivery.runId}.jsonl`), "utf8");
+        const records = raw ? decodeLog(raw, { runId: delivery.runId, sessionId: exchange.recipient.sessionId } as Run).events : [];
+        if (records.some(e => e.kind !== "submission" && !(e.kind === "status" && (e.data as { status?: string } | null)?.status === "running" && Object.keys((e.data ?? {}) as object).length === 1))) return workerStore.advanceExchange(exchange.id, "acceptance-unknown", "Orphan exchange log exceeds pre-submission boundary; no automatic resend");
+      } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") return workerStore.advanceExchange(exchange.id, "acceptance-unknown", "Exchange log unreadable; no automatic resend"); }
+      return workerStore.advanceExchange(exchange.id, "not-submitted", "Exchange was not submitted; it can be retried");
+    }
+    const evidence = exchangeDeliveryEvidence({ id: delivery.deliveryId, commandId: delivery.commandId, native: exchange.recipient.native, sessionId: exchange.recipient.sessionId, runId: delivery.runId }, run, events.get(run.runId) ?? []);
+    if (evidence === "accepted") return workerStore.advanceExchange(exchange.id, "accepted");
+    if (evidence === "not-submitted" && owners.get(exchange.recipient.sessionId)?.settled !== false) return workerStore.advanceExchange(exchange.id, "not-submitted", "Exchange did not submit; it can be retried");
+    const problem = run.status === "running" ? "Waiting for correlated native acceptance; exchange will not be resent" : "Run ended without proof of acceptance or non-submission. No automatic resend.";
+    if (delivery.state === "acceptance-unknown" && delivery.error === problem) return;
+    return workerStore.advanceExchange(exchange.id, "acceptance-unknown", problem);
+  }
+  async function dispatchWorkerExchange(workerId: string, exchange: import("./worker-contract").WorkerExchange) {
+    if (exchange.delivery.state !== "queued") return;
+    const session = meta.sessions.find(s => s.sessionId === exchange.recipient.sessionId);
+    if (!session || !session.nativeSessionId) return workerStore.noteExchange(exchange.id, "Exchange recipient is unavailable; the message remains queued");
+    if (session.hidden) return workerStore.noteExchange(exchange.id, "Recipient is soft-hidden; the exchange remains queued");
+    if (workerStore.suppressed(session.sessionId)) return workerStore.noteExchange(exchange.id, "Automatic continuation is stopped; the exchange remains queued");
+    const recipientWorker = workerStore.getBySession(session.sessionId);
+    if (recipientWorker && (recipientWorker.assignment === "closing" || recipientWorker.assignment === "terminal")) return workerStore.noteExchange(exchange.id, "Recipient assignment is no longer open; the exchange remains queued");
+    const ready = coordinator.inspectReadiness({ conversationId: session.sessionId, intent: { kind: "worker-exchange", requestId: exchange.id }, phase: "admission" });
+    if (!ready.ready) return workerStore.noteExchange(exchange.id, ready.reason);
+    if (recipientWorker && workers.executionCount(session.cwd, session.sessionId) >= maxWorkersPerCheckout) return workerStore.noteExchange(exchange.id, `Checkout worker capacity reached (${maxWorkersPerCheckout}); exchange remains queued`);
+    const admission = admissions.get(session.sessionId);
+    if (!admission || admission.state !== "ready") return workerStore.noteExchange(exchange.id, "Exchange recipient is not an admitted conversation");
+    const cwd = await execution(session.sessionId);
+    if (session.harness === "opencode") await oc.assertIdle(session.nativeSessionId, cwd);
+    const again = coordinator.inspectReadiness({ conversationId: session.sessionId, intent: { kind: "worker-exchange", requestId: exchange.id }, phase: "admission" });
+    if (!again.ready || workerStore.hasActiveExchange(session.sessionId)) return;
+    const now = new Date().toISOString();
+    const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: now, agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, profileId: session.profileId, model: session.model, effort: session.effort, ...saneContextSnapshot(session) };
+    const commandId = session.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : `${run.runId}:user`;
+    if (session.harness === "opencode") { run.nativeCommandId = commandId; run.nativePhase = "preparing"; }
+    const deliveryId = crypto.randomUUID();
+    const lease = reserve({ kind: "worker-exchange", requestId: exchange.id }, session.sessionId);
+    try {
+      const claimed = workerStore.claimExchange(workerId, exchange.id, { deliveryId, runId: run.runId, commandId });
+      if (!claimed) return;
+      if (recipientWorker && recipientWorker.assignment !== "terminal") workerStore.update(recipientWorker.id, { state: "running", continuation: { runId: run.runId, state: "running" } });
+      // owner.workerDeliveryId carries the exchange id only so existing executors can prove non-submission. It is not a WorkerDelivery.
+      executePrompt(lease, session, run, workerExchangePrompt(claimed), true, "worker-exchange", {
+        requestId: exchange.id, coordinatorIntent: "worker-exchange", workerDeliveryId: deliveryId,
+        reconciliation: { order: "after-release", run: async () => {
+          if (storageFailed) return;
+          const current = workerStore.get(workerId)?.exchanges?.find(item => item.id === exchange.id);
+          if (current) await reconcileExchange(current);
+          if (recipientWorker) await workers.refresh(workerStore.get(recipientWorker.id)!);
+        } },
+      });
+    } finally { coordinator.releaseAdmission(lease); }
+  }
+
   let workerOutboxTask: Promise<void> | undefined;
   async function consumeWorkerReports() {
     for (const w of workers.listForRefresh()) { if (closing || storageFailed) return; await workers.refresh(w); }
     for (const d of workerStore.deliveriesToReconcile()) { if (closing || storageFailed) return; await reconcileWorkerDelivery(d); }
+    for (const exchange of workerStore.exchangesToReconcile()) { if (closing || storageFailed) return; await reconcileExchange(exchange.exchange); }
     for (const parent of workerStore.pendingParents()) {
       if (closing || storageFailed) return;
       try { await dispatchWorkerReport(parent); } catch (e) { if (storageFailed) throw e; workerStore.pendingProblem(parent, e instanceof Error ? e.message : "Worker report preparation unavailable"); }
+    }
+    for (const queued of workerStore.queuedExchanges()) {
+      if (closing || storageFailed) return;
+      try { await dispatchWorkerExchange(queued.workerId, queued.exchange); } catch (e) { if (storageFailed) throw e; workerStore.noteExchange(queued.exchange.id, "Exchange preparation is unavailable; the message remains queued"); }
     }
   }
   const workerOutbox = { list: () => workerStore.deliveries(), reconcile: async (id: string) => { const d = workerStore.deliveries().find(d => d.id === id); if (!d) throw new WorkstreamAdapterError(404, "worker-delivery-missing", "Unknown worker delivery"); return reconcileWorkerDelivery(d); } };
@@ -2447,9 +2642,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     catalog.assertBinding(admission.binding.workspaceId, admission.binding.worktreeId, source.cwd, admission.binding.bindingRevision);
     if (retainOwner || meta.reconciliationRequired || coordinator.hasReconciliation(id)
       || handoffReservations.has(id) || handoffDispatches.has(id)) return blocked("Current App admission, reconciliation or handoff remains held");
-    if (workers.tree(id).some(w => !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state)
-      || workerResults(w).some(r => ["pending", "claimed", "acceptance-unknown"].includes(r.notification.state)))
-      || workerStore.hasActiveDelivery(id))
+    if (workers.tree(id).some(workerBlocksParentGate) || workerStore.hasActiveDelivery(id) || workerStore.hasActiveExchange(id))
       return blocked("Current App workers or pending reports remain unresolved");
     if (own && (!coordinator.holdsAdmission(own.lease, id) || !sameDispatchSource(own.identity.source, source))) return blocked("Original queue reservation is no longer current");
     const owner = coordinator.getOwner(id);
@@ -3751,7 +3944,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const reconciliationWasRequired = !!meta.reconciliationRequired;
           const token = coordinator.beginReconciliation(owner);
           owner.settled = true; releaseOwner(owner);
-          const w = workerStore.getByRun(recovering.runId);
+          const w = workerStore.getByRun(recovering.runId) ?? workerStore.getByExecutionRun(recovering.runId);
           if (w && !storageFailed) await workers.refresh(w);
           // A preexisting operator pause does not turn healthy observation into
           // a failed source hook. It still denies all admissions independently;

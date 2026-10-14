@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { CallerEnvelope } from "../src/cli-arguments"
-import { matchesOpenCodeWorkerPart, nativeWorkerInput, nativeWorkerInvocation, nativeWorkerRequestId, nativeWorkerSchemas, parseNativeWorkerRequest, projectNativeWorkerReply } from "../src/native-worker-contract"
+import { matchesOpenCodeWorkerPart, nativeWorkerInput, nativeWorkerInvocation, nativeWorkerOperationRequestId, nativeWorkerRequestId, nativeWorkerSchemas, parseNativeWorkerRequest, projectNativeWorkerReply } from "../src/native-worker-contract"
 import { OpenCodeWorkerInvocations } from "../src/native-opencode"
 
 const workerId = "11111111-1111-4111-8111-111111111111"
@@ -94,5 +94,45 @@ describe("strict shared native worker contract", () => {
     expect(projected.worker!.latestResult).toMatchObject({ revision: 2, notificationId: ref.notificationId, notificationState: "claimed" })
     expect(projected.receipts).toEqual([{ ...ref, state: "claimed", acknowledged: false }])
     expect(JSON.stringify(projected)).not.toContain("private")
+  })
+
+  test("complete, notify, message_parent and message parse private request ids and reject model-supplied ones", () => {
+    const cases = [
+      { operation: "complete" as const, input: { outcome: "role report" } },
+      { operation: "notify" as const, input: { text: "need a look", intent: "informational" as const } },
+      { operation: "message_parent" as const, input: { text: "checking a choice", awaitReply: true } },
+      { operation: "message" as const, input: { workerId, text: "continue with the narrower scope" } },
+    ]
+    for (const { operation, input } of cases) {
+      expect(() => nativeWorkerInput(operation, { ...input, requestId: "invented" })).toThrow()
+      const requestId = nativeWorkerOperationRequestId(caller, invocation, operation)
+      const request = { operation, caller, invocation, input: { ...input, requestId } }
+      expect(parseNativeWorkerRequest(request)).toMatchObject(request)
+      expect(() => parseNativeWorkerRequest({ ...request, input: { ...input, requestId: "invented" } })).toThrow()
+      expect(() => parseNativeWorkerRequest({ ...request, input: { ...input, requestId: nativeWorkerRequestId(caller, invocation) } })).toThrow()
+    }
+  })
+
+  test("existing start request-id formula is unchanged", () => {
+    // sha256 of [harness, authorityId, nativeId, messageId, toolCallId, "sane_worker_start"]
+    expect(nativeWorkerRequestId(caller, invocation)).toBe("worker:e0844f49b0995f38ff33bc554cd368de93417055ec4a973954f8a94673691bd5")
+    // OpenCode callbacks append invocationId and do not replace the start operation slot.
+    const opencode = { ...invocation, opencode: { invocationId: "11111111-1111-4111-8111-111111111111", operation: "start" as const } }
+    expect(nativeWorkerRequestId(caller, opencode)).toBe("worker:b7f80923917e156a835510428632a3c04c28ee372604a7cbdf19c5aa28e2e821")
+    expect(nativeWorkerRequestId(caller, invocation)).not.toBe(nativeWorkerOperationRequestId(caller, invocation, "complete"))
+  })
+
+  test("completion, notification and message receipts survive both projection passes", () => {
+    const once = projectNativeWorkerReply({
+      completion: { state: "accepted", revision: 1 },
+      attention: { state: "accepted", revision: 1, occurrenceId: "worker-attention:private" },
+      exchange: { id: workerId, state: "accepted", revision: 1, correlationId: "corr-1" },
+    })
+    expect(once).toEqual({
+      completion: { state: "accepted", revision: 1 },
+      notification: { state: "accepted" },
+      message: { state: "accepted", correlation: "corr-1" },
+    })
+    expect(projectNativeWorkerReply(once)).toEqual(once)
   })
 })

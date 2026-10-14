@@ -9,6 +9,7 @@ import { verifyOpenCodeCompletion, type OperatorCompletionEvidence } from "./ope
 import { prepareContextDelivery, assertContextCurrent, contextReceipt, type ContextProvider } from "./context-delivery";
 import { openCodeExecutionConfiguration } from "./canonical-agent-operations";
 import type { CanonicalExecutionProvider } from "./canonical-execution-store";
+import type { WorkerProtocolPin } from "./worker-contract";
 
 /** Private App recovery capability; no Run synthesis or submission hooks. */
 export type OpenCodeRecoveryObservation = Readonly<{
@@ -48,6 +49,8 @@ export type OpenCodeRunDependencies = {
   saneSession: (sessionId: string) => Promise<string | null>;
   canonicalContext?: ContextProvider;
   canonicalExecution?: CanonicalExecutionProvider;
+  /** Recorded worker pin only. Absent must not upgrade an unpinned resume. */
+  explicitProtocol?: (sessionId: string) => WorkerProtocolPin | undefined;
   sleep: (ms: number) => Promise<unknown>;
 };
 
@@ -86,7 +89,7 @@ export class OpenCodeRunService {
     if (!snapshot) return;
     if (!this.deps.oc.configureCanonicalExecution) throw new Error("Canonical execution integration is unavailable");
     if (snapshot.policy.spec.name !== `sane/${session.agentKind}/${session.agent}`) throw new Error("Canonical execution role mismatch");
-    const configuration = openCodeExecutionConfiguration({ policy: snapshot.policy, children: snapshot.children, sessionID: session.nativeSessionId!, directory: session.cwd, model: run.model, effort: run.effort });
+    const configuration = openCodeExecutionConfiguration({ policy: snapshot.policy, children: snapshot.children, sessionID: session.nativeSessionId!, directory: session.cwd, model: run.model, effort: run.effort, protocol: this.deps.explicitProtocol?.(run.sessionId) });
     await this.deps.emit(run, "context", { type: "canonical-execution", stage: "prepared", revision: snapshot.revision, configuration });
     guard();
     const readOnly = run.nativeDelivery === "queue";

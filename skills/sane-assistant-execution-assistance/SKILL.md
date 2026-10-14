@@ -12,7 +12,7 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
    - **User-directed:** return at each review checkpoint for the user's next instruction.
    - **Delegated cycle:** coordinate work within the agreed scope and attempt limit until accepted or a stop condition applies.
 3. For each job, start one Implementer per attempt with `sane_worker_start` (`worker: "implementer"`, `jobs: ["<id>"]`). Use the configured worker profile; collect its result and Job Report.
-4. Finish independent coordination and end your turn while the batch runs. Assess returned outcomes before dispatching dependent work; ask the user about interrupted assignments.
+4. Finish independent coordination and end your turn while the batch runs. Assess returned outcomes before dispatching dependent work; ask the user about interrupted assignments. Ending a worker's turn does not by itself complete its assignment or deliver its result.
 5. Continue through the checkpoint's jobs, then follow Checkpoint Review and Commit before starting the next checkpoint. Track implemented jobs awaiting review separately from accepted jobs in the execution evidence. Mark accepted jobs with `sane job <id> completed`.
 
 ## Review and Fixes
@@ -58,7 +58,7 @@ When authorized execution is ready, summarize the outcome and ask whether the us
 
 Limit each worker assignment to the contents listed for its role below.
 
-Use `sane_worker_wait` for a bounded join when useful; use `sane_worker_acknowledge` for results handled through wait/status with their exact revision and notification references to avoid a later duplicate report-back.
+Use `sane_worker_acknowledge` for terminal result receipts handled through status, with their exact revision and notification references, to avoid a later duplicate report-back. An explicit worker's notification or consultation is not completion, and the parent must end its turn so those messages and the later terminal outcome can arrive.
 
 Workers started with `sane_worker_start` receive the session roots, workstream identity, and the Job Spec, Job Report, and template paths of the jobs passed in `jobs`; do not restate them.
 

@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { FiArrowRight, FiArrowUpRight, FiChevronRight, FiGitBranch, FiInfo, FiSquare, FiUsers, FiX } from "react-icons/fi";
-import type { WorkerDelivery, WorkerRecord, WorkerResult } from "../src/worker-contract";
-import { workerResults } from "../src/worker-contract";
+import type { WorkerDelivery, WorkerExchange, WorkerRecord, WorkerResult } from "../src/worker-contract";
+import { workerCountsAsActiveExecution, workerProtocolStatus, workerResults, workerStoppable } from "../src/worker-contract";
+import { exchangeRecipientLabel, exchangeSenderLabel, workerStatusText } from "./worker-presentation";
 import { builtinProfiles, type AgentProfile } from "../src/agent-profiles-contract";
 import { WORKER_AGENT_CATALOG } from "sane-core/agent-catalog";
 import { AGENT_ICONS, agentColor } from "./agent-visuals";
@@ -33,6 +34,23 @@ function WorkerIcon({ profile, size = 20 }: { profile: Pick<AgentProfile, "icon"
   const Glyph = AGENT_ICONS[profile.icon] ?? FiUsers;
   return <Glyph className="worker-glyph" size={size} style={{ color: agentColor(profile.color) }} aria-hidden="true" />;
 }
+function WorkerExchanges({ worker, compact = false }: { worker: WorkerRecord; compact?: boolean }) {
+  const exchanges = worker.exchanges ?? [];
+  if (!exchanges.length) return null;
+  return <ul className={`worker-exchanges${compact ? " is-compact" : ""}`} aria-label="Worker messages">
+    {exchanges.map(exchange => <WorkerExchangeRow key={exchange.id} exchange={exchange} compact={compact} />)}
+  </ul>;
+}
+function WorkerExchangeRow({ exchange, compact }: { exchange: WorkerExchange; compact: boolean }) {
+  const sender = exchangeSenderLabel(exchange);
+  const recipient = exchangeRecipientLabel(exchange);
+  return <li className="worker-exchange">
+    <span className="worker-exchange-route">{sender} → {recipient}</span>
+    <span className="worker-status" title="Native acceptance, not comprehension">{exchange.delivery.state}</span>
+    {!compact && <span className="muted">{exchange.kind}</span>}
+    {!compact && <pre className="worker-exchange-text">{exchange.text}</pre>}
+  </li>;
+}
 type WorkerView = "history" | "details";
 function WorkerDetails({ worker: w, view, close, trigger }: { worker: WorkerRecord; view: WorkerView; close: () => void; trigger: HTMLButtonElement | null }) {
   const profile = useWorkerVisual(w);
@@ -51,6 +69,7 @@ function WorkerDetails({ worker: w, view, close, trigger }: { worker: WorkerReco
       <dl className="facts">{[["Harness", harnessName(w.launch.harness)], ["Model", w.launch.model || "Native default"], ["Worker ID", w.id], ["Conversation ID", w.sessionId], ["Native session ID", w.child?.nativeId ?? "Unavailable"], ["Initial run", w.runId ?? "Unavailable"], ["Continuation run", w.continuation?.runId ?? "None"], ["Report-back", (w.latestResult ?? results.at(-1))?.notification.state ?? "No result yet"]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       {w.error && <p className="notice error">{w.error}</p>}{w.continuation?.error && <p className="notice error">{w.continuation.error}</p>}{w.continuationCancellation && <p className="notice">Stop requested {new Date(w.continuationCancellation.requestedAt).toLocaleString()}. {w.continuationCancellation.error}</p>}
       {results.map(r => <p className="muted" key={r.revision}>Result {r.revision} · {r.notification.state}{r.notification.error && <span className="notice error">{r.notification.error}</span>}</p>)}
+      <WorkerExchanges worker={w} />
     </>}</div>
   </dialog>, document.body);
 }
@@ -69,24 +88,32 @@ export function WorkerCard({ worker: w, workers = [], runs = [], open = openWork
   const attention = !!(w.error || w.continuation?.error || w.continuationCancellation?.error || results.some(r => r.notification.error));
   const timestamp = execution.latest?.createdAt ?? w.createdAt;
   const duration = elapsed(w, execution, now);
-  const status = execution.executionState;
-  const statusClass = `${moving ? " is-active" : ""}${status === "failed" ? " is-error" : ""}${status === "uncertain" || status === "unknown" ? " is-uncertain" : ""}`;
-  return <section className={`worker-card${moving ? " is-active" : ""}`} data-send-kind={sendAnchor ? "worker" : undefined} data-send-id={sendAnchor ? w.id : undefined} tabIndex={sendAnchor ? -1 : undefined} aria-label={sendAnchor ? "Worker send" : undefined}>
+  const protocol = workerProtocolStatus(w);
+  const protocolLabel = workerStatusText(w);
+  const status = protocolLabel ?? execution.executionState;
+  const movingStatus = protocol === "running" || (!protocol && moving);
+  const failed = protocol === "terminal" ? w.outcome?.status === "failed" || w.state === "failed" : status === "failed";
+  const uncertainStatus = protocol === "uncertain" || !protocol && (status === "uncertain" || status === "unknown");
+  const statusClass = `${movingStatus ? " is-active" : ""}${failed ? " is-error" : ""}${uncertainStatus ? " is-uncertain" : ""}`;
+  const stoppable = workerStoppable(w, execution.active, execution.executionState);
+  const legacyWaiting = !protocol && execution.executionState === "waiting";
+  return <section className={`worker-card${movingStatus ? " is-active" : ""}`} data-send-kind={sendAnchor ? "worker" : undefined} data-send-id={sendAnchor ? w.id : undefined} tabIndex={sendAnchor ? -1 : undefined} aria-label={sendAnchor ? "Worker send" : undefined}>
     <header><WorkerIcon profile={profile} /><div className="worker-card-heading"><strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong>{!!w.input.jobs?.length && <span className="worker-card-jobs"><span className="sr-only">{w.input.jobs.length === 1 ? "Job: " : "Jobs: "}</span>{w.input.jobs.map(job => <code key={job}>{job}</code>)}</span>}{timestamp && <time className="worker-card-timing" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}</div></header>
     <div className="worker-card-controls">
       <div className="worker-actions">
         <button type="button" className="worker-action" aria-label="Open worker" disabled={sending} onClick={() => open(w)}><FiArrowUpRight size={13} aria-hidden="true" />Open</button>
-        <Stop parent={w.parent.sessionId} input={{ ids: [w.id] }} label="Stop worker" disabled={!execution.active && !["uncertain", "unknown"].includes(execution.executionState)}>Stop</Stop>
+        <Stop parent={w.parent.sessionId} input={{ ids: [w.id] }} label="Stop worker" disabled={!stoppable}>Stop</Stop>
         {duration && <span className="worker-card-elapsed" aria-label={`Elapsed: ${duration}`}>{duration}</span>}
         {workers.some(child => child.parent.sessionId === w.sessionId) && <Stop parent={w.parent.sessionId} input={{ ids: [w.id], includeDescendants: true }} label="Stop worker tree" icon={<FiGitBranch size={13} aria-hidden="true" />}>Stop Tree</Stop>}
       </div>
       <div className="worker-actions worker-secondary-actions">
-        <span className={`worker-status${statusClass}`} role="status">{`${execution.continuation ? "Continuation · " : ""}${status}`}</span>
+        <span className={`worker-status${statusClass}`} role="status">{protocol ? status : `${execution.continuation ? "Continuation · " : ""}${status}`}</span>
         <button type="button" className="worker-action" aria-haspopup="dialog" disabled={!results.length} onClick={event => show("history", event.currentTarget)}>History <span className="worker-count">{results.length}</span></button>
         <button type="button" className={`worker-action worker-info${attention ? " has-issue" : ""}`} aria-haspopup="dialog" aria-label={attention ? "Worker details, attention needed" : "Worker details"} title={attention ? "Attention needed" : "Worker details"} onClick={event => show("details", event.currentTarget)}><FiInfo size={13} aria-hidden="true" />Details</button>
       </div>
     </div>
-    {execution.executionState === "waiting" && <p className="worker-waiting muted">Waiting for input</p>}
+    {legacyWaiting && <p className="worker-waiting muted">Waiting for input</p>}
+    <WorkerExchanges worker={w} compact />
     {view && <WorkerDetails worker={w} view={view} trigger={trigger.current} close={() => setView(null)} />}
   </section>;
 }
@@ -142,7 +169,9 @@ export function WorkersButton({ sessionId, active = true }: { sessionId: string;
   const workers = projection.workers;
   const newestWorkers = [...workers].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const executions = workers.map(w => workerExecution(w, runs, conversations.find(c => c.id === w.sessionId)));
-  const count = executions.filter(e => e.active).length;
+  const count = workers.filter((worker, index) => workerCountsAsActiveExecution(worker, executions[index]?.active ?? false)).length;
+  const idle = workers.filter(worker => workerProtocolStatus(worker) === "idle").length;
+  const awaiting = workers.filter(worker => ["awaiting-user", "awaiting-parent", "awaiting-children"].includes(workerProtocolStatus(worker) ?? "")).length;
   const uncertain = executions.filter(e => e.executionState === "uncertain" || e.executionState === "unknown").length;
   useEffect(() => { if (!active) setOpened(false); }, [active]);
   useEffect(() => {
@@ -166,7 +195,7 @@ export function WorkersButton({ sessionId, active = true }: { sessionId: string;
   const open = (w: WorkerRecord) => { flushSync(() => setOpened(false)); openWorker(w); };
   return <><button ref={trigger} type="button" disabled={!active} className="composer-workers" aria-haspopup="dialog" aria-expanded={opened && active} aria-controls={opened && active ? id : undefined} aria-label={`Workers, ${count} active`} title="Workers" onClick={() => setOpened(true)}><FiUsers size={14} aria-hidden="true" /><span className="workers-count" aria-hidden="true">{count}</span></button>
     {opened && active && createPortal(<dialog ref={dialog} id={id} className="workers-panel" aria-modal="true" aria-labelledby={`${id}-title`} onCancel={event => { event.preventDefault(); setOpened(false); }} onClick={event => { if (event.target === event.currentTarget) setOpened(false); }}><div className="workers-panel-content">
-      <header className="workers-panel-header"><div><h2 id={`${id}-title`}>Workers</h2><p className="muted">{count} active · {workers.length} total{uncertain ? ` · ${uncertain} unconfirmed` : ""}</p></div><button type="button" className="icon-button" aria-label="Close workers" onClick={() => setOpened(false)}><FiX size={18} /></button></header>
+      <header className="workers-panel-header"><div><h2 id={`${id}-title`}>Workers</h2><p className="muted">{count} active · {workers.length} total{idle ? ` · ${idle} idle` : ""}{awaiting ? ` · ${awaiting} awaiting` : ""}{uncertain ? ` · ${uncertain} unconfirmed` : ""}</p></div><button type="button" className="icon-button" aria-label="Close workers" onClick={() => setOpened(false)}><FiX size={18} /></button></header>
       <div className="workers-panel-body">
         {projection.error && <p className="notice error" role="alert">Worker status unavailable: {projection.error}</p>}
         {projection.continuationSuppressed && <p className="notice" role="status">Automatic report-back is paused after an explicit stop. Results remain available; resuming this conversation re-enables delivery.</p>}

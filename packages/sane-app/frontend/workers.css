@@ -19,6 +19,10 @@
 .worker-card-controls > .worker-actions { min-width:0; max-width:100%; }
 .worker-secondary-actions { margin-left:auto; justify-content:flex-end; }
 .worker-waiting { margin:10px 0 0; font-size:11px; }
+.worker-exchanges { margin:8px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px; }
+.worker-exchange { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 8px; min-width:0; font-size:11px; color:var(--muted-foreground); }
+.worker-exchange-route { color:var(--foreground); }
+.worker-exchange-text { flex-basis:100%; margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
 .worker-count { color:var(--muted-foreground); font-size:10px; font-variant-numeric:tabular-nums; }
 .worker-actions { display:flex; align-items:center; flex-wrap:wrap; gap:4px 8px; }
 .worker-action { display:inline-flex; align-items:center; gap:5px; margin:0; padding:4px 6px; border-radius:5px; background:none; color:var(--muted-foreground); font-size:12px; text-decoration:none; white-space:nowrap; }

@@ -63,7 +63,9 @@ View current status with \`sane view\` and use the CLI to record state.
 
 - \`pending\` — Not started or not approved.
 - \`in_progress\` — Session is in progress.
-- \`approved\` — User explicitly approved the tracked outcome.`
+- \`approved\` — User explicitly approved the tracked outcome.
+
+A worker notification or consultation is not completion. Respond to an authorized ongoing child with \`sane_worker_message\`; retain its worker identity. Dispatch dependent work only after its terminal outcome. Ending your own turn permits asynchronous replies.`
 
 export const SANE_WORKER_ASSIGNMENT_DISCIPLINE = `## Worker Assignment Discipline
 

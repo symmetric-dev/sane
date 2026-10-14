@@ -293,6 +293,17 @@ export class ConversationUpdates<State = UpdateJson> {
       }, undefined, undefined, false, guard);
     } catch { return Promise.resolve(false); }
   }
+  /** Metadata-only worker attention. Does not admit ordinary worker reply/failed/interrupted updates. */
+  publishWorkerAttention(candidate: ConversationUpdateCandidate): Promise<boolean> {
+    try {
+      if (!isConversationUpdateCandidate(candidate) || candidate.kind !== "worker-attention" || !candidate.workerId) return Promise.resolve(false);
+      const captured = structuredClone(candidate);
+      const sourceKey = updateSourceKey(captured.source);
+      const key = JSON.stringify(["worker-attention", sourceKey, captured.workerId, captured.id]);
+      // Do not attribute a rejected attention row to the parent's native producer.
+      return this.enqueue(() => this.store.commitCandidates([captured], { key, sourceKey, through: 1 }));
+    } catch { return Promise.resolve(false); }
+  }
   getCoverage(): ConversationUpdateCoverage[] {
     const result = new Map(this.store.getCoverage().map(coverage => [coverage.sourceKey, coverage]));
     try {

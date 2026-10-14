@@ -1,8 +1,8 @@
 import { useCallback, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { FiCheckCircle, FiPauseCircle, FiX, FiXCircle } from "react-icons/fi";
+import { FiBell, FiCheckCircle, FiPauseCircle, FiX, FiXCircle } from "react-icons/fi";
 import { catalog } from "./catalog";
 import { notificationStore, type NotificationItem } from "./notifications";
-import { notificationDeliveryMessage, notificationLocation } from "./notification-presentation";
+import { notificationDeliveryMessage, notificationLocation, notificationOutcome } from "./notification-presentation";
 import type { Conversation } from "./types";
 import { notificationContextKey, notificationSourceMatches } from "./notification-source";
 import { PenroseTriangle } from "./penrose-triangle";
@@ -196,8 +196,9 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
             const valid = matchesDestination(item, state.conversations.find(conversation => conversation.id === item.conversationId));
             const disabled = state.sending || !valid;
             const time = timeLabel(item.time);
-            const outcome = item.status === "completed" ? item.kind === "reply" ? "Reply ready" : "Completed" : item.status === "failed" ? "Failed" : "Interrupted";
-            const Icon = item.status === "completed" ? FiCheckCircle : item.status === "failed" ? FiXCircle : FiPauseCircle;
+            const outcome = notificationOutcome(item);
+            const Icon = item.kind === "worker-attention" || item.status === "attention" ? FiBell : item.status === "completed" ? FiCheckCircle : item.status === "failed" ? FiXCircle : FiPauseCircle;
+            const jobs = item.jobs?.length ? item.jobs.join(", ") : "";
             return <li key={item.groupId ?? item.conversationId}>
               <button type="button" className="notification-center-entry" disabled={disabled} onClick={() => choose(item)}>
                 <Icon aria-hidden="true" />
@@ -205,6 +206,7 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
                   <span className="notification-center-title">{item.title || "Untitled session"}</span>
                   <span className="notification-center-location" title={location}>{location}</span>
                   <span className="notification-center-outcome">{outcome}<span aria-hidden="true"> · </span><time dateTime={time.iso} title={time.iso}>{time.label}</time></span>
+                  {jobs && <span className="notification-center-location" title={jobs}>{item.jobs!.length === 1 ? "Job" : "Jobs"}: {jobs}</span>}
                   {!valid && <span className="notification-center-unavailable">Session unavailable</span>}
                 </span>
               </button>

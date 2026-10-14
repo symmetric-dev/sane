@@ -20,7 +20,7 @@ type Options = {
   dataDir: string;
   storeId: string;
   feed: ConversationUpdateStore;
-  eligible: (conversationId: string, source: ConversationUpdateSource) => boolean;
+  eligible: (conversationId: string, source: ConversationUpdateSource, kind?: PushPayload["kind"]) => boolean;
   presentation?: (conversationId: string, source: ConversationUpdateSource) => { sessionTitle?: string; workspaceName?: string };
   recoverCompletions: () => Iterable<ChromePushRecoveryRecord>;
   subject?: string;
@@ -477,7 +477,7 @@ export class ChromePushService {
   }
   private isEligible(payload: PushPayload): boolean {
     if (payload.kind === "test") return true;
-    try { return !!payload.conversationId && !!payload.source && this.options.eligible(payload.conversationId, payload.source); }
+    try { return !!payload.conversationId && !!payload.source && this.options.eligible(payload.conversationId, payload.source, payload.kind); }
     catch { return false; }
   }
   private withPresentation(payload: PushPayload): PushPayload {
@@ -508,6 +508,7 @@ export class ChromePushService {
         const budget = this.budget();
         for (const update of page.updates) {
           if (update.historical || update.sequence !== update.occurrenceSequence) continue;
+          if (update.kind !== "reply" && update.kind !== "failed" && update.kind !== "interrupted" && update.kind !== "worker-attention") continue;
           const createdAt = Date.parse(update.occurredAt ?? update.observedAt);
           if (!Number.isSafeInteger(createdAt) || createdAt <= 0 || createdAt > Date.now() + 60_000) continue;
           // The occurrence already contains its qualified native source/boundary.

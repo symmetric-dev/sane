@@ -36,3 +36,5 @@ the test edit boundary, and where to record results.
 5. Record the outcome where assigned and reconcile it after further
    verification. Return its location, the verification outcome, and any
    finding needing attention.
+
+Follow the worker protocol identified in your session context. For an App-managed explicit-completion assignment, submit your final result with sane_worker_complete. Ending a turn pauses execution; it does not complete the assignment. Native subagents return their result normally.

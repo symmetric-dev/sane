@@ -3,7 +3,7 @@ import type { WorkerDelivery, WorkerRecord } from "../src/worker-contract";
 import type { HandoffPresentation } from "../src/handoff-contract";
 import type { CompactionRecord } from "../src/oc-contract";
 import type { Harness, Message, Run } from "./types";
-import { workerReportDelivery } from "./worker-presentation";
+import { workerExchanges, workerReportDelivery } from "./worker-presentation";
 import { receivedHandoff } from "./handoff-presentation";
 import { ACTIVITY_ANIMATION_MAX_MS } from "./activity-visuals";
 import { classifyTranscriptTool, createActivityEntry, type ActivityEntry } from "./activity-model";
@@ -42,7 +42,7 @@ export function planTranscriptActivities(sessionId: string, messages: Message[],
   };
   for (const source of messages) {
     if (compactionPositions?.get(source.id)?.length) flush();
-    if (!readOnly && (workerReportDelivery(source, deliveries) || receivedHandoff(source, sessionId, handoffs))) { flush(); continue; }
+    if (!readOnly && (workerReportDelivery(source, deliveries, workerExchanges(workers)) || receivedHandoff(source, sessionId, handoffs))) { flush(); continue; }
     if (source.role !== "assistant") {
       flush();
       source.parts.forEach((part, index) => {

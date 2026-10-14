@@ -1,6 +1,7 @@
 import type { CanonicalAgentOperations } from "./canonical-agent-operations";
 import type { WorkerAgentId } from "sane-core/agent-catalog";
 import { workerResults, workerTerminal, type WorkerRecord } from "./worker-contract";
+export { workerBlocksParentGate } from "./worker-protocol";
 
 /** Explicit opt-in in new execution packages, never inferred from a mutable role file. */
 export function managedScoutCrew(policy: CanonicalAgentOperations | undefined) {

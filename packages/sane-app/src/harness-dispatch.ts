@@ -48,6 +48,7 @@ export class HarnessDispatchRegistry<O extends RunOwner = RunOwner> {
     this.adapters.set(adapter.id, Object.freeze({ ...adapter, automation: Object.freeze({
       "queued-user": adapter.automation?.["queued-user"] && Object.freeze({ ...adapter.automation["queued-user"] }),
       "worker-report": adapter.automation?.["worker-report"] && Object.freeze({ ...adapter.automation["worker-report"] }),
+      "worker-exchange": adapter.automation?.["worker-exchange"] && Object.freeze({ ...adapter.automation["worker-exchange"] }),
       handoff: adapter.automation?.handoff && Object.freeze({ ...adapter.automation.handoff }),
     }) }) as HarnessDispatchAdapter<O>);
   }

@@ -2,13 +2,14 @@ import { lstatSync, readFileSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import { DomainError } from "../../sane-core/src/server.ts"
 import { openNativeCaller, type NativeCaller } from "./native-caller.ts"
-import { nativeWorkerInput, nativeWorkerInvocation, nativeWorkerRequestId, parseNativeWorkerRequest, projectNativeWorkerReply, type NativeWorkerOperation } from "./native-worker-contract.ts"
+import { nativeWorkerInput, nativeWorkerInvocation, nativeWorkerOperationRequestId, nativeWorkerRequestId, parseNativeWorkerRequest, projectNativeWorkerReply, type NativeWorkerOperation } from "./native-worker-contract.ts"
 
 export async function workerNativeCaller(caller: NativeCaller, operation: NativeWorkerOperation, input: unknown, connectionFile: string, signal?: AbortSignal) {
   const args = nativeWorkerInput(operation, input), invocation = nativeWorkerInvocation(caller.invocation)
   const opened = openNativeCaller(caller)
   try {
-    const request = parseNativeWorkerRequest({ operation, caller: opened.envelope, invocation, input: { ...args, ...(operation === "start" ? { requestId: nativeWorkerRequestId(opened.envelope, invocation) } : {}) } })
+    const requestId = operation === "start" ? nativeWorkerRequestId(opened.envelope, invocation) : operation === "complete" || operation === "notify" || operation === "message_parent" || operation === "message" ? nativeWorkerOperationRequestId(opened.envelope, invocation, operation) : undefined
+    const request = parseNativeWorkerRequest({ operation, caller: opened.envelope, invocation, input: { ...args, ...(requestId ? { requestId } : {}) } })
     if (typeof connectionFile !== "string" || !isAbsolute(connectionFile)) throw new DomainError("UNAVAILABLE", "Configure an explicit App native handoff connection file for worker transport.")
     const stat = lstatSync(connectionFile)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw new DomainError("UNAVAILABLE", "Invalid App connection file.")

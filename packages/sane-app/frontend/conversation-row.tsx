@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { FiCheck, FiMoreHorizontal, FiPause, FiX } from "react-icons/fi";
+import { FiCheck, FiClock, FiMoreHorizontal, FiPause, FiX } from "react-icons/fi";
+import { workerStatusLabel } from "./worker-presentation";
+import type { WorkerProtocolStatus } from "../src/worker-contract";
 import { store } from "./store";
 import { assignmentClass, assignmentLabel } from "./assignment-semantics";
 
@@ -15,9 +17,20 @@ export function PhaseBadge({ phase }: { phase: string }) {
   return <span className={`harness-badge phase-badge ${assignmentClass(phase)}`.trim()} title={`Assignment · ${phase}`}>{assignmentLabel(phase)}</span>;
 }
 
-/** Status icon replacing the running/completed text; full state in the tooltip. */
-export function StatusIcon({ status }: { status: string }) {
-  if (status === "running") return <span className="pulse status-icon" title="Running" role="img" aria-label="Running" />;
+/** Status icon replacing the running/completed text; full state in the tooltip.
+ * Protocol statuses come from the session-list projection, not a permission prompt. */
+export function StatusIcon({ status, protocol }: { status: string; protocol?: WorkerProtocolStatus }) {
+  if (protocol && protocol !== "running" && protocol !== "terminal") {
+    const label = workerStatusLabel(protocol);
+    return <span className={`status-icon${protocol === "uncertain" ? " status-unknown" : " status-muted"}`} title={label} role="img" aria-label={label}>{protocol === "idle" || protocol === "closing" ? <FiPause size={12} aria-hidden="true" /> : <FiClock size={12} aria-hidden="true" />}</span>;
+  }
+  if (protocol === "terminal") {
+    const label = workerStatusLabel(protocol, status === "failed" || status === "interrupted" || status === "completed" ? status : undefined);
+    if (status === "failed") return <span className="status-icon status-failed" title={label} role="img" aria-label={label}><FiX size={12} aria-hidden="true" /></span>;
+    if (status === "interrupted") return <span className="status-icon status-muted" title={label} role="img" aria-label={label}><FiPause size={12} aria-hidden="true" /></span>;
+    return <span className="status-icon status-completed" title={label} role="img" aria-label={label}><FiCheck size={12} aria-hidden="true" /></span>;
+  }
+  if (status === "running" || protocol === "running") return <span className="pulse status-icon" title="Running" role="img" aria-label="Running" />;
   if (status === "completed") return <span className="status-icon status-completed" title="Completed" role="img" aria-label="Completed"><FiCheck size={12} aria-hidden="true" /></span>;
   if (status === "failed") return <span className="status-icon status-failed" title="Failed" role="img" aria-label="Failed"><FiX size={12} aria-hidden="true" /></span>;
   if (status === "interrupted") return <span className="status-icon status-muted" title="Interrupted" role="img" aria-label="Interrupted"><FiPause size={12} aria-hidden="true" /></span>;
