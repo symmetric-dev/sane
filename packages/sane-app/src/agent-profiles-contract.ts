@@ -9,7 +9,7 @@
  * role/model/effort at creation (or on Base -> assistant upgrade); later profile
  * edits only affect new conversations.
  */
-import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, WORKER_AGENT_IDS, WORKER_AGENT_CATALOG, isWorkerAgentId, isAssistantAgentId, nativeAgentId, type SaneAgentIdentity, type WorkerAgentId, type AssistantAgentId, type StoredAssistantAgentId } from "sane-core/agent-catalog";
+import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, WORKER_AGENT_IDS, WORKER_AGENT_CATALOG, isWorkerAgentId, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId, type SaneAgentIdentity, type WorkerAgentId, type AssistantAgentId, type StoredAssistantAgentId } from "sane-core/agent-catalog";
 import { canonicalSlot, isStoredSlot } from "sane-core/contracts";
 import type { Harness } from "./oc-contract";
 import type { AgentSnapshot } from "./history";
@@ -56,6 +56,12 @@ export const LEGACY_KNOWLEDGE_PROFILE = {
   description: "Helps the user improve repository skills, development scripts, documentation, and tooling from verified evidence.",
 } as const;
 export const storedAssistantLabel = (role: StoredAssistantAgentId): string => role === "knowledge" ? LEGACY_KNOWLEDGE_PROFILE.label : ASSISTANT_AGENT_LABELS[role];
+/** Stored sidebar label when no prompt or handoff title was captured. Role catalog name, never journal text. */
+export function genericSessionTitle(session: Pick<AgentSnapshot, "agent" | "agentKind">): string {
+  if (session.agentKind === "worker" && isWorkerAgentId(session.agent)) return WORKER_AGENT_CATALOG[session.agent].label;
+  if (session.agentKind !== "worker" && isStoredAssistantAgentId(session.agent)) return storedAssistantLabel(session.agent);
+  return "Conversation";
+}
 
 /** A migrated mutable profile must not relabel a historical Knowledge snapshot. */
 export function historicalAgentProfile(snapshot: AgentSnapshot & { profileId?: string; harness?: Harness; model?: string; effort?: string }): HistoricalAgentProfile | undefined {

@@ -7,7 +7,7 @@ import {
 } from "../shared/conversation/conversation-updates";
 import {
   ConversationUpdateServiceError, ConversationUpdateStore, isConversationUpdateCommitCurrent, isConversationUpdateExpectedCheckpoint,
-  type ConversationUpdateCommitGuard, type UpdateJson,
+  type ConversationUpdateCheckpoint, type ConversationUpdateCommitGuard, type UpdateJson,
 } from "./conversation-update-store";
 
 /** The harness adapter owns qualification and its bounded JSON reducer state.
@@ -187,16 +187,57 @@ export class ConversationUpdates<State = UpdateJson> {
       // App status timestamps are not authoritative native boundary timestamps.
       occurredAt: null, ...(sourceSequence === undefined ? {} : { sourceSequence }) };
   }
+  /** Failed/interrupted runs stay unsettled until the durable terminal marker exists. Invalid projector state is not settled. */
+  private checkpointSettled(session: Session, run: Run, checkpoint: ConversationUpdateCheckpoint | undefined): boolean {
+    const source = sessionSource(session);
+    if (!source || !checkpoint || !Number.isSafeInteger(checkpoint.through) || checkpoint.through < 1) return false;
+    try {
+      const state = runState(checkpoint.state, source.harness === "claude-code" ? this.options.projector : undefined);
+      return run.status !== "failed" && run.status !== "interrupted" || state.terminalIndexed;
+    } catch { return false; }
+  }
   /** Tail seq already committed, including a failed/interrupted terminal marker. Startup uses this to avoid rereading a settled journal. */
   replaySettled(session: Session, run: Run, lastSeq: number): boolean {
     const source = sessionSource(session);
     if (!source || !Number.isSafeInteger(lastSeq) || lastSeq < 1) return false;
     const prior = this.store.getCheckpoint(appRunUpdateCheckpointKey(source, run.runId));
     if (!prior || prior.through !== lastSeq) return false;
-    try {
-      const state = runState(prior.state, source.harness === "claude-code" ? this.options.projector : undefined);
-      return run.status !== "failed" && run.status !== "interrupted" || state.terminalIndexed;
-    } catch { return false; }
+    return this.checkpointSettled(session, run, prior);
+  }
+  /** journalBytes is trusted only because it was recorded against a verified through. Size equality alone is not proof. */
+  coveredByJournalBytes(session: Session, run: Run, bytes: number): boolean {
+    const source = sessionSource(session);
+    if (!source || !Number.isSafeInteger(bytes) || bytes < 1) return false;
+    const prior = this.store.getCheckpoint(appRunUpdateCheckpointKey(source, run.runId));
+    if (!prior || prior.journalBytes !== bytes) return false;
+    return this.checkpointSettled(session, run, prior);
+  }
+  /** One store write for startup length notes. False means the store could not accept the batch. */
+  noteJournalBytes(notes: readonly { session: Session; run: Run; through: number; bytes: number }[]): Promise<boolean> {
+    if (!notes.length) return Promise.resolve(true);
+    if (this.closed) return Promise.resolve(false);
+    let captured: { session: Session; run: Run; through: number; bytes: number }[];
+    try { captured = structuredClone([...notes]); }
+    catch { return Promise.resolve(false); }
+    const task = this.queue.then(() => {
+      if (this.closed || this.store.getHealth().state !== "ready") return false;
+      const prepared: { key: string; through: number; bytes: number; session: Session; run: Run }[] = [];
+      for (const note of captured) {
+        const source = sessionSource(note.session);
+        if (!source || !Number.isSafeInteger(note.through) || note.through < 1 || !Number.isSafeInteger(note.bytes) || note.bytes < 1) continue;
+        const key = appRunUpdateCheckpointKey(source, note.run.runId);
+        const checkpoint = this.store.getCheckpoint(key);
+        if (!checkpoint || checkpoint.through !== note.through || !this.checkpointSettled(note.session, note.run, checkpoint)) continue;
+        prepared.push({ key, through: note.through, bytes: note.bytes, session: note.session, run: note.run });
+      }
+      if (!prepared.length) return true;
+      return this.store.noteJournalBytes(prepared.map(({ key, through, bytes }) => ({ key, through, bytes })), checkpoint => {
+        const note = prepared.find(item => item.key === checkpoint.key);
+        return !!note && note.through === checkpoint.through && this.checkpointSettled(note.session, note.run, checkpoint);
+      });
+    });
+    this.queue = task.catch(() => undefined);
+    return task.catch(() => false);
   }
   /** Startup replay requires the complete contiguous journal; durable per-run through/state
    * makes replay idempotent even after all rows for the run have been pruned. */

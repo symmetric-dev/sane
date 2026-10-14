@@ -11,7 +11,7 @@ import { resolveAppConfig } from "./app-config";
 import { AssetBuildError, buildAssets, validateAssets } from "./asset-build";
 import { acquireInstallation, acquireData, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
 import { claudeSourceRoot } from "./claude-source";
-import { decodeLog, firstSubmissionTitle, lastJournalSeq, validCompactRequest, uuid, efforts, type SaneSessionContext, type Session, type Run, type Event, type Metadata, type TerminationUncertainty } from "./history";
+import { decodeLog, lastJournalSeq, validCompactRequest, uuid, efforts, type SaneSessionContext, type Session, type Run, type Event, type Metadata, type TerminationUncertainty } from "./history";
 import { projectCompactions } from "./compaction";
 import type { CompactEligibility, CompactRequest, CompactResponse } from "./oc-contract";
 import { OpenCodeAdapter, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeUnavailableError } from "./opencode";
@@ -58,10 +58,11 @@ import { ScienceStore } from "./science-store";
 import { RepositoryRouter, RepositoryStoreError, WorkstreamAdapterError, authenticatedWorkstreamRoute, validateWorkstreamInput, flushAndCloseWorkstreams } from "./workstreams";
 import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult } from "./workstreams-contract";
 import { validateAppStore, assertSourceConfiguration, atomicAppRecord, atomicNativeHistory, loadAgentProfiles, validateAgentProfiles, AppStoreError, type SourceConfiguration } from "./app-store";
-import { builtinProfiles, legacyProfileId, storedAssistantLabel, resolveAssistantProfile, BASE_PROFILE_IDS, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
+import { builtinProfiles, genericSessionTitle, legacyProfileId, storedAssistantLabel, resolveAssistantProfile, BASE_PROFILE_IDS, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { AdmissionService } from "./admission";
-import { HandoffService, handoffRecipientTitle, projectHandoffEnqueue, projectHandoffStatus, slotSessionIndex } from "./handoff";
+import { HandoffService, handoffRecipientTitle, nextSlotSessionIndex, projectHandoffEnqueue, projectHandoffStatus, slotSessionIndex } from "./handoff";
 import { DomainError, canonicalSlot, equivalentSlots, normalizeNativeSource, revalidateCheckout, discoverRepository, inspectRepositoryStore } from "sane-core/server";
+import type { Handoff } from "sane-core/contracts";
 import { classifyCaller } from "../../sane-cli/src/cli-arguments";
 import { WorkerStore } from "./worker-store";
 import { WorkerService, type WorkerParent } from "./workers";
@@ -518,7 +519,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   });
   const events = new Map<string, Event[]>();
   const deferredJournals = new Set<string>();
-  const startupTitles = new Map<string, string>();
   let materializeDeferred: ((runId: string) => Event[]) | undefined;
   function journalEvents(id: string): Event[] {
     return events.get(id) ?? materializeDeferred?.(id) ?? [];
@@ -753,6 +753,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       executionConfig: { profileId: launch.profileId, agent: launch.agent!, ...(model ? { model } : {}), ...(effort ? { effort } : {}) },
     };
   });
+  async function handoffContextTitle(handoff: Pick<Handoff, "workstreamId" | "input" | "recipient">, workspaceId: string): Promise<string> {
+    try {
+      const status = (await router!.forWorkspace(workspaceId)).domain.getWorkstreamStatus(handoff.workstreamId);
+      const assignments = [...status.phaseHistory, ...status.activePhases];
+      const ref = handoff.recipient.ref;
+      if (!ref) return handoffRecipientTitle(handoff.input.to, nextSlotSessionIndex(assignments, handoff.input.to));
+      const assignment = assignments.find(item => equivalentSlots(item.phase, handoff.input.to) && item.ref.harness === ref.harness && item.ref.authorityId === ref.authorityId && item.ref.nativeId === ref.nativeId);
+      return handoffRecipientTitle(handoff.input.to, slotSessionIndex(assignments, handoff.input.to, assignment?.id ?? ""));
+    } catch {
+      const role = handoff.input.to.split(":")[0];
+      return genericSessionTitle({ agent: isStoredAssistantAgentId(role) ? role : undefined, agentKind: "assistant" });
+    }
+  }
   const handoffToken = crypto.randomUUID();
   async function nativeHandoff(req: Request) {
     if (req.method !== "POST" || req.headers.has("origin") || !equal(req.headers.get("authorization") ?? "", `Bearer ${handoffToken}`)) return json({ error: "Native authorization required" }, 401);
@@ -777,9 +790,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // Only the createNew path below runs `create`; reply/attach deliveries
       // (already-bound recipients) never reach it, so only handoff-created
       // sessions get auto-titles and existing sessions are never renamed.
-      let created = false;
+      let created = false, predictedTitle: string | undefined;
       const handoff = await handoffs.prepareRecipient(workspaceId, handoffId, async h => {
         created = true;
+        predictedTitle = await handoffContextTitle(h, workspaceId);
         const sessionId = h.recipient.sessionId, cwd = h.recipient.checkout.path, harness = h.recipient.harness === "oc" ? "opencode" : "claude-code";
         if (sessionId !== selected.recipient.sessionId || !coordinator.holdsAdmission(lease!, sessionId)) throw new WorkstreamAdapterError(409, "recipient-unavailable", "Recipient admission changed");
         let a = admissions.get(sessionId);
@@ -814,7 +828,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!meta.sessions.some(s => s.sessionId === sessionId)) {
           if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId, cwd, nativeAgent);
           if (harness === "opencode" && sane.saneContext) await deliverSaneFramework(a.nativeId, sessionId, sane.saneContext);
-          meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
+          meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, title: predictedTitle,
             ...(config ? { profileId: config.profileId, ...(harness === "claude-code" ? { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}) } : {}) } : {}),
             ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: !sane.saneExecution || harness !== "opencode", ...sane } : {}),
             ...(launch?.model ? { model: `${launch.model.providerID}/${launch.model.id}`, ...(launch.model.variant ? { effort: launch.model.variant } : {}) } : {}),
@@ -826,22 +840,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (a.state !== "ready") admissions.ready(sessionId);
         replyIntegration?.requestRefresh();
       });
-      if (created) {
-        // Title the new recipient `<Role> #<n>` (legacy counting, minus the
-        // `[workstream]` prefix): n is the 1-based position among this
-        // workstream's assignments for the same phase, oldest first, counting
-        // ended assignments. Untitled-only: a retried preparation never renames.
-        const session = meta.sessions.find(s => s.sessionId === handoff.recipient.sessionId);
-        if (session && !session.title && handoff.recipient.ref) {
-          const ref = handoff.recipient.ref;
-          const status = (await router!.forWorkspace(workspaceId)).domain.getWorkstreamStatus(handoff.workstreamId);
-          const assignment = status.activePhases.find(a => equivalentSlots(a.phase, handoff.input.to) && a.ref.harness === ref.harness && a.ref.authorityId === ref.authorityId && a.ref.nativeId === ref.nativeId);
-          session.title = handoffRecipientTitle(handoff.input.to, slotSessionIndex([...status.phaseHistory, ...status.activePhases], handoff.input.to, assignment?.id ?? ""));
-          // Legacy/recovered recipients may only have this display/lock profile.
-          if (!session.profileId && isStoredAssistantAgentId(session.agent)) session.profileId = legacyProfileId(session.harness ?? "claude-code", session.agent);
-          await persist();
-        }
+      const session = meta.sessions.find(s => s.sessionId === handoff.recipient.sessionId);
+      let titled = false;
+      // Bound assignment index replaces only the prediction from this attempt.
+      // A retry fills a missing title and never renames one already stored.
+      if (session && handoff.recipient.ref && (!session.title || created && session.title === predictedTitle)) {
+        const title = await handoffContextTitle(handoff, workspaceId);
+        if (session.title !== title) { session.title = title; titled = true; }
       }
+      if (created && session && !session.profileId && isStoredAssistantAgentId(session.agent)) {
+        session.profileId = legacyProfileId(session.harness ?? "claude-code", session.agent);
+        titled = true;
+      }
+      if (titled) await persist();
       return handoff;
     } finally {
       if (lease) coordinator.releaseAdmission(lease);
@@ -1019,16 +1030,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (session && kind === "message") nativeSubagentRecorder.refresh(session, run);
     });
   }
-  // Display title for list responses: stored title wins (handoff `<Role> #<n>`
-  // or a previously persisted first prompt). Otherwise derive from the
-  // earliest submission event so a refresh shows names without opening each
-  // conversation. Never persists here; POST persists for new prompts.
+  // Stored title wins. Startup fills a role label once when none was captured.
+  // A later user prompt still names an untitled conversation.
   const titleFromPrompt = (prompt: unknown): string | undefined => {
     if (typeof prompt !== "string") return undefined;
     const line = prompt.split("\n")[0]!.trim().slice(0, 200);
     return line ? line : undefined;
   };
-  const displayTitle = (session: Session) => session.title ?? startupTitles.get(session.sessionId) ?? sessionDisplayTitle(session, meta.runs, events);
+  const displayTitle = (session: Session) => session.title ?? sessionDisplayTitle(session, meta.runs, events);
+  let backfilledTitles = false;
+  for (const session of meta.sessions) if (!session.title) { session.title = genericSessionTitle(session); backfilledTitles = true; }
+  if (backfilledTitles) await persist();
   const followupSessions = new Set(meta.runs.filter(run => run.queuedFollowupId).map(run => run.sessionId));
   materializeDeferred = runId => {
     if (!deferredJournals.has(runId)) return [];
@@ -1047,21 +1059,37 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       return decoded.events;
     } catch (error) { deferredJournals.add(runId); throw error; }
   };
+  const journalByteNotes: { session: Session; run: Run; through: number; bytes: number }[] = [];
   for (const run of meta.runs) {
     const logPath = join(options.dataDir, `${run.runId}.jsonl`);
     const sessionForRun = meta.sessions.find(session => session.sessionId === run.sessionId)!;
     const mustRead = run.status === "running" || options.reconcileInterrupted && sessionForRun.harness === "claude-code" || followupSessions.has(run.sessionId);
-    let present = false;
-    if (!mustRead) { try { present = statSync(logPath).isFile(); } catch { present = false; } }
-    // Terminal workers have no update replay. Covered assistant journals are already checkpointed.
+    let present = false, journalSize = 0;
+    if (!mustRead) {
+      try {
+        const file = statSync(logPath);
+        present = file.isFile();
+        if (present) journalSize = file.size;
+      } catch { present = false; }
+    }
+    // Terminal workers have no update replay. A recorded length skips the tail read.
+    // Missing length, size mismatch, or an unsettled terminal still falls through.
     // A missing file still falls through so the existing read reports it.
-    if (present && (!updateEligible(sessionForRun, run) || updates.replaySettled(sessionForRun, run, lastJournalSeq(logPath) ?? -1))) {
+    if (present && !updateEligible(sessionForRun, run)) {
       deferredJournals.add(run.runId);
-      if (!sessionForRun.title && !startupTitles.has(sessionForRun.sessionId)) {
-        const title = firstSubmissionTitle(logPath);
-        if (title) startupTitles.set(sessionForRun.sessionId, title);
-      }
       continue;
+    }
+    if (present && updates.coveredByJournalBytes(sessionForRun, run, journalSize)) {
+      deferredJournals.add(run.runId);
+      continue;
+    }
+    if (present) {
+      const seq = lastJournalSeq(logPath);
+      if (seq !== undefined && updates.replaySettled(sessionForRun, run, seq)) {
+        journalByteNotes.push({ session: sessionForRun, run, through: seq, bytes: journalSize });
+        deferredJournals.add(run.runId);
+        continue;
+      }
     }
     let raw: string;
     try { raw = await readFile(logPath, "utf8"); } catch (e: any) { throw new Error(`Cannot load historical event log for ${run.runId}: ${e.code === "ENOENT" ? "missing file" : "read failed"}`); }
@@ -1071,7 +1099,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     replyJournalThrough.set(run.runId, list.at(-1)?.seq ?? 0);
     transcripts.ingest(run, list);
     const updateSession = meta.sessions.find(session => session.sessionId === run.sessionId)!;
-    if (updateEligible(updateSession, run)) await updates.replayRun(updateSession, run, list);
+    if (updateEligible(updateSession, run) && await updates.replayRun(updateSession, run, list)) {
+      const through = list.at(-1)?.seq;
+      // A repair rewrite changes the file. Measure after that write, never the pre-repair size.
+      let bytes: number | undefined = decoded.repaired === undefined && present ? journalSize : undefined;
+      if (bytes === undefined) { try { bytes = statSync(logPath).size; } catch { bytes = undefined; } }
+      if (through !== undefined && bytes !== undefined) journalByteNotes.push({ session: updateSession, run, through, bytes });
+    }
     if (run.status === "running" && !getHarnessDescriptor(sessionHarness(meta.sessions.find(s => s.sessionId === run.sessionId)!))!.operations.recoverRun.supported) {
       run.status = "interrupted"; run.endedAt = new Date().toISOString(); meta.reconciliationRequired = true;
       const session = meta.sessions.find(s => s.sessionId === run.sessionId)!; session.lastStatus = "interrupted";
@@ -1082,6 +1116,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (uncertainty) await emit(run, "status", { status: run.status, reason: "Operator confirmed previous CLI termination with --reconcile-interrupted", reconciliation: { kind: "termination-confirmed", throughSeq: uncertainty.seq } });
     }
   }
+  if (journalByteNotes.length && !await updates.noteJournalBytes(journalByteNotes)) throw new Error("Conversation update journal length note failed; reconciliation required");
   if (options.reconcileInterrupted) meta.reconciliationRequired = false;
   await persist();
   let origin = "";
@@ -2058,7 +2093,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         let a = await admissions.begin({ sessionId: w.sessionId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd: w.checkout, nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: parentAdmission.binding.workspaceId, worktreeId: parentAdmission.binding.worktreeId, parent: w.parent.native });
         if (harness === "opencode") a = await admissions.createNative(w.sessionId, async () => (await oc.createResolved(w.checkout, nativeLaunch!)).id);
         const launch = { ...w.launch, ...(nativeLaunch?.model ? { model: `${nativeLaunch.model.providerID}/${nativeLaunch.model.id}`, effort: nativeLaunch.model.variant } : {}) };
-        const session: Session = { sessionId: w.sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd: w.checkout, lastStatus: "unknown", lastRunId: null, ...agentLaunchSnapshot(launch), ...pinnedContext, ...(pinnedContext.saneExecution ? { nativeAgentSelected: harness !== "opencode" } : {}) };
+        const session: Session = { sessionId: w.sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd: w.checkout, lastStatus: "unknown", lastRunId: null, ...agentLaunchSnapshot(launch), ...pinnedContext, ...(pinnedContext.saneExecution ? { nativeAgentSelected: harness !== "opencode" } : {}), title: genericSessionTitle({ agent: w.input.worker, agentKind: "worker" }) };
         workerStore.update(w.id, { launch, child: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! } });
         meta.sessions.push(session); await persist();
         await catalog.associate(w.sessionId, w.checkout, a.binding.workspaceId, a.binding.worktreeId);

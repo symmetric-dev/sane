@@ -53,6 +53,10 @@ export interface SlotAssignment { id: string; phase: string; startedAt: string }
  * active + history rows. Falls back to 1 when the assignment is absent,
  * mirroring legacy `targetIndex`.
  */
+/** Next 1-based slot position before the new assignment exists. */
+export function nextSlotSessionIndex(assignments: readonly SlotAssignment[], phase: string): number {
+  return assignments.filter(a => sameSlot(a.phase, phase)).length + 1;
+}
 export function slotSessionIndex(assignments: readonly SlotAssignment[], phase: string, assignmentId: string): number {
   const ordered = assignments.filter(a => sameSlot(a.phase, phase))
     .sort((a, b) => a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

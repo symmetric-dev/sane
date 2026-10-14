@@ -42,7 +42,8 @@ export function isConversationUpdateCommitCurrent(guard?: ConversationUpdateComm
   catch { return false; }
 }
 /** Keys must include the qualified source, e.g. JSON.stringify(["app-run", sourceKey, runId]).
- * Checkpoints are NOT retained-row caches: never discard them when pruning rows. */
+ * Checkpoints are NOT retained-row caches: never discard them when pruning rows.
+ * journalBytes is the file length verified at `through`. A new commit must not copy it forward. */
 export type ConversationUpdateCheckpoint = {
   key: string;
   sourceKey: string;
@@ -50,6 +51,7 @@ export type ConversationUpdateCheckpoint = {
   baselineThrough?: number;
   state?: UpdateJson;
   coverage?: ConversationUpdateCoverage;
+  journalBytes?: number;
 };
 type RecordValue = {
   version: 1;
@@ -100,8 +102,9 @@ function json(value: unknown, depth = 0): value is UpdateJson {
   return object(value) && Object.values(value).every(item => json(item, depth + 1));
 }
 export function isConversationUpdateCheckpoint(value: unknown): value is ConversationUpdateCheckpoint {
-  if (!object(value) || !exact(value, ["key", "sourceKey", "through", "baselineThrough", "state", "coverage"])
+  if (!object(value) || !exact(value, ["key", "sourceKey", "through", "baselineThrough", "state", "coverage", "journalBytes"])
     || !text(value.key) || !text(value.sourceKey) || !integer(value.through)
+    || value.journalBytes !== undefined && !integer(value.journalBytes)
     || !isConversationUpdateCoverage({ sourceKey: value.sourceKey, state: "ready" })
     || value.baselineThrough !== undefined && (!integer(value.baselineThrough) || value.baselineThrough > value.through)
     || value.state !== undefined && (!json(value.state) || bytes(value.state) > STATE_BYTES)
@@ -179,12 +182,19 @@ function sameCandidate(a: ConversationUpdateCandidate, b: ConversationUpdateCand
 /** Optional derived feed. Its queue and all failures are isolated from the primary journal. */
 export class ConversationUpdateStore {
   private record?: RecordValue;
+  /** Published checkpoint objects by full key. Not persisted. Rebuilt only when `this.record` is assigned. */
+  private checkpointsByKey = new Map<string, ConversationUpdateCheckpoint>();
   private health: ConversationUpdateHealth = { state: "initializing" };
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
   private closing = false;
   constructor(private readonly dataDir: string, readonly storeId: string,
     private readonly options: { save?: typeof atomicAppRecord; now?: () => string } = {}) {}
+
+  /** Index the objects in the current record. An unset record yields an empty map. */
+  private reindexCheckpoints() {
+    this.checkpointsByKey = new Map((this.record?.checkpoints ?? []).map(checkpoint => [checkpoint.key, checkpoint]));
+  }
 
   /** ENOENT alone creates an epoch. Invalid or unsafe existing files are never overwritten. */
   load(): boolean {
@@ -203,8 +213,12 @@ export class ConversationUpdateStore {
         (this.options.save ?? atomicAppRecord)(this.dataDir, "conversation-updates.json", record);
       }
       if (!validRecord(record, this.storeId)) throw new Error("Corrupt conversation-updates.json; operator reconciliation required");
-      this.record = record; this.health = { state: "ready" }; return true;
-    } catch { this.health = { state: "unavailable", reason: "Conversation update storage requires reconciliation" }; return false; }
+      this.record = record; this.reindexCheckpoints(); this.health = { state: "ready" }; return true;
+    } catch {
+      this.health = { state: "unavailable", reason: "Conversation update storage requires reconciliation" };
+      if (!this.record) this.reindexCheckpoints();
+      return false;
+    }
   }
   getHealth(): ConversationUpdateHealth { return { ...this.health }; }
   getHead() {
@@ -213,7 +227,7 @@ export class ConversationUpdateStore {
     return { storeId, epoch, retainedAfter, through };
   }
   getCheckpoint(key: string): ConversationUpdateCheckpoint | undefined {
-    const found = this.record?.checkpoints.find(checkpoint => checkpoint.key === key);
+    const found = this.checkpointsByKey.get(key);
     return found && structuredClone(found);
   }
   getCheckpoints(): ConversationUpdateCheckpoint[] { return structuredClone(this.record?.checkpoints ?? []); }
@@ -231,7 +245,7 @@ export class ConversationUpdateStore {
       return (!checkpoint || expected.key === checkpoint.key)
         && (checkpoint !== undefined || candidates.every(candidate => updateSourceKey(candidate.source) === sourceKey))
         && (!extras?.nativeMessages || extras.nativeMessages.sourceKey === sourceKey)
-        && (this.record?.checkpoints.find(checkpoint => checkpoint.key === expected.key)?.through ?? null) === expected.through;
+        && (this.checkpointsByKey.get(expected.key)?.through ?? null) === expected.through;
     } catch { return false; }
   }
   getUpdate(id: string): ConversationUpdate | undefined {
@@ -309,6 +323,7 @@ export class ConversationUpdateStore {
         }
         if (capturedCheckpoint) {
           const index = next.checkpoints.findIndex(value => value.key === capturedCheckpoint.key);
+          // Replace the checkpoint. Do not preserve journalBytes: this commit may cover a different file length.
           if (index < 0) next.checkpoints.push(capturedCheckpoint); else next.checkpoints[index] = capturedCheckpoint;
         }
         if (capturedExtras?.nativeMessages) {
@@ -336,10 +351,50 @@ export class ConversationUpdateStore {
           persistenceStarted = true;
           (this.options.save ?? atomicAppRecord)(this.dataDir, "conversation-updates.json", next);
         }
-        this.record = next; return true;
+        this.record = next; this.reindexCheckpoints(); return true;
       } catch {
         // Invalid source evidence/budget exhaustion rejects this batch, not the
         // healthy committed store. Only ambiguous persistence poisons its owner.
+        if (persistenceStarted) this.health = { state: "unavailable", reason: "Conversation update commit failed; reconciliation required" };
+        return false;
+      }
+    });
+    this.queue = task.catch(() => undefined);
+    return task.catch(() => false);
+  }
+  /** Record verified file lengths on the serial queue. Skips a checkpoint whose through moved or whose settlement no longer holds.
+   * Does not change through, state, coverage, or other checkpoints. An unchanged batch is not saved. */
+  noteJournalBytes(notes: readonly { key: string; through: number; bytes: number }[],
+    settled: (checkpoint: ConversationUpdateCheckpoint) => boolean): Promise<boolean> {
+    if (!notes.length) return Promise.resolve(true);
+    if (this.closed || this.closing || typeof settled !== "function") return Promise.resolve(false);
+    let captured: { key: string; through: number; bytes: number }[];
+    try { captured = structuredClone([...notes]); }
+    catch { return Promise.resolve(false); }
+    const task = this.queue.then(() => {
+      if (this.closed || this.health.state !== "ready" || !this.record) return false;
+      let persistenceStarted = false;
+      try {
+        const next = structuredClone(this.record);
+        let changed = false;
+        for (const note of captured) {
+          if (!object(note) || !text(note.key) || !integer(note.through) || note.through < 1 || !integer(note.bytes) || note.bytes < 1) continue;
+          const checkpoint = next.checkpoints.find(item => item.key === note.key);
+          if (!checkpoint || checkpoint.through !== note.through) continue;
+          let holds = false;
+          try { holds = settled(checkpoint); } catch { holds = false; }
+          if (!holds || checkpoint.journalBytes === note.bytes) continue;
+          checkpoint.journalBytes = note.bytes;
+          changed = true;
+        }
+        if (!changed) return true;
+        if (!validRecord(next, this.storeId)) throw new Error("Invalid journal length note");
+        persistenceStarted = true;
+        (this.options.save ?? atomicAppRecord)(this.dataDir, "conversation-updates.json", next);
+        this.record = next;
+        this.reindexCheckpoints();
+        return true;
+      } catch {
         if (persistenceStarted) this.health = { state: "unavailable", reason: "Conversation update commit failed; reconciliation required" };
         return false;
       }
