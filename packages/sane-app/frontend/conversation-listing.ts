@@ -18,11 +18,11 @@ export class ConversationListing {
     pending?.controller.abort();
   }
 
-  async read(signal: AbortSignal): Promise<{ value: Listing; revision: number }> {
+  async read(signal: AbortSignal, freshnessMs = this.freshnessMs): Promise<{ value: Listing; revision: number }> {
     for (;;) {
       signal.throwIfAborted();
       const revision = this.revision;
-      if (this.cached && this.now() - this.cached.at < this.freshnessMs) return { value: this.cached.value, revision };
+      if (this.cached && this.now() - this.cached.at < freshnessMs) return { value: this.cached.value, revision };
       const request = this.pending ?? this.start();
       try {
         const value = await this.join(request, signal);

@@ -3,7 +3,7 @@ import { FiArrowUpRight, FiCheck, FiHelpCircle, FiShield } from "react-icons/fi"
 import { FilterDropdown } from "./filter-dropdown";
 import { pendingInteractions } from "./interaction-presentation";
 import { store, type State } from "./store";
-import type { FormField, Interaction, InteractionReply } from "./types";
+import type { FormField, HandoffApprovalReply, Interaction, InteractionReply } from "./types";
 import type { FormOption } from "../shared/conversation/native-contract";
 import "./interactions.css";
 
@@ -15,7 +15,19 @@ const safeURL = (url: string) => { try { const parsed = new URL(url); return ["h
 function reply(sessionId: string, interaction: Interaction, answer: InteractionReply) {
   const state = store.snapshot();
   if (state.selected !== sessionId || !state.connected || state.actionBusy || !pendingInteractions(state, store.capabilities()).some(item => item.id === interaction.id && item.type === interaction.type)) return;
+  if (answer.type === "handoff-approval") {
+    const { type: _ignored, ...handoff } = answer;
+    void store.replyHandoff(interaction.id, handoff);
+    return;
+  }
   void store.reply(interaction.id, answer);
+}
+// Sender-session handoff decision. Attached to the sender sessionId that
+// called sane_handoff, never the recipient.
+function replyHandoff(sessionId: string, interaction: Interaction, answer: HandoffApprovalReply) {
+  const state = store.snapshot();
+  if (state.selected !== sessionId || !state.connected || state.actionBusy || !pendingInteractions(state, store.capabilities()).some(item => item.id === interaction.id && item.type === "handoff-approval")) return;
+  void store.replyHandoff(interaction.id, answer);
 }
 
 function Choices({ options, values, multiple = false, disabled, label, choose }: { options: FormOption[]; values: string[]; multiple?: boolean; disabled: boolean; label: string; choose: (value: string) => void }) {
@@ -108,6 +120,27 @@ function Permission({ interaction, sessionId, disabled, navigation, error, busy 
   const [message, setMessage] = useState("");
   return <><div className="interaction-composer-body"><label className="interaction-field">Optional reply message<textarea rows={2} placeholder="Add context for the assistant…" value={message} disabled={disabled} onChange={e => setMessage(e.target.value)} /></label>{error && <p className="run-warning" role="alert">{error}</p>}</div><footer className="interaction-composer-toolbar"><span>{busy ? "Sending decision…" : "Choose whether to allow this action"}</span><div>{(interaction.options ?? []).filter(o => ["once", "always", "reject"].includes(o.id)).map(option => <button type="button" className={option.id === "once" ? "interaction-primary" : option.id === "reject" ? "interaction-reject" : undefined} key={option.id} disabled={disabled} onClick={() => { if (!disabled) reply(sessionId, interaction, { type: "permission", decision: option.id as "once" | "always" | "reject", ...(message ? { message } : {}) }); }}>{option.name}</button>)}{navigation}</div></footer></>;
 }
+/** Sender-session approval for an outgoing sane_handoff. Copies Permission:
+ * Allow/Deny buttons plus a textarea for the deny reason/instruction. */
+function HandoffApproval({ interaction, sessionId, disabled, navigation, error, busy }: { interaction: Interaction; sessionId: string; disabled: boolean; navigation?: ReactNode; error: string; busy: boolean }) {
+  const [message, setMessage] = useState("");
+  const handoffId = interaction.type === "handoff-approval" ? interaction.handoffId : "";
+  const requestId = interaction.type === "handoff-approval" ? interaction.requestId : "";
+  const revision = interaction.type === "handoff-approval" ? interaction.revision : 0;
+  const send = (decision: "allow" | "deny") => {
+    if (disabled) return;
+    if (!Number.isSafeInteger(revision) || revision < 0) return;
+    replyHandoff(sessionId, interaction, { decision, ...(message.trim() ? { message: message.trim().slice(0, 8000) } : {}), expectedRevision: revision });
+  };
+  return <><div className="interaction-composer-body">
+    {(handoffId || requestId) && <p className="muted">Handoff {handoffId || "unavailable"} · Request {requestId || "unavailable"}</p>}
+    <label className="interaction-field">Deny reason or instruction for the sender<textarea rows={2} placeholder="Allow as-is, or deny with a reason/instruction…" value={message} disabled={disabled} onChange={e => setMessage(e.target.value)} /></label>
+    {error && <p className="run-warning" role="alert">{error}</p>}
+  </div><footer className="interaction-composer-toolbar"><span>{busy ? "Sending decision…" : "Choose whether to allow this handoff"}</span><div>
+    <button type="button" className="interaction-primary" disabled={disabled} onClick={() => send("allow")}>Allow</button>
+    <button type="button" className="interaction-reject" disabled={disabled} onClick={() => send("deny")}>Deny</button>
+    {navigation}</div></footer></>;
+}
 export function Interactions({ state, active = true, navigation, showNotice = true }: { state: State; active?: boolean; navigation?: ReactNode; showNotice?: boolean }) {
   const requests = pendingInteractions(state, store.capabilities());
   const [selection, setSelection] = useState<string>();
@@ -119,14 +152,14 @@ export function Interactions({ state, active = true, navigation, showNotice = tr
     root.current?.querySelector<HTMLElement>('.interaction-request:not([hidden]) textarea:not(:disabled), .interaction-request:not([hidden]) input:not(:disabled), .interaction-request:not([hidden]) button:not(:disabled)')?.focus({ preventScroll: true });
   }, [active, interaction?.id]);
   if (!interaction) return null;
-  const RequestIcon = interaction.type === "permission" ? FiShield : FiHelpCircle;
+  const RequestIcon = interaction.type === "permission" ? FiShield : interaction.type === "handoff-approval" ? FiArrowUpRight : FiHelpCircle;
   return <section ref={root} className="interaction interaction-composer" aria-labelledby={`request-${interaction.id}`}>
-    <header className="interaction-composer-heading"><div><RequestIcon size={16} aria-hidden="true" /><strong>{interaction.type === "permission" ? "Permission request" : "Answer the assistant"}</strong></div><h3 id={`request-${interaction.id}`}>{interaction.title}</h3>
-      {requests.length > 1 && <FilterDropdown label={`${requests.length} pending requests`} value={interaction.id} options={requests.map(item => ({ value: item.id, label: `${item.type === "permission" ? "Permission" : "Question"} · ${item.title}` }))} disabled={disabled} onChange={setSelection} />}
+    <header className="interaction-composer-heading"><div><RequestIcon size={16} aria-hidden="true" /><strong>{interaction.type === "permission" ? "Permission request" : interaction.type === "handoff-approval" ? "Handoff approval" : "Answer the assistant"}</strong></div><h3 id={`request-${interaction.id}`}>{interaction.title}</h3>
+      {requests.length > 1 && <FilterDropdown label={`${requests.length} pending requests`} value={interaction.id} options={requests.map(item => ({ value: item.id, label: `${item.type === "permission" ? "Permission" : item.type === "handoff-approval" ? "Handoff" : "Question"} · ${item.title}` }))} disabled={disabled} onChange={setSelection} />}
     </header>
     {requests.map(item => <div key={item.id} className="interaction-request" hidden={item.id !== interaction.id} style={item.id !== interaction.id ? { display: "none" } : undefined}>
       {item.description && <p className="interaction-description">{item.description}</p>}
-      {item.type === "permission" ? <Permission interaction={item} sessionId={state.selected} disabled={disabled || item.id !== interaction.id} navigation={navigation} error={state.interactionError} busy={state.actionBusy} /> : <Question interaction={item} sessionId={state.selected} disabled={disabled || item.id !== interaction.id} navigation={navigation} error={state.interactionError} busy={state.actionBusy} />}
+      {item.type === "permission" ? <Permission interaction={item} sessionId={state.selected} disabled={disabled || item.id !== interaction.id} navigation={navigation} error={state.interactionError} busy={state.actionBusy} /> : item.type === "handoff-approval" ? <HandoffApproval interaction={item} sessionId={state.selected} disabled={disabled || item.id !== interaction.id} navigation={navigation} error={state.interactionError} busy={state.actionBusy} /> : <Question interaction={item} sessionId={state.selected} disabled={disabled || item.id !== interaction.id} navigation={navigation} error={state.interactionError} busy={state.actionBusy} />}
     </div>)}
     {showNotice && state.actionNotice && <p className="notice" role="status">{state.actionNotice}</p>}
   </section>;

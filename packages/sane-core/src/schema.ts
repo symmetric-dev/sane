@@ -1,5 +1,5 @@
 /** Relational domain. Upgrades are explicit; adapters use RepositoryDomain. */
-export const SCHEMA_VERSION = 3 as const
+export const SCHEMA_VERSION = 4 as const
 // BEFORE INSERT runs even when REPLACE's implicit DELETE triggers are disabled.
 // Cover every identity/unique conflict, including the partial active indexes.
 const protectedInsertConflicts: Record<string, string> = {
@@ -158,4 +158,10 @@ export const SCHEMA_V3 = SCHEMA_V2
   .replace("phase IN ('design','engineering','planning','execution','research','knowledge','prototype')", "phase IN ('design','engineering','planning','execution','research','knowledge','prototype','curation','experimentation')")
   .replace("ON phase_assignments(membership_id,phase) WHERE ended_at IS NULL", `ON phase_assignments(membership_id,(${CANONICAL_PHASE_SQL})) WHERE ended_at IS NULL`)
   .replace(protectedInsertConflicts.phase_assignments!, `id=NEW.id OR (membership_id=NEW.membership_id AND (${CANONICAL_PHASE_SQL})=(${canonicalNewPhaseSQL}) AND ended_at IS NULL AND NEW.ended_at IS NULL)`)
-export const SCHEMA = SCHEMA_V3
+/** v4 adds pre-dispatch approval: handoffs admit as awaiting_approval and only
+ * enter the queued delivery pipeline after explicit approval. Existing queued
+ * and active statuses are unchanged. v1/v2/v3 definitions above remain frozen. */
+export const SCHEMA_V4 = SCHEMA_V3
+  .replace("CHECK(version=3)", "CHECK(version=4)")
+  .replace("CHECK(status IN ('queued','acceptance_unknown','accepted','running','completed','failed'))", "CHECK(status IN ('awaiting_approval','queued','acceptance_unknown','accepted','running','completed','failed'))")
+export const SCHEMA = SCHEMA_V4

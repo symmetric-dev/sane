@@ -77,7 +77,9 @@ export function contextualDestinations(view: ActiveView) {
 }
 
 export function ContextualNavigation({ state, activeView, onNavigate }: { state: State; activeView: ActiveView; onNavigate: (view: ActiveView) => void }) {
-  const pending = state.interactions.length;
+  // Sender-session handoff approvals badge together with permission/question
+  // prompts. Approvals attach to the sender sessionId, never the recipient.
+  const pending = state.interactions.length + (state.handoffApprovals?.length ?? 0);
   const running = state.sending || state.runs.some(run => active(run.status)) || state.conversations.some(conversation => active(conversation.status));
   return <nav className="contextual-navigation" aria-label="View navigation">{contextualDestinations(activeView).map(item => {
     const openChat = item.id === "chat" && (activeView === "terminal" || activeView === "history");

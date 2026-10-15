@@ -2,7 +2,7 @@
 export type Harness = "claude-code" | "opencode";
 export const FIXED_EFFORT_VALUES = Object.freeze(["low", "medium", "high", "xhigh", "max"] as const);
 
-export type HarnessOperation = "prompt" | "readHistory" | "attachHistory" | "compact" | "branch" | "cancelOwnedRun" | "listInteractions" | "permissionReply" | "questionReply" | "listModels" | "recoverRun";
+export type HarnessOperation = "prompt" | "readHistory" | "attachHistory" | "compact" | "branch" | "cancelOwnedRun" | "listInteractions" | "permissionReply" | "questionReply" | "listHandoffApprovals" | "handoffReply" | "listModels" | "recoverRun";
 export type HarnessOperationSupport = { readonly supported: true; readonly reason?: never } | { readonly supported: false; readonly reason: string };
 export type HarnessPolicies = {
   readonly modelInput: "free-text" | "live-catalog";
@@ -27,6 +27,8 @@ export type HarnessCapabilities = { -readonly [Key in keyof Omit<HarnessPolicies
   listInteractions: boolean;
   permissionReplies: boolean;
   questionReplies: boolean;
+  listHandoffApprovals: boolean;
+  handoffReplies: boolean;
   listModels: boolean;
   recoverRun: boolean;
   modelSelection: boolean;
@@ -49,6 +51,7 @@ const operationCapabilities = {
   prompt: "prompt", readHistory: "nativeHistoryRefresh", attachHistory: "attachHistory",
   compact: "compaction", branch: "branch", cancelOwnedRun: "cancelRun",
   listInteractions: "listInteractions", permissionReply: "permissionReplies", questionReply: "questionReplies",
+  listHandoffApprovals: "listHandoffApprovals", handoffReply: "handoffReplies",
   listModels: "listModels", recoverRun: "recoverRun",
 } as const satisfies Record<HarnessOperation, keyof HarnessCapabilities>;
 const supported: HarnessOperationSupport = Object.freeze({ supported: true });
@@ -71,6 +74,7 @@ export const HARNESS_DESCRIPTORS: Readonly<Record<Harness, HarnessDescriptor>> =
       listInteractions: unsupported("Claude Code one-shot mode does not expose an interaction inbox"),
       permissionReply: unsupported("Claude Code one-shot mode does not support permission replies"),
       questionReply: unsupported("Claude Code one-shot mode does not support question replies"),
+      listHandoffApprovals: supported, handoffReply: supported,
       listModels: unsupported("Claude Code accepts model text without a live model catalog"),
       recoverRun: unsupported("Claude Code process ownership cannot be recovered after an App restart"),
     },
@@ -85,7 +89,7 @@ export const HARNESS_DESCRIPTORS: Readonly<Record<Harness, HarnessDescriptor>> =
     operations: {
       prompt: supported, readHistory: supported, attachHistory: supported, compact: supported,
       branch: supported, cancelOwnedRun: supported, listInteractions: supported, permissionReply: supported,
-      questionReply: supported, listModels: supported, recoverRun: supported,
+      questionReply: supported, listHandoffApprovals: supported, handoffReply: supported, listModels: supported, recoverRun: supported,
     },
     policies: {
       modelInput: "live-catalog", catalogRequiredForSend: true, effortMode: "model-variant", effortValues: Object.freeze([] as const),

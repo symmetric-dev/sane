@@ -75,15 +75,24 @@ export type FormField =
   | { key: string; type: "external"; url: string; title?: string; description?: string };
 /** GET /api/sessions/:id/interactions -> { interactions: Interaction[] }.
  * Native form fields retain their V2 types/options/when constraints.
+ * Handoff approvals are App-owned sender-session approvals for outgoing
+ * sane_handoff calls. They attach to the sender sessionId (the session that
+ * called sane_handoff), never the recipient, and take over the composer like
+ * permission prompts until allowed or denied.
  */
-export type Interaction = {
-  id: string; type: "permission" | "question"; title: string; description?: string;
-  options?: { id: string; name: string }[]; fields?: FormField[];
-};
-/** POST /api/sessions/:id/interactions/:interactionId/reply -> { ok: true } */
+export type Interaction =
+  | { id: string; type: "permission" | "question"; title: string; description?: string; options?: { id: string; name: string }[]; fields?: FormField[] }
+  | { id: string; type: "handoff-approval"; title: string; description?: string; handoffId: string; requestId: string; revision: number; workstreamId?: string; to?: string; status?: string; options?: { id: string; name: string }[]; fields?: FormField[] };
+/** Sender-session decision for a queued handoff. Deny carries a reason/instruction for the sender.
+ * expectedRevision is the optimistic-concurrency guard from the polled approval;
+ * stale revisions surface as CONFLICT so callers refresh before retrying. */
+export type HandoffApprovalReply = { decision: "allow" | "deny"; message?: string; expectedRevision: number };
+/** POST /api/sessions/:id/interactions/:interactionId/reply -> { ok: true }
+ * POST /api/sessions/:id/handoff-approvals/:approvalId/reply -> { ok: true } */
 export type InteractionReply =
   | { type: "permission"; decision: "once" | "always" | "reject"; message?: string }
-  | { type: "question"; answer: Record<string, string | number | boolean | string[]> };
+  | { type: "question"; answer: Record<string, string | number | boolean | string[]> }
+  | ({ type: "handoff-approval" } & HandoffApprovalReply);
 /** POST /api/sessions/:id/cancel with {} -> { interrupted: boolean }.
  * Only the selected App-owned run may be cancelled. OC status settles by native
  * observation, not HTTP acceptance; CC status settles after its process group exits.

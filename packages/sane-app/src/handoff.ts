@@ -11,12 +11,15 @@ import { RepositoryRouter, WorkstreamAdapterError } from "./workstreams";
 const same = (a: ConversationRef, b: ConversationRef) => a.harness === b.harness && a.authorityId === b.authorityId && a.nativeId === b.nativeId;
 const sameSlot = (a: string, b: string) => isStoredSlot(a) && isStoredSlot(b) && equivalentSlots(a, b);
 const system = (id: string): MutationContext => ({ actor: { kind: "system" }, correlationId: id });
+const human = (id: string): MutationContext => ({ actor: { kind: "human" }, correlationId: id });
 
 // C11 agent-facing native projections. The full Handoff row stays server-side
 // (verbose form reachable via GET /api/handoffs?workspaceId= and the
 // /api/handoffs/:id owner endpoints); the native replies carry only what the
 // next action needs. runId is kept in the enqueue projection — a deviation
 // from the drafted 5-key shape — for delivery correlation.
+// Enqueue admits as awaiting_approval (pre-dispatch gate); status projections
+// pass that status through unchanged so native pollers observe the gate.
 export function projectHandoffEnqueue(h: Handoff) {
   return { requestId: h.input.requestId, id: h.id, to: h.input.to, status: h.status, recipientSessionId: h.recipient.sessionId, runId: h.runId, ...(h.input.kickoff ? { workstreamId: h.workstreamId } : {}) };
 }
@@ -118,6 +121,45 @@ export class HandoffService {
     const { adapter, ref } = await this.caller(envelope);
     return adapter.domain.findHandoff(ref, requestId);
   }
+  /**
+   * Human approval gate: awaiting_approval -> queued. Bound recipients reuse
+   * the synchronous dispatch admission guard; createNew (unbound) recipients
+   * skip it until preparation binds them. Stale revisions surface as CONFLICT
+   * from the domain's compare-and-swap.
+   */
+  async approve(workspaceId: string, handoffId: string, expectedRevision: number, evidence?: string): Promise<Handoff> {
+    if (typeof workspaceId !== "string" || !workspaceId) throw new DomainError("INVALID_INPUT", "Workspace required.");
+    if (typeof handoffId !== "string" || !handoffId) throw new DomainError("INVALID_INPUT", "Handoff ID required.");
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new DomainError("INVALID_INPUT", "Expected revision must be a non-negative integer.");
+    const trimmed = evidence?.trim() ? evidence.trim().slice(0, 8000) : undefined;
+    if (evidence !== undefined && !trimmed) throw new DomainError("INVALID_INPUT", "Approval evidence must not be empty.");
+    const domain = (await this.router.forWorkspace(workspaceId)).domain;
+    this.assertAvailable();
+    const current = domain.getHandoff(handoffId);
+    if (current.recipient.ownerId !== this.ownerId) throw new DomainError("CONFLICT", "Delivery belongs to another App store.");
+    if (current.status !== "awaiting_approval") throw new DomainError("CONFLICT", "Handoff is not awaiting approval.");
+    // Bound deliveries revalidate the exact admission/session pin before
+    // entering the queued pipeline; unbound createNew stays unchecked.
+    if (current.recipient.ref) this.assertRecipientReady(current);
+    return domain.advanceHandoff(handoffId, expectedRevision, { status: "queued", ...(trimmed ? { evidence: trimmed } : { evidence: "Approved handoff delivery" }) }, human(handoffId));
+  }
+  /**
+   * Human denial gate: awaiting_approval -> failed with an operator reason.
+   * Denial never requires recipient readiness; the delivery simply ends.
+   */
+  async deny(workspaceId: string, handoffId: string, expectedRevision: number, reason: string): Promise<Handoff> {
+    if (typeof workspaceId !== "string" || !workspaceId) throw new DomainError("INVALID_INPUT", "Workspace required.");
+    if (typeof handoffId !== "string" || !handoffId) throw new DomainError("INVALID_INPUT", "Handoff ID required.");
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new DomainError("INVALID_INPUT", "Expected revision must be a non-negative integer.");
+    const trimmed = typeof reason === "string" ? reason.trim().slice(0, 8000) : "";
+    if (!trimmed || trimmed.includes("\0")) throw new DomainError("INVALID_INPUT", "Denial reason required.");
+    const domain = (await this.router.forWorkspace(workspaceId)).domain;
+    this.assertAvailable();
+    const current = domain.getHandoff(handoffId);
+    if (current.recipient.ownerId !== this.ownerId) throw new DomainError("CONFLICT", "Delivery belongs to another App store.");
+    if (current.status !== "awaiting_approval") throw new DomainError("CONFLICT", "Handoff is not awaiting approval.");
+    return domain.advanceHandoff(handoffId, expectedRevision, { status: "failed", evidence: trimmed }, human(handoffId));
+  }
   async list(workspaceId: string) { return (await this.router.forPolling(workspaceId)).domain.listHandoffs(); }
   async listForPolling(workspaceId: string) { return (await this.router.forPolling(workspaceId)).domain.listHandoffsForPolling(); }
   async forSession(sessionId: string): Promise<HandoffPresentation[]> {
@@ -147,7 +189,7 @@ export class HandoffService {
         return { ref, phases, title, sessionId: local?.sessionId ?? (preferredSessionId && this.sessions().some(s => s.sessionId === preferredSessionId) ? preferredSessionId : null) };
       };
       const events = audit.filter(e => e.entityId === h.id && ["handoff_queued", "handoff_state_changed"].includes(e.operation));
-      const history = events.map(e => ({ id: e.id, status: e.operation === "handoff_queued" ? "queued" as const : e.details.status as Handoff["status"], at: e.timestamp, ...(typeof e.details.evidence === "string" ? { evidence: e.details.evidence } : {}) }));
+      const history = events.map(e => ({ id: e.id, status: e.operation === "handoff_queued" ? "awaiting_approval" as const : e.details.status as Handoff["status"], at: e.timestamp, ...(typeof e.details.evidence === "string" ? { evidence: e.details.evidence } : {}) }));
       const deliveries = events.flatMap(e => typeof e.details.runId === "string" ? [{ runId: e.details.runId, commandId: typeof e.details.nativeCommandId === "string" ? e.details.nativeCommandId : null }] : []);
       if (h.runId && !deliveries.some(d => d.runId === h.runId)) deliveries.push({ runId: h.runId, commandId: h.nativeCommandId });
       return {

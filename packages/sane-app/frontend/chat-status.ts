@@ -64,7 +64,7 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
   if (context.workerError) add("workers-error", "Background worker status unavailable", context.workerError);
   if (state.actionNotice) add("action-notice", state.actionNotice);
   if (state.actionBusy) add("action", "Updating conversation…", undefined, true);
-  if (requests.length) add("input-request", state.actionBusy ? "Sending your reply…" : requests.some(item => item.type === "permission") ? "Waiting for your permission" : "Waiting for your answer", `${requests.length} pending request${requests.length === 1 ? "" : "s"}. Respond in the composer to continue.`, state.actionBusy);
+  if (requests.length) add("input-request", state.actionBusy ? "Sending your reply…" : requests.some(item => item.type === "handoff-approval") ? "Waiting for your handoff approval" : requests.some(item => item.type === "permission") ? "Waiting for your permission" : "Waiting for your answer", `${requests.length} pending request${requests.length === 1 ? "" : "s"}. Respond in the composer to continue.`, state.actionBusy);
   if (state.pageBusy) add("history-page", "Loading conversation history…", undefined, true);
   if (activity?.phase === "refreshing" || state.transcriptRefreshing) add("history-refresh", "Refreshing conversation history…", undefined, true, undefined, { observedAt: activity?.observedAt });
   if (state.availability.nativeQueue) add("native-queue", "OpenCode is continuing in the background…", "OpenCode is continuing in the background. Your next message will be queued for it.", true);

@@ -4,7 +4,12 @@ import { resolve, dirname, join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { BridgeAuth, validateBridgeAuthOptions } from "./bridge-auth";
-import { body, equal, json, loopback } from "./bridge-http";
+import { body, json, loopback } from "./bridge-http";
+import { requireNativeBearer, requireStartupReady } from "./bridge-native-auth";
+import { httpErrorResponse, toHttpError } from "./bridge-errors";
+import { newDispatchRun, newNativeCommandId } from "./dispatch-run";
+import { toNativeHarness, toSessionHarness } from "./harness-names";
+import { createPoller } from "./poller";
 import { ClaudeRunService, hookEvents } from "./claude-run-service";
 import { projectClaudeFollowups } from "./claude-followup-projection";
 import { resolveAppConfig } from "./app-config";
@@ -768,15 +773,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   const handoffToken = crypto.randomUUID();
   async function nativeHandoff(req: Request) {
-    if (req.method !== "POST" || req.headers.has("origin") || !equal(req.headers.get("authorization") ?? "", `Bearer ${handoffToken}`)) return json({ error: "Native authorization required" }, 401);
-    if (!startupReady) return json({ error: "Startup execution classification is incomplete", code: "startup-classifying" }, 503);
+    const denied = requireNativeBearer(req, handoffToken) ?? requireStartupReady(startupReady);
+    if (denied) return denied;
     try {
       if (closing || storageFailed || meta.reconciliationRequired) return json({ error: "App execution owner unavailable" }, 503);
       const input = await body(req);
       if (input?.operation === "enqueue") return json({ handoff: projectHandoffEnqueue(await handoffs.enqueue(input.caller, input.input)) }, 202);
       if (input?.operation === "status") { const handoff = await handoffs.status(input.caller, input.requestId); return json({ handoff: handoff ? projectHandoffStatus(handoff) : handoff, ...(handoff && handoffProblems.has(handoff.id) ? { problem: handoffProblems.get(handoff.id) } : {}) }); }
       return json({ error: "Unknown handoff operation" }, 400);
-    } catch (error) { return error instanceof DomainError || error instanceof WorkstreamAdapterError ? json({ error: error.message, code: error.code }, error instanceof WorkstreamAdapterError ? error.status : error.code === "INVALID_INPUT" ? 400 : 409) : json({ error: "Handoff admission unavailable" }, 503); }
+    } catch (error) { return httpErrorResponse(error, "Handoff admission unavailable"); }
   }
   async function prepareHandoffRecipient(workspaceId: string, handoffId: string) {
     assertStartupReady();
@@ -794,7 +799,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const handoff = await handoffs.prepareRecipient(workspaceId, handoffId, async h => {
         created = true;
         predictedTitle = await handoffContextTitle(h, workspaceId);
-        const sessionId = h.recipient.sessionId, cwd = h.recipient.checkout.path, harness = h.recipient.harness === "oc" ? "opencode" : "claude-code";
+        const sessionId = h.recipient.sessionId, cwd = h.recipient.checkout.path, harness = toSessionHarness(h.recipient.harness);
         if (sessionId !== selected.recipient.sessionId || !coordinator.holdsAdmission(lease!, sessionId)) throw new WorkstreamAdapterError(409, "recipient-unavailable", "Recipient admission changed");
         let a = admissions.get(sessionId);
         const freshAdmission = !a;
@@ -1398,10 +1403,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // Recheck synchronously without counting our own preflight reservation.
       const current = coordinator.inspectReadiness({ conversationId: session.sessionId, intent: { kind: "compact", requestId: input.requestId }, phase: "dispatch", lease }), reason = compactBlocked(session);
       if (!current.ready || reason) throw new WorkstreamAdapterError(409, !current.ready ? current.code : "compact-unavailable", !current.ready ? current.reason : reason!);
-      const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: new Date().toISOString(), operation: "compact", compact: { requestId: input.requestId, ...(input.instructions !== undefined ? { instructions: input.instructions } : {}) }, model: session.model, effort: session.effort, agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, profileId: session.profileId, ...saneContextSnapshot(session) };
+      const { run } = newDispatchRun({ ...session, cwd }, { operation: "compact", compact: { requestId: input.requestId, ...(input.instructions !== undefined ? { instructions: input.instructions } : {}) } });
       if (session.harness === "opencode") {
-        run.nativeCommandId = `msg_${crypto.randomUUID().replaceAll("-", "")}`;
-        run.nativePhase = "preparing"; run.compact!.nativeRequestId = run.nativeCommandId;
+        run.compact!.nativeRequestId = run.nativeCommandId;
       }
       const finished = Promise.withResolvers<void>();
       const owner: Owner = { run, native: session.harness === "opencode", nativeDispatched: false, done: finished.promise, settled: false };
@@ -1994,8 +1998,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     } satisfies ExplicitWorkerOperations,
   });
   async function nativeWorker(req: Request) {
-    if (req.method !== "POST" || req.headers.has("origin") || !equal(req.headers.get("authorization") ?? "", `Bearer ${handoffToken}`)) return json({ error: "Native authorization required" }, 401);
-    if (!startupReady) return json({ error: "Startup execution classification is incomplete", code: "startup-classifying" }, 503);
+    const denied = requireNativeBearer(req, handoffToken) ?? requireStartupReady(startupReady);
+    if (denied) return denied;
     return workerHandler(req);
   }
   function assertWorkerDeliverySubmission(owner: Owner) {
@@ -2046,7 +2050,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
     publishAttention(worker, attention) {
       const child = worker.child;
-      const harness = child?.harness === "oc" ? "opencode" : child?.harness === "cc" ? "claude-code" : undefined;
+      const harness = child?.harness === "oc" || child?.harness === "cc" ? toSessionHarness(child.harness) : undefined;
       const source = child && harness && { harness, authorityId: child.authorityId, nativeSessionId: child.nativeId };
       if (!child || !isConversationUpdateSource(source)) return;
       const occurrence = updateOccurrenceId(source, attention.occurrenceBoundary);
@@ -2466,7 +2470,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   async function reconcileHandoff(workspaceId: string, id: string) {
     const domain = (await router!.forWorkspace(workspaceId)).domain;
     let h = domain.getHandoff(id);
-    if (h.recipient.ownerId !== store.manifest.storeId || !h.runId || ["queued", "completed", "failed"].includes(h.status)) return h;
+    if (h.recipient.ownerId !== store.manifest.storeId || !h.runId || ["awaiting_approval", "queued", "completed", "failed"].includes(h.status)) return h;
     const run = meta.runs.find(r => r.runId === h.runId && r.sessionId === h.recipient.sessionId);
     if (!run || run.operation === "compact") return h;
     const records = journalEvents(run.runId);
@@ -2508,8 +2512,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const ready = coordinator.inspectReadiness({ conversationId: session.sessionId, intent: { kind: "handoff", requestId: id }, phase: "dispatch", lease });
       if (!ready.ready) return;
       assertDispatchSnapshot(session.sessionId, snapshot);
-      const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: new Date().toISOString(), agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, model: session.model, effort: session.effort, profileId: session.profileId, ...saneContextSnapshot(session) };
-      const commandId = session.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : `${run.runId}:user`;
+      const { run, commandId } = newDispatchRun({ ...session, cwd });
       h = handoffMutation(() => domain.advanceHandoff(h.id, h.revision, { status: "acceptance_unknown", attemptId: crypto.randomUUID(), nativeCommandId: commandId, runId: run.runId }, { actor: { kind: "system" }, correlationId: h.id }, current => { handoffs.assertRecipientReady(current); }));
       handoffReservations.add(session.sessionId);
       if (process.env.SANE_TEST_FAULT === "handoff-drop-run") {
@@ -2522,7 +2525,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
       handoffAcknowledgements.delete(h.id);
       const resume = !!session.lastRunId || !!session.attachment;
-      if (session.harness === "opencode") { run.nativeCommandId = commandId; run.nativePhase = "preparing"; }
       const prompt = [
         `SANE handoff ${h.id}`, `Request ID: ${h.input.requestId}`, `Repository: ${domain.primaryCheckout}`, `Workstream: ${h.workstreamId}`,
         `Destination: ${h.input.to}`, `From: ${JSON.stringify(h.sender)}`,
@@ -2569,10 +2571,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         handoffPollFailures.set(w.workspaceId, { fingerprint, delay, retryAt: performance.now() + delay });
         continue;
       }
-      for (const h of deliveries.filter(h => h.recipient.ownerId === store.manifest.storeId && !["queued", "completed", "failed"].includes(h.status))) handoffReservations.add(h.recipient.sessionId);
-      for (const h of deliveries.filter(h => h.recipient.ownerId === store.manifest.storeId && !["completed", "failed"].includes(h.status))) {
+      for (const h of deliveries.filter(h => h.recipient.ownerId === store.manifest.storeId && !["awaiting_approval", "queued", "completed", "failed"].includes(h.status))) handoffReservations.add(h.recipient.sessionId);
+      for (const h of deliveries.filter(h => h.recipient.ownerId === store.manifest.storeId && !["awaiting_approval", "completed", "failed"].includes(h.status))) {
         if (closing || storageFailed) return;
         try {
+          // Pre-dispatch approval gate: awaiting_approval never dispatches or
+          // reconciles until an explicit human allow moves it to queued.
+          if (h.status === "awaiting_approval") continue;
           if (h.status === "queued") {
             const sessionId = h.recipient.sessionId;
             if (handoffDispatches.has(sessionId) || handoffReservations.has(sessionId) || !availability(sessionId, true, true, true).canSend) continue;
@@ -3573,6 +3578,60 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         } catch (error) { return json({ error: error instanceof Error ? error.message : "Native reconciliation unavailable" }, error instanceof OpenCodeError && error.status === 409 ? 409 : 503); }
         finally { historyRefreshes.delete(session.sessionId); coordinator.releaseAdmission(lease); }
       }
+      // Pre-dispatch handoff approval gate. Listing is read-only; the reply
+      // mutates awaiting_approval -> queued (allow) or -> failed (deny) with
+      // an optimistic-concurrency expectedRevision, mirroring
+      // validateWorkstreamInput's revision guard.
+      const handoffApprovals = /^\/api\/sessions\/([^/]+)\/handoff-approvals(?:\/([^/]+)\/reply)?$/.exec(path);
+      if (handoffApprovals) {
+        const sessionId = handoffApprovals[1]!;
+        try {
+          const session = meta.sessions.find(s => s.sessionId === sessionId);
+          if (!session) return json({ error: "Unknown session" }, 404);
+          const admission = admissions.get(sessionId);
+          if (!admission) return json({ error: "Conversation admission is unavailable", code: "admission-missing" }, 409);
+          const adapter = await router!.forAdmission(admission);
+          if (!adapter) return json({ error: "Conversation has no repository domain", code: "not-repository" }, 409);
+          // Single harness mapping: bans raw ternaries for session/native conversion.
+          const nativeHarness = toNativeHarness(sessionHarness(session));
+          const senderRef = adapter.reference(session);
+          if (senderRef.harness !== nativeHarness) return json({ error: "Conversation harness changed", code: "harness-mismatch" }, 409);
+          const workspaceId = admission.binding.workspaceId;
+          const domain = (await router!.forWorkspace(workspaceId)).domain;
+          const related = (h: Handoff) => {
+            const senderMatch = h.sender.harness === senderRef.harness && h.sender.authorityId === senderRef.authorityId && h.sender.nativeId === senderRef.nativeId;
+            return h.recipient.ownerId === store.manifest.storeId && (h.recipient.sessionId === sessionId || senderMatch);
+          };
+          if (!handoffApprovals[2]) {
+            if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
+            const approvals = domain.listHandoffs().filter(h => h.status === "awaiting_approval" && related(h));
+            return json({ approvals: approvals.map(h => ({ id: h.id, status: h.status, revision: h.revision, workstreamId: h.workstreamId, to: h.input.to, message: h.input.message, requestId: h.input.requestId, recipientSessionId: h.recipient.sessionId, sender: h.sender, createdAt: h.createdAt, updatedAt: h.updatedAt })) });
+          }
+          if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+          const startupBlock = requireStartupReady(startupReady);
+          if (startupBlock) return startupBlock;
+          const handoffId = handoffApprovals[2]!;
+          const input = await body(req);
+          const invalid = (field: string): never => { throw new WorkstreamAdapterError(400, "invalid-request", `Invalid or missing ${field}`); };
+          if (!input || typeof input !== "object" || Array.isArray(input)) invalid("request object");
+          if (input.decision !== "allow" && input.decision !== "deny") invalid("decision");
+          if ("message" in input && (typeof input.message !== "string" || input.message.includes("\0") || input.message.length > 8000)) invalid("message");
+          if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0) invalid("expectedRevision");
+          const handoff = domain.getHandoff(handoffId);
+          if (!related(handoff)) return json({ error: "Handoff does not belong to this conversation", code: "handoff-mismatch" }, 404);
+          if (handoff.status !== "awaiting_approval") return json({ error: "Handoff is not awaiting approval", code: "handoff-not-pending" }, 409);
+          if (handoff.revision !== input.expectedRevision) return json({ error: "Handoff changed; refresh its current state before retrying", code: "CONFLICT" }, 409);
+          const message = typeof input.message === "string" && input.message.trim() ? input.message.trim().slice(0, 8000) : undefined;
+          const result = input.decision === "allow"
+            ? await handoffs.approve(workspaceId, handoffId, input.expectedRevision, message)
+            : await handoffs.deny(workspaceId, handoffId, input.expectedRevision, message ?? "Operator denied handoff delivery");
+          return json({ handoff: result }, input.decision === "allow" ? 202 : 200);
+        } catch (error) {
+          const mapped = toHttpError(error, "Handoff approval unavailable");
+          // Domain CONFLICT already carries code; preserve it for stale revisions.
+          return json(mapped.body, mapped.status);
+        }
+      }
       const verifyCompletionMatch = /^\/api\/sessions\/([^/]+)\/runs\/([^/]+)\/verify-completion$/.exec(path);
       if (verifyCompletionMatch && req.method === "POST") {
         const session = meta.sessions.find(s => s.sessionId === verifyCompletionMatch[1]);
@@ -4077,23 +4136,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // Startup-only reconciliation, after run ownership and worker recovery are known.
   // The admission locks and attachment task set also coordinate request/shutdown races.
   for (const op of branches.list()) void reconcileBranch(op).catch(error => { failClosed(error, "branch-reconciliation"); });
-  const handoffTimer = setInterval(() => {
-    if (closing || storageFailed || handoffTask) return;
-    handoffTask = consumeHandoffs().catch(error => { failClosed(error, "handoff-consumer"); }).finally(() => { handoffTask = undefined; });
-  }, 500);
-  const workerOutboxTimer = setInterval(() => {
-    if (closing || storageFailed || workerOutboxTask) return;
-    workerOutboxTask = consumeWorkerReports().catch(error => { failClosed(error, "worker-outbox"); }).finally(() => { workerOutboxTask = undefined; });
-  }, 500);
-  let inputRecoveryTask: Promise<void> | undefined;
-  const inputRecoveryTimer = setInterval(() => {
-    if (closing || storageFailed || inputRecoveryTask || !recoveredInputConversations.size) return;
-    const task = pendingInputRecovery!.refresh().catch(error => { failClosed(error, "pending-input-recovery-refresh"); }).finally(() => {
-      dispatchTasks.delete(task); inputRecoveryTask = undefined;
-    });
-    inputRecoveryTask = task; dispatchTasks.add(task);
-  }, 2000);
-  stopStartupConsumers = () => { clearInterval(handoffTimer); clearInterval(workerOutboxTimer); clearInterval(inputRecoveryTimer); };
+  const handoffPoller = createPoller(() => consumeHandoffs(), { intervalMs: 500, shouldRun: () => !closing && !storageFailed, onError: (error) => failClosed(error, "handoff-consumer") });
+  const workerOutboxPoller = createPoller(() => consumeWorkerReports(), { intervalMs: 500, shouldRun: () => !closing && !storageFailed, onError: (error) => failClosed(error, "worker-outbox") });
+  const inputRecoveryPoller = createPoller(
+    async () => {
+      if (!recoveredInputConversations.size) return;
+      const task = pendingInputRecovery!.refresh().catch((error) => failClosed(error, "pending-input-recovery-refresh"));
+      dispatchTasks.add(task);
+      try { await task; } finally { dispatchTasks.delete(task); }
+    },
+    { intervalMs: 2000, shouldRun: () => !closing && !storageFailed, onError: (error) => failClosed(error, "pending-input-recovery-refresh") },
+  );
+  handoffPoller.start(); workerOutboxPoller.start(); inputRecoveryPoller.start();
+  stopStartupConsumers = () => { handoffPoller.stop(); workerOutboxPoller.stop(); inputRecoveryPoller.stop(); };
   const preparedInput: PreparedInputAdmission = {
     reserve: (intent, id) => reserve(intent, id), release: lease => coordinator.releaseAdmission(lease),
     async admit(prepared, lease, inputOptions) {
@@ -4122,9 +4177,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Observe immediately; later shutdown stages still supervise retained ownership.
     void scienceDrain?.catch(() => { retainOwner = true; });
     const nativeSubagentDrain = nativeSubagentRecorder.drain();
-    clearInterval(handoffTimer);
-    clearInterval(workerOutboxTimer);
-    clearInterval(inputRecoveryTimer);
+    handoffPoller.stop();
+    workerOutboxPoller.stop();
+    inputRecoveryPoller.stop();
     closePromise = (async () => {
     await boundedStartupCleanup(() => repositoryReadDrain);
     await boundedStartupCleanup(() => queueDrain);

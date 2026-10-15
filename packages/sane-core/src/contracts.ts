@@ -9,7 +9,7 @@ export { SUPPORTED_WORKSTREAM_TYPES, isSupportedWorkstreamType } from "./workstr
 export type { WorkstreamType } from "./workstream-type.ts"
 export type Harness = "cc" | "oc"
 export interface ConversationRef { harness: Harness; authorityId: string; nativeId: string }
-export type HandoffStatus = "queued" | "acceptance_unknown" | "accepted" | "running" | "completed" | "failed"
+export type HandoffStatus = "awaiting_approval" | "queued" | "acceptance_unknown" | "accepted" | "running" | "completed" | "failed"
 export interface HandoffInput { requestId: string; to: Phase; message: string; target?: ConversationRef; createNew?: boolean; checkout?: string; kickoff?: HandoffKickoff }
 /** Kickoff: a sender without a workstream creates one and hands off to a new recipient without joining it. */
 export interface HandoffKickoff { workstream: string; title: string; type: WorkstreamType }
@@ -23,7 +23,7 @@ export interface NativeAuthority { descriptor: NativeSourceDescriptor; authority
 export type Phase = StoredSlot
 export interface CheckoutPin { path: string; commonDir: string; gitDir: string; device: number; inode: number; commonDevice: number; commonInode: number; gitDevice: number; gitInode: number }
 export interface RepositoryDiscovery { primaryCheckout: string; commonDir: string; stateRoot: string; databasePath: string; primaryPin: CheckoutPin; invocationCheckout: CheckoutPin }
-export interface RepositoryContext extends RepositoryDiscovery { repositoryId: string; schemaVersion: 1 | 2 | 3 }
+export interface RepositoryContext extends RepositoryDiscovery { repositoryId: string; schemaVersion: 1 | 2 | 3 | 4 }
 export type StoreAvailability = { state: "ready"; context: RepositoryContext } | { state: "uninitialized" | "unsupported" | "corrupt" | "unavailable" | "stale-binding"; code: DomainErrorCode; message: string; path: string }
 export type MutationActor = { kind: "local" | "human" | "system" } | { kind: "native"; repositoryId: string; ref: ConversationRef }
 export interface MutationContext { actor: MutationActor; correlationId: string; expectedRevision?: number }

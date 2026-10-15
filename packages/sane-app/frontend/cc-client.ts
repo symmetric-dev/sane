@@ -57,6 +57,30 @@ export const conversationClient: ConversationClient = {
   },
   async interactions(id, signal) { return (await request(`/api/sessions/${encodeURIComponent(id)}/interactions`, { signal })).interactions ?? []; },
   reply: (id, interactionId, reply) => request(`/api/sessions/${encodeURIComponent(id)}/interactions/${encodeURIComponent(interactionId)}/reply`, { method: "POST", body: JSON.stringify(reply) }),
+  async handoffApprovals(id, signal) {
+    const data = await request(`/api/sessions/${encodeURIComponent(id)}/handoff-approvals`, { signal });
+    const raw = data.approvals ?? data.handoffApprovals ?? data.interactions ?? [];
+    if (!Array.isArray(raw)) return [];
+    // Backend approvals are domain rows (id/revision/to/message/...); project
+    // them to the sender-session Interaction shape for the Permissions-style
+    // composer. Already-shaped Interactions pass through unchanged.
+    return raw.map((item: any) => {
+      if (item && typeof item === "object" && item.type === "handoff-approval" && typeof item.id === "string" && typeof item.handoffId === "string") {
+        return { ...item, revision: Number.isSafeInteger(item.revision) ? item.revision : 0 };
+      }
+      if (!item || typeof item !== "object" || typeof item.id !== "string") return item;
+      const handoffId = typeof item.handoffId === "string" ? item.handoffId : item.id;
+      const requestId = typeof item.requestId === "string" ? item.requestId : typeof item.request_id === "string" ? item.request_id : handoffId;
+      const revision = Number.isSafeInteger(item.revision) ? item.revision : Number.isSafeInteger(item.expectedRevision) ? item.expectedRevision : 0;
+      const to = typeof item.to === "string" ? item.to : typeof item.destination === "string" ? item.destination : "";
+      const message = typeof item.message === "string" ? item.message : typeof item.description === "string" ? item.description : "";
+      const title = typeof item.title === "string" ? item.title : to ? `Handoff to ${to}` : "Handoff approval";
+      return { id: item.id, type: "handoff-approval" as const, title, ...(message ? { description: message } : {}), handoffId, requestId, revision,
+        ...(typeof item.workstreamId === "string" ? { workstreamId: item.workstreamId } : {}), ...(to ? { to } : {}),
+        ...(typeof item.status === "string" ? { status: item.status } : {}) };
+    });
+  },
+  replyHandoff: (id, approvalId, reply) => request(`/api/sessions/${encodeURIComponent(id)}/handoff-approvals/${encodeURIComponent(approvalId)}/reply`, { method: "POST", body: JSON.stringify({ decision: reply.decision, ...(reply.message !== undefined ? { message: reply.message } : {}), expectedRevision: reply.expectedRevision }) }),
   cancel: id => request(`/api/sessions/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
   async verifyCompletion(id, runId, input) {
     const result = await request(`/api/sessions/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/verify-completion`, { method: "POST", body: JSON.stringify(input) });

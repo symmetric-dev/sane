@@ -29,7 +29,7 @@ export { RepositoryReader, type RepositoryReadOptions } from "./repository-reade
 export { discoverRepository, inspectRepositoryStore, initializeRepository, upgradeRepository, revalidateCheckout } from "./repository.ts"
 export { SLOT_REGISTRY, SLOT_PATTERN, STORED_SLOT_PATTERN, SUPPORT_TRACKS, isSlot, isStoredSlot, canonicalSlot, equivalentSlots, validateSlot, parseSlot } from "./slots.ts"
 export { normalizeNativeSource } from "./native-source.ts"
-export { handoffInput, handoffSchema, equivalentHandoffInputs } from "./handoff.ts"
+export { handoffInput, handoffSchema, equivalentHandoffInputs, HANDOFF_STATUSES, isHandoffStatus } from "./handoff.ts"
 
 const now = () => new Date().toISOString()
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex")
@@ -283,7 +283,7 @@ export class RepositoryDomain {
     return this.createWorkstream({ id: kickoff.workstream, title: kickoff.title, type: kickoff.type, defaultCheckout: args.checkout ?? invocation.executionCheckout }, context)
   }
   listHandoffs(): Handoff[] { this.validateRead(); return this.rows("SELECT * FROM handoffs ORDER BY created_at,id").map(row => this.handoffDTO(row)) }
-  /** Polling/recovery only: retain every queued or active delivery, including uncertain attempts. */
+  /** Polling/recovery only: retain every queued or active delivery, including uncertain attempts. Awaiting-approval admissions are excluded until approved. */
   listHandoffsForPolling(): Handoff[] {
     this.validatePolling()
     return this.rows("SELECT * FROM handoffs WHERE status IN ('queued','acceptance_unknown','accepted','running') ORDER BY created_at,id").map(row => this.handoffDTO(row))
@@ -310,7 +310,7 @@ export class RepositoryDomain {
         if (args.createNew || args.target && JSON.stringify(args.target) !== JSON.stringify(target.ref)) fail("CONFLICT", "Recipient differs from requested target.")
       } else if (!args.createNew) fail("INVALID_INPUT", "New recipient requires explicit creation.")
       const key = randomUUID(), time = now()
-      this.run("INSERT INTO handoffs(id,sender_id,request_id,workstream_id,input,recipient,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',?,?)", key, this.conversationRow(sender).id, args.requestId, workstreamId, JSON.stringify(args), JSON.stringify(recipient), time, time)
+      this.run("INSERT INTO handoffs(id,sender_id,request_id,workstream_id,input,recipient,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'awaiting_approval',?,?)", key, this.conversationRow(sender).id, args.requestId, workstreamId, JSON.stringify(args), JSON.stringify(recipient), time, time)
       this.event(context, "handoff_queued", workstreamId, key, { recipient, requestId: args.requestId, ...(args.kickoff ? { origin: { kind: "kickoff", sender, requestId: args.requestId } } : {}) })
       return this.getHandoff(key)
     })
@@ -340,15 +340,24 @@ export class RepositoryDomain {
     this.assertConversationWritable(ref)
   }
   /** The App guard is synchronous: admission revalidation and domain eligibility
-   * share the definitive reservation, before any attempt identities persist. */
+   * share the definitive reservation, before any attempt identities persist.
+   * Pre-dispatch approval (awaiting_approval -> queued/failed) accepts a human
+   * operator or the system owner; every dispatch/outcome transition still
+   * requires the system execution owner. */
   advanceHandoff(id: string, expectedRevision: number, change: { status: HandoffStatus; attemptId?: string; nativeCommandId?: string; runId?: string; evidence?: string; retry?: boolean }, context: MutationContext, assertAppRecipientReady?: (handoff: Handoff) => void): Handoff {
     return this.transaction(context, () => {
-      if (context.actor.kind !== "system") fail("INVALID_CONTEXT", "App execution owner required.")
-      const h = this.getHandoff(id)
+      const current = this.getHandoff(id)
+      const isApprovalDecision = current.status === "awaiting_approval" && (change.status === "queued" || change.status === "failed");
+      if (isApprovalDecision) {
+        if (context.actor.kind !== "human" && context.actor.kind !== "system") fail("INVALID_CONTEXT", "Handoff approval requires a human operator or the App execution owner.");
+      } else if (context.actor.kind !== "system") fail("INVALID_CONTEXT", "App execution owner required.")
+      const h = current
       if (h.revision !== expectedRevision) fail("CONFLICT", "Handoff changed; reconcile current state.")
-      const transitions: Record<HandoffStatus, HandoffStatus[]> = { queued: ["acceptance_unknown"], acceptance_unknown: ["accepted", "failed", "queued"], accepted: ["running", "completed", "failed"], running: ["completed", "failed"], completed: [], failed: [] }
+      const transitions: Record<HandoffStatus, HandoffStatus[]> = { awaiting_approval: ["queued", "failed"], queued: ["acceptance_unknown"], acceptance_unknown: ["accepted", "failed", "queued"], accepted: ["running", "completed", "failed"], running: ["completed", "failed"], completed: [], failed: [] }
       if (!transitions[h.status].includes(change.status)) fail("CONFLICT", "Invalid handoff transition.")
-      if (change.status === "queued" && (change.retry !== true || !change.evidence?.trim())) fail("CONFLICT", "Explicit retry requires reconciled nonacceptance evidence.")
+      const isApproval = h.status === "awaiting_approval" && change.status === "queued"
+      if (isApproval && change.retry === true) fail("CONFLICT", "Approval does not use retry.")
+      if (change.status === "queued" && !isApproval && (change.retry !== true || !change.evidence?.trim())) fail("CONFLICT", "Explicit retry requires reconciled nonacceptance evidence.")
       if (change.status === "acceptance_unknown") {
         if (!h.recipient.ref || !change.attemptId || !change.nativeCommandId || !change.runId) fail("INVALID_INPUT", "Persist recipient, attempt, native command and run identities before dispatch.")
         text(change.attemptId, "attempt ID"); text(change.nativeCommandId, "native command ID"); text(change.runId, "run ID")
@@ -358,7 +367,9 @@ export class RepositoryDomain {
         if (active) fail("BUSY", "Recipient already has an active or uncertain delivery.")
         this.run("INSERT INTO handoff_attempts VALUES(?,?,?,?,?)", change.attemptId, id, change.nativeCommandId, change.runId, now())
       } else if (change.attemptId !== undefined || change.nativeCommandId !== undefined || change.runId !== undefined) fail("INVALID_INPUT", "Attempt identities cannot change after dispatch.")
-      if (change.status !== "acceptance_unknown") text(change.evidence, "native acceptance or outcome evidence")
+      if (isApproval) {
+        if (change.evidence !== undefined && change.evidence !== null) text(change.evidence, "approval evidence")
+      } else if (change.status !== "acceptance_unknown") text(change.evidence, "native acceptance or outcome evidence")
       this.run("UPDATE handoffs SET status=?,revision=revision+1,attempt_id=?,native_command_id=?,run_id=?,evidence=?,updated_at=? WHERE id=?", change.status, change.attemptId ?? h.attemptId, change.nativeCommandId ?? h.nativeCommandId, change.runId ?? h.runId, change.evidence ?? null, now(), id)
       this.event(context, "handoff_state_changed", h.workstreamId, id, { ...change, previousStatus: h.status, previousAttemptId: h.attemptId })
       return this.getHandoff(id)

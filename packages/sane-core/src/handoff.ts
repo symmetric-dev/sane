@@ -1,7 +1,13 @@
-import type { HandoffInput } from "./contracts.ts"
+import type { HandoffInput, HandoffStatus } from "./contracts.ts"
 import { DomainError } from "./errors.ts"
 import { STORED_SLOT_PATTERN, isStoredSlot, canonicalSlot } from "./slots.ts"
 import { SUPPORTED_WORKSTREAM_TYPES, isSupportedWorkstreamType } from "./workstream-type.ts"
+
+/** Canonical handoff delivery states, including pre-approval admission. */
+export const HANDOFF_STATUSES: readonly HandoffStatus[] = ["awaiting_approval", "queued", "acceptance_unknown", "accepted", "running", "completed", "failed"] as const
+export function isHandoffStatus(value: unknown): value is HandoffStatus {
+  return typeof value === "string" && (HANDOFF_STATUSES as readonly string[]).includes(value)
+}
 
 export const handoffSchema = {
   type: "object", properties: {

@@ -1,7 +1,7 @@
 /** Private SQLite capabilities and explicit history-preserving upgrades. */
 import { Database } from "bun:sqlite"
 import { fail } from "./errors.ts"
-import { SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, CANONICAL_PHASE_SQL } from "./schema.ts"
+import { SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, CANONICAL_PHASE_SQL } from "./schema.ts"
 
 interface SchemaObject { type: string; name: string; tbl_name: string; sql: string }
 const definitions = new Map<number, SchemaObject[]>()
@@ -9,17 +9,17 @@ const normalize = (sql: string) => sql.trim().replace(/\s+/g, " ").replace(/;$/,
 function objects(db: Database): SchemaObject[] {
   return db.query<SchemaObject, []>("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' ORDER BY type,name").all()
 }
-function expected(version: 1 | 2 | 3): SchemaObject[] {
+function expected(version: 1 | 2 | 3 | 4): SchemaObject[] {
   let result = definitions.get(version)
   if (!result) {
     const model = new Database(":memory:", { strict: true })
-    try { model.exec(version === 1 ? SCHEMA_V1 : version === 2 ? SCHEMA_V2 : SCHEMA_V3); result = objects(model); definitions.set(version, result) }
+    try { model.exec(version === 1 ? SCHEMA_V1 : version === 2 ? SCHEMA_V2 : version === 3 ? SCHEMA_V3 : SCHEMA_V4); result = objects(model); definitions.set(version, result) }
     finally { model.close() }
   }
   return result
 }
 /** Check definitions, not merely object names: constraints and history triggers are capabilities. */
-export function assertSchemaCapabilities(db: Database, version: 1 | 2 | 3): void {
+export function assertSchemaCapabilities(db: Database, version: 1 | 2 | 3 | 4): void {
   const actual = objects(db), required = expected(version)
   if (actual.length !== required.length) fail("CORRUPT_STORE", `Unexpected or missing sane-domain v${version} schema objects.`)
   for (let i = 0; i < required.length; i++) {
@@ -41,10 +41,14 @@ export function migrateV1ToV2(db: Database): void {
 export function migrateV2ToV3(db: Database): void {
   rebuildAssignmentCapability(db, 2, 3)
 }
-/** Deliberate v1 -> v2 -> v3 path within the caller's single transaction. */
-export function migrateToCurrent(db: Database, fromVersion: 1 | 2): void {
+export function migrateV3ToV4(db: Database): void {
+  rebuildHandoffCapability(db, 3, 4)
+}
+/** Deliberate v1 -> v2 -> v3 -> v4 path within the caller's single transaction. */
+export function migrateToCurrent(db: Database, fromVersion: 1 | 2 | 3): void {
   if (fromVersion === 1) migrateV1ToV2(db)
-  migrateV2ToV3(db)
+  if (fromVersion <= 2) migrateV2ToV3(db)
+  migrateV3ToV4(db)
 }
 function rebuildAssignmentCapability(db: Database, fromVersion: 1 | 2, toVersion: 2 | 3): void {
   assertSchemaCapabilities(db, fromVersion); assertStoreIntegrity(db)
@@ -62,6 +66,35 @@ function rebuildAssignmentCapability(db: Database, fromVersion: 1 | 2, toVersion
     || db.query(`SELECT * FROM phase_assignments EXCEPT SELECT * FROM _sane_upgrade_phase_assignments`).all().length
     || db.query(`SELECT id,format,repository_id,primary_checkout,common_dir,primary_pin,created_at FROM _sane_upgrade_store_metadata
       EXCEPT SELECT id,format,repository_id,primary_checkout,common_dir,primary_pin,created_at FROM store_metadata`).all().length) fail("CORRUPT_STORE", "Upgrade failed to preserve assignment/metadata history.")
+  for (const table of rebuilt) db.exec(`DROP TABLE _sane_upgrade_${table}`)
+  assertSchemaCapabilities(db, toVersion); assertStoreIntegrity(db)
+}
+/** v3 -> v4 broadens the handoffs status CHECK with awaiting_approval.
+ * Child handoff_attempts is rebuilt alongside its parent so the FK stays
+ * enforced throughout; no history rows are rewritten. */
+function rebuildHandoffCapability(db: Database, fromVersion: 3, toVersion: 4): void {
+  assertSchemaCapabilities(db, fromVersion); assertStoreIntegrity(db)
+  const rebuilt = ["handoffs", "handoff_attempts", "store_metadata"]
+  for (const table of rebuilt) db.exec(`CREATE TEMP TABLE _sane_upgrade_${table} AS SELECT * FROM ${table}`)
+  for (const item of expected(fromVersion).filter(item => rebuilt.includes(item.tbl_name) && item.type === "trigger")) db.exec(`DROP TRIGGER ${item.name}`)
+  // Child first so the parent drop never violates the enforced FK.
+  for (const table of ["handoff_attempts", "handoffs", "store_metadata"]) db.exec(`DROP TABLE ${table}`)
+  const target = expected(toVersion).filter(item => rebuilt.includes(item.tbl_name))
+  // Parent first so the child FK resolves on creation.
+  for (const table of ["store_metadata", "handoffs", "handoff_attempts"]) {
+    const sql = target.find(item => item.type === "table" && item.tbl_name === table)?.sql ?? fail("CORRUPT_STORE", `Missing v${toVersion} table: ${table}.`)
+    db.exec(sql)
+  }
+  db.exec(`INSERT INTO handoffs SELECT * FROM _sane_upgrade_handoffs;
+    INSERT INTO handoff_attempts SELECT * FROM _sane_upgrade_handoff_attempts;
+    INSERT INTO store_metadata SELECT id,format,${toVersion},repository_id,primary_checkout,common_dir,primary_pin,created_at FROM _sane_upgrade_store_metadata`)
+  for (const item of target.filter(item => item.type !== "table")) db.exec(item.sql)
+  if (db.query(`SELECT * FROM _sane_upgrade_handoffs EXCEPT SELECT * FROM handoffs`).all().length
+    || db.query(`SELECT * FROM handoffs EXCEPT SELECT * FROM _sane_upgrade_handoffs`).all().length
+    || db.query(`SELECT * FROM _sane_upgrade_handoff_attempts EXCEPT SELECT * FROM handoff_attempts`).all().length
+    || db.query(`SELECT * FROM handoff_attempts EXCEPT SELECT * FROM _sane_upgrade_handoff_attempts`).all().length
+    || db.query(`SELECT id,format,repository_id,primary_checkout,common_dir,primary_pin,created_at FROM _sane_upgrade_store_metadata
+      EXCEPT SELECT id,format,repository_id,primary_checkout,common_dir,primary_pin,created_at FROM store_metadata`).all().length) fail("CORRUPT_STORE", "Upgrade failed to preserve handoff/metadata history.")
   for (const table of rebuilt) db.exec(`DROP TABLE _sane_upgrade_${table}`)
   assertSchemaCapabilities(db, toVersion); assertStoreIntegrity(db)
 }

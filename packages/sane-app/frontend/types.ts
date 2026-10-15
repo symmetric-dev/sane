@@ -1,5 +1,5 @@
 /** UI contract. Harness-specific records stay behind ConversationClient. */
-import type { CompactRequest, CompactResponse, CompactState, Interaction, InteractionReply } from "../shared/conversation/native-contract";
+import type { CompactRequest, CompactResponse, CompactState, HandoffApprovalReply, Interaction, InteractionReply } from "../shared/conversation/native-contract";
 import type { DiagnosticEvent, Harness, ModelChoice, Run, RunMetadata, RunStatus } from "../shared/conversation/types";
 import type { ScienceSnapshotReference, ScienceSubmissionView, ScienceSubmissionDetail } from "../shared/conversation/types";
 export type { ScienceSnapshotReference, ScienceSubmissionView, ScienceSubmissionDetail } from "../shared/conversation/types";
@@ -18,7 +18,7 @@ import type { PendingInputCapability, PendingInputRemovalRequest, PendingInputRe
 import type { PendingInputResumeResult, PendingInputStatus, PendingInputView } from "./pending-input-presentation";
 export type { ConversationUpdateCursor, ConversationUpdateFeedRequest, ConversationUpdatePage, ConversationUpdateSource } from "../shared/conversation/conversation-updates";
 export type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agent-profiles-contract";
-export type { Interaction, InteractionReply, FormField } from "../shared/conversation/native-contract";
+export type { Interaction, InteractionReply, FormField, HandoffApprovalReply } from "../shared/conversation/native-contract";
 export type WorkerSessionMetadata = { id: string; parent: { sessionId: string; runId: string; toolCallId: string } };
 export type { WorkerProtocolStatus };
 export const harnessName = (harness: Harness) => harness === "opencode" ? "OpenCode" : "Claude Code";
@@ -63,6 +63,10 @@ export interface ConversationClient {
    models(cwd: string, signal?: AbortSignal): Promise<ModelChoice[]>;
    interactions(id: string, signal?: AbortSignal): Promise<Interaction[]>;
    reply(id: string, interactionId: string, reply: InteractionReply): Promise<void>;
+   /** Sender-session handoff approvals. Attached to the sender sessionId that
+    * called sane_handoff, never the recipient. Mirrors interactions()/reply(). */
+   handoffApprovals?(id: string, signal?: AbortSignal): Promise<Interaction[]>;
+   replyHandoff?(id: string, approvalId: string, reply: HandoffApprovalReply): Promise<void>;
     cancel(id: string): Promise<{ interrupted: boolean }>;
     hide?(id: string): Promise<void>;
     unhide?(id: string): Promise<void>;
