@@ -2,8 +2,8 @@ import type { State } from "./store";
 import { active as runtimeActive } from "./types";
 
 export type PendingInputPrimaryAction = {
-  mode: "send" | "queue" | "add-paused" | "check-request";
-  label: "Send" | "Queue message" | "Add to paused queue" | "Check request";
+  mode: "send";
+  label: "Send";
   disabled: boolean;
   reason: string | null;
 };
@@ -44,7 +44,7 @@ export function pendingInputLid(state: State, supported: boolean): PendingInputL
     && operation.state === "rejected" && operation.error)) return { text: "Queue request rejected", waitingLabel, state: "reconciliation" };
   if (view?.presentation.unresolved?.classification === "uncertain") return { text: "Reconciliation needed", waitingLabel, state: "reconciliation" };
   if (state.pendingInputLoading) return { text: "Checking queue…", waitingLabel, state: "checking" };
-  if (view?.snapshot.paused) return { text: "Queue paused", waitingLabel, state: "paused" };
+  if (view?.snapshot.paused && (view.snapshot.items.length || view.presentation.chainLocked)) return { text: "Queue paused", waitingLabel, state: "paused" };
   const running = state.runs.some(run => run.conversationId === state.selected && !run.summaryOnly && runtimeActive(run.status));
   if (running) return { text: "Running", waitingLabel, state: "running" };
   const head = view?.snapshot.items.find(item => item.state !== "waiting");
@@ -54,36 +54,18 @@ export function pendingInputLid(state: State, supported: boolean): PendingInputL
   return null;
 }
 
-export function pendingInputPrimaryAction({ state, supported, chainLocked, command, text, sendBlocked, sendReason, queueReason, inactive, composing }: {
+export function pendingInputPrimaryAction({ state, chainLocked, text, sendBlocked, sendReason, inactive, composing }: {
   state: State;
-  supported: boolean;
   chainLocked: boolean;
-  command: boolean;
   text: string;
   sendBlocked: boolean;
   sendReason: string | null;
-  queueReason: string | null;
   inactive: boolean;
   composing: boolean;
 }): PendingInputPrimaryAction {
   const operations = unresolvedOperations(state);
-  // Opening details is not a retry, a refresh, or a new admission.
-  if (operations.length) return { mode: "check-request", label: "Check request", disabled: inactive || composing,
-    reason: "Inspect the original request before submitting another message." };
-  const view = supported ? selectedQueue(state) : null;
-  const ordinaryBusy = state.availability.code === "conversation-busy" || (!state.availability.code
-    && state.availability.reason === "This conversation already has an active run or reconciliation");
-  const conversation = state.conversations.find(item => item.id === state.selected);
-  const queueMode = supported && !!conversation && !conversation.replacedBy && !command && (chainLocked
-    || !!view?.snapshot.items.length || !!view?.snapshot.paused || ordinaryBusy || state.runs.some(run => run.conversationId === state.selected && runtimeActive(run.status))
-    || runtimeActive(conversation.status) || !!state.availability.nativeQueue || !!state.availability.queueAfterRunId);
-  if (queueMode) {
-    const waiting = view?.snapshot.items.filter(item => item.state === "waiting").length ?? 0;
-    const reason = queueReason || (waiting >= 3 ? "Waiting queue is full (3/3)." : !view ? "Read current queue eligibility before queueing."
-      : !view.presentation.automation.supported ? view.presentation.automation.reason || "Queue automation is unavailable."
-      : !view.presentation.enqueue.allowed ? view.presentation.enqueue.reason || "Queue admission is unavailable." : null);
-    return { mode: view?.snapshot.paused ? "add-paused" : "queue", label: view?.snapshot.paused ? "Add to paused queue" : "Queue message",
-      disabled: inactive || composing || !!reason || !text.trim(), reason: reason || (!text.trim() ? "Write a message to queue." : null) };
-  }
-  return { mode: "send", label: "Send", disabled: inactive || composing || chainLocked || sendBlocked || !text.trim(), reason: sendReason };
+  return { mode: "send", label: "Send", disabled: inactive || composing || operations.length > 0 || chainLocked || sendBlocked || !text.trim(),
+    reason: operations.length ? "Check the original request in the queue details before sending another message."
+      : chainLocked ? sendReason || "Resolve existing queued messages before sending."
+      : !text.trim() ? "Write a message to send." : sendReason };
 }

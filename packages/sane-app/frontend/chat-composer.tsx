@@ -77,7 +77,6 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   const [pickerOpen, setPickerOpen] = useState(false);
   const [composing, setComposing] = useState(false);
   const composingRef = useRef(false);
-  const [details, setDetails] = useState<{ scope: string; request: number } | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const pendingActionRef = useRef<{ scope: string } | null>(null);
   const mounted = useRef(true);
@@ -144,7 +143,6 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   const wasFlowOpen = useRef(flowOpen);
   const hadRequests = useRef(hasRequests);
   useEffect(() => { setStatus(null); }, [flowScope]);
-  useEffect(() => { setDetails(null); }, [flowScope]);
   useEffect(() => { if (review?.flow) setStatus(null); }, [!!review?.flow]);
   useEffect(() => { if (science?.view.flow) setStatus(null); }, [science?.view.flow]);
   // Dialog cleanup runs after a navigation render; consult the current activity,
@@ -182,28 +180,27 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
     const busy = current.availability.code === "conversation-busy" || (!current.availability.code
       && current.availability.reason === "This conversation already has an active run or reconciliation");
     const running = current.runs.some(run => runtimeActive(run.status)) || runtimeActive(currentConversation?.status ?? "completed");
+    const busyInput = running || !!current.availability.nativeQueue || !!current.availability.queueAfterRunId;
     const ordinaryBlocked = locked || supported && (current.phase !== "ready" || current.config?.authenticated !== true)
       || (command ? current.sending || !currentCapabilities.compaction
       : sendDisabled || !currentCapabilities.prompt || ackMissing || current.loading || current.sending || current.actionBusy
-        || !current.connected || !current.availability.canSend || running && !store.canQueueInput(current)
+        || !current.connected || !current.availability.canSend || busyInput
         || store.compactBlocked() || store.modelUnavailable() || !!store.executionUnavailable());
-    const sendReason = locked ? command ? "Resolve the existing input chain before compacting." : "Resolve the existing input chain before sending ordinary input."
+    const sendReason = locked ? command ? "Resolve the existing input chain before compacting." : "Resolve existing queued messages in the queue details before sending."
       : current.sending ? "Sending your message…"
+      : current.phase !== "ready" || current.config?.authenticated !== true ? "Waiting for an authenticated connection."
+      : command && !currentCapabilities.compaction ? "Context compaction is unavailable for this harness."
+      : !command && pendingInteractions(current, currentCapabilities).length ? "Respond to the pending conversation request before sending."
       : !command && ackMissing ? "Confirm external assistant execution is stopped before sending."
+      : !command && current.loading ? "Loading the conversation…"
       : !command && !current.connected ? "Waiting for the conversation connection."
       : !command && !current.availability.canSend ? busy ? "Wait for the current run or conversation reservation to finish."
-        : current.availability.reason || "Sending is currently unavailable." : "Send message";
-    // Busy/retained-chain ordinary-send restrictions are intentionally not queue
-    // gates. All other source, profile, flow and acknowledgment gates still apply.
-    const queueReason = !supported ? null
-      : current.phase !== "ready" || current.config?.authenticated !== true ? "Choose an authenticated conversation to queue an input."
-      : store.pendingUpgrade() ? "Queue uses saved settings; clear pending assignment first."
-      : pendingActionRef.current?.scope === pendingScope || current.actionBusy || current.sending || store.compactBlocked() ? "Wait for the current action to settle."
-      : current.loading || !current.connected ? "Waiting for the conversation connection."
-      : !currentCapabilities.prompt ? "Sending is unavailable for this harness."
-      : ackMissing ? "Confirm external assistant execution is stopped before queueing."
-      : store.executionUnavailable() || (store.modelUnavailable() ? "Waiting for the model catalog…" : "")
-        || current.pendingInputError || (current.pendingInputLoading ? "Reading current queue eligibility…" : "") || store.pendingInputUnavailable() || null;
+        : current.availability.reason || "Sending is currently unavailable."
+      : !command && busyInput ? "Wait for the current run to finish before sending."
+      : !command && !currentCapabilities.prompt ? "Sending is unavailable for this harness."
+      : !command && current.actionBusy ? "Wait for the current action to finish."
+      : store.compactBlocked() ? "Wait for context compaction to finish."
+      : store.executionUnavailable() || (store.modelUnavailable() ? "Waiting for the model catalog…" : "") || (ordinaryBlocked ? "Sending is currently unavailable." : "Send message");
     const snapshots = current.drafts[store.draftKey(current.selected)]?.scienceSnapshots ?? [];
     if (current.sciencePending?.[current.selected]) {
       return { mode: "send" as const, label: "Send" as const, disabled: true, reason: "The previous science send is unresolved. Refresh conversation history before sending again." };
@@ -216,8 +213,8 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
         : ordinaryBlocked ? sendReason : null;
       return { mode: "send" as const, label: "Send" as const, disabled: !active || flowOpen || !!currentConversation?.replacedBy || composingRef.current || composing || !!reason || unresolvedOperations(current).length > 0, reason };
     }
-    return pendingInputPrimaryAction({ state: current, supported, chainLocked: locked, command, text, sendBlocked: !!ordinaryBlocked,
-      sendReason, queueReason, inactive: !active || flowOpen || !!currentConversation?.replacedBy, composing: composingRef.current || composing });
+    return pendingInputPrimaryAction({ state: current, chainLocked: locked, text, sendBlocked: !!ordinaryBlocked,
+      sendReason, inactive: !active || flowOpen || !!currentConversation?.replacedBy, composing: composingRef.current || composing });
   };
   const primary = deriveAction(state, draft.text);
   const lid = pendingInputLid(state, pendingSupported);
@@ -230,12 +227,8 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
     const text = store.draft().text;
     const action = deriveAction(current, text);
     if (action.disabled) return;
-    // A concurrent state change must not reinterpret a visible Send as consent
-    // to future execution (or a visible Queue as an ordinary immediate send).
-    if (action.mode !== primary.mode) return;
-    if (action.mode === "check-request") setDetails(previous => ({ scope: pendingScope, request: previous?.scope === pendingScope ? previous.request + 1 : 1 }));
-    else if (action.mode === "queue" || action.mode === "add-paused") operatePending(() => store.enqueuePendingInput(text));
-    else void send(text);
+    // Never reinterpret Send as consent to queue a future message.
+    void send(text);
   };
 
   return <>
@@ -247,7 +240,6 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
       queue={lid ? { lid, details: pendingSupported
         ? <PendingInputDetails state={state} active={active && !flowOpen && !conversation?.replacedBy} busy={pendingBusy} operate={operatePending} />
         : <RetainedInputDetails state={state} disabled={!active || flowOpen || !!conversation?.replacedBy || pendingBusy || state.actionBusy || state.sending || state.loading || !!state.pendingInputLoading} operate={operatePending} /> } : undefined}
-      detailsRequest={details?.scope === pendingScope ? details.request : 0}
       restoreFocus={() => !flowOpen ? normalComposer.current?.querySelector("textarea") ?? document.body : document.body} />
     {hasRequests && <Interactions key={flowScope} state={state} active={active && !helpOpen && !pickerOpen} navigation={navigation} showNotice={false} />}
     <div ref={flowComposer} className="composer-flow-slot" hidden={hasRequests} style={{ display: hasRequests ? "none" : "contents" }}>
@@ -259,7 +251,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
     </div>
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onCompositionStartCapture={() => { composingRef.current = true; setComposing(true); }} onCompositionEndCapture={() => { composingRef.current = false; setComposing(false); }} onSubmit={event => { event.preventDefault(); submit(); }}>
       <ScienceShareDraftPreview />
-      <ChatInput key={draftIdentity} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input pending-input-primary-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" sendButton={<button type="submit" className="send pending-input-primary" data-mode={primary.mode} disabled={primary.disabled} aria-label={primary.mode === "send" ? "Send message" : primary.label} title={primary.reason ?? (primary.mode === "add-paused" ? "Add using saved settings; waiting messages remain paused." : "Queue this message using the conversation's saved settings.")}><Icon name="send" /><span>{primary.label}</span></button>} />
+      <ChatInput key={draftIdentity} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input pending-input-primary-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" sendButton={<button type="submit" className="send pending-input-primary" data-mode={primary.mode} disabled={primary.disabled} aria-label="Send message" title={primary.reason ?? "Send message"}><Icon name="send" /><span>{primary.label}</span></button>} />
       <div className="composer-toolbar"><div className="composer-options">
         {profile ? fixed
           ? <span className="agent-chip fixed" role="status" title={profile.label}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span></span>

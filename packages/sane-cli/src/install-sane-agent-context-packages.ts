@@ -68,6 +68,7 @@ export const PLUGIN_FILENAMES = [
   "sane/index.ts",
   "sane/execution.ts",
   "sane/execution-rpc.ts",
+  "sane/visibility.ts",
   ...PLUGIN_SRC_FILES.map((filename) => `sane/runtime/packages/sane-cli/src/${filename}`),
   ...PLUGIN_CORE_SRC_FILES.map(filename => `sane/runtime/packages/sane-core/src/${filename}`),
 ] as const
@@ -201,6 +202,11 @@ function installationEntries(
       rewriteImports: true,
       source: join(sourceRoot, "opencode", "plugins", "sane", "index.ts"),
       destination: join(homeDirectory, ".config", "opencode", "plugins", "sane", "index.ts"),
+    },
+    {
+      rewriteImports: true,
+      source: join(sourceRoot, "opencode", "plugins", "sane", "visibility.ts"),
+      destination: join(homeDirectory, ".config", "opencode", "plugins", "sane", "visibility.ts"),
     },
     ...["execution.ts", "execution-rpc.ts"].map(filename => ({
       source: join(sourceRoot, "opencode", "plugins", "sane", filename),

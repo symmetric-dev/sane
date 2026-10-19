@@ -43,8 +43,7 @@ function nativeState(session: Session, available: SessionListAvailability, nativ
     ...(native.error ? { nativeActivityReason: native.error } : {}),
     ...(active ? { lastStatus: "running" as const } : {}),
     availability: !available.canSend ? available : native.error ? { canSend: false, reason: native.error }
-      : active && session.agentKind === "worker" ? { canSend: false, reason: "OpenCode worker is still active" }
-      : active ? { ...available, nativeQueue: true } : available,
+      : active ? { canSend: false, code: "native-busy", reason: session.agentKind === "worker" ? "OpenCode worker is still active" : "Wait for OpenCode to finish before sending" } : available,
   };
 }
 

@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { discoverRepository, handoffInput, equivalentHandoffInputs, normalizeNativeSource, revalidateCheckout, DomainError } from "sane-core/server";
 import { canonicalSlot, equivalentSlots, isStoredSlot, type CheckoutPin, type ConversationRef, type Handoff, type HandoffExecutionConfig, type HandoffRecipient, type MutationContext } from "sane-core/contracts";
 import { classifyCaller } from "../../sane-cli/src/cli-arguments";
@@ -69,7 +71,26 @@ export function slotSessionIndex(assignments: readonly SlotAssignment[], phase: 
 
 export class HandoffService {
   constructor(private admissions: AdmissionService, private catalog: CatalogService, private router: RepositoryRouter, private sources: SourceRecords, private sessions: () => Session[], private assertAvailable: () => void, private ownerId: string, private resolveRecipient: (to: string, checkout: string) => Promise<{ harness: HandoffRecipient["harness"]; executionConfig: HandoffExecutionConfig }>) {}
-  private async caller(envelope: unknown) {
+  /**
+   * Qualify the native sender. A kickoff from an unenrolled sender carries an
+   * `enroll` request (trusted hook checkout + nearest enrolled ancestor); it is
+   * returned unapplied so enqueue can register the sender only after every
+   * admission precondition passes. Conversation rows are immutable history, so
+   * enrollment must never precede a rejectable validation step.
+   */
+  private async caller(envelope: unknown, allowEnroll = false) {
+    let enroll: { executionCheckout: string; parent: ConversationRef | null } | undefined;
+    if (envelope && typeof envelope === "object" && !Array.isArray(envelope) && "enroll" in envelope) {
+      const { enroll: raw, ...rest } = envelope as Record<string, unknown>;
+      if (!allowEnroll) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Enrollment is only available to a kickoff handoff.");
+      const value = raw as Record<string, unknown> | null;
+      const parent = value?.parent as Record<string, unknown> | null | undefined;
+      if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(k => k !== "executionCheckout" && k !== "parent")
+        || typeof value.executionCheckout !== "string" || !value.executionCheckout.startsWith("/")
+        || parent !== null && (!parent || typeof parent !== "object" || Array.isArray(parent) || Object.keys(parent).length !== 3 || typeof parent.harness !== "string" || typeof parent.authorityId !== "string" || typeof parent.nativeId !== "string")) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Invalid enrollment request.");
+      enroll = { executionCheckout: value.executionCheckout, parent: parent ? { harness: parent.harness, authorityId: parent.authorityId, nativeId: parent.nativeId } as ConversationRef : null };
+      envelope = rest;
+    }
     const classified = classifyCaller({ SANE_CALLER_CONTEXT: JSON.stringify(envelope) });
     if (classified.actorKind !== "native") throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Qualified sender required.");
     const e = classified.envelope, source = normalizeNativeSource(e.source);
@@ -80,28 +101,52 @@ export class HandoffService {
     if (matches.length !== 1) throw new DomainError("INVALID_CONTEXT", "Repository must be registered in the running App.");
     const adapter = await this.router.forWorkspace(matches[0]!.workspaceId);
     const ref: ConversationRef = { harness: e.source.harness, authorityId: e.authorityId, nativeId: e.nativeId };
-    return { adapter, ref, context: adapter.domain.resolveContext(ref) };
+    // A concurrent same-requestId retry may already have enrolled the sender.
+    if (enroll && !adapter.domain.getConversation(ref)) return { adapter, ref, context: null, enroll: { ...enroll, source: source.descriptor } };
+    return { adapter, ref, context: adapter.domain.resolveContext(ref), enroll: null };
   }
   async enqueue(envelope: unknown, input: unknown): Promise<Handoff> {
-    const args = handoffInput(input), { adapter, ref, context } = await this.caller(envelope), domain = adapter.domain;
-    const old = domain.findHandoff(ref, args.requestId);
+    const args = handoffInput(input), { adapter, ref, context, enroll } = await this.caller(envelope, !!args.kickoff), domain = adapter.domain;
+    // An unenrolled sender cannot have prior handoffs; skip the idempotency lookup.
+    const old = context ? domain.findHandoff(ref, args.requestId) : null;
     if (old) {
       if (!equivalentHandoffInputs(old.input, args)) throw new DomainError("CONFLICT", "Request ID is already bound to another handoff payload.");
       return old;
     }
-    // Kickoff: sender without a workstream creates one (idempotent per requestId) and never joins it.
-    const workstream = args.kickoff ? (this.assertAvailable(), domain.kickoffWorkstream(ref, args)) : context.workstream;
+    // Validate everything a first-time kickoff sender could be rejected for
+    // before it is enrolled: its pinned checkout, that it would not inherit a
+    // workstream (kickoff requires none), and that the kickoff ID is free.
+    const senderCheckoutPath = enroll?.executionCheckout ?? context!.executionCheckout;
+    if (enroll) {
+      const kickoff = args.kickoff!;
+      domain.validateExecutionCheckout(enroll.executionCheckout);
+      if (enroll.parent) {
+        if (enroll.parent.harness !== ref.harness || enroll.parent.authorityId !== ref.authorityId) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Enrollment parent must share the sender's native authority.");
+        const parent = domain.getConversation(enroll.parent);
+        if (!parent) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Enrollment parent is not registered.");
+        if (parent.workstreamId) throw new DomainError("INVALID_CONTEXT", "Kickoff is only for senders without a workstream.");
+      }
+      if (domain.listWorkstreams().some(w => w.id === kickoff.workstream)) throw new DomainError("CONFLICT", "Workstream already exists.");
+      if (existsSync(join(domain.stateRoot, "workstreams", kickoff.workstream))) throw new DomainError("CONFLICT", "Orphan or existing artifact directory for the kickoff workstream; never adopted or removed.");
+    } else if (args.kickoff && context!.workstream) throw new DomainError("INVALID_CONTEXT", "Kickoff is only for senders without a workstream.");
+    // Kickoff recipients are always createNew; resolve them before any kickoff
+    // mutation (enrollment or workstream creation) so a rejection leaves none.
+    let recipient: HandoffRecipient | undefined;
+    if (args.kickoff) recipient = await this.newRecipient(domain, args, domain.validateExecutionCheckout(args.checkout ?? senderCheckoutPath));
+    let workstream = context?.workstream ?? null;
+    if (args.kickoff) {
+      this.assertAvailable();
+      if (enroll) {
+        const bootstrap: MutationContext = { actor: { kind: "system" }, correlationId: `kickoff-enroll:${args.requestId}` };
+        domain.declareNativeAuthority(enroll.source, bootstrap);
+        domain.registerConversation({ ref, executionCheckout: enroll.executionCheckout, parent: enroll.parent }, bootstrap);
+      }
+      // Kickoff: sender without a workstream creates one (idempotent per requestId) and never joins it.
+      workstream = domain.kickoffWorkstream(ref, args);
+    }
     if (!workstream) throw new DomainError("INVALID_CONTEXT", "Sender has no workstream.");
-    let recipient: HandoffRecipient;
-    if (args.createNew) {
-      const checkout = args.checkout ? domain.validateExecutionCheckout(args.checkout) : workstream.defaultCheckout;
-      if (!checkout) throw new DomainError("INVALID_CHECKOUT", "New recipient requires an explicit checkout or workstream default.");
-      revalidateCheckout(domain.context, checkout);
-      const resolved = await this.resolveRecipient(args.to, checkout.path);
-      const source = normalizeNativeSource(this.sources[resolved.harness].descriptor);
-      if (source.authorityId !== this.sources[resolved.harness].authorityId) throw new DomainError("SOURCE_UNAVAILABLE", "Recipient source requires configuration refresh.");
-      recipient = { ownerId: this.ownerId, sessionId: crypto.randomUUID(), ref: null, ...resolved, authorityId: source.authorityId, checkout };
-    } else {
+    if (!recipient && args.createNew) recipient = await this.newRecipient(domain, args, args.checkout ? domain.validateExecutionCheckout(args.checkout) : workstream.defaultCheckout);
+    else if (!recipient) {
       const linked = domain.getWorkstreamStatus(workstream.id).activePhases.filter(a => equivalentSlots(a.phase, args.to));
       const candidates = this.admissions.list().filter(a => a.state === "ready" && a.nativeId && a.binding.domain.mode === "repository" && a.binding.domain.repositoryId === domain.repositoryId && this.sessions().some(s => s.sessionId === a.sessionId && s.attachment?.state !== "pending")).filter(a => linked.some(l => same(l.ref, { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! })));
       const eligible = args.target ? candidates.filter(a => same(args.target!, { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! })) : candidates;
@@ -115,6 +160,14 @@ export class HandoffService {
     this.assertAvailable();
     if (recipient.ref) this.assertRecipientReady({ repositoryId: domain.repositoryId, recipient });
     return domain.admitHandoff(ref, args, recipient, { actor: { kind: "native", repositoryId: domain.repositoryId, ref }, correlationId: args.requestId });
+  }
+  private async newRecipient(domain: Awaited<ReturnType<RepositoryRouter["forWorkspace"]>>["domain"], args: ReturnType<typeof handoffInput>, checkout: CheckoutPin | null): Promise<HandoffRecipient> {
+    if (!checkout) throw new DomainError("INVALID_CHECKOUT", "New recipient requires an explicit checkout or workstream default.");
+    revalidateCheckout(domain.context, checkout);
+    const resolved = await this.resolveRecipient(args.to, checkout.path);
+    const source = normalizeNativeSource(this.sources[resolved.harness].descriptor);
+    if (source.authorityId !== this.sources[resolved.harness].authorityId) throw new DomainError("SOURCE_UNAVAILABLE", "Recipient source requires configuration refresh.");
+    return { ownerId: this.ownerId, sessionId: crypto.randomUUID(), ref: null, ...resolved, authorityId: source.authorityId, checkout };
   }
   async status(envelope: unknown, requestId: string) {
     if (typeof requestId !== "string" || !requestId || requestId.length > 200) throw new DomainError("INVALID_INPUT", "Request ID required.");

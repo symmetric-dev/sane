@@ -15,38 +15,77 @@ export interface NativeCaller {
   invocation?: import("./native-worker-contract.ts").NativeWorkerInvocation
 }
 
-export function openNativeCaller(caller: NativeCaller, enroll = false) {
+/** Stable, non-actionable rejection for conversations SANE does not manage.
+ * Never suggests enrollment: the only bootstrap is a validated kickoff handoff. */
+export const NOT_MANAGED_MESSAGE = "This session is not managed by SANE. Continue with your harness's native tools; do not retry SANE tools."
+
+/** Enrollment request carried to the App on a kickoff handoff. The CLI never
+ * enrolls: the App registers the sender only after the kickoff passes its
+ * admission validation, so a rejected kickoff leaves no enrollment behind. */
+export interface NativeKickoffEnrollment { executionCheckout: string; parent: ConversationRef | null }
+
+function openDomain(caller: NativeCaller) {
   const source = normalizeNativeSource(caller.source)
   if (source.authorityId !== caller.authorityId) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Native authority changed.")
   if (!caller.nativeId || !caller.correlationId) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Incomplete native caller.")
   const discovery = discoverRepository(caller.cwd), state = inspectRepositoryStore(discovery)
   if (state.state !== "ready") throw new DomainError(state.code, state.message)
   const domain = openRepositoryDomain(state.context)
+  const ref: ConversationRef = { harness: source.descriptor.harness, authorityId: source.authorityId, nativeId: caller.nativeId }
+  const envelope: CallerEnvelope = { version: 1, repository: domain.primaryCheckout, source: source.descriptor, authorityId: ref.authorityId, nativeId: ref.nativeId }
+  return { source, discovery, domain, ref, envelope }
+}
+
+/** Read-only visibility probe: true if registered, false if this directory has
+ * no domain or no such conversation, undefined if the store is unavailable. */
+export function nativeConversationEnrolled(descriptor: NativeSourceDescriptor, nativeId: string, cwd: string): boolean | undefined {
   try {
-    const ref: ConversationRef = { harness: source.descriptor.harness, authorityId: source.authorityId, nativeId: caller.nativeId }
-    let conversation = domain.getConversation(ref)
-    if (!conversation && enroll) {
-      let parent: ConversationRef | null = null
-      const visited = new Set([caller.nativeId])
-      for (const ancestor of caller.ancestors) {
-        if (visited.has(ancestor.nativeId)) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Cyclic native ancestry.")
-        visited.add(ancestor.nativeId)
-        const ancestorRepo = discoverRepository(ancestor.cwd)
-        if (ancestorRepo.commonDir !== discovery.commonDir) break
-        const candidate = { ...ref, nativeId: ancestor.nativeId }
-        if (domain.getConversation(candidate)) { parent = candidate; break }
-      }
-      const bootstrap: MutationContext = { actor: { kind: "system" }, correlationId: caller.correlationId }
-      domain.declareNativeAuthority(source.descriptor, bootstrap)
-      conversation = domain.registerConversation({ ref, executionCheckout: discovery.invocationCheckout.path, parent }, bootstrap)
-    }
-    if (!conversation) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Native conversation is not enrolled in this repository. Use sane_link explicitly.")
+    const source = normalizeNativeSource(descriptor)
+    let discovery: ReturnType<typeof discoverRepository>
+    // Not a Git repository: no domain can manage it.
+    try { discovery = discoverRepository(cwd) } catch { return false }
+    const state = inspectRepositoryStore(discovery)
+    if (state.state === "uninitialized") return false
+    if (state.state !== "ready") return undefined
+    const domain = openRepositoryDomain(state.context)
+    try { return domain.getConversation({ harness: source.descriptor.harness, authorityId: source.authorityId, nativeId }) !== null }
+    finally { domain.close() }
+  } catch { return undefined }
+}
+
+export function openNativeCaller(caller: NativeCaller) {
+  const { discovery, domain, ref, envelope } = openDomain(caller)
+  try {
+    if (!domain.getConversation(ref)) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", NOT_MANAGED_MESSAGE)
     const context = domain.resolveContext(ref)
     if (context.executionCheckout !== discovery.invocationCheckout.path) throw new DomainError("INVALID_CHECKOUT", "Native directory differs from the enrolled execution checkout.")
-    const envelope: CallerEnvelope = { version: 1, repository: domain.primaryCheckout, source: source.descriptor, authorityId: ref.authorityId, nativeId: ref.nativeId }
     const mutation: MutationContext = { actor: { kind: "native", repositoryId: domain.repositoryId, ref }, correlationId: caller.correlationId }
     return { domain, ref, context, envelope, mutation }
   } catch (error) { domain.close(); throw error }
+}
+
+/** Read-only kickoff qualification. Enrolled callers get the normal checkout-pin
+ * check; unenrolled callers get an enrollment request (trusted hook cwd +
+ * nearest enrolled same-repository ancestor) for the App to apply on admission. */
+export function nativeKickoffCaller(caller: NativeCaller): { envelope: CallerEnvelope; enrollment: NativeKickoffEnrollment | null } {
+  const { discovery, domain, ref, envelope } = openDomain(caller)
+  try {
+    if (domain.getConversation(ref)) {
+      if (domain.resolveContext(ref).executionCheckout !== discovery.invocationCheckout.path) throw new DomainError("INVALID_CHECKOUT", "Native directory differs from the enrolled execution checkout.")
+      return { envelope, enrollment: null }
+    }
+    let parent: ConversationRef | null = null
+    const visited = new Set([caller.nativeId])
+    for (const ancestor of caller.ancestors) {
+      if (visited.has(ancestor.nativeId)) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Cyclic native ancestry.")
+      visited.add(ancestor.nativeId)
+      const ancestorRepo = discoverRepository(ancestor.cwd)
+      if (ancestorRepo.commonDir !== discovery.commonDir) break
+      const candidate = { ...ref, nativeId: ancestor.nativeId }
+      if (domain.getConversation(candidate)) { parent = candidate; break }
+    }
+    return { envelope, enrollment: { executionCheckout: discovery.invocationCheckout.path, parent } }
+  } finally { domain.close() }
 }
 
 export interface NativeLinkInput { slot?: StoredSlot; workstream?: string; reassign?: boolean }
@@ -141,15 +180,18 @@ export function openCompactCaller(harness: Harness, nativeId: string, cwd: strin
   const domain = openRepositoryDomain(state.context)
   try {
     const matches = domain.listConversations().filter(c => c.ref.harness === harness && c.ref.nativeId === nativeId)
-    if (matches.length !== 1) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", matches.length ? "Native caller reference is ambiguous." : "Native conversation is not enrolled in this repository. Use sane_link explicitly.")
+    if (matches.length !== 1) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", matches.length ? "Native caller reference is ambiguous." : NOT_MANAGED_MESSAGE)
     const ref: ConversationRef = matches[0]!.ref
     const context: InvocationContext = domain.resolveContext(ref)
     return { domain, ref, context }
   } catch (error) { domain.close(); throw error }
 }
 
+/** Membership/phase changes for an already-enrolled conversation only. Never
+ * enrolls: an unenrolled caller is rejected before any mutation, so a rejected
+ * phase assignment cannot leave an enrollment behind. */
 export function linkNativeCaller(caller: NativeCaller, input: unknown): NativeContextSummary {
-  const args = nativeLinkInput(input), opened = openNativeCaller(caller, true)
+  const args = nativeLinkInput(input), opened = openNativeCaller(caller)
   try {
     const { domain, ref, mutation } = opened
     const current = opened.context.workstream?.id

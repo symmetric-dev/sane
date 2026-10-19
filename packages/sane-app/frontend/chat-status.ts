@@ -67,7 +67,7 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
   if (requests.length) add("input-request", state.actionBusy ? "Sending your reply…" : requests.some(item => item.type === "handoff-approval") ? "Waiting for your handoff approval" : requests.some(item => item.type === "permission") ? "Waiting for your permission" : "Waiting for your answer", `${requests.length} pending request${requests.length === 1 ? "" : "s"}. Respond in the composer to continue.`, state.actionBusy);
   if (state.pageBusy) add("history-page", "Loading conversation history…", undefined, true);
   if (activity?.phase === "refreshing" || state.transcriptRefreshing) add("history-refresh", "Refreshing conversation history…", undefined, true, undefined, { observedAt: activity?.observedAt });
-  if (state.availability.nativeQueue) add("native-queue", "OpenCode is continuing in the background…", "OpenCode is continuing in the background. Your next message will be queued for it.", true);
+  if (state.availability.nativeQueue) add("native-queue", "OpenCode is continuing in the background…", "Wait for OpenCode to finish before sending another message.", true);
   if (running || compacting || liveRetry) {
     if (state.connectionError) add("run", "Run status unknown", "The connection is unavailable. The assistant may still be running.", false, undefined, { priority: 90 });
     else if (activity?.phase === "unconfirmed") add("run", "Run state needs verification", "Process ownership or termination is unconfirmed. Check the original run before sending again.", false, undefined, { priority: 90 });

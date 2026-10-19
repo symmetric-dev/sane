@@ -283,7 +283,11 @@ export async function registerExecutionOperations(ctx: Context) {
     event.system.push({ type: "text", text: definition.system })
     if (definition.children.length) event.system.push({ type: "text", text: delegationText(definition.children, root) })
   })
-  return async () => { bindings.clear(); active.clear(); await admission.dispose(); await hook.dispose(); await registration.dispose(); await agents?.dispose() }
+  return {
+    /** Any durable binding (pending or ready) is App-configured execution. */
+    managed: (sessionID: string) => bindings.has(sessionID),
+    dispose: async () => { bindings.clear(); active.clear(); await admission.dispose(); await hook.dispose(); await registration.dispose(); await agents?.dispose() },
+  }
 }
 
 function delegationText(ids: string[], configuration: Configuration) {

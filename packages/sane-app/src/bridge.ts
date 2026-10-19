@@ -612,7 +612,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const historyRefreshes = new Map<string, string>();
   const attaching = new Set<string>();
   const attachmentTasks = new Set<Promise<void>>();
-  const queuedInputTasks = new Set<Promise<void>>();
   const dispatchTasks = new Set<Promise<void>>();
   const handoffReservations = new Set<string>();
   const handoffAcknowledgements = new Set<string>();
@@ -912,8 +911,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   function availability(sessionId?: string, capacity = true, delivery = false, preparation = false, inputMode?: "user", read?: SessionListProjection): { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string } {
     const intent = delivery ? { kind: "handoff" as const } : preparation ? { kind: "prepare-recipient" as const } : inputMode === "user" ? { kind: "user-prompt" as const } : capacity ? { kind: "user-prompt" as const } : { kind: "inspect-idle" as const };
-    const owner = sessionId && inputMode === "user" ? owners.get(sessionId) : undefined;
-    const inspect = () => coordinator.inspectReadiness({ conversationId: sessionId, intent, phase: "admission", ...(owner && claudeRuns.canQueueFollowup(owner) ? { predecessor: owner } : {}) });
+    const inspect = () => coordinator.inspectReadiness({ conversationId: sessionId, intent, phase: "admission" });
     const result = read ? sessionListReadiness.inspect(read, inspect) : inspect();
     return result.ready ? { canSend: true, ...(result.queueAfterRunId ? { queueAfterRunId: result.queueAfterRunId } : {}) } : { canSend: false, reason: result.reason, code: result.code };
   }
@@ -1653,8 +1651,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return isStoredAssistantAgentId(agent) && prepared.binding.harness === "opencode" && !nativeAgentSelected && !prepared.configuration.saneContext?.package
       ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n` : "";
   }
-  /** Backend launch authority shared by immediate admission and the existing
-   * single CC continuation. No HTTP closure or mutable request is retained. */
+  /** Backend launch authority shared by immediate admission and explicit queue
+   * recovery. Ordinary user sends are idle-only. */
   async function admitPreparedInput(prepared: PreparedUserInput, lease: ConversationAdmissionLease, options: PreparedAdmissionOptions & { scienceSubmission?: { conversationId: string; requestId: string } } = {}) {
     const { conversationId, cwd, harness } = prepared.binding;
     const input = prepared.normalized, { model, effort, agent } = prepared.configuration;
@@ -1687,6 +1685,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
     const intent = context?.intent ?? { kind: "user-prompt" as const };
     const origin = context?.origin ?? (queuedFollowupId ? "queued-user" : "user");
+    const delivery = context?.delivery ?? (origin === "user" ? "idle-only" : undefined);
     const runId = context?.runId ?? crypto.randomUUID();
     const nativeCommandId = harness === "opencode" ? context?.nativeCommandId ?? `msg_${crypto.randomUUID().replaceAll("-", "")}` : null;
     const identity: DispatchIdentity = Object.freeze({ runId, nativeCommandId, ...(intent.requestId !== undefined ? { requestId: intent.requestId } : {}), source: Object.freeze({ harnessId: harness, sessionId: conversationId,
@@ -1765,7 +1764,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     } else if (harness === "opencode") {
       const native = await oc.activity(session.nativeSessionId!, cwd);
       if (native.active || native.pending) {
-        if (context?.delivery === "idle-only") throw new WorkstreamAdapterError(409, "native-busy", "Idle-only delivery refuses native activity or pending input");
+        if (delivery === "idle-only") throw new WorkstreamAdapterError(409, "native-busy", "Wait for the native assistant to finish before sending");
         if (session.agentKind === "worker" || prepared.stagedUpgrade || input.model !== undefined && input.model !== session.model
           || input.effort !== undefined && input.effort !== session.effort || input.agent !== undefined && input.agent !== session.agent) throw new OpenCodeError("Wait for OpenCode to finish before changing conversation configuration or sending worker input", 409);
         nativeDelivery = "queue";
@@ -1807,7 +1806,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const lifecycle = executePrompt(lease, session, run, effectivePrompt, prepared.resume, origin, {
       requestId: intent.requestId,
       validate: () => { assertDispatch(); assertContext(); assertPreparedUserInputCurrent(prepared, preparationState(), createdSnapshot); },
-      link: context?.link && (() => context.link!(identity)), evidence: context?.evidence, delivery: context?.delivery,
+      link: context?.link && (() => context.link!(identity)), evidence: context?.evidence, delivery,
       ...(nativeHandoff ? { nativeQueuedHandoff: identity } : {}), publish,
       configure: () => {
         Object.assign(session!, configured);
@@ -3402,45 +3401,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
           ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) });
         const { conversationId, cwd } = prepared.binding;
-        const oldOwner = owners.get(conversationId);
         // Science dispatch carries this exact request identity through readiness
         // and native evidence; the admission lease must reserve the same intent.
-        const admission = coordinator.reserveAdmission({ conversationIds: [conversationId], intent: { kind: "user-prompt", ...(scienceReceipt ? { requestId: scienceReceipt.intent.requestId } : {}) },
-          ...(!scienceReceipt && oldOwner && claudeRuns.canQueueFollowup(oldOwner) ? { predecessor: oldOwner } : {}) });
+        const admission = coordinator.reserveAdmission({ conversationIds: [conversationId], intent: { kind: "user-prompt", ...(scienceReceipt ? { requestId: scienceReceipt.intent.requestId } : {}) } });
         if (!admission.ready) return json({ error: admission.reason, code: admission.code }, admission.code === "capacity" ? 429 : 409);
         const lease = admission.lease;
-        if (scienceReceipt && admission.queueAfterRunId) { coordinator.releaseAdmission(lease); return json({ error: "Science snapshots cannot be queued", code: "science-queue-unsupported" }, 409); }
-        // Reserve admission through old-owner settlement and new-owner creation.
-        // This exact reservation belongs only to this send, never another task.
-        if (admission.queueAfterRunId) {
-          const task = Promise.withResolvers<void>();
-          queuedInputTasks.add(task.promise);
-          let queued;
-          try {
-            queued = await claudeRuns.queueFollowup(oldOwner!, prepared.prompt, { cwd, profileId: prepared.configuration.profileId,
-              ...(prepared.configuration.model !== undefined ? { model: prepared.configuration.model } : {}), ...(prepared.configuration.effort !== undefined ? { effort: prepared.configuration.effort } : {}), ...(prepared.configuration.agent !== undefined ? { agent: prepared.configuration.agent } : {}) });
-          } catch (error) {
-            coordinator.releaseAdmission(lease); task.resolve(); queuedInputTasks.delete(task.promise);
-            throw error;
-          }
-          void claudeRuns.drainQueuedFollowup(oldOwner!, async receipt => {
-            try {
-              const result = await admitPreparedInput(prepared, lease, { queuedFollowupId: receipt.requestId });
-              return { runId: result.runId };
-            } catch (error) {
-              // No new owner/run means definite non-submission. The queue keeps
-              // its text, and this validation failure is not a storage failure.
-              if (!meta.runs.some(r => r.queuedFollowupId === receipt.requestId)) {
-                return { notSubmitted: true };
-              }
-              throw error;
-            }
-          }).catch(() => { /* Queue/launch journals retain the outcome; never auto-retry. */ }).finally(() => {
-            coordinator.releaseAdmission(lease); task.resolve(); queuedInputTasks.delete(task.promise);
-          });
-          const receipt = projectClaudeFollowups(conversationId, meta.runs, id => journalEvents(id), id => claudeRuns.followupPending(id)).find(r => r.requestId === queued.requestId)!;
-          return json({ sessionId: conversationId, queued: true, receipt }, 202);
-        }
         const task = Promise.withResolvers<void>(); attachmentTasks.add(task.promise);
         try {
           if (scienceReceipt) {
@@ -3876,7 +3841,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!owner.native && owner.child && !await terminate(owner)) retainOwner = true;
       await Promise.all([owner.done, owner.submission?.catch(() => {}), owner.cancel?.catch(() => {})]);
     }));
-    await Promise.all([...dispatchTasks, ...attachmentTasks, ...queuedInputTasks, ...handoffDispatches.values(), workerOutboxTask, handoffTask, nativeSubagentRecorder.drain()]);
+    await Promise.all([...dispatchTasks, ...attachmentTasks, ...handoffDispatches.values(), workerOutboxTask, handoffTask, nativeSubagentRecorder.drain()]);
     await serial;
     await catalog.flush();
     if (!coordinator.reconciliationSessionIds().next().done) retainOwner = true;
@@ -4228,13 +4193,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // A failed source hook may finish done while retaining its safety barrier.
     // Do not wait for retained ownership; preserve the recovery sentinel instead.
     if (!coordinator.reconciliationSessionIds().next().done) { retainOwner = true; meta.reconciliationRequired = true; }
-    // Queue drains wait for owner.done, so supervise/stop owners FIRST. They
-    // cannot launch after closing, and must journal their non-submission before
-    // storage is flushed. Never put them in the pre-termination attachment wait.
-    if (queuedInputTasks.size) {
-      const drained = await Promise.race([Promise.all([...queuedInputTasks]).then(() => true), Bun.sleep(3000).then(() => false)]);
-      if (!drained) { retainOwner = true; meta.reconciliationRequired = true; }
-    }
     if (retainOwner && !storageFailed) {
       // Best effort only: ownership remains if storage is broken or blocked.
       await Promise.race([persist().catch(error => { failClosed(error, "shutdown-persist"); }), Bun.sleep(500)]);

@@ -1771,28 +1771,12 @@ export class ChatStore {
       }
     }
   }
-  canQueueInput = (state: State = this.state): boolean => {
-    if (state.drafts[this.draftKey(state.selected)]?.scienceSnapshots?.length) return false;
-    if (isPendingInputCapability(state.config?.pendingInputCapability)) return false;
-    const conversation = state.conversations.find(c => c.id === state.selected);
-    // Native continuation is not an App-owned run. Its queue gets a fresh exact
-    // command admission; it must never borrow the previous completed run ID.
-    if (conversation?.harness === "opencode" && conversation.nativeActivity === "active"
-      && state.availability.canSend && state.availability.nativeQueue === true && conversation.availability?.nativeQueue === true
-      && !state.runs.some(run => run.status === "running" || run.status === "starting")) return true;
-    const after = state.availability.queueAfterRunId;
-    // An old backend, another conversation's availability, or stale ownership
-    // cannot opt into mid-run input. This is a receipt-bound CC queue, not steering.
-    return !!after && state.availability.canSend && conversation?.harness === "claude-code"
-      && conversation.lastRunId === after && conversation.availability?.queueAfterRunId === after
-      && state.runs.some(run => run.id === after && run.conversationId === conversation.id && run.status === "running");
-  };
   send = async (text: string, nativeStopped = false, options: { preserveDraft?: boolean } = {}): Promise<SendOutcome> => {
     const initialSelection = this.state.selected;
     const pendingFence = this.pendingInputFence();
     if (this.pendingInputSupported() && this.state.selected && this.pendingInputFresh !== pendingFence && (!await this.refreshPendingInputs() || pendingFence !== this.pendingInputFence())) return { status: "blocked" };
     if (this.pendingInputChainLocked()) { this.update({ submissionError: "Resolve the existing input chain before sending ordinary input." }); return { status: "blocked" }; }
-    if (this.pendingInputSupported() && (this.state.availability.queueAfterRunId || this.state.availability.nativeQueue)) { this.update({ submissionError: "Use the explicit App-owned queue for a future input." }); return { status: "blocked" }; }
+    if (this.state.availability.queueAfterRunId || this.state.availability.nativeQueue) { this.update({ submissionError: "Wait for the current run to finish before sending." }); return { status: "blocked" }; }
     if (options.preserveDraft && !this.state.selected) return { status: "blocked" };
     if (this.state.selected !== initialSelection) return { status: "blocked" };
     const scienceSnapshots = options.preserveDraft ? [] : structuredClone(this.draft().scienceSnapshots ?? []);
@@ -1805,7 +1789,7 @@ export class ChatStore {
     if (!this.supportedCapabilities().prompt) return { status: "blocked" };
     if (conversation?.attachment && this.supportedCapabilities(conversation.harness).attachedSendRequiresNativeStopped && !nativeStopped) { this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" }; }
     const running = conversation?.status === "starting" || conversation?.status === "running" || this.state.runs.some(r => r.status === "starting" || r.status === "running");
-    if (!text.trim() && !scienceSnapshots.length || this.state.loading || running && !this.canQueueInput() || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
+    if (!text.trim() && !scienceSnapshots.length || this.state.loading || running || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
     const selected = this.state.selected, draft = this.draft(), draftKey = this.draftKey();
     // Flow submissions are independent of the ordinary chat draft and any
     // staged agent upgrade. They never consume or replace that draft.

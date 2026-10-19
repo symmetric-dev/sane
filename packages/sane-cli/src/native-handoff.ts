@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import { DomainError, handoffInput, handoffSchema } from "../../sane-core/src/server.ts"
-import { openNativeCaller, type NativeCaller } from "./native-caller.ts"
+import { nativeKickoffCaller, openNativeCaller, type NativeCaller } from "./native-caller.ts"
 
 export { handoffSchema as nativeHandoffSchema }
 export const nativeHandoffStatusSchema = { type: "object", properties: { requestId: { type: "string", minLength: 1, maxLength: 200 } }, required: ["requestId"], additionalProperties: false } as const
@@ -44,22 +44,35 @@ export function projectNativeHandoffReply(handoff: unknown, status: boolean): un
 export async function handoffNativeCaller(caller: NativeCaller, input: unknown, connectionFile: string, status = false) {
   const args = status ? input as { requestId: string } : handoffInput(input)
   if (!args || typeof args.requestId !== "string" || !args.requestId.trim() || args.requestId.length > 200 || status && Object.keys(args).some(k => k !== "requestId")) throw new DomainError("INVALID_INPUT", "Expected a requestId.")
-  // Only a validated kickoff may bootstrap enrollment from trusted native
-  // callback/hook identity. Status and ordinary handoffs remain enrollment-only.
-  const opened = openNativeCaller(caller, !status && "kickoff" in args && args.kickoff !== undefined)
+  if (typeof connectionFile !== "string" || !isAbsolute(connectionFile)) throw new DomainError("UNAVAILABLE", "Configure an explicit App native handoff connection file.")
+  const stat = lstatSync(connectionFile)
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw new DomainError("UNAVAILABLE", "Invalid App connection file.")
+  const connection = JSON.parse(readFileSync(connectionFile, "utf8")), url = new URL(connection.url)
+  if (connection.version !== 1 || url.protocol !== "http:" || url.hostname !== "127.0.0.1" || url.pathname !== "/native/handoffs" || url.search || url.hash || url.username || url.password || typeof connection.token !== "string" || !connection.token || !Number.isSafeInteger(connection.pid) || connection.pid < 1) throw new DomainError("UNAVAILABLE", "Invalid local App endpoint.")
+  process.kill(connection.pid, 0)
+  // The CLI never enrolls. An unenrolled kickoff sender carries a read-only
+  // enrollment request that the App applies only after the kickoff passes its
+  // admission validation; status and ordinary handoffs require enrollment.
+  let envelope: unknown, enrolling = false
+  if (!status && "kickoff" in args && args.kickoff !== undefined) {
+    const kickoff = nativeKickoffCaller(caller)
+    enrolling = kickoff.enrollment !== null
+    envelope = enrolling ? { ...kickoff.envelope, enroll: kickoff.enrollment } : kickoff.envelope
+  } else {
+    const opened = openNativeCaller(caller)
+    try { envelope = opened.envelope } finally { opened.domain.close() }
+  }
+  let response: Response
   try {
-    if (typeof connectionFile !== "string" || !isAbsolute(connectionFile)) throw new DomainError("UNAVAILABLE", "Configure an explicit App native handoff connection file.")
-    const stat = lstatSync(connectionFile)
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw new DomainError("UNAVAILABLE", "Invalid App connection file.")
-    const connection = JSON.parse(readFileSync(connectionFile, "utf8")), url = new URL(connection.url)
-    if (connection.version !== 1 || url.protocol !== "http:" || url.hostname !== "127.0.0.1" || url.pathname !== "/native/handoffs" || url.search || url.hash || url.username || url.password || typeof connection.token !== "string" || !connection.token || !Number.isSafeInteger(connection.pid) || connection.pid < 1) throw new DomainError("UNAVAILABLE", "Invalid local App endpoint.")
-    process.kill(connection.pid, 0)
-    let response: Response
-    try {
-      response = await fetch(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json", authorization: `Bearer ${connection.token}` }, body: JSON.stringify({ operation: status ? "status" : "enqueue", caller: opened.envelope, ...(status ? { requestId: args.requestId } : { input: args }) }), signal: AbortSignal.timeout(15000) })
-    } catch { throw new DomainError("UNAVAILABLE", `App acknowledgment is unknown. Query sane_handoff_status with requestId ${args.requestId}; reuse this same requestId and payload to recover admission, never invent a replacement ID.`) }
-    const result = await response.json() as { handoff?: unknown; error?: string }
-    if (!response.ok) throw new DomainError("UNAVAILABLE", result.error ?? "App handoff admission unavailable.")
-    return { ...result, handoff: projectNativeHandoffReply(result.handoff, status) }
-  } finally { opened.domain.close() }
+    response = await fetch(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json", authorization: `Bearer ${connection.token}` }, body: JSON.stringify({ operation: status ? "status" : "enqueue", caller: envelope, ...(status ? { requestId: args.requestId } : { input: args }) }), signal: AbortSignal.timeout(15000) })
+  } catch {
+    // Admission (and, for a first kickoff, enrollment) may or may not have
+    // happened; only a same-requestId retry is guaranteed to converge.
+    throw new DomainError("UNAVAILABLE", enrolling
+      ? `App acknowledgment is unknown. Retry sane_handoff with this same requestId ${args.requestId} and payload to recover admission, never invent a replacement ID.`
+      : `App acknowledgment is unknown. Query sane_handoff_status with requestId ${args.requestId}; reuse this same requestId and payload to recover admission, never invent a replacement ID.`)
+  }
+  const result = await response.json() as { handoff?: unknown; error?: string }
+  if (!response.ok) throw new DomainError("UNAVAILABLE", result.error ?? "App handoff admission unavailable.")
+  return { ...result, handoff: projectNativeHandoffReply(result.handoff, status) }
 }

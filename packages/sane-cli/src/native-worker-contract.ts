@@ -41,7 +41,9 @@ export const nativeWorkerSchemas = {
   message_parent: { type: "object", properties: { text: workerTextSchema, awaitReply: { type: "boolean" } }, required: ["text", "awaitReply"], additionalProperties: false },
   message: { type: "object", properties: { workerId: { type: "string", pattern: uuidPattern }, text: workerTextSchema }, required: ["workerId", "text"], additionalProperties: false },
 } as const
-export const nativeWorkerDescriptions: Record<NativeWorkerOperation, string> = {
+/** Shared scope prefix for every SANE native tool description. Guidance only; enforcement stays server-side. */
+export const SANE_MANAGED_ONLY = "SANE-managed sessions only. Not a general subagent, delegation or parent-messaging facility; ordinary sessions use native tools."
+const workerDescriptionBodies: Record<NativeWorkerOperation, string> = {
   start: "Launch an App-managed worker in the background. Continue useful work, then end your turn; terminal outcomes report back automatically. Waiting is optional. context is explicit supplemental text, not inherited conversation history. jobs assigns registered job IDs and SANE supplies their paths: implementer accepts exactly one, required when called from Execution; fixer, tester and reviewer accept one or more; other roles reject jobs. Workers continue independently when the parent stops.",
   status: "Inspect background workers in this caller's worker tree; omit ids to list them. Background outcomes report back automatically; polling is unnecessary.",
   wait: "Optionally join selected background workers for 0–10 seconds (default 0). A timeout or cancelled wait leaves workers running independently; normally end your turn and await automatic report-back. For an explicit-protocol worker, wait only joins the current turn. It does not wait for assignment completion. End your turn so a consultation or completion can be delivered. Do not call wait again to hold the session open.",
@@ -53,6 +55,7 @@ export const nativeWorkerDescriptions: Record<NativeWorkerOperation, string> = {
   message_parent: "Consult the launching parent without completing the assignment. No parent id is accepted. If awaitReply is true, end the turn and resume from the response. A second user-or-parent wait is rejected.",
   message: "Send guidance to a direct explicit child. workerId is the target id only, the same idea as cancel ids. Sibling, unrelated, or caller-supplied parent identities are rejected.",
 }
+export const nativeWorkerDescriptions = Object.fromEntries(Object.entries(workerDescriptionBodies).map(([operation, body]) => [operation, `${SANE_MANAGED_ONLY} ${body}`])) as Record<NativeWorkerOperation, string>
 function invalid(message: string): never { throw new Error(`INVALID_INPUT: ${message}`) }
 function nonblankText(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim() || value.length > 100000) invalid(`${label} must be nonblank text (max 100000 characters).`)

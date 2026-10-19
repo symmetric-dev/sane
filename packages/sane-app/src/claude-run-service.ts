@@ -502,7 +502,9 @@ export class ClaudeRunService {
         if (!version || Number(version[1]) < 2 || Number(version[1]) === 2 && (Number(version[2]) < 1 || Number(version[2]) === 1 && Number(version[3]) < 281)) throw new AgentLaunchConfigurationError("Canonical execution requires Claude Code 2.1.281 or newer");
       }
       const installed = identity && !privateExecution ? await prepare(() => runtime.agentSettings(this.options.claudeRoot, identity)) : undefined;
-      const ccAgent = privateExecution?.agent ?? installed?.agent, permissions = privateExecution?.permissions ?? installed?.permissions;
+      // Base sessions carry no role policy; grant the parent messaging tool so
+      // explicit-protocol workers they launch can consult them.
+      const ccAgent = privateExecution?.agent ?? installed?.agent, permissions = privateExecution?.permissions ?? installed?.permissions ?? (identity ? undefined : { allow: ["mcp__sane__sane_worker_message"] });
       // Canonical static context stays pinned across resumes; mutable membership
       // travels through UserPromptSubmit rather than Claude's prompt snapshot.
       const saneSession = canonical && operation !== "compact" ? canonical.dynamic : !resume ? await prepare(() => deps.saneSession(sessionId)) : null;

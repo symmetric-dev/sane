@@ -156,7 +156,7 @@ export function parseCliCommand(args: readonly string[], signals: CallerSignals 
       }
     }
     const caller = classifyCaller(signals, options)
-    if (caller.actorKind === "native-bootstrap" && !["init", "inspect"].includes(command)) throw new ParseFailure("NATIVE_CONTEXT_UNAVAILABLE", "Native conversation is not enrolled. Run sane init if needed, then sane_link with empty arguments or a kickoff sane_handoff.")
+    if (caller.actorKind === "native-bootstrap" && !["init", "inspect"].includes(command)) throw new ParseFailure("NATIVE_CONTEXT_UNAVAILABLE", "This session is not managed by SANE. Continue with your harness's native tools; do not retry SANE commands.")
     if (!Object.hasOwn(commandFlags, command)) fail("Unknown command.")
     if (options.json && options.verbose) fail("--json conflicts with --verbose.")
     if (options.workstream) safeId(options.workstream as string)
