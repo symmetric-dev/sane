@@ -5,12 +5,15 @@ import { store } from "./store";
 import { loadWorkstreams, subscribeWorkstreamMutations } from "./workstreams-client";
 import { WorkspaceError } from "./workspace-client";
 import { subscribeWorkspace, workspaceEpoch } from "./workspace-store";
+import { documentHidden, jitteredDelay, subscribeVisibility } from "./visibility";
+import { active } from "./types";
+import { workersFor, workerProjectionInFlight } from "./worker-client";
 
 type OverviewState = { overview: WorkstreamOverview | null; loading: boolean; error: string };
 type Owner = {
   workspaceId: string; auth: number; key: string; leases: number; disposed: boolean;
   listeners: Set<() => void>; state: OverviewState; serialized: string;
-  revision: number; resultRevision: number; settledAt: number; unchangedPolls: number;
+  revision: number; resultRevision: number; settledAt: number; inFlight: boolean;
   promise?: Promise<WorkstreamOverview>; controller?: AbortController; automatic: boolean; paused: boolean;
   timer?: ReturnType<typeof setTimeout>; unsubscribe: () => void;
 };
@@ -19,10 +22,22 @@ const initial: OverviewState = { overview: null, loading: true, error: "" };
 const registry = new Map<string, Owner>();
 const POLL_MS = 1500;
 const shellReady = () => store.snapshot().phase === "ready";
-const automaticPaused = () => catalog.snapshot().navigation.view === "terminal";
+const automaticPaused = () => documentHidden() || catalog.snapshot().navigation.view === "terminal";
 const keyFor = (workspaceId: string) => JSON.stringify([workspaceId, workspaceEpoch()]);
 const current = (owner: Owner) => !owner.disposed && owner.auth === workspaceEpoch() && registry.get(owner.key) === owner;
 const unavailable = () => new WorkspaceError("Workspace changed or unavailable. Choose an available workspace and retry.", 409, "workspace-changed");
+
+function overviewInFlight(overview: WorkstreamOverview | null) {
+  if (!overview) return true;
+  if (overview.workstreams.some(item => item.workstream.lifecycle.jobs.some(job => job.status === "running"))) return true;
+  // Overview rows carry membership, not live run status. Reuse scoped runtime
+  // projections rather than treating an unchanged overview as settled work.
+  const ids = new Set(overview.conversations.flatMap(row => row.sessionId ? [row.sessionId] : []));
+  const state = store.snapshot();
+  return state.conversations.some(row => ids.has(row.id) && (active(row.status) || !!row.lastRunStatus && active(row.lastRunStatus)
+    || row.nativeActivity === "active" || workerProjectionInFlight(workersFor(row.id))))
+    || ids.has(state.selected) && state.runs.some(run => active(run.status));
+}
 
 function publish(owner: Owner, state: OverviewState) {
   if (owner.state.overview === state.overview && owner.state.loading === state.loading && owner.state.error === state.error) return;
@@ -43,18 +58,17 @@ function dispose(owner: Owner) {
 
 function schedule(owner: Owner) {
   clearTimeout(owner.timer); owner.timer = undefined;
-  if (!current(owner) || owner.paused || !owner.listeners.size) return;
-  // Static overviews back off (1.5s → 3s → 6s → 12s → 24s);
-  // any change resets to the live 1.5s cadence.
-  const delay = Math.min(POLL_MS * 2 ** Math.min(owner.unchangedPolls, 4), 30_000);
+  if (!current(owner) || owner.paused || documentHidden() || !owner.listeners.size) return;
+  owner.inFlight = overviewInFlight(owner.state.overview);
+  const delay = owner.inFlight ? POLL_MS : 60_000;
   owner.timer = setTimeout(() => {
     owner.timer = undefined;
     refreshAutomatically(owner, true);
-  }, delay);
+  }, jitteredDelay(delay));
 }
 
 function refreshAutomatically(owner: Owner, force: boolean) {
-  if (!current(owner) || owner.paused || !owner.listeners.size) return;
+  if (!current(owner) || owner.paused || documentHidden() || !owner.listeners.size) return;
   void refresh(owner, force, true).catch(() => {});
 }
 
@@ -81,7 +95,7 @@ function refresh(owner: Owner, force: boolean, automatic = false): Promise<Works
   clearTimeout(owner.timer); owner.timer = undefined;
   const controller = owner.controller = new AbortController();
   owner.automatic = automatic;
-  const valid = () => current(owner) && owner.controller === controller && !controller.signal.aborted;
+  const valid = () => current(owner) && owner.controller === controller && !controller.signal.aborted && (!owner.automatic || !documentHidden());
   const promise = Promise.resolve().then(async () => {
     try {
       while (valid()) {
@@ -92,7 +106,6 @@ function refresh(owner: Owner, force: boolean, automatic = false): Promise<Works
           if (!valid()) throw error;
           if (revision !== owner.revision) continue;
           owner.settledAt = Date.now();
-          owner.unchangedPolls = 0;
           publish(owner, { overview: owner.state.overview, loading: false, error: error instanceof Error ? error.message : "Workstreams are unavailable." });
           if (valid() && revision !== owner.revision) continue;
           throw error;
@@ -103,7 +116,6 @@ function refresh(owner: Owner, force: boolean, automatic = false): Promise<Works
         const changed = serialized !== owner.serialized || revision !== owner.resultRevision;
         const result = owner.state.overview && !changed ? owner.state.overview : overview;
         owner.serialized = serialized;
-        owner.unchangedPolls = changed ? 0 : owner.unchangedPolls + 1;
         owner.resultRevision = revision; owner.settledAt = Date.now();
         publish(owner, { overview: result, loading: false, error: "" });
         if (!valid()) throw unavailable();
@@ -128,7 +140,7 @@ function acquire(workspaceId: string) {
   let owner = registry.get(key);
   if (!owner) {
     owner = { workspaceId, auth: workspaceEpoch(), key, leases: 0, disposed: false,
-      listeners: new Set(), state: initial, serialized: "", revision: 0, resultRevision: -1, settledAt: 0, unchangedPolls: 0,
+      listeners: new Set(), state: initial, serialized: "", revision: 0, resultRevision: -1, settledAt: 0, inFlight: true,
       automatic: false, paused: automaticPaused(), unsubscribe: () => {} };
     registry.set(key, owner);
     const entry = owner;
@@ -140,7 +152,7 @@ function acquire(workspaceId: string) {
       entry.revision++;
       refreshAutomatically(entry, true);
     });
-    const unsubscribeCatalog = catalog.subscribe(() => {
+    const updatePause = () => {
       if (!current(entry)) return;
       const paused = automaticPaused();
       if (entry.paused === paused) return;
@@ -148,8 +160,18 @@ function acquire(workspaceId: string) {
       // Keep scoped leases and cached snapshots, including hidden chat consumers.
       if (paused) pause(entry);
       else refreshAutomatically(entry, true);
+    };
+    const unsubscribeCatalog = catalog.subscribe(updatePause);
+    const unsubscribeVisibility = subscribeVisibility(updatePause);
+    const unsubscribeStore = store.subscribe(() => {
+      if (!current(entry)) return;
+      const inFlight = overviewInFlight(entry.state.overview);
+      if (entry.inFlight === inFlight) return;
+      entry.inFlight = inFlight;
+      if (inFlight) refreshAutomatically(entry, true);
+      else if (!entry.promise) schedule(entry);
     });
-    entry.unsubscribe = () => { unsubscribeWorkspace(); unsubscribeMutations(); unsubscribeCatalog(); };
+    entry.unsubscribe = () => { unsubscribeWorkspace(); unsubscribeMutations(); unsubscribeCatalog(); unsubscribeVisibility(); unsubscribeStore(); };
   }
   owner.leases++;
   const entry = owner;

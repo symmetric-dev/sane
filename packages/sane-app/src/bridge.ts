@@ -18,7 +18,7 @@ import { acquireInstallation, acquireData, validateOwnershipPaths, type Ownershi
 import { claudeSourceRoot } from "./claude-source";
 import { decodeLog, lastJournalSeq, validCompactRequest, uuid, efforts, type SaneSessionContext, type Session, type Run, type Event, type Metadata, type TerminationUncertainty } from "./history";
 import { projectCompactions } from "./compaction";
-import type { CompactEligibility, CompactRequest, CompactResponse } from "./oc-contract";
+import type { CompactEligibility, CompactRequest, CompactResponse, MessageSnapshot } from "./oc-contract";
 import { OpenCodeAdapter, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeUnavailableError } from "./opencode";
 import { readOpenCodeWorkerContinuation, type OpenCodeWorkerContinuation } from "./opencode-worker-continuation";
 import { OpenCodeRunService, type FrameworkDelivery } from "./opencode-run-service";
@@ -62,13 +62,12 @@ import { ScienceChatService, scienceChatRoute } from "./science-chat-service";
 import { ScienceStore } from "./science-store";
 import { RepositoryRouter, RepositoryStoreError, WorkstreamAdapterError, authenticatedWorkstreamRoute, validateWorkstreamInput, flushAndCloseWorkstreams } from "./workstreams";
 import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult } from "./workstreams-contract";
-import { validateAppStore, assertSourceConfiguration, atomicAppRecord, atomicNativeHistory, loadAgentProfiles, validateAgentProfiles, AppStoreError, type SourceConfiguration } from "./app-store";
+import { validateAppStore, assertSourceConfiguration, atomicAppRecord, atomicNativeHistory, loadAgentProfiles, validateAgentProfiles, AppStoreError, type Admission, type SourceConfiguration } from "./app-store";
 import { builtinProfiles, genericSessionTitle, legacyProfileId, storedAssistantLabel, resolveAssistantProfile, BASE_PROFILE_IDS, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { AdmissionService } from "./admission";
 import { HandoffService, handoffRecipientTitle, nextSlotSessionIndex, projectHandoffEnqueue, projectHandoffStatus, slotSessionIndex } from "./handoff";
 import { DomainError, canonicalSlot, equivalentSlots, normalizeNativeSource, revalidateCheckout, discoverRepository, inspectRepositoryStore } from "sane-core/server";
 import type { Handoff } from "sane-core/contracts";
-import { classifyCaller } from "../../sane-cli/src/cli-arguments";
 import { WorkerStore } from "./worker-store";
 import { WorkerService, type WorkerParent } from "./workers";
 import type { ExplicitWorkerOperations } from "./native-workers";
@@ -222,7 +221,7 @@ export async function start(options: Options) {
   }
 }
 async function startOwned(options: Options, assetsDir: string, packageDir: string, retainOwnership: () => void, ownsStorage: () => boolean) {
-  const indexHtml = await readFile(join(packageDir, "public", "index.html"), "utf8");
+  const assetManifest = JSON.parse(await readFile(join(assetsDir, "manifest.json"), "utf8")) as ReturnType<typeof validateAssets>["manifest"];
   const maxConcurrentRuns = options.maxConcurrentRuns ?? 24;
   if (!Number.isSafeInteger(maxConcurrentRuns) || maxConcurrentRuns < 1 || maxConcurrentRuns > 256) throw new Error("max-concurrent-runs must be an integer from 1 to 256");
   const maxWorkersPerCheckout = options.maxWorkersPerCheckout ?? DEFAULT_MAX_WORKERS_PER_CHECKOUT;
@@ -909,10 +908,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       && !pendingInputBridge?.allowsReadiness(options)) return { ready: false as const, reason: "A durable input chain is active; use the explicit pending-inputs API", code: "pending-input-chain-active" };
     return undefined;
   }
-  function availability(sessionId?: string, capacity = true, delivery = false, preparation = false, inputMode?: "user", read?: SessionListProjection): { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string } {
+  function availability(sessionId?: string, capacity = true, delivery = false, preparation = false, inputMode?: "user", read?: SessionListProjection): { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string; liveInputRunId?: string } {
     const intent = delivery ? { kind: "handoff" as const } : preparation ? { kind: "prepare-recipient" as const } : inputMode === "user" ? { kind: "user-prompt" as const } : capacity ? { kind: "user-prompt" as const } : { kind: "inspect-idle" as const };
     const inspect = () => coordinator.inspectReadiness({ conversationId: sessionId, intent, phase: "admission" });
     const result = read ? sessionListReadiness.inspect(read, inspect) : inspect();
+    if (!result.ready && result.code === "conversation-busy" && sessionId && inputMode === "user"
+      && !coordinator.hasAdmission(sessionId) && !coordinator.hasReconciliation(sessionId) && !pendingInputs?.hasChain(sessionId)) {
+      const owner = owners.get(sessionId);
+      const policy = coordinator.inspectReadiness({ conversationId: sessionId, intent: { kind: "user-prompt" }, phase: "enqueue" });
+      if (policy.ready && owner && claudeRuns.canSendInput(owner)) return { canSend: true, liveInputRunId: owner.run.runId };
+    }
     return result.ready ? { canSend: true, ...(result.queueAfterRunId ? { queueAfterRunId: result.queueAfterRunId } : {}) } : { canSend: false, reason: result.reason, code: result.code };
   }
   let serial = Promise.resolve();
@@ -1838,25 +1843,28 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     sessionId: string; runId: string; evidence: OpenCodeWorkerContinuation;
     validate(): void; refresh(): Promise<void>;
   };
-  const workerContinuations = new WeakMap<NativeWorkerInvocation, WorkerContinuationAuthorization>();
+  const qualifiedWorkerInvocations = new WeakMap<NativeWorkerInvocation, { admission: Admission; session: Session; starting: boolean; continuation?: WorkerContinuationAuthorization }>();
   const continuationParents = new WeakMap<WorkerParent, () => void>();
   const resolveTrustedWorkerInvocation: NativeWorkerCallerResolver = async (request, context) => {
     const reject = (): never => { throw new NativeWorkerRequestError(409, "worker-identity", "Worker invocation is not evidenced in its App-owned run. Ensure this conversation is repository-enrolled and retry only the same native tool invocation after its tool evidence is persisted."); };
     context.assertActive();
     const e = request.caller, source = normalizeNativeSource(e.source);
     if (source.authorityId !== e.authorityId) reject();
-    const candidates = admissions.list().filter(a => a.state === "ready" && a.source.authorityId === source.authorityId && a.source.descriptor.harness === e.source.harness && a.nativeId === e.nativeId && a.binding.domain.mode === "repository" && a.binding.domain.primaryCheckout === e.repository && meta.sessions.some(s => s.sessionId === a.sessionId && !s.attachment));
-    if (candidates.length !== 1) return reject();
-    const admission = candidates[0]!;
-    const session = meta.sessions.find(s => s.sessionId === admission.sessionId)!;
+    const admission = admissions.getByNative({ harness: e.source.harness, authorityId: source.authorityId, nativeId: e.nativeId });
+    if (!admission || admission.state !== "ready" || admission.binding.domain.mode !== "repository" || admission.binding.domain.primaryCheckout !== e.repository) return reject();
+    const session = meta.sessions.find(s => s.sessionId === admission.sessionId && !s.attachment);
+    if (!session) return reject();
     if (branches.pending(session.sessionId) || branches.replaced(session.sessionId)) return reject();
+    qualifiedWorkerInvocations.set(request.invocation, { admission, session, starting: request.operation === "start" });
     const owner = owners.get(session.sessionId);
     const old = request.operation === "start" ? workerStore.getByRequest(session.sessionId, request.input.requestId) : undefined;
     // A durable reservation is the original binding, even after parent completion.
     if (old && request.operation === "start") {
       if (old.parent.native.harness !== e.source.harness || old.parent.native.authorityId !== e.authorityId || old.parent.native.nativeId !== e.nativeId || old.parent.toolCallId !== request.invocation.toolCallId || old.input.worker !== request.input.worker || old.input.prompt !== request.input.prompt || old.input.context !== request.input.context || JSON.stringify(old.input.jobs) !== JSON.stringify(request.input.jobs)) return reject();
       if (JSON.stringify(old.parent.invocation?.opencode) !== JSON.stringify(request.invocation.opencode)) return reject();
-      return { sessionId: session.sessionId, caller: { envelope: e, runId: old.parent.runId, toolCallId: old.parent.toolCallId, invocation: old.parent.invocation } };
+      const invocation = old.parent.invocation ?? request.invocation;
+      qualifiedWorkerInvocations.set(invocation, qualifiedWorkerInvocations.get(request.invocation)!);
+      return { sessionId: session.sessionId, caller: { envelope: e, runId: old.parent.runId, toolCallId: old.parent.toolCallId, invocation } };
     }
     const current = () => {
       context.assertActive();
@@ -1866,9 +1874,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     let run = owner?.run;
     const name = `sane_worker_${request.operation}`;
     const matchesName = (value: unknown) => value === name || e.source.harness === "cc" && value === `mcp__sane__${name}`;
-    // execution already validates the repository admission and resolves its context.
-    await execution(session.sessionId);
-    if (owner || e.source.harness !== "oc") current();
     let evidenced = false;
     for (let attempt = 0; run && attempt < 3 && !evidenced; attempt++) {
       current();
@@ -1880,10 +1885,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         });
       } else {
         if (!run.nativeCommandId) return reject();
-        // Read actual persisted part IDs; callback callID is never converted.
-        const snapshot = await oc.snapshot(e.nativeId, run.nativeCommandId, session.cwd);
-        current();
-        evidenced = snapshot.messages.some(message => message.type === "assistant" && message.content?.some(part => matchesOpenCodeWorkerPart(request.operation, request.invocation, message.id, part)));
+        // The run journal already contains command-bounded native observations.
+        // Fetch another snapshot only when the tool part has not reached it yet.
+        const observed = journalEvents(run.runId).findLast(event => event.kind === "message" && (event.data as MessageSnapshot)?.messageId === request.invocation.messageId)?.data as MessageSnapshot | undefined;
+        evidenced = observed?.role === "assistant" && observed.parts.some(part => matchesOpenCodeWorkerPart(request.operation, request.invocation, observed.messageId, part));
+        if (!evidenced) {
+          const snapshot = await oc.snapshot(e.nativeId, run.nativeCommandId, session.cwd);
+          current();
+          evidenced = snapshot.messages.some(message => message.type === "assistant" && message.content?.some(part => matchesOpenCodeWorkerPart(request.operation, request.invocation, message.id, part)));
+        }
       }
       if (!evidenced && attempt < 2) await Bun.sleep(150);
     }
@@ -1933,7 +1943,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         },
       };
       authorization.validate();
-      workerContinuations.set(request.invocation, authorization);
+      qualifiedWorkerInvocations.get(request.invocation)!.continuation = authorization;
     } else {
       current();
       if (!evidenced) return reject();
@@ -2007,36 +2017,31 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (closing || storageFailed || meta.reconciliationRequired || owner.stopRequested || owners.get(owner.run.sessionId) !== owner || workerStore.suppressed(owner.run.sessionId) || !session || session.hidden) throw new Error("Worker continuation withheld: parent stopped, hidden, or execution unavailable");
   }
   const workers = new WorkerService(workerStore, {
-    async parent(caller, starting) {
-      if (starting) assertStartupReady();
-      const classified = classifyCaller({ SANE_CALLER_CONTEXT: JSON.stringify(caller.envelope) });
-      if (classified.actorKind !== "native") throw new WorkstreamAdapterError(409, "worker-parent", "Qualified App-owned native caller required");
-      const e = classified.envelope, source = normalizeNativeSource(e.source);
-      if (source.authorityId !== e.authorityId) throw new WorkstreamAdapterError(409, "worker-parent", "Caller authority changed");
-      // Enrollment changes admission.operation; attachment metadata is the durable external-ownership discriminator.
-       const candidates = admissions.list().filter(a => a.state === "ready" && a.source.authorityId === e.authorityId && a.source.descriptor.harness === e.source.harness && a.nativeId === e.nativeId && a.binding.domain.mode === "repository" && a.binding.domain.primaryCheckout === e.repository && meta.sessions.some(s => s.sessionId === a.sessionId && !s.attachment));
-      const a = candidates.length === 1 ? candidates[0] : undefined;
-      const session = a && meta.sessions.find(s => s.sessionId === a.sessionId && !s.attachment);
-      const run = session && meta.runs.find(r => r.sessionId === session.sessionId && r.runId === caller.runId);
-      const continuation = caller.invocation && workerContinuations.get(caller.invocation);
-      if (!a || !session || !run || run.operation === "compact" || typeof caller.toolCallId !== "string" || !caller.toolCallId || caller.toolCallId.length > 300
-        || continuation && (continuation.sessionId !== session.sessionId || continuation.runId !== run.runId)
-        || starting && !continuation && owners.get(session.sessionId)?.run !== run) throw new WorkstreamAdapterError(409, "worker-parent", "Worker operations require an App-owned repository parent and an evidenced live invocation");
+    async parent(caller) {
+      const qualified = caller.invocation && qualifiedWorkerInvocations.get(caller.invocation);
+      if (!qualified) throw new WorkstreamAdapterError(409, "worker-parent", "Qualified App-owned native caller required");
+      const { admission: a, session, continuation } = qualified;
+      const run = meta.runs.find(r => r.sessionId === session.sessionId && r.runId === caller.runId);
+      if (!run || run.operation === "compact" || typeof caller.toolCallId !== "string" || !caller.toolCallId || caller.toolCallId.length > 300
+        || continuation && (continuation.sessionId !== session.sessionId || continuation.runId !== run.runId)) throw new WorkstreamAdapterError(409, "worker-parent", "Worker operations require an App-owned repository parent and an evidenced live invocation");
       continuation?.validate();
-      const checkout = await execution(session.sessionId);
-      const native = { harness: e.source.harness, authorityId: e.authorityId, nativeId: e.nativeId };
-      const domain = (await router!.forAdmission(a))!.domain, workstream = domain.resolveContext(native).workstream;
+      const native = { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! };
+      const domain = (await router!.forAdmission(a))!.domain;
+      revalidateCheckout(domain.context, a.binding.checkoutPin!);
+      const context = domain.resolveContext(native), workstream = context.workstream;
+      if (context.executionCheckout !== session.cwd) throw new WorkstreamAdapterError(409, "execution-mismatch", "Parent execution checkout changed");
       const holdsExecution = !!workstream && domain.getWorkstreamStatus(workstream.id).activePhases.some(p => equivalentSlots(p.phase, "execution") && p.ref.harness === native.harness && p.ref.authorityId === native.authorityId && p.ref.nativeId === native.nativeId);
-      const parent: WorkerParent = { sessionId: session.sessionId, runId: run.runId, native, checkout, profileId: sessionProfileId(session), holdsExecution };
+      const parent: WorkerParent = { sessionId: session.sessionId, runId: run.runId, native, checkout: context.executionCheckout, profileId: sessionProfileId(session), holdsExecution };
       if (session.saneExecution) parent.allowedWorkerRoles = managedWorkerRoles((await executionPackages.load(session.saneExecution)).policy);
       if (continuation) {
-        if (starting) await emit(run, "context", { type: "native-worker-continuation", ...continuation.evidence });
+        if (qualified.starting) await emit(run, "context", { type: "native-worker-continuation", ...continuation.evidence });
         await continuation.refresh();
         continuationParents.set(parent, () => continuation.validate());
       }
       return parent;
     },
     assertCurrentParent(parent) {
+      assertStartupReady();
       const continuation = continuationParents.get(parent);
       if (continuation) { continuation(); return; }
       const owner = owners.get(parent.sessionId);
@@ -3401,6 +3406,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
           ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) });
         const { conversationId, cwd } = prepared.binding;
+        const liveOwner = owners.get(conversationId);
+        if (!scienceReceipt && prepared.binding.harness === "claude-code" && liveOwner && claudeRuns.canSendInput(liveOwner)) {
+          if (prepared.stagedUpgrade || prepared.configuration.model !== liveOwner.run.model || prepared.configuration.effort !== liveOwner.run.effort) return json({ error: "Wait for this run to finish before changing assistant settings", code: "claude-input-configuration" }, 409);
+          const assertCurrent = () => {
+            assertPreparedUserInputCurrent(prepared, { profiles: agentProfiles, getSession: id => meta.sessions.find(s => s.sessionId === id), sourceAuthorityId: nativeSource });
+            const readiness = coordinator.inspectReadiness({ conversationId, intent: { kind: "user-prompt" }, phase: "enqueue" });
+            if (!readiness.ready) throw new WorkstreamAdapterError(409, readiness.code, readiness.reason);
+            if (owners.get(conversationId) !== liveOwner || coordinator.hasAdmission(conversationId) || coordinator.hasReconciliation(conversationId) || pendingInputs!.hasChain(conversationId)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Conversation changed before the follow-up could be sent");
+          };
+          const task = Promise.withResolvers<void>(); attachmentTasks.add(task.promise);
+          try {
+            assertCurrent();
+            if (await execution(conversationId) !== cwd) throw new WorkstreamAdapterError(409, "execution-mismatch", "Conversation execution checkout changed");
+            return json({ sessionId: conversationId, ...await claudeRuns.sendInput(liveOwner, prepared.prompt, assertCurrent) }, 202);
+          } finally { task.resolve(); attachmentTasks.delete(task.promise); }
+        }
         // Science dispatch carries this exact request identity through readiness
         // and native evidence; the admission lease must reserve the same intent.
         const admission = coordinator.reserveAdmission({ conversationIds: [conversationId], intent: { kind: "user-prompt", ...(scienceReceipt ? { requestId: scienceReceipt.intent.requestId } : {}) } });
@@ -3799,32 +3820,44 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (/^\/api\/(?:runs|sessions)\/[^/]+\/input$/.test(path) && req.method === "POST") return json({ error: "One-shot mode does not support interactive input" }, 501);
       if (path.startsWith("/api/")) return json({ error: "Not found" }, 404);
       if (req.method !== "GET" && req.method !== "HEAD") return json({ error: "Method not allowed" }, 405);
-      let file: string;
-      if (path === "/") return new Response(req.method === "HEAD" ? null : indexHtml, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" } });
-      else if (path === "/push-worker.js") {
-        const worker = Bun.file(join(assetsDir, "push-worker.js"));
-        if (!await worker.exists()) return json({ error: "Not found" }, 404);
-        return new Response(req.method === "HEAD" ? null : worker, { headers: {
-          "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "service-worker-allowed": "/",
-        } });
-      }
+      let assetName: string;
+      if (path === "/") assetName = "index.html";
+      else if (path === "/push-worker.js") assetName = "push-worker.js";
       else {
         let assetPath: string;
         try { assetPath = decodeURIComponent(path); } catch { return json({ error: "Not found" }, 404); }
         if (!assetPath.startsWith("/assets/") || assetPath.includes("\\") || assetPath.includes("\0") || assetPath.split("/").slice(2).some(part => !part || part.startsWith("."))) return json({ error: "Not found" }, 404);
-        const assetsRoot = assetsDir;
-        file = resolve(assetsRoot, assetPath.slice("/assets/".length));
-        if (!file.startsWith(assetsRoot + "/")) return json({ error: "Not found" }, 404);
-        try {
-          const canonicalRoot = await realpath(assetsRoot);
-          file = await realpath(file);
-          if (!file.startsWith(canonicalRoot + "/")) return json({ error: "Not found" }, 404);
-        } catch { return json({ error: "Not found" }, 404); }
+        assetName = assetPath.slice("/assets/".length);
+        if (url.searchParams.has("v") && (url.searchParams.getAll("v").length !== 1 || url.searchParams.get("v") !== assetManifest.fingerprint)) return json({ error: "Not found" }, 404);
       }
+      if (!Object.hasOwn(assetManifest.outputs, assetName) || /\.(?:gz|br)$/.test(assetName)) return json({ error: "Not found" }, 404);
+      const accepted = new Map<string, number>();
+      for (const part of (req.headers.get("accept-encoding") ?? "").toLowerCase().split(",")) {
+        const [name, ...parameters] = part.trim().split(";").map(value => value.trim());
+        if (!name) continue;
+        const q = parameters.find(value => value.startsWith("q="))?.slice(2);
+        accepted.set(name, q === undefined ? 1 : /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(q) ? Number(q) : 0);
+      }
+      const quality = (name: string) => accepted.get(name) ?? accepted.get("*") ?? 0;
+      const encodings = [{ name: "br", suffix: ".br" }, { name: "gzip", suffix: ".gz" }].sort((a, b) => quality(b.name) - quality(a.name));
+      const encoding = encodings.find(value => quality(value.name) > 0 && quality(value.name) >= (accepted.get("identity") ?? 0) && Object.hasOwn(assetManifest.outputs, assetName + value.suffix));
+      if (!encoding && (accepted.get("identity") ?? (accepted.get("*") === 0 ? 0 : 1)) === 0) return new Response(null, { status: 406, headers: { "cache-control": "no-store", vary: "Accept-Encoding" } });
+      let file = resolve(assetsDir, assetName + (encoding?.suffix ?? ""));
+      if (!file.startsWith(assetsDir + "/")) return json({ error: "Not found" }, 404);
+      try {
+        const canonicalRoot = await realpath(assetsDir);
+        file = await realpath(file);
+        if (!file.startsWith(canonicalRoot + "/")) return json({ error: "Not found" }, 404);
+      } catch { return json({ error: "Not found" }, 404); }
       try { if (!(await stat(file)).isFile()) return json({ error: "Not found" }, 404); }
       catch { return json({ error: "Not found" }, 404); }
       const asset = Bun.file(file);
-      return new Response(req.method === "HEAD" ? null : asset, { headers: { "content-type": asset.type, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      const immutable = assetName !== "index.html" && assetName !== "push-worker.js" && url.searchParams.get("v") === assetManifest.fingerprint;
+      return new Response(req.method === "HEAD" ? null : asset, { headers: {
+        "content-type": Bun.file(join(assetsDir, assetName)).type, "content-length": String(asset.size),
+        "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-store", "x-content-type-options": "nosniff", vary: "Accept-Encoding",
+        ...(encoding ? { "content-encoding": encoding.name } : {}), ...(path === "/push-worker.js" ? { "service-worker-allowed": "/" } : {}),
+      } });
     } catch (error) {
       if (error instanceof ScienceSubmissionStorageError) { failClosed(); return json({ error: error.message, code: "science-submission-unknown" }, 503); }
       if (error instanceof ScienceSubmissionError) return json({ error: error.message, code: error.code }, error.status);

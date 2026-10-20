@@ -9,6 +9,7 @@ import { catalog, worktreeScope, type CatalogNavigation } from "./catalog";
 import { acquireWorktreeDirectories, type DirectoryResult, type DirectoryRequest, type WorktreeDirectories } from "./workspace-directory-cache";
 export type { DirectoryResult } from "./workspace-directory-cache";
 import { fencePath, notifyWorkspace, openBuffer, pathFence, refreshBuffer, renameBuffer, requestFence, rootState, subscribeWorkspace, workspaceEpoch, workspaceFailure, workspaceSnapshot, type Buffer, type TreePresentation } from "./workspace-store";
+import { jitteredDelay } from "./visibility";
 
 export type ActiveView = CatalogNavigation["view"];
 export type WorkspaceActivation = { view: "code"; path: string; location?: WorkspaceLocation; source?: "files" | "search" } | { view: "git"; path: string; comparison: GitComparison };
@@ -109,36 +110,41 @@ function useController(conversationId: string | null, view: ActiveView, navigate
   useEffect(() => {
     if (!scope || !root || (view !== "code" && view !== "git")) return;
     let active = true, busy = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const request = selectionRequest.current;
     const current = () => active && currentScope(scope) && request === selectionRequest.current && identity.current.view === view && root.selected === selected && root.comparison === comparisonKind;
     const refresh = async () => {
+      clearTimeout(timer); timer = undefined;
       if (document.hidden || busy || !current()) return;
       busy = true;
       try {
         const existing = root.buffers.get(selected);
         if (existing) await refreshBuffer(scope.id, scope.workspace, existing, false, current);
-        if (!current()) return;
+        if (document.hidden || !current()) return;
         if (view === "git") {
           const gitVersion = root.gitVersion;
           const git = await workspaceClient.git(scope.id, scope.workspace.workspaceId);
-          if (!current() || gitVersion !== root.gitVersion) return;
+          if (document.hidden || !current() || gitVersion !== root.gitVersion) return;
           root.git = git; notifyWorkspace();
           const entry = git.entries.find(entry => entry.path === selected);
           const value = selected && entry?.comparisons.includes(comparisonKind)
             ? await workspaceClient.diff(scope.id, scope.workspace.workspaceId, selected, comparisonKind) : null;
-          if (current() && gitVersion === root.gitVersion) { setDiff({ key: selectionKey, value }); setError(""); }
+          if (!document.hidden && current() && gitVersion === root.gitVersion) { setDiff({ key: selectionKey, value }); setError(""); }
         }
       } catch (error) {
         if (current()) { setDiffLoading(null); setError(workspaceFailure(error)); }
       } finally {
-        if (current()) { busy = false; setDiffLoading(null); }
+        busy = false;
+        if (current()) {
+          setDiffLoading(null);
+          if (!document.hidden) timer = setTimeout(() => void refresh(), jitteredDelay(view === "git" ? 15_000 : 5000));
+        }
       }
     };
     if (view === "git") { setDiff(null); setDiffLoading(selectionKey); }
     void refresh();
-    const timer = setInterval(() => void refresh(), 5000);
     window.addEventListener("focus", refresh); document.addEventListener("visibilitychange", refresh);
-    return () => { active = false; clearInterval(timer); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+    return () => { active = false; clearTimeout(timer); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
   }, [scope, view, selected, comparisonKind, openAttempt]);
 
   // One directory freshness owner for both desktop/mobile trees. HT retains its

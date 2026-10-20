@@ -9,7 +9,7 @@ import { conversationRecency } from "./conversation-recency";
 import type { Event, Run, Session } from "./history";
 import type { SessionListProjection } from "./session-list-projection";
 
-export type SessionListAvailability = { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string };
+export type SessionListAvailability = { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string; liveInputRunId?: string };
 
 /** Bridge-owned policy/lifecycle reads, captured after native observation. The
  * response model has no access to admission, dispatch, or mutation authority. */

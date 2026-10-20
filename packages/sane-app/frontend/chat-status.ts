@@ -1,5 +1,5 @@
 import { completionVerificationTarget, store, type State } from "./store";
-import { active, type CompletionVerificationTarget, type Conversation } from "./types";
+import { active, liveInputReady, type CompletionVerificationTarget, type Conversation } from "./types";
 import { pendingInteractions } from "./interaction-presentation";
 import { knownWorker, workersFor } from "./worker-client";
 import { workerProtocolStatus, type WorkerProtocolStatus, type WorkerRecord } from "../src/worker-contract";
@@ -57,7 +57,6 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
 
   if (state.submissionError) add("submission-error", "Message submission needs attention", state.submissionError);
   if (state.interactionError) add("interaction-error", "Conversation action needs attention", state.interactionError);
-  if (context.handoffLoading && state.selected) add("handoffs", "Loading handoff status…", undefined, true);
   if (state.workerLoading && state.selected) add("workers", "Loading background workers…", undefined, true);
   if (context.nativeSubagentLoading) add("native-subagents", "Loading recorded native subagents…", undefined, true);
   if (context.handoffError) add("handoffs-error", "Handoff status unavailable", context.handoffError);
@@ -82,7 +81,7 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
     else if (completionBoundary) add("run", "Run completion needs verification", `A later ${completionBoundary.type} message prevents confirming this command’s outcome. The run remains reserved; no prompt is being resent.`, false, undefined, { priority: 90 });
     else if (nativeQueueWaiting) add("run", "Message queued…", "Message queued. OpenCode is finishing its current continuation.", true);
     else if (activity?.phase === "starting") add("run", "Starting assistant…", "The message was accepted. Preparing the Claude Code process.", true);
-    else if (activity?.phase === "background") add("run", "Background tasks are running…", `The main assistant turn has stopped, but ${activity.backgroundTaskCount ?? "native"} background ${activity.backgroundTaskCount === 1 ? "task is" : "tasks are"} still active. The run has not completed.`, true);
+    else if (activity?.phase === "background") add("run", "Background tasks are running…", `${activity.backgroundTaskCount ?? "Native"} background ${activity.backgroundTaskCount === 1 ? "task is" : "tasks are"} still active.${liveInputReady(conversation, state.availability) ? " You can continue chatting while they run." : " Waiting for the assistant to accept another message."}`, true);
     else if (activity?.phase === "waiting") add("run", "Waiting for run to finish…", "The main assistant turn has stopped. Waiting for the CLI to finish or report further activity.", true);
     else add("run", "Assistant is working…", "New output will appear in the conversation.", true);
     const runStatus = statuses.find(status => status.id === "run");

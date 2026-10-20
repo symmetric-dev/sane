@@ -1,36 +1,59 @@
-# Hook-removal audit (Option A) — context/prompt consumers
-Scope: everything that READS context artifacts or prompts. Read-only inventory; no changes made.
+# Context/prompt consumers — selective delivery, retained operational evidence
 
-## Prompt composers (must ADD the delimited standing block)
-- `bridge.ts:1722-1723` role-prefix precedent (`[SANE role: …]` + `prepared.prompt`, OC only). Reads `prepared.prompt`. A: extend this pattern — standing block + delimiter + prompt, both harnesses.
-- `bridge.ts:2055` worker launch (`w.input.prompt` + context). A: prepend standing block w/ delimiter.
-- `bridge.ts:2221-2222,2313` worker report/exchange dispatch (`workerReportPrompt`, `workerExchangePrompt`). A: accept history-presence (first-run assignment carries block); do NOT re-prepend per report.
-- `bridge.ts:2445-2459` handoff prompt (`SANE handoff …` + `h.input.message`). A: standing block + delimiter + handoff body.
-- `bridge.ts:3156` branch firstMessage (+ role prefix). A: same standing-block prefix rule.
-- `worker-outbox.ts:6,16` `workerReportPrompt` / `workerExchangePrompt` builders. A: pure body builders stay; prefixing happens at dispatch site.
+Integration inventory for the [shared context contract](shared-context.md). Scope and implementation order are in [PLAN.md](PLAN.md); coverage is in [tests.md](tests.md).
 
-## Title / classification readers (must STRIP the delimiter first)
-- `bridge.ts:1015` `titleFromPrompt` (first line ≤200ch). A: strip standing block or titles become `# SANE Context…`.
-- `session-list-response.ts:51-62` `sessionDisplayTitle` (earliest submission text). A: same strip rule — HIGHEST title blast radius (every list row).
-- `review.ts:323-329` `submissionKind` (`^SANE handoff`, `^Worker Outcome` regexes). A: strip block before classify or every run misclassifies as `prompt`.
-- `review.ts:348-351` submission excerpt. A: strip before truncate/display.
+## Prompt preparation — select context, do not prefix every dispatch
 
-## Evidence builders / launch pipeline (RETIRE or repurpose)
-- `opencode-run-service.ts:308-323` `launchEvidence` + `framework-delivered` event (`takeFrameworkDelivery`). A: delete delivery; keep event kind as historical only.
-- `opencode-run-service.ts:585-593` `deliverSaneSession` + `session-block` context event. A: delete; block moves into prompt text.
-- `claude-run-service.ts:463,489-493` `frameworkPath` + SessionStart hook registration. A: delete; framework text moves into prompt composition.
-- `claude-run-service.ts:508-515` `sessionPath` + UserPromptSubmit hook. A: delete; dynamic block moves into prompt.
-- `claude-run-service.ts:468`, `opencode-run-service.ts:568` `submission` journal event stores full prompt. A: text now contains block — downstream readers strip (see above).
-- `claude-run-service.ts:534-544`, `opencode-run-service.ts:317-322` `launch` event (`framework`/`sessionBlock` paths+sha). A: replace with prompt-composition receipt (standing revision + hashes).
-- `context-delivery.ts:19-58` `prepareContextDelivery`/`contextReceipt`; `context-package.ts:71-97` standing/dynamic composer. A: composer becomes THE prompt-prefix source; `deliverContextEntry`/`append-system-prompt-file` channels retired.
-- `worker-outbox.ts:24-47` `exchangeDeliveryEvidence`/`workerDeliveryEvidence` (+ `bridge.ts:2075,2163,2232` call sites). A: NOTHING (acceptance signals content-agnostic).
+Bridge callers select the operation's context; run-service adapters send composed bytes. Update these sites without adding another composition layer:
 
-## Snapshot / transcript readers (mostly NOTHING)
-- `shared/conversation/transcript.ts` `transcriptMessages`, `opencode.ts:613-647` `compactionSnapshot`/`normalizeMessage`, `opencode.ts:410` `history`, run-service `readCommand`, `transcript-service.ts:109-143` `evidence()`. A: nothing — native history shape unchanged. Only text-scanning uses (titles/classification) strip.
-- Compaction guards `claude-run-service.ts:124,465`, `opencode-run-service.ts:63,564`, `bridge.ts:1333`. A: nothing, except summaries must preserve the block pointer via history-presence.
+| Source / call site | Required behavior |
+| --- | --- |
+| `src/bridge.ts`, role-prefix / `prepared.prompt` dispatch | Select activation vs ordinary input before composing. |
+| `src/bridge.ts`, worker `launch(w)` / `workerAssignment` | Supply worker activation and structured assignment. |
+| `src/bridge.ts`, `workerReportPrompt` / `workerExchangePrompt` dispatch | Supply attributed body and selected sharing payload. |
+| `src/bridge.ts`, handoff body / `h.input.message` | Distinguish an existing recipient from one needing activation. |
+| `src/bridge.ts`, branch `firstMessage` | Account for inherited context and branch-specific content. |
+| `src/worker-outbox.ts`, `workerReportPrompt` / `workerExchangePrompt` | Keep body builders pure. |
 
-## review.ts hook-assuming checks → all become "present once in early history"
-`367` SessionStart outcome read; `406-411` framework file/event/hookOutcome; `414-425` block file/event/launch; `458-500` `claudeNative` (`prompt_snapshot`, `hook_additional_context`, `sessionBlockInSystemPrompt`); `509,529` OC synthetic framework + expected id; `528` `saneContextMetadata`; `606-623` framework-missing/hook-failed/repeated/not-in-transcript/id-mismatch; `642,647,649-655` framework-repeated/session-block-stale+missing (OC metadata check); `403,637,661` hook-error plumbing (informational only post-removal).
+## Titles, classification, excerpts, and display
 
-## Stale docs/skills paths (no template hits)
-`docs/sane-context/pending.md:36-38,63`; `docs/sane-context/native-context-injection.md:19,60,64,106,116`; `docs/sane-context/explicit-worker-protocol-plan.md:192,339,376,409` (partial); `.opencode/skills/review-sane-sessions/SKILL.md:45,77,83,86-88,97,99`; `scripts/review.ts` (lines above). `templates/**`: no matches.
+- `src/bridge.ts` `titleFromPrompt` and `src/session-list-response.ts` `sessionDisplayTitle`: use the authored body, not activation/context headings.
+- `scripts/review.ts` `submissionKind` and submission excerpt: use a shared body-extraction helper or explicit message-kind/body data before regex/truncation.
+- `shared/conversation/cc-reducer.ts` consumes submission text directly as the user message; OC normalized/native messages also contain transmitted text. Account for body vs context presentation without altering raw audit bytes.
+- Use the shared body-extraction contract rather than independent stripping regexes.
+
+## Evidence builders and journals
+
+- `src/opencode-run-service.ts` `launchEvidence`: retire new `framework-delivered` and `session-block` emits plus `takeFrameworkDelivery`; keep lifecycle evidence.
+- `src/claude-run-service.ts` framework/session paths, context-only hook registrations, append-file fields, and acknowledgment gates: retire as context delivery is replaced. Keep operational hook settings/events.
+- Both run services' submission journals: wire the shared composition/body/operation evidence to actual dispatched bytes, not the pre-composition body.
+- `src/context-delivery.ts` and `src/context-package.ts`: implement the shared composition/validation contract; keep checks unrelated to the retired sinks.
+- `src/worker-outbox.ts` `exchangeDeliveryEvidence` / `workerDeliveryEvidence`: preserve content-independent acceptance/uncertainty semantics and no automatic retries.
+
+## Operational hook consumers — KEEP
+
+Current code also uses hooks outside context delivery:
+
+- `src/claude-run-service.ts`: authenticated ingestion, turn-stop eligibility, task-notification invalidation, and queued-followup handling.
+- `src/claude-activity.ts`: running/waiting/background observations from hooks plus stdout.
+- `src/bridge.ts`: worker invocation evidence accepts root PreToolUse hooks or matching stdout tool use; permission/post-tool observations provide worker waiting-state fallback.
+- `src/native-subagent-projection.ts`: hook and stdout evidence for native child observation.
+- `src/transcript-service.ts`, `shared/conversation/cc-reducer.ts`, `context-usage.ts`, and `compaction-evidence.ts`: operational hook-derived evidence. Remove branches used only to interpret retired context injection, not operational events.
+- `frontend/thread.tsx`: hook event presentation. Context-only payload presentation may change, but operational events remain valid.
+- The listener called `hookServer` also serves `/native/workers` and `/native/handoffs`. Keep both those routes and the operational hook route/authentication.
+
+## Review tooling — one context model
+
+Original `scripts/review.ts` context-specific checks include SessionStart delivery, framework/session sidecar paths, `hook_additional_context` / prompt snapshots, OC synthetics/metadata, and framework/session-block missing/repeated/stale checks. Replace these rather than adding compatibility branches:
+
+- Delete old context receipt stages, context sidecar readers, SANE synthetic/metadata context checks, and era-based delivery interpretations.
+- Check SANE's intended activation/update/sharing placement and actual submitted payload; ordinary turns need no repeated context.
+- Separate context-delivery failures from operational hook/process/background failures. Do not demote all hook errors to informational.
+- Native compact transport, guards, and evidence remain. Compaction preservation/recovery, including any future summaries or pointers, is explicitly separate work.
+
+## Follow-on documentation references
+
+Update context-delivery descriptions when implementation lands; preserve operational-hook guidance. Skill/context edit authorization follows `PLAN.md`.
+
+- Repository root: `docs/sane-context/pending.md`, `docs/sane-context/native-context-injection.md`, `docs/sane-context/explicit-worker-protocol-plan.md`, `.opencode/skills/review-sane-sessions/SKILL.md`.
+- App package: `scripts/context-report/README.md`.

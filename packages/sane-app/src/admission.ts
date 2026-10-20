@@ -9,6 +9,10 @@ export class AdmissionService {
   private records: AdmissionRecords;
   constructor(private dataDir: string, initial: AdmissionRecords, private sources: SourceRecords, private catalog: CatalogService, private router: RepositoryRouter, private save = atomicAppRecord) { this.records = structuredClone(validateAdmissions(initial)); }
   get(sessionId: string): Admission | undefined { const a = this.records.admissions.find(a => a.sessionId === sessionId); return a && structuredClone(a); }
+  getByNative(ref: ConversationRef): Admission | undefined {
+    const a = this.records.admissions.find(a => a.source.descriptor.harness === ref.harness && a.source.authorityId === ref.authorityId && a.nativeId === ref.nativeId);
+    return a && structuredClone(a);
+  }
   list(): Admission[] { return structuredClone(this.records.admissions); }
   private persist(next: AdmissionRecords) { validateAdmissions(next); this.save(this.dataDir, "admissions.json", next); this.records = next; }
   private update(sessionId: string, change: Partial<Admission>) {

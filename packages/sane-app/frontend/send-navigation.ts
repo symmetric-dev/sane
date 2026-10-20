@@ -88,7 +88,7 @@ export function useSendNavigation(viewport: RefObject<HTMLDivElement | null>, st
     if (loaded.outcome === "missing") { finish(jump, "Original send unavailable"); return; }
     if (loaded.outcome === "error") { finish(jump, "Could not load original send. Try again."); return; }
     if (state.connectionError) { finish(jump, "Could not load original send. Try again."); return; }
-    if (state.loading || !state.connected || jump.kind === "handoff" && state.handoffLoading || jump.kind === "worker" && state.workerLoading) return;
+    if (state.loading || !state.connected || jump.kind === "worker" && state.workerLoading) return;
     const root = viewport.current;
     if (!root) return;
     let frame = 0;

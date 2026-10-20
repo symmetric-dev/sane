@@ -5,7 +5,7 @@ import { AgentLaunchConfigurationError, claudeAgentSettings, saneContextText, sh
 import { projectCompactions } from "./compaction";
 import type { Event, Run, Session, TerminationUncertainty } from "./history";
 import type { RunOwner } from "./run-owner";
-import type { ExecutionContext } from "./workstreams";
+import { WorkstreamAdapterError, type ExecutionContext } from "./workstreams";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
 import { CLAUDE_RESULT_TEXT_LIMIT, consumeClaudeResultRecord, createClaudeResultSequenceState, rejectUndeliveredClaudeFramework, type ClaudeResultSequenceState } from "../shared/conversation/cc-result";
 import type { QueuedSendConfiguration } from "../shared/conversation/queued-followup";
@@ -118,6 +118,7 @@ type Supervision = {
 type QueuedFollowup = { owner: RunOwner; input: ClaudeQueuedFollowup; cancelled?: boolean; persisted: Promise<void>; draining?: Promise<void> };
 /** failure: the first non-success result record; framework: the SessionStart text this run must deliver. */
 type Result = ClaudeResultSequenceState & { stderr: string; canonical?: { delivery: ContextDelivery; dynamicAccepted: boolean; rejected: boolean } };
+type LiveInput = { closed: boolean; sending: boolean; turnComplete: boolean; pendingUuid?: string; result: Result };
 const resultTextLimit = CLAUDE_RESULT_TEXT_LIMIT;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -132,6 +133,7 @@ export class ClaudeRunService {
   private readonly turnHooks = new Map<string, symbol | undefined>();
   private readonly followups = new Map<string, QueuedFollowup>();
   private readonly activities = new Map<string, ClaudeActivity>();
+  private readonly inputs = new WeakMap<RunOwner, LiveInput>();
   private readonly supervision = new WeakMap<RunOwner, Supervision>();
   /** All unretired local groups/attempts, not the bridge's execution owners. */
   private readonly supervised = new Map<string, Set<Supervision>>();
@@ -243,6 +245,58 @@ export class ClaudeRunService {
   }
 
   hasQueuedFollowup(sessionId: string): boolean { return this.followups.has(sessionId); }
+  /** Continue the original CLI, never resume the same session in a second process. */
+  private inputReady(owner: RunOwner, input: LiveInput): boolean {
+    const supervised = this.supervision.get(owner);
+    return !!supervised && this.validSupervision(supervised) && this.deps.owns(owner)
+      && !input.closed && input.turnComplete && !input.result.error
+      && !!owner.child && owner.child.exitCode === null && owner.run.status === "running" && owner.run.operation !== "compact"
+      && !owner.settled && !owner.stopRequested && !owner.cancelling && !owner.stopping && !owner.workerDeliveryId
+      && !this.deps.closing() && !this.deps.storageFailed() && !this.deps.retained()
+      && !this.hasQueuedFollowup(owner.run.sessionId) && !this.deps.session(owner.run.sessionId)?.attachment
+      && this.activities.get(owner.run.runId)?.get().phase === "background";
+  }
+  canSendInput(owner: RunOwner): boolean {
+    const input = this.inputs.get(owner);
+    return !!input && !input.sending && this.inputReady(owner, input);
+  }
+  async sendInput(owner: RunOwner, prompt: string, assertCurrent: () => void): Promise<{ runId: string; messageId: string }> {
+    const input = this.inputs.get(owner);
+    if (!prompt.trim() || compactCommand(prompt) || !input || !this.canSendInput(owner)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Claude is not ready for a background follow-up");
+    input.sending = true;
+    const uuid = this.runtime.randomUUID(), messageId = `${owner.run.runId}:user:${uuid}`;
+    let attempted = false;
+    try {
+      assertCurrent();
+      await this.deps.emit(owner.run, "submission", { messageId, text: prompt, liveInput: true });
+      assertCurrent();
+      if (!this.inputReady(owner, input)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Claude resumed or stopped before the follow-up could be sent");
+      input.turnComplete = false;
+      input.pendingUuid = uuid;
+      this.stoppedTurns.delete(owner.run.runId);
+      this.turnHooks.set(owner.run.runId, undefined);
+      this.activities.get(owner.run.runId)?.running();
+      attempted = true;
+      owner.child!.stdin.write(JSON.stringify({ type: "user", uuid, session_id: this.supervision.get(owner)!.identity.nativeSessionId,
+        message: { role: "user", content: prompt }, parent_tool_use_id: null }) + "\n");
+      await owner.child!.stdin.flush();
+      return { runId: owner.run.runId, messageId };
+    } catch (error) {
+      // A partial pipe write is not safe to retry or accept more input behind.
+      if (attempted) void this.terminate(owner);
+      throw error;
+    } finally {
+      input.sending = false;
+      this.finishInput(owner);
+    }
+  }
+  private finishInput(owner: RunOwner) {
+    const input = this.inputs.get(owner);
+    if (!input || input.closed || input.sending || !input.turnComplete) return;
+    if (!input.result.error && this.activities.get(owner.run.runId)?.get().backgroundTaskCount) return;
+    input.closed = true;
+    void Promise.resolve().then(() => owner.child!.stdin.end()).catch(() => this.terminate(owner));
+  }
   activity(owner: RunOwner): ConversationActivity | undefined {
     if (!this.deps.owns(owner)) return;
     const activity = this.activities.get(owner.run.runId)?.get()
@@ -397,11 +451,27 @@ export class ClaudeRunService {
           }
         }
         // Fail fast: Claude must not proceed without this run's framework.
-        if (observation.frameworkRejected) void this.terminate(owner);
+        if (observation.frameworkRejected || result.integrityRejected) void this.terminate(owner);
       }
       else result.stderr = (result.stderr + text + "\n").slice(-resultTextLimit);
       await this.deps.emit(run, kind, data);
-      if (kind === "stdout") this.activities.get(run.runId)?.stdout(data, nativeSessionId);
+      if (kind === "stdout") {
+        const activity = this.activities.get(run.runId);
+        activity?.stdout(data, nativeSessionId);
+        if (isClaudeRootRecord(data) && data?.type === "result" && data.session_id === nativeSessionId) {
+          const input = this.inputs.get(owner);
+          // A background continuation can finish while a user send is pending.
+          // Only the result answering that UUID may make its turn idle again.
+          const answersInput = !input?.pendingUuid || data.user_message_uuid === input.pendingUuid
+            || Array.isArray(data.user_message_uuids) && data.user_message_uuids.includes(input.pendingUuid)
+            || input.pendingUuid === run.runId && data.user_message_uuid === undefined && data.user_message_uuids === undefined;
+          if (answersInput) {
+            if (input) { input.pendingUuid = undefined; input.turnComplete = !(data.queued_turn_count > 0); }
+            if (!input || input.turnComplete) activity?.turnFinished();
+          }
+          this.finishInput(owner);
+        }
+      }
     };
     while (true) { const { value, done } = await reader.read(); if (done) break; pending += decoder.decode(value, { stream: true }); let at: number; while ((at = pending.indexOf("\n")) >= 0) { await line(pending.slice(0, at)); pending = pending.slice(at + 1); } if (pending.length > 1024 * 1024) { await line(pending); pending = ""; } }
     pending += decoder.decode(); await line(pending);
@@ -520,6 +590,7 @@ export class ClaudeRunService {
       await prepare(() => deps.enqueue(() => runtime.writeSettings(settingsPath, settings)));
       if (deps.closing() || deps.storageFailed() || owner.stopRequested) throw new Error("Closing before launch");
       const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", nativeSessionId!, "--settings", settingsPath];
+      if (operation !== "compact") args.push("--input-format", "stream-json");
       if (canonical) args.push("--include-hook-events");
       if (privateExecution) args.push(...privateExecution.args);
       else if (ccAgent !== undefined) args.push("--agent", ccAgent);
@@ -574,8 +645,10 @@ export class ClaudeRunService {
       // Observe both consumers before a synchronous stdin failure can occur.
       const output = Promise.all([child.exited, ...streams]);
       void output.catch(() => {});
-      child.stdin.write(prompt);
-      const [exit] = await Promise.all([output.then(values => values[0] as number), Promise.resolve(child.stdin.end()).then(() => {
+      if (operation !== "compact") this.inputs.set(owner, { closed: false, sending: false, turnComplete: false, pendingUuid: runId, result });
+      child.stdin.write(operation === "compact" ? prompt : JSON.stringify({ type: "user", uuid: runId, session_id: nativeSessionId,
+        message: { role: "user", content: prompt }, parent_tool_use_id: null }) + "\n");
+      const [exit] = await Promise.all([output.then(values => values[0] as number), Promise.resolve(operation === "compact" ? child.stdin.end() : child.stdin.flush()).then(() => {
         // Pipe completion proves submission only, never native acceptance.
         dispatchEvidence?.outcome("submitted");
       })]);
@@ -633,6 +706,7 @@ export class ClaudeRunService {
       this.stoppedTurns.delete(runId);
       this.turnHooks.delete(runId);
       this.activities.delete(runId);
+      this.inputs.delete(owner);
       supervised.finished = true;
       this.retireSupervision(supervised);
     }

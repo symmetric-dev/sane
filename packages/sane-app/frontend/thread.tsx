@@ -20,7 +20,7 @@ import { store, useStore, type State } from "./store";
 import { pendingInteractions } from "./interaction-presentation";
 import { catalog } from "./catalog";
 import { BranchAction, BranchLinks } from "./branch-ui";
-import { active, type Message, type Run, type UsageSnapshot } from "./types";
+import { active, liveInputReady, type Message, type Run, type UsageSnapshot } from "./types";
 import { activityPosition, useActivityPresentation, type ActivityEntry, type ActivityDetail, type ActivityGroup, type ActivityPresentation } from "./transcript-activity";
 import { TranscriptActivity } from "./activity-ui";
 import { classifyTranscriptTool, createActivityEntry, resolveActivityDetail } from "./activity-model";
@@ -220,7 +220,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   useEffect(() => { if (capabilities.listModels && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) { const timer = setTimeout(() => void store.loadModels(harness), 300); return () => clearTimeout(timer); } }, [harness, capabilities.listModels, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
    const appRunning = state.runs.some(run => active(run.status));
    const running = appRunning || active(conversation?.status ?? "completed");
-   const busyInput = running || !!state.availability.nativeQueue || !!state.availability.queueAfterRunId;
+   const busyInput = running && !liveInputReady(conversation, state.availability) || !!state.availability.nativeQueue || !!state.availability.queueAfterRunId;
   const compactBlocked = !!store.compactBlocked();
   const latestRun = state.runs.at(-1);
   const nativeQueueWaiting = active(latestRun?.status ?? "completed") && latestRun?.nativeDelivery === "queue"
@@ -244,10 +244,10 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     return key ? [nativeSubagentId(key)] : [];
   }))), [messages, state.selected, state.runs, harness]);
   const runtime = useExternalStoreRuntime({ messages: runtimeMessages, convertMessage: convertTranscriptMessage, isRunning: running,
-    isSendDisabled: !isActive || hasRequests || chainLocked || !capabilities.prompt || busyInput || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
+    isSendDisabled: !isActive || hasRequests || chainLocked || !capabilities.prompt || busyInput || compactBlocked || state.actionBusy || state.sending || !(state.interactive ?? state.connected) || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
     onNew: async message => { if (store.pendingInputChainLocked()) return; const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
   });
-  const sendDisabled = !isActive || hasRequests || chainLocked || !capabilities.prompt || busyInput || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
+  const sendDisabled = !isActive || hasRequests || chainLocked || !capabilities.prompt || busyInput || compactBlocked || state.actionBusy || state.sending || !(state.interactive ?? state.connected) || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
   const sendReview = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped, { preserveDraft: true }); };
   const review = useDocumentReview(state, isActive && !hasRequests, sendDisabled, sendReview);
   const science = useScienceChat(state, isActive, sendDisabled || !!review.flow, scienceIntegration);

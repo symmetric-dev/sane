@@ -1,45 +1,81 @@
-# Option A implementation plan — complete hook removal → user-authored prompt composition
+# Implementation plan — SANE-owned context through prompts
 
-## Phase 0 — Decisions (block everything; do first, in order)
-- 0.1 Delimiter format. Decide standing-block open/close markers + strip helper home (single `stripStandingBlock()` used by titles/classification). Files: new composer + `bridge.ts:1015`, `session-list-response.ts:51`, `review.ts:323`. Done: markers pinned, strip unit-tested, no title regex depends on hook text.
-- 0.2 Canonical byte-layout per harness. Pin concat order standing/dynamic/framework, newline separators, `injectRole` fork resolution at `bridge.ts:461` (role text = composed bytes, flag dies). Files: `context-package.ts:63-98`, `bridge.ts:460-471`. Done: byte-layout doc + hash fixtures per harness.
-- 0.3 `forward.ts` / settings fate. Delete `hooks/forward.ts`, shrink per-run settings to permissions-only or delete; same for `hooks/settings.example.json`. Files: `claude-run-service.ts:487`, `hooks/forward.ts`, `hooks/settings.example.json`. Done: no `--settings` hook table, CC launches with no hook commands.
-- 0.4 Queued-409 replacement. `deliverContextEntry` staleness gate + 409-withhold becomes pre-send recompose-and-compare (`assertContextCurrent` logic) with prompt-withhold on mismatch; queued runs never mutate. Files: `opencode-run-service.ts:597-603,484-490`, `context-delivery.ts:38-51`. Done: drift withholds prompt without any PUT.
-- 0.5 Turn-complete signal. Replace `stoppedTurns`/`turnHooks` queued-followup gate (`claude-run-service.ts:359-364,242`) with stdout result-record only. Done: admission/drain (`:237-311`, K5) passes without hook events.
+Revised 2026-10-20; supersedes the original "complete hook removal" proposal. Paths throughout these reports are relative to `packages/sane-app/` unless qualified. Source references use symbols rather than audit-era line numbers.
 
-## Phase 1 — Shared composer (parallelizable after 0.1–0.2)
-- 1.1 New prompt-composition module. Pure string builders reusing `ContextAsset/Package`, `createContextPackage`, `contextHash`, static/dynamic/payload hashes, `validateContextComposition` recomposition, binding check; consumes `saneSessionText`, `workerContext`, `branchContextDynamic`, `explicitProtocolDynamic`. Files: new `composePrompt.ts`, `context-package.ts`, `agent-launch.ts:57-59,30-43`, `branch-context.ts:10`, `bridge.ts:436-442`. Done: byte-exact output matches 0.2 fixtures.
-- 1.2 Composition receipt. Single `composed` receipt (standing revision + static/dynamic/payload hashes + send-ack) replacing 4-stage `prepared/configured/stored-readback/hook-accepted`. Files: `context-delivery.ts:19-58`, `claude-run-service.ts:543-544`, `opencode-run-service.ts:484-502,597-602`. Done: launch/compact journals emit only new shape; old readers treat old stages as historical.
-- 1.3 Retire channels. Delete `ContextProvider/validate` async hook plumbing, `prepared` full-byte event, `assertDispatchState` wrappers, `native-role-reference` vs `standing` fork. Files: `context-delivery.ts`, `bridge.ts:443-471`. Done: no import of channel code remains. PARALLEL with Phase 2/3 once 1.1 lands.
+## Reading guide
 
-## Phase 2 — CC removal sequence (`src/claude-run-service.ts`, `hooks/`)
-- 2.1 Switch composition in. Route static+dynamic through composer into prompt text; keep hooks dormant behind version-gate. Files: `:508-514,:521-527`. Done: new sessions carry block with zero hook fires.
-- 2.2 Remove delivery branches. Framework sidecar + SessionStart push (`:489-493`), session sidecar + UserPromptSubmit push (`:508-514`), `hookContextLimit` guards, `*.canonical-context.md` write (`:484-485`), `--append-system-prompt-file` + snapshot-off (`:524,527`), receipt hook half (`:521,544`). Done: no sidecar writes, no append-file flags.
-- 2.3 Remove ack fail-fast JOINTLY with 2.2. Stdout `hook_response` acceptance (`:384-397`) + post-exit `dynamicAccepted` gate (`:584-587`) + `framework-rejected` branch (`:492,583,591`). Done: runs never fail-fast on missing dynamic ack.
-- 2.4 Remove hook intake. `ingestHook` + `secrets` map (`:345-366,:130,486,630`), `hookEvents` list (`:23`), hook settings build (`:487`), `CC_WEB_HOOK_URL/RUN_ID/SECRET` env (`:557`), `hookUrl()`. Done: no HTTP hook route, no secrets in spawn env.
-- 2.5 Delete hook files. `hooks/forward.ts`, `hooks/session-start.ts`, `hooks/session-context.ts` + orphan `.delivered` cleanup + Q4 reader/GC decision. Done: `hooks/` empty or deleted, no `.delivered` writers/readers.
+| Document | Owns |
+| --- | --- |
+| [shared-context.md](shared-context.md) | Authoritative context placement, composition, validation, and evidence contract. |
+| [cc-injection.md](cc-injection.md) | Claude context mechanisms to remove and operational infrastructure to retain. |
+| [oc-injection.md](oc-injection.md) | OpenCode context mechanisms to remove and adapter-specific constraints. |
+| [consumers.md](consumers.md) | Call sites, presentation/evidence readers, retained hook consumers, and follow-on documentation. |
+| [tests.md](tests.md) | Coverage to rewrite, retain, and delete. |
+| [performance.md](performance.md) | Performance evidence, acceptance criteria, remaining costs, and measurement plan. |
 
-## Phase 3 — OC removal sequence (after 1.1; PARALLEL with Phase 2)
-- 3.1 Switch composition in. Prompt-prefix standing block at `executeNative`/compact; keep synthetics gated off for new sessions. Files: `opencode-run-service.ts:585-603,484-490`, `bridge.ts:1722`. Done: canonical sessions dispatch with block, zero synthetic messages.
-- 3.2 Remove sinks. `deliverContextEntry` (+ `prepareContextDelivery`/`assertContextCurrent` sink half, `stored-readback`) and `deliverSaneSession` + `session-block` event, `deliverSaneFramework` + `framework-delivered` event. Files: `opencode.ts:310-321`, `opencode-run-service.ts:484-603,308-323`, `bridge.ts:474-479,806,1663,2033`. Done: no synthetic/PUT writes on any run or compaction.
-- 3.3 Strip plumbing. Adapter dead members (`deliverSaneSession`, `deliverContextEntry`, `bindSaneSession`, `boundSaneSession`), `bind/rebindSaneSession`, `saneSession` dep + wiring, `FrameworkDelivery/frameworkDeliveries/takeFrameworkDelivery`, `agent-launch.ts:45-55` stable IDs (unless reused by composer per Q2). Files: `opencode-run-service.ts:27,41,57`, `opencode.ts:366-379`, `bridge.ts:377,473-479,1356,729`. Done: `tsc` dead-code clean.
-- 3.4 Confirm KEEPs untouched. `select`, `assertIdle`, `prompt/promptQueuedHandoff`, `snapshot/compact/cancel`, `preflightNativeSession`, lifecycle skeleton, `canonicalActivation/prepareCanonicalExecution`, `configureCanonicalExecution` RPC, `canonicalContext` validator (validates composed text). Done: K1–K8 review passes.
+## Scope and blank-slate decision
 
-## Phase 4 — Consumers (after 1.1; PARALLEL with 2/3)
-- 4.1 Prefix all dispatches. Standing block + delimiter at role-prefix (`bridge.ts:1722-1723`), worker launch (`:2055`), handoff (`:2445-2459`), branch firstMessage (`:3156`); report/exchange (`:2221,2313`) rely on history-presence, no re-prepend. Files: `bridge.ts`, `worker-outbox.ts:6,16` (bodies stay pure). Done: every first-run native message carries block exactly once.
-- 4.2 Strip for classification. `titleFromPrompt`, `sessionDisplayTitle`, `submissionKind`/excerpt strip before regex/truncate. Files: `bridge.ts:1015`, `session-list-response.ts:51-62`, `review.ts:323-329,348-351`. Done: no `# SANE Context` titles, no handoff→prompt misclassify.
-- 4.3 Evidence readers. `launch` event replaces `framework/sessionBlock` paths+sha with composition receipt; `submission` journal keeps full text (readers strip); retire `framework-delivered`/`session-block` emits (historical only). Files: `claude-run-service.ts:468,534-544`, `opencode-run-service.ts:568,317-322,308-323`. Done: journals queryable by new receipt.
-- 4.4 `review.ts` + skill rewrite. Checks at `:367,406-425,458-500,509-529,606-655` become "present once in early history"; hook-error plumbing (`:403,637,661`) informational; update `SKILL.md:45-99` + `docs/sane-context/*.md`. Done: review passes on composed sessions, old sessions judged by era.
+Replace harness-specific context delivery with SANE-owned prompt composition under the [shared contract](shared-context.md). Keep process/activity/background-job hooks and execution safeguards. This prepares the context layer for Grok Build and Antigravity; their adapters, compaction preservation/recovery, and skill/procedure policy changes are separate work.
 
-## Phase 5 — Tests (after 2–4; hardest first)
-- 5.1 Rewrite canonical CC 8-test matrix first (`claude-run-service.test.ts:28`, assistant/worker×new/resume/upgrade/compact + authored-parent `:9` + upgrade-off `:53`). New asserts: composed prompt bytes, no append-file/sidecar/hook, new receipt hashes. Done: matrix green without `--append-system-prompt-file`.
-- 5.2 Rewrite OC delivery pins (`opencode-run-service.test.ts:9-56,436-451`, `branch-context.test.ts:22`, `opencode-native-queue.test.ts:670`). Composed-prompt journal + withhold-as-no-composed-session. Done: no `deliverContextEntry/deliverSaneSession/takeFrameworkDelivery` pins.
-- 5.3 Delete obsolete (`claude-run-service.test.ts:67,505-560,327-353,432,961-970` ingestHook/auth/framework-gate; `native-context-entry.test.ts` all 5). Done: ~19 tests removed, zero references to deleted APIs.
-- 5.4 Keep/adjust survivors. Binding/currency/cancel withholds, trusted-validator gates, settlement proofs, base isolation (2nd half → "no composed prompt"), source-validation stages minus hook/file stages. Done: ~17 kept tests green unmodified or trivially.
+- Start with fresh SANE data **and fresh native sessions**, without active old runs. Old OC instruction entries and CC hook/system context are not adopted by reattaching to old sessions.
+- Breaking context schema/API/config changes are allowed. No migration, backward compatibility, legacy context readers, dual modes, rollout flags, historical imports/parity tooling, or in-flight executor transfer.
+- Delete retired writers and context-only readers rather than building sidecar GC, native-entry cleanup, or adoption utilities.
+- Resume, restart, branches, queue uncertainty, and no-replay guarantees still apply to new-model sessions. Blank-slate deployment does not remove future recovery obligations.
 
-## Phase 6 — Migration, rollout, verification
-- 6.1 Version-gate. Third `contextDelivery` value (e.g. `"composed"`) at `bridge.ts:97,431-434`: `canonical` = legacy hook path for pre-cutover sessions, new value = composition for new activations; branch as opt-in migration. Done: old sessions finish on hooks, no mid-history duplication.
-- 6.2 Resume/compact rules. Re-prepend standing only on package-revision change, dynamic always; compact prompt carries what it needs; legacy once-at-creation unchanged. Done: resume/compact matrix tested both eras.
-- 6.3 Joint-removal guards. In-flight fail-fast without dynamic ack removed jointly (2.3); OC in-memory ack orphans dropped; re-prepend duplication covered by 6.1. Done: no cutover run jetsam-fails or double-prepends.
-- 6.4 Parity harness. Old-vs-new byte comparison: same package → legacy sidecar bytes == composed block bytes (modulo delimiters); run on fixtures + `canonical-claude-capture.integration` negatives. Done: parity report attached.
-- 6.5 Review-script era handling. `scripts/review.ts` + `context-report/report.py` read old receipts as history, new receipt as proof; journals stay readable, no `.data-fresh` rewrite (`history.ts:91-95,158`, `review.ts:685-688`). Done: review green on mixed-era corpus.
+## Phase 0 — Pin the prompt contract
+
+1. Finalize implementation-facing message kinds from the placement table in `shared-context.md`; do not invent a parallel public operation API without need.
+2. Define exact block boundaries and ordering, plus a shared body-extraction helper for titles/classification. Keep authored message bodies distinguishable from composed transport text.
+3. Decide how SANE records a submitted activation/update and its package/binding. Do not use hook acknowledgments, an in-memory-only marker, or text scanning as the new source of truth. Reuse existing durable run/submission evidence where possible; do not add a parallel delivery state machine without need.
+4. Pin how existing run/submission evidence represents bootstrap and inherited branch context across resume/restart.
+5. Separate retained lifecycle hook configuration from context injectors. No replacement of `stoppedTurns`/`turnHooks` is required by this work.
+
+Done: encoding, placement inputs, and durable activation/update evidence are specified before runtime changes.
+
+## Phase 1 — Shared composition and evidence
+
+1. Implement the shared composition boundary and message/body extraction contract.
+2. Reuse `ContextAsset`, `ContextPackage`, hashes, trusted pinned inputs, and the pure dynamic producers (`saneSessionText`, `workerContext`, `branchContextDynamic`, `explicitProtocolDynamic`). Adapt delivery-channel types without discarding their integrity guarantees.
+3. Keep binding, source, cancellation, and ownership checks at dispatch. Validate/recheck selected context for context-bearing messages; do not require full context recomposition/reinjection merely to send ordinary input.
+   - Check indirect paths too: execution-policy validation currently loads paired context through `validateCanonicalActivation`. Separate that repeated context work from ordinary dispatch without weakening execution-policy/binding checks. Removing the context sink alone is insufficient.
+4. Implement composition evidence linked to existing submission/admission records, following `shared-context.md`.
+5. Resolve main-role prompt ownership so activation contains the selected role once. Preserve native-child role definitions and execution-policy configuration. Retire `injectRole` only after remaining callers are accounted for.
+
+Done: harnesses share the same composition contract and ordinary-message fast path; selective procedure loading is unchanged.
+
+## Phase 2 — Claude context-only removal
+
+1. Wire composed text into the ordinary prompt path in `src/claude-run-service.ts`.
+2. Remove the mechanisms in [cc-injection.md](cc-injection.md), jointly removing their acknowledgment/failure gates.
+3. Retain the listed operational hooks, settings/permissions, result integrity, and process/queue handling.
+
+Done: no SANE context is returned by hooks or appended as a system-prompt file; operational hooks still function.
+
+## Phase 3 — OpenCode context-channel removal
+
+1. Wire composed text into `prompt` / `promptQueuedHandoff`.
+2. Remove the sinks, receipt plumbing, and legacy metadata helpers in [oc-injection.md](oc-injection.md), including context-entry work in the compact path.
+3. Replace queued entry-equality checks with selected-message/binding validation. Preserve exact admission, ownership, cancellation, and uncertain-submission reconciliation.
+4. Retain execution configuration, observation, interruption, and compact transport; do not add compact-time context injection.
+
+Done: no SANE synthetic context messages or instruction-entry writes are needed for the prompt-based path.
+
+## Phase 4 — Callers and consumers
+
+1. Update dispatch callers, body/display extraction, and journals using [consumers.md](consumers.md).
+2. Replace review/context-report checks for the new contract only; remove context-only readers without deleting operational hook evidence.
+3. Preserve native-worker/handoff routes and authenticated operational hook ingestion.
+4. Update the follow-on documentation listed in `consumers.md` when implementation lands; skill/context edits remain separately authorized.
+
+## Phase 5 — Delete obsolete modes and validate the new model
+
+- Remove the `contextDelivery` startup/canonical selector from config, CLI, banner, and context dispatch. Do not add a third `composed` mode. Preserve canonical execution/pinning independently of the deleted transport switch.
+- Remove migration-only package activation markers, append-file upgrade workarounds, old context schemas/receipts/readers, and compatibility-only tests. Keep only state required by the new model and operational hooks.
+- Apply [tests.md](tests.md) to the new-model scenarios and retained lifecycle-hook behavior.
+- Apply [performance.md](performance.md) to the complete dispatch path, including indirect package loads through execution validation. Keep bootstrap/update costs separate from ordinary messages and retained operational costs.
+
+Done: one prompt-based context path works on fresh sessions without context hooks, synthetic context messages, native instruction entries, or legacy-mode branches. Process/background hooks remain intact. The context layer has no CC/OC-specific delivery requirement for future harnesses.
+
+## Status and work boundary
+
+Documentation only: no runtime, test, skill/context, process, or data changes were made. No tests, benchmarks, or browser checks were run. Runtime implementation and test/benchmark execution require requested work; tests must remain focused. An actual blank-slate reset must name its target directories/native sessions, not delete broad paths.

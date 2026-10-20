@@ -1,8 +1,8 @@
 import { useRef, useSyncExternalStore } from "react";
 import { ApiError, conversationClient } from "./cc-client";
-import { publishWorkers, workersFor, registerWorkerSessions, setWorkerNavigator, workerReference } from "./worker-client";
+import { publishWorkers, workersFor, registerWorkerSessions, setWorkerNavigator, workerReference, workerProjectionInFlight } from "./worker-client";
 import { consume, createRun } from "./cc-reducer";
-import { transcriptMessages } from "./transcript";
+import { pendingTurnRecorded, transcriptMessages } from "./transcript";
 import { contextUsageFor, type ContextUsageSnapshot } from "./context-usage";
 import { catalog } from "./catalog";
 import { clearWorkstreamSelection } from "./workstream-selection-storage";
@@ -11,13 +11,14 @@ import { invalidateWorkspaceRequests, onWorkspaceAuthExpired } from "./workspace
 import { BASE_PROFILE_IDS, builtinProfiles, canAssign, legacyProfileId, type AgentProfile, type AgentProfileInput, type AgentProfiles } from "../src/agent-profiles-contract";
 import { displayProfile, profileDisplayLabel, savedProfileSnapshot, validatedAgentSnapshot, type DisplayProfile, type ProfileSnapshot } from "./profile-presentation";
 import type { Availability, CompletionVerificationRequest, CompletionVerificationTarget, Config, Conversation, ConversationClient, Harness, HandoffApprovalReply, Interaction, InteractionReply, Message, ModelChoice, PendingTurn, Run } from "./types";
+import { liveInputReady } from "./types";
 import type { ReconciledHistory } from "../src/reconcile";
 import type { CompactRequest, CompactState, CompactionRecord } from "../src/oc-contract";
 import { compactCommand, compactionsFor } from "./compaction";
 import { ConversationCache, cloneRunForConsume, conversationKey } from "./conversation-cache";
 import { ConversationListing } from "./conversation-listing";
 import { canonicalCount, equalValue, mergePage, pageMessages, pagedUsage, refreshPages, sameRunMetadata, TranscriptCoverageError, type PagedTranscript, type PageRequest } from "./transcript-pages";
-import type { TranscriptMetadataItem, TranscriptPage } from "../src/transcript-contract";
+import type { TranscriptMetadataItem, TranscriptMetadataPage, TranscriptPage } from "../src/transcript-contract";
 import { capabilitiesFor, getHarnessDescriptor, type HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 import { notificationStore } from "./notifications";
 import { notificationContextKey } from "./notification-source";
@@ -30,6 +31,8 @@ import { isDefinitePendingInputRefusal, PendingInputApiError } from "./pending-i
 import { PendingInputLedger, pendingInputLedgerKey, type PendingInputRecord } from "./pending-input-ledger";
 import type { ScienceShareSnapshot } from "../shared/science-chat-contract";
 import type { ScienceSubmissionView } from "../shared/conversation/types";
+import { jitteredDelay } from "./visibility";
+import { wakePolls } from "./poll-wake";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
@@ -49,7 +52,7 @@ export type State = {
   pendingInputOperations?: Record<string, PendingInputOperation>;
   phase: "connecting" | "login" | "ready"; config?: Config; conversations: Conversation[]; conversationsReady: boolean;
   selected: string; runs: Run[]; messages: Message[]; drafts: Record<string, Draft>;
-  connected: boolean; loading: boolean; sending: boolean; availability: Availability;
+  connected: boolean; interactive?: boolean; loading: boolean; sending: boolean; availability: Availability;
   connectionError: string; submissionError: string; authError: string;
   models: ModelChoice[]; modelsLoading: boolean; modelsError: string; modelsLoaded: boolean;
   modelsCwd: string; interactions: Interaction[]; handoffApprovals: Interaction[]; interactionError: string; actionBusy: boolean; actionNotice: string;
@@ -251,8 +254,7 @@ export class ChatStore {
       || this.pendingInputMutations.has(`${this.pendingInputKey()}:${this.state.selected}`)
       || this.pendingInputConfirmedChains.has(this.state.selected)
       || !!this.pendingInputViews.get(this.state.selected)?.presentation.chainLocked
-      || this.state.pendingInputs?.snapshot.conversationId === this.state.selected && this.state.pendingInputs.presentation.chainLocked
-      || this.pendingInputSupported() && this.pendingInputFresh !== this.pendingInputFence();
+      || this.state.pendingInputs?.snapshot.conversationId === this.state.selected && this.state.pendingInputs.presentation.chainLocked;
   };
   pendingInputUnavailable = (): string => {
     if (!this.pendingInputSupported()) return "App-owned input queue is unavailable on this bridge.";
@@ -325,7 +327,15 @@ export class ChatStore {
     finally { if (this.pendingInputRead?.promise === promise) this.pendingInputRead = undefined; }
   };
   private pendingInputPolling() {
-    if (this.pendingInputVisible && typeof document !== "undefined" && !document.hidden && Date.now() - this.pendingInputLastRead >= 5000) void this.refreshPendingInputs();
+    if (!this.pendingInputVisible || typeof document !== "undefined" && document.hidden || Date.now() - this.pendingInputLastRead < 5000) return;
+    this.loadPendingInputLedger(false);
+    const id = this.state.selected, view = this.pendingInputViews.get(id);
+    if (view && !view.presentation.chainLocked && !view.presentation.unresolved && !view.presentation.pauseCode
+      && this.pendingInputSourceMatches(view.presentation.currentAssertions?.source ?? null)
+      && !this.pendingInputConfirmedChains.has(id) && !this.pendingInputContextFailure && !this.pendingInputStorageError
+      && !this.state.pendingInputError && !this.pendingInputMutations.has(`${this.pendingInputKey()}:${id}`)
+      && ![...this.pendingInputRecords.values()].some(record => record.operation.conversationId === id)) return;
+    void this.refreshPendingInputs();
   }
   private async newPendingInputOperation(kind: PendingInputOperation["kind"], text?: string, itemId?: string): Promise<SendOutcome> {
     if (kind === "enqueue" && this.draft().scienceSnapshots?.length) { this.update({ pendingInputError: "Science snapshots cannot be queued. Send them from an idle conversation." }); return { status: "blocked" }; }
@@ -541,6 +551,18 @@ export class ChatStore {
   private summarySerial = 0;
   private envelopeReceipts = new Map<string, number>();
   private workerReady = false;
+  private workerPollAfter = 0;
+  private workerPollMarkers = "";
+  private workerMarkers(conversation?: Conversation) { return JSON.stringify([conversation?.id, conversation?.directWorkerCount, conversation?.worker]); }
+  private workerPollDue(conversation?: Conversation) {
+    const projection = workersFor(this.state.selected);
+    return !this.workerReady || !!projection.error || workerProjectionInFlight(projection)
+      || this.state.conversations.some(item => item.worker?.parent.sessionId === conversation?.id && (item.status === "running" || item.status === "starting" || item.lastRunStatus === "running" || item.lastRunStatus === "starting"))
+      || this.workerPollMarkers !== this.workerMarkers(conversation) || !this.pollBusy() || Date.now() >= this.workerPollAfter;
+  }
+  private recordWorkerPoll(conversation?: Conversation) {
+    this.workerReady = true; this.workerPollMarkers = this.workerMarkers(conversation); this.workerPollAfter = Date.now() + jitteredDelay(60000);
+  }
   private pageRequests = new Set<AbortController>();
   private get paged() { return !!(this.client.transcriptPage && this.client.transcriptMeta && this.client.transcriptRefresh); }
   private cacheConversation() {
@@ -599,7 +621,7 @@ export class ChatStore {
     const usage = conversation ? pagedUsage(transcript, conversation.harness, this.state.modelsCwd === conversation.cwd && this.state.modelsLoaded ? this.state.models : []) : null;
     const contextUsage = equalValue(usage, this.state.contextUsage) ? this.state.contextUsage : usage;
     this.update({ transcript, messages, transcriptInitialLoading: false, contextUsage,
-      pendingTurn: pending && messages.some(message => message.runId === pending.runId && message.role === "user") ? null : pending });
+      pendingTurn: pendingTurnRecorded(messages, pending) ? null : pending });
   }
   private protectedAfter(serial: number, messages: { id: string }[]) {
     return new Set(messages.filter(message => (this.envelopeReceipts.get(message.id) ?? 0) > serial).map(message => message.id));
@@ -684,6 +706,7 @@ export class ChatStore {
   snapshot = () => this.state;
   shellSnapshot = () => this.shellRevision;
   private update(patch: Partial<State>, publishShell = true) {
+    if (patch.connected === false && patch.interactive === undefined) patch.interactive = false;
     for (const key of ["scienceSubmissions", "sciencePending", "scienceRecoveries"] as const) {
       if (Object.hasOwn(patch, key) && equalValue(this.state[key] ?? {}, patch[key] ?? {})) patch[key] = this.state[key] as never;
     }
@@ -697,9 +720,13 @@ export class ChatStore {
       if (!Object.is(this.state[key], patch[key])) { changed = true; break; }
     }
     if (!changed) return;
+    const selected = this.state.selected;
+    const scienceChanged = selected && (patch.selected === undefined || patch.selected === selected) && patch.transcript
+      && (patch.transcript.summary.epoch !== this.state.transcript?.summary.epoch || patch.transcript.summary.revision !== this.state.transcript?.summary.revision);
     this.state = { ...this.state, ...patch };
     if (publishShell) this.shellRevision++;
     this.listeners.forEach(fn => fn());
+    if (scienceChanged) this.sciencePolling(true);
   }
   draftKey = (id = this.state.selected) => id || `draft:${catalog.state.navigation.workspaceId}:${catalog.state.navigation.worktreeId}`;
   draft = (id = this.state.selected): Draft => {
@@ -783,6 +810,7 @@ export class ChatStore {
       if (resolved?.state === "submitted" && pending && draft.text === pending.text && equalValue(draft.scienceSnapshots ?? [], pending.snapshots)) this.setDraft({ text: "", scienceSnapshots: [] }, id);
       const recoveries = this.readScienceRecoveries(id);
       this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: recoveries }, scienceSubmissions: { ...this.state.scienceSubmissions, [id]: submissions }, sciencePending: { ...this.state.sciencePending, [id]: consumed ? null : pending }, scienceSubmissionError: "" });
+      return true;
     } catch (error) { if (current() && !this.expired(error)) this.update({ scienceSubmissionError: error instanceof Error ? error.message : "Science submission evidence unavailable" }); }
   }
   executionUnavailable = () => {
@@ -1052,7 +1080,7 @@ export class ChatStore {
     const id = this.state.selected, current = this.beginAction();
     try {
       await this.listingMutation(() => this.client.reply!(id, interactionId, reply));
-      if (current()) { this.replied.add(interactionId); this.update({ interactions: this.state.interactions.filter(i => i.id !== interactionId), handoffApprovals: this.state.handoffApprovals.filter(i => i.id !== interactionId), actionNotice: "Reply sent. Waiting for native state to reconcile." }); }
+      if (current()) { wakePolls(id); this.replied.add(interactionId); this.update({ interactions: this.state.interactions.filter(i => i.id !== interactionId), handoffApprovals: this.state.handoffApprovals.filter(i => i.id !== interactionId), actionNotice: "Reply sent. Waiting for native state to reconcile." }); }
     } catch (error) {
       if (current() && !this.expired(error)) this.update({ interactionError: `${error instanceof Error ? error.message : "Reply failed."} No automatic retry was made; check the pending request before replying again.` });
     } finally { if (current()) this.update({ actionBusy: false }); }
@@ -1073,7 +1101,7 @@ export class ChatStore {
     const id = this.state.selected, current = this.beginAction();
     try {
       await this.listingMutation(() => this.client.replyHandoff!(id, approvalId, reply));
-      if (current()) { this.replied.add(approvalId); this.update({ handoffApprovals: this.state.handoffApprovals.filter(i => i.id !== approvalId), interactions: this.state.interactions.filter(i => i.id !== approvalId), actionNotice: reply.decision === "allow" ? "Handoff allowed. Waiting for delivery to reconcile." : "Handoff denied. The sender was notified." }); }
+      if (current()) { wakePolls(id); this.replied.add(approvalId); this.update({ handoffApprovals: this.state.handoffApprovals.filter(i => i.id !== approvalId), interactions: this.state.interactions.filter(i => i.id !== approvalId), actionNotice: reply.decision === "allow" ? "Handoff allowed. Waiting for delivery to reconcile." : "Handoff denied. The sender was notified." }); }
     } catch (error) {
       if (current() && !this.expired(error)) this.update({ interactionError: `${error instanceof Error ? error.message : "Handoff reply failed."} No automatic retry was made; check the pending approval before replying again.` });
     } finally { if (current()) this.update({ actionBusy: false }); }
@@ -1157,9 +1185,12 @@ export class ChatStore {
     if (this.paged) this.update({ pageBusy: "", transcriptRefreshing: false });
   }
   private stopNotifications() {
+    this.stopNotificationPolling();
+    this.notificationScope = ""; this.notificationSources.clear(); this.queuedNotificationReceipts.clear();
+  }
+  private stopNotificationPolling() {
     this.notificationFence++; clearTimeout(this.notificationTimer); this.notificationTimer = undefined;
     this.notificationController?.abort(); this.notificationController = undefined;
-    this.notificationScope = ""; this.notificationSources.clear(); this.queuedNotificationReceipts.clear();
   }
   private configureNotifications(config: Config) {
     this.stopNotifications();
@@ -1197,7 +1228,7 @@ export class ChatStore {
   }
   private async pollNotifications() {
     const scope = this.notificationScope, fence = this.notificationFence, auth = this.authEpoch;
-    if (!scope || this.notificationController || !this.client.conversationUpdates || this.state.phase !== "ready") return;
+    if (!scope || this.notificationController || !this.client.conversationUpdates || this.state.phase !== "ready" || typeof document !== "undefined" && document.hidden) return;
     const controller = this.notificationController = new AbortController();
     const current = () => !controller.signal.aborted && fence === this.notificationFence && auth === this.authEpoch
       && scope === this.notificationScope && scope === this.state.config?.storeId && this.state.config?.authenticated === true && this.state.phase === "ready";
@@ -1256,7 +1287,7 @@ export class ChatStore {
       if (current() && !this.expired(error)) notificationStore.setFeedError("storage-error");
     } finally {
       if (this.notificationController === controller) this.notificationController = undefined;
-      if (current()) this.notificationTimer = setTimeout(() => { this.notificationTimer = undefined; void this.pollNotifications(); }, !healthy ? 5000 : this.pollBusy() ? 1500 : 15000);
+      if (current()) this.notificationTimer = setTimeout(() => { this.notificationTimer = undefined; void this.pollNotifications(); }, this.pollDelay(healthy));
     }
   }
   private loginRequired() {
@@ -1274,8 +1305,18 @@ export class ChatStore {
   }
   private expired(error: unknown) { if ((error instanceof ApiError || error instanceof PendingInputApiError) && error.status === 401) { this.loginRequired(); return true; } return false; }
   start = () => { if (this.started) return; this.started = true; void this.boot(); };
-  reconnect = () => { this.conversationListing.invalidate(); if (document.hidden || this.state.sending) return; if (this.state.phase === "login") return; this.pendingInputFresh = ""; void this.refreshPendingInputs(); this.nativeHistoryLoaded = false; this.stop(); void (this.state.phase === "connecting" ? this.boot() : this.poll()); };
+  reconnect = () => {
+    this.stopNotificationPolling();
+    if (typeof document !== "undefined" && document.hidden) { if (!this.state.sending) this.stop(); return; }
+    if (this.state.phase === "login") return;
+    if (this.state.sending) { void this.pollNotifications(); return; }
+    this.conversationListing.invalidate();
+    this.pendingInputFresh = ""; this.pendingInputPolling(); this.nativeHistoryLoaded = false; this.stop(); this.workerPollAfter = 0;
+    void this.pollNotifications(); this.sciencePolling(true);
+    void (this.state.phase === "connecting" ? this.boot() : this.poll());
+  };
   private async boot() {
+    if (typeof document !== "undefined" && document.hidden) return;
     this.stop(); this.conversationListing.invalidate(); const generation = this.generation, auth = this.authEpoch;
     const controller = this.controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 25000);
@@ -1369,6 +1410,7 @@ export class ChatStore {
     this.update({ pendingInputs: this.pendingInputViews.get(selected) ?? null, pendingInputLoading: false, pendingInputError: "" }); this.publishPendingInputOperations();
     if (this.pendingInputVisible && !document.hidden) void this.refreshPendingInputs();
     if (this.paged) this.update({ transcript: cached?.transcript ?? null, transcriptInitialLoading: !!selected && !cached?.messages.length, transcriptError: "", metadataError: "", pageBusy: "", pageErrors: {}, workerLoading: !!selected && !!this.client.workers, compactions: cached?.transcript?.compactions ?? [] });
+    this.sciencePolling(true);
     void this.poll();
   };
   private async pollPaged(listing: { conversations: Conversation[]; availability: Availability }, current: () => boolean, signal: AbortSignal) {
@@ -1377,20 +1419,62 @@ export class ChatStore {
     this.update({ conversations: listing.conversations, availability: awaitingCompact ? { canSend: false } : conversation?.availability ?? listing.availability });
     if (!id) { this.update({ connected: true, loading: false, connectionError: "", transcriptInitialLoading: false }); return; }
     this.update({ transcriptRefreshing: !this.pageValidated || !!this.state.transcriptError });
-    let opened!: () => void;
-    const initialPage = new Promise<void>(resolve => { opened = resolve; });
+    const metadataHead = (async () => {
+      const readFence = this.pageFence;
+      const page = await this.client.transcriptMeta!(id, undefined, signal);
+      if (!current()) return;
+      signal.throwIfAborted();
+      if (readFence !== this.pageFence) throw new ApiError("Transcript changed while reading metadata.", 409, "transcript-reset");
+      if (page.sessionId !== id) throw new Error("Run metadata session identity mismatch.");
+      if (this.state.transcript && page.epoch !== this.state.transcript.summary.epoch) { this.resetPages(); this.update({ messages: [] }); }
+      return page;
+    })();
+    let metadataProjection: { epoch: string; metadataRevision: string; compactions: PagedTranscript["compactions"] } | undefined;
+    const publishMetadata = () => {
+      const transcript = this.state.transcript;
+      if (!metadataProjection || transcript?.summary.epoch !== metadataProjection.epoch) return;
+      const compactions = equalValue(transcript.compactions, metadataProjection.compactions) ? transcript.compactions : metadataProjection.compactions;
+      this.update({ transcript: { ...transcript, metadataRevision: metadataProjection.metadataRevision, compactions } });
+    };
+    const validatedTail = () => {
+      const transcript = this.state.transcript;
+      return this.pageValidated && !this.state.transcriptError && !this.state.pageBusy && !Object.values(this.state.pageErrors ?? {}).some(Boolean)
+        && transcript?.summary.sessionId === id && !!transcript.summary.epoch && !!transcript.summary.revision
+        && this.refreshedRevision === transcript.summary.revision
+        && transcript.islands.length === 1 && !transcript.islands[0]!.scope && transcript.islands[0]!.endRevision === transcript.summary.revision
+        && (canonicalCount(transcript) === 0 || transcript.islands[0]!.coverage.lastIndex === canonicalCount(transcript) - 1) ? transcript : undefined;
+    };
     const historyRead = (async () => {
       try {
-        const readFence = this.pageFence, readSerial = this.publicationSerial;
-        const latest = await this.client.transcriptPage!(id, {}, signal);
+        let head: TranscriptMetadataPage | undefined;
+        // Uncertain coverage must load independently of metadata availability.
+        // Only an already validated tail can wait for the cheap skip decision.
+        if (validatedTail()) {
+          try { head = await metadataHead; }
+          catch (error) { if (!current() || this.expired(error)) return; }
+        }
+        if (!current()) return;
+        let readFence = this.pageFence, readSerial = this.publicationSerial;
+        const transcript = validatedTail();
+        const unchanged = head && transcript?.summary.epoch === head.epoch && transcript.summary.revision === head.revision;
+        let latest = unchanged && head ? head : await this.client.transcriptPage!(id, {}, signal);
+        if (!current()) return;
+        // Parallel metadata can reset the epoch while the tail is in flight.
+        // Re-read under the new fence rather than accepting stale coverage.
+        if (readFence !== this.pageFence) {
+          signal.throwIfAborted();
+          readFence = this.pageFence; readSerial = this.publicationSerial;
+          latest = await this.client.transcriptPage!(id, {}, signal);
+        }
         if (!current() || readFence !== this.pageFence) return;
         signal.throwIfAborted();
         const reopen = !this.pageValidated || this.state.transcript?.summary.epoch !== latest.epoch;
-        this.acceptPage(latest, undefined, true, undefined, readSerial);
+        if ("messages" in latest) this.acceptPage(latest, undefined, true, undefined, readSerial);
+        publishMetadata();
         this.pageValidated = true; this.transcriptKey = conversation ? conversationKey(conversation) : "";
         // Render latest first. ALL loaded-island refreshes can then continue
         // independently of live-status/eligibility readiness.
-        this.update({ transcriptError: "", transcriptRefreshing: false }); opened();
+        this.update({ transcriptError: "", transcriptRefreshing: false, loading: awaitingCompact });
         const pending = this.state.pendingTurn;
         if (pending?.runId && !pageMessages(this.state.transcript).some(message => message.runId === pending.runId && message.role === "user")) {
           try {
@@ -1427,28 +1511,27 @@ export class ChatStore {
         if (!current() || this.expired(error)) return;
         if (this.cursorExpired(error)) { this.resetPages(); this.update({ messages: [] }); }
         this.update({ transcriptInitialLoading: false, transcriptError: `${error instanceof Error ? error.message : "History unavailable."} History will retry automatically.` });
-      } finally { opened(); if (current()) this.update({ transcriptRefreshing: false }); }
+      } finally { if (current()) this.update({ transcriptRefreshing: false, loading: awaitingCompact }); }
     })();
-    await initialPage;
-    if (!current()) return;
     // Listing + ALL lightweight run summaries, not the displayed history window,
     // are the active-run authority. No per-run event cursor is seeded here.
     const metadata = async () => {
       try {
-        let items: TranscriptMetadataItem[] = [], revision = "";
+        let items: TranscriptMetadataItem[] = [], revision = "", epoch = "";
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
             let cursor: string | undefined; items = [];
             do {
               const readFence = this.pageFence;
-              const page = await this.client.transcriptMeta!(id, cursor, signal);
+              const page = !attempt && !cursor ? await metadataHead : await this.client.transcriptMeta!(id, cursor, signal);
               if (!current()) return false;
               signal.throwIfAborted();
-              if (readFence !== this.pageFence) throw new ApiError("Transcript changed while reading metadata.", 409, "transcript-reset");
+              if (!page) return false;
+              if ((attempt || cursor) && readFence !== this.pageFence) throw new ApiError("Transcript changed while reading metadata.", 409, "transcript-reset");
               if (page.sessionId !== id) throw new Error("Run metadata session identity mismatch.");
               if (this.state.transcript && page.epoch !== this.state.transcript.summary.epoch) { this.resetPages(); this.update({ messages: [] }); }
-              if (!cursor) revision = page.metadataRevision;
-              else if (revision !== page.metadataRevision) throw new ApiError("Metadata changed; retrying traversal.", 409, "transcript-reset");
+              if (!cursor) { revision = page.metadataRevision; epoch = page.epoch; }
+              else if (revision !== page.metadataRevision || epoch !== page.epoch) throw new ApiError("Metadata changed; retrying traversal.", 409, "transcript-reset");
               if (!cursor && this.state.transcript?.metadataRevision === revision && !this.state.metadataError) return true;
               items.push(...page.items); cursor = page.nextCursor ?? undefined;
             } while (cursor);
@@ -1467,7 +1550,8 @@ export class ChatStore {
         const proposed = items.flatMap(item => item.kind === "compaction" ? [item.compaction] : []);
         const transcript = this.state.transcript;
         const compactions = transcript && equalValue(transcript.compactions, proposed) ? transcript.compactions : proposed;
-        if (transcript) this.update({ transcript: { ...transcript, metadataRevision: revision, compactions } });
+        metadataProjection = { epoch, metadataRevision: revision, compactions };
+        publishMetadata();
         const ordered = [...runMap.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
         const runs = ordered.length === this.state.runs.length && ordered.every((run, index) => run === this.state.runs[index]) ? this.state.runs : ordered;
         this.update({ runs, compactions, metadataError: "" });
@@ -1486,11 +1570,11 @@ export class ChatStore {
       } catch (error) { if (current() && !this.expired(error) && read === this.compactReadSerial) this.update({ compactState: null, compactError: this.compactReadFeedback(error) }); }
     };
     const workers = async () => {
-      if (!this.client.workers) return;
+      if (!this.client.workers || !this.workerPollDue(conversation)) return;
       if (!this.workerReady) this.update({ workerLoading: true });
       try { const projection = await this.client.workers(id, signal); if (current()) publishWorkers(id, projection); }
       catch (error) { if (current() && !this.expired(error)) publishWorkers(id, { ...workersFor(id), error: error instanceof Error ? error.message : "Worker status unavailable" }); }
-      finally { if (current()) { this.workerReady = true; this.update({ workerLoading: false }); } }
+      finally { if (current()) { this.recordWorkerPoll(conversation); this.update({ workerLoading: false }); } }
     };
     const eligibilityRead = eligibility(), workerRead = workers();
     const metadataReady = await metadata();
@@ -1500,7 +1584,7 @@ export class ChatStore {
     // eligibility response just because it happened to finish later.
     if (this.state.compactState) this.applyCompactState(this.state.compactState);
     const ready = metadataReady && !awaitingCompact;
-    this.update({ connected: ready, loading: awaitingCompact, connectionError: ready ? "" : this.state.metadataError ?? "", ...(ready ? {} : { availability: { canSend: false } }) });
+    this.update({ connected: ready, interactive: !awaitingCompact, connectionError: ready ? "" : this.state.metadataError ?? "" });
     const branchDraft = conversation?.branchDraft;
     if (branchDraft && !this.state.runs.some(run => run.operation !== "compact") && !this.state.drafts[this.draftKey(id)]) this.setDraft({ text: branchDraft }, id);
     if (this.supportedCapabilities(conversation?.harness).listInteractions && this.client.interactions && ready) {
@@ -1521,35 +1605,51 @@ export class ChatStore {
       }
     }
     await Promise.all([historyRead, eligibilityRead, workerRead]);
+    if (current() && this.state.compactState) this.applyCompactState(this.state.compactState);
   }
   private scienceTimer?: ReturnType<typeof setTimeout>;
   private scienceController?: AbortController;
+  private scienceDiscoveryPending = false;
+  private scienceListing?: Conversation;
+  private sciencePendingFor(id: string) {
+    if (this.state.sciencePending?.[id] || this.state.scienceSubmissions?.[id]?.some(item => item.state === "prepared" || item.state === "unknown")) return true;
+    try { return !!this.readSciencePending(id); }
+    catch { return true; }
+  }
   /** Independent single-flight discovery also covers sends made by other clients. */
-  private sciencePolling() {
-    if (this.state.phase !== "ready" || this.scienceTimer || this.scienceController || !this.client.scienceSubmissions || !this.state.selected || !this.state.config?.authenticated || !this.state.config.storeId) return;
+  private sciencePolling(discover = false) {
+    // Keep invalidations that arrive during a read or while polling is paused.
+    if (discover) this.scienceDiscoveryPending = true;
+    if (this.state.phase !== "ready" || this.scienceTimer || this.scienceController || !this.client.scienceSubmissions || !this.state.selected || !this.state.config?.authenticated || !this.state.config.storeId || typeof document !== "undefined" && document.hidden) return;
+    if (!this.scienceDiscoveryPending && this.state.scienceSubmissions?.[this.state.selected] !== undefined && !this.sciencePendingFor(this.state.selected)) return;
+    this.scienceDiscoveryPending = false;
     const id = this.state.selected, auth = this.authEpoch, selection = this.selectionEpoch, generation = this.generation, storeId = this.state.config.storeId;
     const controller = this.scienceController = new AbortController();
     const current = () => !controller.signal.aborted && this.state.phase === "ready" && this.state.config?.authenticated === true && this.state.config.storeId === storeId && auth === this.authEpoch && selection === this.selectionEpoch && generation === this.generation && id === this.state.selected;
     const deadline = setTimeout(() => controller.abort(), 25000);
-    void this.refreshScienceSubmissions(id, current, controller.signal).finally(() => {
+    void this.refreshScienceSubmissions(id, current, controller.signal).then(refreshed => {
+      if (!refreshed && this.scienceController === controller) this.scienceDiscoveryPending = true;
+    }).finally(() => {
       clearTimeout(deadline);
       if (this.scienceController !== controller) return;
       this.scienceController = undefined;
       if (auth !== this.authEpoch || selection !== this.selectionEpoch || generation !== this.generation || this.state.phase !== "ready") return;
-      const pending = this.state.sciencePending?.[id] || this.state.scienceSubmissions?.[id]?.some(item => item.state === "prepared" || item.state === "unknown");
-      this.scienceTimer = setTimeout(() => { this.scienceTimer = undefined; this.sciencePolling(); }, pending ? 3000 : 15000);
+      if (this.scienceDiscoveryPending || this.sciencePendingFor(id) || this.state.scienceSubmissions?.[id] === undefined) this.scienceTimer = setTimeout(() => { this.scienceTimer = undefined; this.sciencePolling(); }, jitteredDelay(5000));
     });
   }
   /** Live sessions (running work or pending submission state) poll fast; static opened sessions back off. */
   private pollBusy() {
     return this.state.loading || this.state.sending || !!this.state.pendingTurn || this.state.actionBusy
       || this.state.interactions.length > 0 || this.state.handoffApprovals.length > 0
+      || this.state.conversations.some(conversation => conversation.status === "running" || conversation.status === "starting" || conversation.lastRunStatus === "running" || conversation.lastRunStatus === "starting")
+      || workerProjectionInFlight(workersFor(this.state.selected))
       || this.state.runs.some(run => run.status === "running" || run.status === "starting");
   }
+  private pollDelay(healthy: boolean) { return jitteredDelay(!healthy || this.pollBusy() ? 5000 : 60000); }
   private runGateId = "";
   private runGateMarkers = "";
   private async poll() {
-    if (this.state.phase !== "ready") return;
+    if (this.state.phase !== "ready" || typeof document !== "undefined" && document.hidden) return;
     this.pendingInputPolling();
     this.sciencePolling();
     const generation = this.generation, auth = this.authEpoch, selected = this.state.selected, selection = this.selectionEpoch;
@@ -1585,11 +1685,19 @@ export class ChatStore {
         else this.timer = setTimeout(() => void this.poll(), 5000);
         return;
       }
+      // Compare server rows, not locally derived titles or optimistic updates.
+      if (selected && !equalValue(this.scienceListing, currentConversation)) {
+        this.scienceListing = currentConversation;
+        this.sciencePolling(true);
+        // Run/worker markers changed (possibly from another client).
+        wakePolls(selected);
+      }
       const conversations = listing.conversations.map(conversation => {
         const title = this.state.conversations.find(previous => previous.id === conversation.id)?.title;
         return !conversation.title && title ? { ...conversation, title } : conversation;
       });
-      this.update({ conversations: equalValue(this.state.conversations, conversations) ? this.state.conversations : conversations, conversationsReady: true });
+      this.update({ conversations: equalValue(this.state.conversations, conversations) ? this.state.conversations : conversations, conversationsReady: true,
+        interactive: !this.compactInFlight.has(selected), availability: this.compactInFlight.has(selected) ? { canSend: false } : currentConversation?.availability ?? listing.availability });
       if (!current()) return;
       if (this.paged) { await this.pollPaged(listing, current, controller.signal); return; }
       // Safe GET also notices reconciliation by another view/client. Reuse the
@@ -1608,9 +1716,10 @@ export class ChatStore {
         const knownWorkers = workersFor(selected);
         const workerQuiet = !knownWorkers.workers.length && !knownWorkers.deliveries.length && !knownWorkers.error
           && (workerRow?.directWorkerCount ?? 0) === 0 && !workerRow?.worker;
-        if (!workerQuiet) {
+        if (!workerQuiet && this.workerPollDue(workerRow)) {
           try { const projection = await this.client.workers(selected, controller.signal); if (current()) publishWorkers(selected, projection); }
           catch (error) { if (!current() || this.expired(error)) return; publishWorkers(selected, { ...workersFor(selected), error: error instanceof Error ? error.message : "Worker status unavailable" }); }
+          if (current()) this.recordWorkerPoll(workerRow);
         }
       }
       if (!current()) return;
@@ -1679,7 +1788,7 @@ export class ChatStore {
       const runs = [...runMap.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       const messages = transcriptMessages(nativeHistory, runs);
       const pending = this.state.pendingTurn;
-      const pendingTurn = pending && messages.some(message => message.runId === pending.runId && message.role === "user") ? null : pending;
+      const pendingTurn = pendingTurnRecorded(messages, pending) ? null : pending;
       const title = messages.find(m => m.role === "user")?.parts.find(p => p.type === "text");
       // Backend titles win (persisted first prompt or handoff `<Role> #<n>`).
       // Otherwise the open conversation derives from its transcript and other
@@ -1767,14 +1876,16 @@ export class ChatStore {
       clearTimeout(deadline);
       if (lifecycleCurrent() && this.state.phase === "ready") {
         // A static opened session backs off to 15s; live sessions keep the 1.5s cadence.
-        this.timer = setTimeout(() => void this.poll(), !this.state.connected ? 5000 : this.pollBusy() ? 1500 : 15000);
+        this.timer = setTimeout(() => void this.poll(), this.pollDelay(this.state.connected));
       }
     }
   }
   send = async (text: string, nativeStopped = false, options: { preserveDraft?: boolean } = {}): Promise<SendOutcome> => {
     const initialSelection = this.state.selected;
     const pendingFence = this.pendingInputFence();
-    if (this.pendingInputSupported() && this.state.selected && this.pendingInputFresh !== pendingFence && (!await this.refreshPendingInputs() || pendingFence !== this.pendingInputFence())) return { status: "blocked" };
+    const initialDraft = this.draft(), initialDraftKey = this.draftKey();
+    if (this.pendingInputSupported() && this.state.selected && (!await this.freshPendingInputs(pendingFence) || pendingFence !== this.pendingInputFence())) return { status: "blocked" };
+    if (pendingFence !== this.pendingInputFence() || initialDraftKey !== this.draftKey() || !options.preserveDraft && !equalValue(initialDraft, this.draft())) return { status: "blocked" };
     if (this.pendingInputChainLocked()) { this.update({ submissionError: "Resolve the existing input chain before sending ordinary input." }); return { status: "blocked" }; }
     if (this.state.availability.queueAfterRunId || this.state.availability.nativeQueue) { this.update({ submissionError: "Wait for the current run to finish before sending." }); return { status: "blocked" }; }
     if (options.preserveDraft && !this.state.selected) return { status: "blocked" };
@@ -1789,7 +1900,8 @@ export class ChatStore {
     if (!this.supportedCapabilities().prompt) return { status: "blocked" };
     if (conversation?.attachment && this.supportedCapabilities(conversation.harness).attachedSendRequiresNativeStopped && !nativeStopped) { this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" }; }
     const running = conversation?.status === "starting" || conversation?.status === "running" || this.state.runs.some(r => r.status === "starting" || r.status === "running");
-    if (!text.trim() && !scienceSnapshots.length || this.state.loading || running || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
+    if (scienceSnapshots.length && running) { this.update({ submissionError: "Science snapshots require an idle conversation." }); return { status: "blocked" }; }
+    if (!text.trim() && !scienceSnapshots.length || running && !liveInputReady(conversation, this.state.availability) || this.state.sending || !(this.state.interactive ?? this.state.connected) || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
     const selected = this.state.selected, draft = this.draft(), draftKey = this.draftKey();
     // Flow submissions are independent of the ordinary chat draft and any
     // staged agent upgrade. They never consume or replace that draft.
@@ -1817,6 +1929,8 @@ export class ChatStore {
       const navigation = catalog.state.navigation;
       const result = await this.listingMutation(() => this.client.submit({ text, ...(sciencePending ? { requestId: sciencePending.requestId, scienceSnapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) } : {}), ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) }));
       if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
+      // Local activity: pull idle handoff/worker polls back to fast cadence.
+      wakePolls(result.conversationId);
       if (sciencePending) {
         if (result.queued) throw new Error("Science queue receipt is unsupported; original request needs reconciliation");
         if (scienceStorage && this.readSciencePending(selected)?.requestId === sciencePending.requestId) localStorage.removeItem(scienceStorage);
@@ -1842,7 +1956,7 @@ export class ChatStore {
         const nextDraft = this.state.drafts[draftKey] ?? { ...draft, text: "" };
         this.update({ drafts: { ...this.state.drafts, [result.conversationId]: { ...nextDraft, profileId: "", upgradeId: "" }, [draftKey]: { ...nextDraft, text: "" } } });
       }
-      const acceptedTurn = { ...pendingTurn, conversationId: result.conversationId, runId: result.runId };
+      const acceptedTurn = { ...pendingTurn, conversationId: result.conversationId, runId: result.runId, ...(result.messageId ? { messageId: result.messageId } : {}) };
       // Keep the local bubble in the old selection until choose switches both
       // identities together. There must be no empty/welcome frame in between.
       this.update({ sending: false, pendingTurn: result.conversationId === selected ? acceptedTurn : pendingTurn });

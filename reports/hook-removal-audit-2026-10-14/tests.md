@@ -1,38 +1,47 @@
-# Tests audit — Option A (complete hook removal, user-composed prompt). 2026-10-14
-Scope: context-delivery coverage only. Verdicts: REWRITE = pins hook/injection mechanics; KEEP = validation/binding/identity survives; DELETE = obsolete with no hooks/storage entry.
+# Coverage plan — prompt-based context, operational hooks retained
 
-## claude-run-service.test.ts (978 lines)
-- `canonical CC authored parent role…once…` (L9) — role text exactly once in `.canonical-context.md`, absent from `--agents` JSON + segment sha. → REWRITE (~17 lines)
-- `canonical CC {assistant,worker}×{new,resume,upgrade,compact} pins static bytes…` (L28, 8 tests) — `--append-system-prompt-file` bytes, snapshot flag, `session-context.ts` in UserPromptSubmit, `.sane-session.md` bytes, receipts `prepared/configured/hook-accepted` + hashes. → REWRITE (~24 lines)
-- `canonical CC persisted upgrade disables stale snapshots…` (L53, 2 tests) — snapshot `off` on later resume/compaction. → REWRITE (~13 lines)
-- `canonical CC {missing,mismatched,foreign-session} hook never claims…` (L67, 3 tests) — hook-response fidelity fail-closed. → DELETE (~10 lines, no hook to accept)
-- `canonical CC {foreign-binding,dynamic-change,cancelled} cannot spawn…` (L79, 3 tests) — binding/currency/cancel withhold before `configured`. → KEEP (~16 lines, validation survives)
-- `ordinary Base CC never consults canonical provider…` (L95) — base isolation + no standing files. → REWRITE (~10 lines, 2nd half becomes no-composed-prompt)
-- `canonical CC cannot spawn without trusted provider validation` (L106) — unvalidated provider withholds. → KEEP (~7 lines)
-- `successful owned launch preserves journal order…` (L199) — journal/flags + `hookEvents` keys + `forward.ts Stop` command. → REWRITE (~15 lines, hook-settings half only)
-- `framework indexed supervision requires exact SessionStart delivery…` (L505, 2 tests) + `required framework cannot complete…` (L516) — SessionStart hook_response gates completion. → DELETE (~16 lines)
-- `framework rejection is captured as its own exit-zero…` (L560) — `framework-rejected` cause. → REWRITE (~5 lines, re-point to composed-prompt check)
-- `terminal DTO setter cannot relabel runtime {5 modes}…` (L765, 5 tests) — settlement proof incl. framework arm. → KEEP (~18 lines)
-- `fresh source validation after asynchronous {11 stages}…` (L835, 11 tests) — stages incl. `framework-file/session-file/session-context/settings`. → REWRITE (~19 lines, drop hook/file stages, keep pins)
-- Hook-plumbing group: `hook authentication…` (L327), `hook journal errors…` (L345), `hook secret…` (L353), `stream drainage…hook secret…` (L432), `hook credentials cannot be borrowed…` (L961), `legacy new-session hooks…` (L970) — ingestHook auth/secret/lifetime. → DELETE (~65 lines, 6 tests)
-- All others (durable intent, spawn/admission, streams, result identity, termination, local proof/idle, source pins) — no delivery pin. → KEEP (untouched, ~750 lines)
+Coverage disposition for the [shared context contract](shared-context.md) and [performance acceptance criteria](performance.md#acceptance-criteria-for-the-ordinary-worker-message-path). Test descriptions identify coverage by behavior, not audit-era line numbers or estimated counts. Scope and execution constraints are in [PLAN.md](PLAN.md).
 
-## opencode-run-service.test.ts (722 lines)
-- `canonical OC authored parent role occurs once…` (L9) — `deliverContextEntry` stored text + `configureCanonicalExecution` excludes role. → REWRITE (~16 lines)
-- `canonical OC cannot dispatch a provider missing trusted…` (L26) — unvalidated withholds. → KEEP (~8 lines)
-- `canonical OC {assistant,worker}×{new,resume,compact} journals exact storage receipt…` (L36, 6 tests) — stored=`standing+\n\n+dynamic`, `prepared/stored-readback` + hashes, readback-before-prompt. → REWRITE (~23 lines)
-- `canonical OC {5 faults} withholds prompt…` (L60, 5 tests) — foreign-binding/dynamic-change/cancelled → KEEP (validation survives); readback-mismatch/lost-write-ack → DELETE (storage readback gone). (~21 lines split 13/8)
-- `ordinary Base OC never requests canonical content` (L81) — no provider call, no mutation, no receipt. → KEEP (~9 lines)
-- `acknowledged creation framework delivery…(compact=…)` (L436, 2 tests) — `takeFrameworkDelivery` + `framework-delivered` journal before launch. → REWRITE (~16 lines, becomes composed-prompt journal)
-- All others (retry/recovery, cancellation, submission evidence, prompt order, compact, interrupts) — no delivery pin. → KEEP (untouched, ~600 lines)
+## Scenario matrix
 
-## Other tests referencing delivery keywords
-- `branch-context.test.ts` (63 lines, 4 tests): `already-canonical native fork reads inherited entry…` (L22) pins GET-only `deliverContextEntry` + `staticHash/payloadHash` equality → REWRITE (~18 lines); other 3 (migration guidance, standing policy, branch dynamics) → KEEP (pure `renderContextDelivery`, no channel).
-- `native-context-entry.test.ts` (51 lines, 5 tests): exact-readback idempotence, `{mismatch,lostAck,duplicate} not a verified receipt`, cancellation-after-read — all pin `deliverContextEntry` GET/PUT/GET storage API → DELETE (API removed under A).
-- `opencode-native-queue.test.ts`: `unassociated unknown policy…cannot select, deliver startup…` (L670, 4 tests) pins `deliverSaneSession` never called → REWRITE (~10 lines, withhold survives as no-composed-session); policy-changed/context-absence asserts → KEEP.
-- `opencode-completion-service.test.ts:36`, `opencode-native-queue.test.ts:37-38` stub `takeFrameworkDelivery`/`saneSession` only — no pin → KEEP, no action.
+Cover assistant/worker activation, ordinary continuation, explicit update, sharing to new/existing recipients, branch inheritance, and new-model resume/restart. Across those cases verify exact selected bytes/body presentation, trusted validation, dispatch/settlement evidence, retained operational hooks, and absence of retired delivery mechanisms. Keep native compact lifecycle tests; compaction preservation/recovery is not part of this matrix.
 
-## Totals (delivery-pinning subset; rest of both files untouched KEEP)
-- REWRITE: ~39 tests, ~190 lines (CC ~25/≈103, OC 9/≈55, other 5/≈28)
-- DELETE: ~19 tests, ~150 lines (CC ~12/≈91, OC 2/≈8, native-entry 5/51)
-- KEEP (delivery-adjacent, survives as-is or trivial): ~17 tests, ~100 lines (binding/validator/settlement/pure-rendering)
+## `claude-run-service.test.ts`
+
+| Original coverage | Disposition |
+| --- | --- |
+| Authored parent role occurs once | REWRITE: role occurs once in bootstrap prompt; no duplicated selected main-role prompt in native definitions. Keep native-child definitions. |
+| Assistant/worker × new/resume/upgrade/compact static-delivery matrix | REWRITE around activation, ordinary resume, and explicit updates; no per-turn context assertions. Delete upgrade-migration cases; retain compact lifecycle coverage. |
+| Persisted upgrade snapshot-off behavior | DELETE: append-file migration/snapshot workaround is removed. |
+| Missing/mismatched/foreign dynamic hook never accepted | DELETE context-ack cases; hook ingestion authentication/association tests remain. |
+| Foreign binding, selected dynamic change, cancellation | KEEP guarantees; adapt to context-bearing prompt validation and new evidence names. |
+| Base isolation | KEEP no canonical context/provider use for Base; ordinary body transport still works. |
+| Trusted provider validation required | KEEP trusted composition guarantee for context-bearing messages; adapt API, not unconditional per-run provider use. |
+| Journal/flags/credentials order, hook keys, forward.ts Stop | KEEP operational registration/authentication/order; change context-file/flag expectations only. |
+| Framework SessionStart success/failure enforcement | DELETE obsolete context-hook enforcement; cover pre-send composition failure instead. |
+| Terminal DTO cannot mint settlement proof | KEEP lifecycle/integrity proof; remove only the obsolete framework-rejection arm. |
+| Fresh source validation across async stages | REWRITE stage list: remove context-file/injector stages; retain settings/permissions and surviving source/cancellation checks. |
+| Hook auth/journal errors/secret lifetime, stream drainage, borrowed credentials | KEEP: forwarding and authenticated operational ingestion remain. |
+| Legacy new-session hook fixture | REWRITE operational parts for new-model sessions; DELETE only legacy context-injector assertions. |
+
+Keep queued-followup Stop/task-notification eligibility, drain-after-owner-settlement, activity/background-job observations, supervision, termination, result identity/index/integrity, and source pins. Removing context hooks does not require a stdout-only turn-completion redesign.
+
+## `opencode-run-service.test.ts`
+
+- Authored parent role and delivery matrix: REWRITE for the scenario matrix. Keep execution-policy RPC/child/model/permission assertions.
+- Missing trusted validation: KEEP for selected context-bearing messages, with the new composition API.
+- Foreign binding/dynamic change/cancelled faults: KEEP their guarantees for selected content; DELETE storage readback-mismatch/lost-write-ack faults.
+- Base isolation: KEEP; no canonical context lookup or injected payload.
+- Acknowledged creation framework delivery: DELETE the ack-map/storage assumptions; cover new-model composition/submission evidence without a parallel delivery stage machine.
+- Keep queue, retry/recovery, cancellation, exact command admission, uncertainty/no-resend, prompt ordering, compact transport/lifecycle, and interrupt coverage. Removing entry-equality 409 does not remove binding or ownership validation.
+
+## Other coverage
+
+- `native-context-entry.test.ts`: DELETE with `deliverContextEntry`; no instruction-entry read/write/readback or migration behavior remains.
+- `branch-context.test.ts`: replace inherited-entry reads with new-model inherited-context/branch placement; retain relevant pure branch-content checks and remove old upgrade/migration guidance.
+- `opencode-native-queue.test.ts`: replace retired delivery-method assertions with no accidental context bootstrap/mutation under unknown policy. Keep preflight, configuration/binding, queue ownership, admission, and no-replay assertions; delete metadata-binding compatibility cases.
+- Completion/queue fixtures: remove `takeFrameworkDelivery` / sink-only `saneSession` stubs when those APIs disappear. Do not otherwise rewrite unrelated coverage.
+- `tests/context-foundations.test.ts`, bridge-runtime coverage, review/context-report tests, and canonical capture integration: replace old context receipts/sidecars/snapshots with the single new prompt model. Delete legacy-only negatives/parity fixtures; preserve trusted-input and role/permission isolation checks.
+- Keep `opencode-retry-projection.test.ts` and operational hook consumers' coverage unless an assertion specifically pins retired context injection.
+- Shared composition/body extraction: plan focused cases for exact selected bytes, ordinary follow-up pass-through, classification/display correctness, and no double-prefix across bridge/run-service boundaries.
+- Performance regressions: count the eliminated operations defined in `performance.md` across the complete dispatch path, including `canonicalExecution` / `validateCanonicalActivation`, rather than using brittle elapsed-time thresholds. Distinguish activation, ordinary continuation, and selected updates; verify retained operational hooks still run. Timing/fan-out benchmarks are separate from these focused regression checks.

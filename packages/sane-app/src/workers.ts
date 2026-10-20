@@ -11,7 +11,7 @@ import { PendingInputStorageError } from "./pending-input-contract";
 /** holdsExecution: the parent currently holds its workstream's execution slot. */
 export type WorkerParent = { sessionId: string; runId: string; native: ConversationRef; checkout: string; profileId?: string; holdsExecution: boolean; scoutOnly?: boolean; allowedWorkerRoles?: readonly WorkerAgentId[] };
 export type WorkerExecutor = {
-  parent(caller: WorkerCaller, starting: boolean): Promise<WorkerParent>;
+  parent(caller: WorkerCaller): Promise<WorkerParent>;
   assertCurrentParent(parent: WorkerParent): void;
   hasActiveExecution(worker: WorkerSelection): boolean;
   assertCapacity(): void;
@@ -92,21 +92,15 @@ export class WorkerService {
     if (!input || !isWorkerAgentId(input.worker) || typeof input.requestId !== "string" || !input.requestId || input.requestId.length > 200 || typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 100000 || input.context !== undefined && (typeof input.context !== "string" || input.context.length > 100000)) error("invalid-worker-input", "Worker role, request ID and bounded prompt/context text required");
     const jobs = workerJobsProblem(input.worker, input.jobs);
     if (jobs) error("invalid-worker-input", jobs);
-    let parent = await this.executor.parent(caller, false);
+    const parent = await this.executor.parent(caller);
     const payload: WorkerStart = { requestId: input.requestId, worker: input.worker, prompt: input.prompt, ...(input.context !== undefined ? { context: input.context } : {}), ...(input.jobs !== undefined ? { jobs: [...input.jobs] } : {}) };
     const old = this.store.getByRequest(parent.sessionId, input.requestId);
     if (old) {
       if (JSON.stringify(old.input) !== JSON.stringify(payload) || old.parent.runId !== parent.runId || old.parent.toolCallId !== caller.toolCallId || JSON.stringify(old.parent.invocation?.opencode) !== JSON.stringify(caller.invocation?.opencode)) error("worker-request-conflict", "Request ID already bound to another invocation/payload");
       return old;
     }
-    parent = await this.executor.parent(caller, true);
     if (parent.scoutOnly && input.worker !== "scout") error("worker-role-denied", "Scout Crew may delegate only App-managed scout workers");
     if (parent.allowedWorkerRoles && !parent.allowedWorkerRoles.includes(input.worker)) error("worker-role-denied", `Pinned parent policy permits only App-managed ${parent.allowedWorkerRoles.join(" or ")} workers`);
-    const concurrent = this.store.getByRequest(parent.sessionId, input.requestId);
-    if (concurrent) {
-      if (JSON.stringify(concurrent.input) !== JSON.stringify(payload) || concurrent.parent.runId !== parent.runId || concurrent.parent.toolCallId !== caller.toolCallId || JSON.stringify(concurrent.parent.invocation?.opencode) !== JSON.stringify(caller.invocation?.opencode)) error("worker-request-conflict", "Request ID already bound to another invocation/payload");
-      return concurrent;
-    }
     if (input.worker === "implementer" && input.jobs === undefined && parent.holdsExecution) error("invalid-worker-input", "Execution must assign the implementer exactly one job ID.");
     const launch = resolveWorkerProfile(this.profiles(), input.worker, parent.profileId);
     this.executor.assertCapacity();
@@ -165,7 +159,7 @@ export class WorkerService {
     return change.results ? this.refresh(updated) : updated;
   }
   private async scoped(caller: WorkerCaller, ids?: string[]) {
-    const p = await this.executor.parent(caller, false), tree = this.tree(p.sessionId);
+    const p = await this.executor.parent(caller), tree = this.tree(p.sessionId);
     if (ids !== undefined && (!Array.isArray(ids) || ids.length > 256 || ids.some(id => !tree.some(w => w.id === id)))) error("worker-scope", "Workers must belong to the caller's descendant tree");
     return ids ? tree.filter(w => ids.includes(w.id)) : tree;
   }
@@ -190,7 +184,7 @@ export class WorkerService {
   async acknowledgeWait(caller: WorkerCaller, refs: { workerId: string; revision: number; notificationId: string }[]) {
     if (!Array.isArray(refs) || !refs.length || refs.length > 256 || refs.some(r => !r || typeof r.workerId !== "string" || !Number.isInteger(r.revision) || r.revision < 1 || typeof r.notificationId !== "string")) error("worker-wait", "Exact result revision and notification IDs required");
     const workers = await this.scoped(caller, refs.map(r => r.workerId));
-    const recipient = await this.executor.parent(caller, false);
+    const recipient = await this.executor.parent(caller);
     if (workers.some(w => w.parent.sessionId !== recipient.sessionId)) error("worker-notification-recipient", "Only the worker's immediate parent may acknowledge its outcome; ancestors may inspect results without consuming notifications");
     return this.store.acknowledgeResults(refs, { runId: caller.runId, toolCallId: caller.toolCallId });
   }
@@ -312,7 +306,7 @@ export class WorkerService {
   async messageChild(caller: WorkerCaller, input: { workerId: string; text: string }, requestId: string) {
     this.assertOperationRequest(requestId);
     if (!input || typeof input.workerId !== "string" || !boundedOperationText(input.text)) return error("invalid-worker-input", "Child guidance requires a worker id and bounded text");
-    const callerSession = await this.executor.parent(caller, false);
+    const callerSession = await this.executor.parent(caller);
     const child = this.store.get(input.workerId);
     if (!child || child.parent.sessionId !== callerSession.sessionId || !isExplicitWorker(child) || !child.child) return error("worker-relationship", "Guidance requires an explicit direct child of the caller");
     const fingerprint = workerPayloadFingerprint({ operation: "message-child", workerId: child.id, text: input.text });
@@ -334,7 +328,7 @@ export class WorkerService {
     return { exchange: { id: result.exchange.id, state: "accepted" as const, revision: 1, correlationId: result.exchange.correlationId } };
   }
   private async callerWorker(caller: WorkerCaller) {
-    const callerSession = await this.executor.parent(caller, false);
+    const callerSession = await this.executor.parent(caller);
     const worker = this.store.getBySession(callerSession.sessionId);
     if (!worker || !isExplicitWorker(worker)) return error("protocol-unavailable", "Caller is not an explicit App-managed worker assignment");
     return worker;
@@ -349,7 +343,7 @@ export class WorkerService {
     if (typeof requestId !== "string" || !requestId || requestId.length > 200 || /[\u0000-\u001f\u007f]/.test(requestId)) error("invalid-worker-input", "Worker request ID required");
   }
   async cancelAll(caller: WorkerCaller, scope: { parentSessionId: string }) {
-    const p = await this.executor.parent(caller, false);
+    const p = await this.executor.parent(caller);
     if (scope?.parentSessionId !== p.sessionId) error("worker-scope", "Explicit cancel-all scope must equal the caller's App session");
     return this.cancelForSession(p.sessionId, "all");
   }

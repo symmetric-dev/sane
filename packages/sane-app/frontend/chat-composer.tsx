@@ -21,7 +21,7 @@ import { chatStatuses, chatStatusSummary, type ChatStatusContext } from "./chat-
 import { ComposerStatus } from "./composer-status";
 import { Interactions } from "./interactions";
 import { pendingInteractions } from "./interaction-presentation";
-import { active as runtimeActive } from "./types";
+import { active as runtimeActive, liveInputReady } from "./types";
 import { PendingInputDetails } from "./pending-input-ui";
 import { pendingInputContextReady, pendingInputLid, pendingInputPrimaryAction, unresolvedOperations } from "./pending-input-primary-action";
 import { ScienceComposer, type ScienceChatController } from "./science-chat";
@@ -180,11 +180,11 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
     const busy = current.availability.code === "conversation-busy" || (!current.availability.code
       && current.availability.reason === "This conversation already has an active run or reconciliation");
     const running = current.runs.some(run => runtimeActive(run.status)) || runtimeActive(currentConversation?.status ?? "completed");
-    const busyInput = running || !!current.availability.nativeQueue || !!current.availability.queueAfterRunId;
+    const busyInput = running && !liveInputReady(currentConversation, current.availability) || !!current.availability.nativeQueue || !!current.availability.queueAfterRunId;
     const ordinaryBlocked = locked || supported && (current.phase !== "ready" || current.config?.authenticated !== true)
       || (command ? current.sending || !currentCapabilities.compaction
-      : sendDisabled || !currentCapabilities.prompt || ackMissing || current.loading || current.sending || current.actionBusy
-        || !current.connected || !current.availability.canSend || busyInput
+      : sendDisabled || !currentCapabilities.prompt || ackMissing || current.sending || current.actionBusy
+        || !(current.interactive ?? current.connected) || !current.availability.canSend || busyInput
         || store.compactBlocked() || store.modelUnavailable() || !!store.executionUnavailable());
     const sendReason = locked ? command ? "Resolve the existing input chain before compacting." : "Resolve existing queued messages in the queue details before sending."
       : current.sending ? "Sending your message…"
@@ -192,8 +192,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
       : command && !currentCapabilities.compaction ? "Context compaction is unavailable for this harness."
       : !command && pendingInteractions(current, currentCapabilities).length ? "Respond to the pending conversation request before sending."
       : !command && ackMissing ? "Confirm external assistant execution is stopped before sending."
-      : !command && current.loading ? "Loading the conversation…"
-      : !command && !current.connected ? "Waiting for the conversation connection."
+      : !command && !(current.interactive ?? current.connected) ? "Waiting for the conversation connection."
       : !command && !current.availability.canSend ? busy ? "Wait for the current run or conversation reservation to finish."
         : current.availability.reason || "Sending is currently unavailable."
       : !command && busyInput ? "Wait for the current run to finish before sending."

@@ -247,22 +247,31 @@ export class RepositoryRouter {
   async forAdmission(admission: Admission, suppliedWorkspaceId?: string, options?: RepositoryReadOptions) {
     if (suppliedWorkspaceId && suppliedWorkspaceId !== admission.binding.workspaceId) throw new WorkstreamAdapterError(409, "repository-mismatch", "Conversation and requested workspace differ");
     if (admission.binding.domain.mode === "app-only") return null;
-    const adapter = await this.forWorkspace(admission.binding.workspaceId, admission.binding.domain.repositoryId, undefined, options);
+    // An enrolled conversation already pins its checkout. Unrelated worktrees
+    // are neither discovery candidates nor admission dependencies.
+    const b = admission.binding, binding = await this.catalog.binding(b.workspaceId, b.worktreeId);
+    if (binding.bindingRevision !== b.bindingRevision || binding.cwd !== b.executionCheckout) throw new WorkstreamAdapterError(409, "stale-binding", "Execution checkout binding changed");
+    const workspace = await this.catalog.registered(b.workspaceId);
+    if (workspace.kind !== "repository" || !workspace.commonDir) throw new WorkstreamAdapterError(409, "not-repository", "Conversation requires a repository workspace");
+    const discovery = await this.discover({ root: binding.cwd, commonDir: workspace.commonDir }, options);
+    const adapter = await this.ready(discovery, admission.binding.domain.repositoryId, undefined, options);
     if (adapter.domain.primaryCheckout !== admission.binding.domain.primaryCheckout) throw new WorkstreamAdapterError(409, "domain-mismatch", "The intended primary checkout changed");
+    this.catalog.assertBinding(b.workspaceId, b.worktreeId, binding.cwd, binding.bindingRevision);
     return adapter;
   }
   /** Current execution pin and membership; App-only domains have no workstream. */
   async execution(admission: Admission, options?: RepositoryReadOptions): Promise<ExecutionContext> {
     if (admission.state !== "ready" || !admission.nativeId) throw new WorkstreamAdapterError(409, "admission-pending", "Conversation admission is not ready");
     if (normalizeNativeSource(admission.source.descriptor).authorityId !== admission.source.authorityId) throw new WorkstreamAdapterError(409, "source-mismatch", "Source pin changed");
-    const b = admission.binding, binding = await this.catalog.binding(b.workspaceId, b.worktreeId);
-    if (binding.bindingRevision !== b.bindingRevision || binding.cwd !== b.executionCheckout) throw new WorkstreamAdapterError(409, "stale-binding", "Execution checkout binding changed");
+    const b = admission.binding;
     const adapter = await this.forAdmission(admission, undefined, options);
     if (adapter) {
       revalidateCheckout(adapter.domain.context, b.checkoutPin!);
       const context = adapter.domain.resolveContext({ harness: admission.source.descriptor.harness, authorityId: admission.source.authorityId, nativeId: admission.nativeId });
       return { executionCheckout: context.executionCheckout, workstreamId: context.workstream?.id ?? null, artifactsRoot: context.artifactsRoot };
     }
+    const binding = await this.catalog.binding(b.workspaceId, b.worktreeId);
+    if (binding.bindingRevision !== b.bindingRevision || binding.cwd !== b.executionCheckout) throw new WorkstreamAdapterError(409, "stale-binding", "Execution checkout binding changed");
     return { executionCheckout: binding.cwd, workstreamId: null, artifactsRoot: null };
   }
   stopReads() { return this.reader.close(); }

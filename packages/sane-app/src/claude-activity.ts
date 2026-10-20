@@ -2,7 +2,7 @@ import type { ConversationActivity } from "../shared/conversation/activity";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
-const terminal = (status: unknown) => status === "completed" || status === "failed" || status === "stopped";
+const terminal = (status: unknown) => status === "completed" || status === "failed" || status === "stopped" || status === "killed";
 
 /** Presentation only. Stop may precede native continuations; it is NOT process
  * exit, run completion, or permission to release the execution owner. */
@@ -19,7 +19,8 @@ export class ClaudeActivity {
     this.observedAt = new Date().toISOString();
   }
 
-  running() { this.observe("running"); }
+  running() { this.stopped = false; this.observe("running"); }
+  turnFinished() { this.stopped = true; this.observe(this.tasks.size ? "background" : "waiting"); }
   finishing() { this.observe("finishing"); }
 
   private snapshot(tasks: unknown[], idKey: "id" | "task_id") {
@@ -44,8 +45,11 @@ export class ClaudeActivity {
     if (this.phase === "finishing" || !object(value) || value.session_id !== nativeSessionId || !isClaudeRootRecord(value) || value.type !== "system") return;
     if (value.subtype === "background_tasks_changed" && Array.isArray(value.tasks)) {
       this.snapshot(value.tasks, "task_id");
-    } else if (value.subtype === "task_updated" && typeof value.task_id === "string" && object(value.patch) && terminal(value.patch.status)) {
-      this.tasks.delete(value.task_id);
+    } else if (value.subtype === "task_started" && typeof value.task_id === "string" && value.is_backgrounded === true) {
+      this.tasks.add(value.task_id);
+    } else if (value.subtype === "task_updated" && typeof value.task_id === "string" && object(value.patch)) {
+      if (terminal(value.patch.status)) this.tasks.delete(value.task_id);
+      else if (value.patch.is_backgrounded === true) this.tasks.add(value.task_id);
     } else if (value.subtype === "task_notification") {
       if (typeof value.task_id === "string" && terminal(value.status)) this.tasks.delete(value.task_id);
       // A task report can wake the root assistant; wait for its next Stop.

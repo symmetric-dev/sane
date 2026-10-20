@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#fcfbf9" />
     <meta name="apple-mobile-web-app-title" content="SANE" />
     <title>SANE · Local workspace</title>
-    <link rel="manifest" href="/assets/pwa/manifest.webmanifest" />
-    <link rel="icon" href="/assets/pwa/icon.svg" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="/assets/pwa/apple-touch-icon.png" sizes="180x180" />
+    <link rel="manifest" href="/assets/pwa/manifest.webmanifest?v=__SANE_ASSET_FINGERPRINT__" />
+    <link rel="icon" href="/assets/pwa/icon.svg?v=__SANE_ASSET_FINGERPRINT__" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/assets/pwa/apple-touch-icon.png?v=__SANE_ASSET_FINGERPRINT__" sizes="180x180" />
     <script>
       // Shared with frontend/theme-settings.ts: sane.theme stores system/light/dark; invalid values follow the OS.
       (() => {
@@ -21,8 +21,8 @@
         document.querySelector('meta[name="theme-color"]').setAttribute("content", resolved === "dark" ? "#1d1b20" : "#fcfbf9");
       })();
     </script>
-    <link rel="stylesheet" href="/assets/app.css" />
-    <script type="module" src="/assets/app.js"></script>
+    <link rel="stylesheet" href="/assets/app.css?v=__SANE_ASSET_FINGERPRINT__" />
+    <script type="module" src="/assets/app.js?v=__SANE_ASSET_FINGERPRINT__"></script>
   </head>
   <body>
     <div id="root"></div>

@@ -10,7 +10,10 @@ const object = (value: any): value is Record<string, any> => value !== null && t
 function user(run: Run, text: string, time: string, id = `${run.id}:user`) {
   const message: Message = { id, runId: run.id, role: "user", parts: [{ type: "text", text }], time, status: "completed" };
   const index = run.messages.findIndex(m => m.id === id);
-  if (index < 0) run.messages.unshift(message); else run.messages[index] = message;
+  if (index < 0) {
+    if (id === `${run.id}:user`) run.messages.unshift(message);
+    else run.messages.push(message);
+  } else run.messages[index] = message;
 }
 function tool(run: Run, id: string): ToolPart | undefined {
   return run.messages.flatMap(m => m.parts).find((p): p is ToolPart => p.type === "tool" && p.id === `${run.id}:${id}`);
@@ -31,6 +34,7 @@ function record(run: Run, value: unknown, event: DiagnosticEvent) {
       const id = claudeResultMessageId(run.id, observation.result, event.seq);
       const resultMessage: Message = { id, runId: run.id, role: "assistant", parts: [{ type: "text", text: observation.result.text }], time: event.time, status: "completed", normalized: true };
       (run.resultMessages ??= []).push(resultMessage);
+      run.messages.push(resultMessage);
     }
   }
   const content = r.message?.content ?? r.content;

@@ -9,7 +9,7 @@ import { ActivityInspector, useActivityInspection } from "./activity-inspector";
 import { convertTranscriptMessage, projectTranscriptMessages } from "./transcript-runtime";
 import { ShellDialog } from "./shell-dialog";
 import { WorkerCard, WorkerSection } from "./worker-ui";
-import { closeWorker, workerReference, openWorkerSession, publishWorkers, useWorkers, useWorkerViewer, useWorkerOpening, workerClient } from "./worker-client";
+import { closeWorker, workerReference, openWorkerSession, publishWorkers, useWorkers, useWorkerViewer, useWorkerOpening, workerClient, workerInFlight, workerProjectionInFlight } from "./worker-client";
 import { useActivityPresentation } from "./transcript-activity";
 import { compactionsFor, compactionPositions } from "./compaction";
 import { CompactionMarkers } from "./compaction-ui";
@@ -18,6 +18,7 @@ import { useHandoffs } from "./handoff-client";
 import { store } from "./store";
 import { getHarnessDescriptor } from "../shared/conversation/harness-capabilities";
 import { claudeReplyPresentation } from "./claude-reply-presentation";
+import { pollWhileVisible } from "./visibility";
 
 function Viewer({ root }: { root: WorkerRecord }) {
   const [trail, setTrail] = useState([root]);
@@ -29,18 +30,18 @@ function Viewer({ root }: { root: WorkerRecord }) {
   const parent = useWorkers(selected.parent.sessionId);
   const worker = parent.workers.find(w => w.id === selected.id) ?? selected;
   useEffect(() => {
-    let current = true;
-    const controller = new AbortController(), map = new Map<string, Run>();
-    let timer: ReturnType<typeof setTimeout>;
+    const map = new Map<string, Run>();
+    let inFlight = workerInFlight(selected);
     setView({ sessionId: selected.sessionId, runs: [], messages: [], compactions: [], error: "", loading: true });
     setWaiting(0);
-    const poll = async () => {
+    return pollWhileVisible(async signal => {
       try {
-        const [metadata, children, parents, interactions] = await Promise.all([conversationClient.runs(selected.sessionId, controller.signal), workerClient.list(selected.sessionId, controller.signal), workerClient.list(selected.parent.sessionId, controller.signal), store.capabilities(selected.launch.harness).listInteractions && conversationClient.interactions ? conversationClient.interactions(selected.sessionId, controller.signal) : Promise.resolve([])]);
-        if (!current) return;
+        const [metadata, children, parents, interactions] = await Promise.all([conversationClient.runs(selected.sessionId, signal), workerClient.list(selected.sessionId, signal), workerClient.list(selected.parent.sessionId, signal), store.capabilities(selected.launch.harness).listInteractions && conversationClient.interactions ? conversationClient.interactions(selected.sessionId, signal) : Promise.resolve([])]);
+        if (signal.aborted) return 60_000;
         setWaiting(interactions.length);
         publishWorkers(selected.sessionId, children); publishWorkers(selected.parent.sessionId, parents);
         const currentWorker = parents.workers.find(record => record.id === selected.id) ?? selected;
+        inFlight = workerInFlight(currentWorker) || workerProjectionInFlight(children) || interactions.length > 0 || metadata.some(run => active(run.status));
         const childHarness = getHarnessDescriptor(selected.launch.harness)?.nativeHarness;
         const nativeSessionId = childHarness && currentWorker.child?.harness === childHarness ? currentWorker.child.nativeId : undefined;
         const ordered = metadata.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -69,21 +70,19 @@ function Viewer({ root }: { root: WorkerRecord }) {
             consume(run, previous.events);
             run.cursor = previous.cursor;
           }
-          const page = await conversationClient.events(run, controller.signal);
-          if (!current) return;
+          const page = await conversationClient.events(run, signal);
+          if (signal.aborted) return 60_000;
           Object.assign(run, meta, { status: page.status || meta.status }); consume(run, page.events ?? []);
           if (Number.isFinite(page.nextCursor)) run.cursor = Math.max(run.cursor, page.nextCursor);
           map.set(run.id, run);
         }
         const runs = [...map.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
         const compactions = nativeSessionId ? compactionsFor({ id: selected.sessionId, harness: selected.launch.harness, nativeSessionId }, runs) : [];
-        if (current) setView({ sessionId: selected.sessionId, runs, messages: runs.flatMap(messagesForRun), compactions, error: "", loading: false });
-      } catch (e) { if (current) setView(v => ({ ...v, loading: false, error: e instanceof Error ? e.message : "Worker transcript unavailable" })); }
-      // A static read-only transcript (all runs terminal) backs off to 15s.
-      finally { if (current) timer = setTimeout(() => void poll(), map.size > 0 && [...map.values()].every(run => !active(run.status)) ? 15000 : 1500); }
-    };
-    void poll();
-    return () => { current = false; controller.abort(); clearTimeout(timer); };
+        inFlight = workerInFlight(currentWorker) || workerProjectionInFlight(children) || interactions.length > 0 || runs.some(run => active(run.status));
+        if (!signal.aborted) setView({ sessionId: selected.sessionId, runs, messages: runs.flatMap(messagesForRun), compactions, error: "", loading: false });
+      } catch (e) { if (!signal.aborted) setView(v => ({ ...v, loading: false, error: e instanceof Error ? e.message : "Worker transcript unavailable" })); }
+      return inFlight ? 3000 : 60_000;
+    }, { sessionIds: [selected.sessionId, selected.parent.sessionId], onWake: () => { inFlight = true; } });
   }, [selected.sessionId, selected.parent.sessionId, selected.launch.harness]);
   const messages = useMemo(() => claudeReplyPresentation(view.sessionId === selected.sessionId ? view.messages : [], selected.launch.harness), [view.sessionId, view.messages, selected.sessionId, selected.launch.harness]);
   const transcriptIndex = useTranscriptIndex(messages);

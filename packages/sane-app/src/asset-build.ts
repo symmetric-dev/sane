@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { acquireInstallation, assertInstallationOwnership, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
 
-const recipe = { version: 2, target: "browser", format: "esm", naming: "app.[ext]", minify: true, define: { "process.env.NODE_ENV": '"production"' } } as const;
+const recipe = { version: 3, target: "browser", format: "esm", naming: "app.[ext]", minify: true, define: { "process.env.NODE_ENV": '"production"' }, compression: { gzip: 9, brotli: 9 } } as const;
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 export class AssetBuildError extends Error {}
 type Manifest = { format: "sane-app-assets"; version: 1; generation: string; fingerprint: string; inputs: Record<string, string>; outputs: Record<string, string> };
@@ -95,11 +96,20 @@ export async function buildAssets(options: AssetBuildOptions): Promise<{ assetsD
         copyFileSync(source, join(stage, "pwa", name));
       }
     }
+    const buildFingerprint = fingerprint(before);
+    const template = join(pkg, "public", "index.html"); regular(template);
+    writeFileSync(join(stage, "index.html"), readFileSync(template, "utf8").replaceAll("__SANE_ASSET_FINGERPRINT__", buildFingerprint), { flag: "wx", mode: 0o600 });
+    for (const name of Object.keys(outputHashes(stage))) {
+      if (!/\.(?:js|css|html|json|webmanifest|svg)$/.test(name)) continue;
+      const bytes = readFileSync(join(stage, name));
+      writeFileSync(join(stage, `${name}.gz`), gzipSync(bytes, { level: recipe.compression.gzip }), { flag: "wx", mode: 0o600 });
+      writeFileSync(join(stage, `${name}.br`), brotliCompressSync(bytes, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: recipe.compression.brotli } }), { flag: "wx", mode: 0o600 });
+    }
     const outputs = outputHashes(stage);
     if (!outputs["app.js"]) throw new AssetBuildError("Build did not produce app.js");
     if (!outputs["push-worker.js"]) throw new AssetBuildError("Build did not produce push-worker.js");
     if (fingerprint(inputs(pkg, outdir)) !== fingerprint(before)) throw new AssetBuildError("Build inputs changed during compilation");
-    const manifest: Manifest = { format: "sane-app-assets", version: 1, generation, fingerprint: fingerprint(before), inputs: before, outputs };
+    const manifest: Manifest = { format: "sane-app-assets", version: 1, generation, fingerprint: buildFingerprint, inputs: before, outputs };
     writeFileSync(join(stage, "manifest.json"), JSON.stringify(manifest), { flag: "wx", mode: 0o600 });
     assertInstallationOwnership(own, pkg); safeDirectory(outdir);
     const assetsDir = join(outdir, generation);
@@ -127,7 +137,7 @@ export function validateAssets(options: Pick<AssetBuildOptions, "packageDir" | "
     const assetsDir = join(outdir, pointer.generation); safeDirectory(assetsDir);
     const manifestPath = join(assetsDir, "manifest.json"); regular(manifestPath);
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
-    if (manifest.format !== "sane-app-assets" || manifest.version !== 1 || manifest.generation !== pointer.generation || !manifest.outputs?.["app.js"] || !manifest.outputs?.["push-worker.js"] || manifest.fingerprint !== fingerprint(inputs(pkg, outdir))) throw new Error("Missing, invalid or stale build manifest");
+    if (manifest.format !== "sane-app-assets" || manifest.version !== 1 || manifest.generation !== pointer.generation || !manifest.outputs?.["app.js"] || !manifest.outputs?.["push-worker.js"] || !manifest.outputs?.["index.html"] || manifest.fingerprint !== fingerprint(inputs(pkg, outdir))) throw new Error("Missing, invalid or stale build manifest");
     for (const [file, digest] of Object.entries(manifest.outputs)) {
       if (!file || file === "manifest.json" || file.startsWith(".") || file.split(/[\\/]/).some(s => s === "..") || resolve(assetsDir, file) !== join(assetsDir, file) || !resolve(assetsDir, file).startsWith(assetsDir + sep)) throw new Error("Invalid asset name");
       const path = join(assetsDir, file); safeDirectory(dirname(path)); regular(path);

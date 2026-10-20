@@ -6,5 +6,5 @@ export type QueuedFollowup = {
   runId?: string;
   configuration?: QueuedSendConfiguration;
 };
-export type SendReceipt = { conversationId: string; queued?: false; runId: string }
+export type SendReceipt = { conversationId: string; queued?: false; runId: string; messageId?: string }
   | { conversationId: string; queued: true; receipt: QueuedFollowup };

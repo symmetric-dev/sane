@@ -2,6 +2,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { request } from "./cc-client";
 import type { WorkerRecord, WorkerDelivery } from "../src/worker-contract";
 import type { WorkerSessionMetadata } from "./types";
+import { pollWhileVisible } from "./visibility";
 
 export type WorkerProjection = { workers: WorkerRecord[]; deliveries: WorkerDelivery[]; continuationSuppressed: boolean; error?: string };
 export type WorkerStop = { ids: string[]; includeDescendants?: boolean } | { all: true };
@@ -25,6 +26,10 @@ export function publishWorkers(id: string, value: WorkerProjection) {
   projections = { ...projections, [id]: value }; emit();
 }
 export const workersFor = (id: string) => projections[id] ?? empty;
+export const workerInFlight = (worker: WorkerRecord) => ["reserved", "launching", "running", "cancelling"].includes(worker.state)
+  || !!worker.continuation && ["reserved", "launching", "running", "cancelling"].includes(worker.continuation.state) || worker.assignment === "closing";
+export const workerProjectionInFlight = (projection: WorkerProjection) => projection.workers.some(workerInFlight)
+  || projection.deliveries.some(delivery => delivery.state === "claimed" || delivery.state === "acceptance-unknown");
 export const knownWorker = (id: string) => {
   const matches = Object.values(projections).flatMap(p => p.workers).filter(w => w.sessionId === id).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   return matches[0];
@@ -61,18 +66,22 @@ export function useWorkerViewer() { return useSyncExternalStore(subscribe, () =>
 export function useWorkerPolling(id: string | null) {
   useEffect(() => {
     if (!id) return;
-    let current = true, timer: ReturnType<typeof setTimeout>, delay = 1500;
-    const controller = new AbortController();
-    const poll = async () => {
+    let inFlight = workerProjectionInFlight(workersFor(id)), failures = 0;
+    return pollWhileVisible(async signal => {
       try {
-        const result = await workerClient.list(id, controller.signal);
-        // Static worker lists back off to 15s; changing lists stay at 1.5s.
-        if (current) { delay = JSON.stringify(workersFor(id)) === JSON.stringify(result) ? Math.min(delay * 2, 15000) : 1500; publishWorkers(id, result); }
+        const result = await workerClient.list(id, signal);
+        if (!signal.aborted) {
+          inFlight = workerProjectionInFlight(result); failures = 0;
+          publishWorkers(id, result);
+        }
       }
-      catch (e) { if (current) { delay = 1500; publishWorkers(id, { ...workersFor(id), error: e instanceof Error ? e.message : "Worker status unavailable" }); } }
-      finally { if (current) timer = setTimeout(() => void poll(), delay); }
-    };
-    void poll();
-    return () => { current = false; controller.abort(); clearTimeout(timer); };
+      catch (e) {
+        if (!signal.aborted) {
+          inFlight ||= workerProjectionInFlight(workersFor(id)); failures++;
+          publishWorkers(id, { ...workersFor(id), error: e instanceof Error ? e.message : "Worker status unavailable" });
+        }
+      }
+      return inFlight ? Math.min(1500 * 2 ** Math.min(failures, 4), 15_000) : 60_000;
+    }, { sessionIds: [id], onWake: () => { inFlight = true; failures = 0; } });
   }, [id]);
 }

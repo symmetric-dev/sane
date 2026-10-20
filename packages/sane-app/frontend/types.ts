@@ -31,10 +31,14 @@ export type Capabilities = {
   attachments: boolean; modelSelection: boolean; effortValues: string[];
 };
 /** Local submission, retained after acknowledgement only until its recorded user turn arrives. */
-export type PendingTurn = { id: string; conversationId: string; runId?: string; text: string; time: string };
+export type PendingTurn = { id: string; conversationId: string; runId?: string; messageId?: string; text: string; time: string };
 export type HarnessInfo = { id: Harness; available: boolean; connected: boolean; state: string; reason?: string; capabilities: Partial<HarnessCapabilities> };
 export type Config = { authRequired: boolean; authenticated: boolean; storeId?: string; conversationUpdates?: boolean; pendingInputCapability?: PendingInputCapability; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
-export type Availability = { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string; nativeQueue?: boolean };
+export type Availability = { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string; nativeQueue?: boolean; liveInputRunId?: string };
+export function liveInputReady(conversation: Conversation | undefined, availability: Availability): boolean {
+  return availability.canSend && conversation?.harness === "claude-code" && !!availability.liveInputRunId
+    && availability.liveInputRunId === conversation.lastRunId;
+}
 export type SearchHit = { sessionId: string; runId?: string; snippet: string; score: number };
 export type CompletionVerificationTarget = { sessionId: string; runId: string; nativeSessionId: string; nativeCommandId: string };
 export type CompletionVerificationRequest = { requestId: string; nativeSessionId: string; nativeCommandId: string; confirm: true; reason: string };

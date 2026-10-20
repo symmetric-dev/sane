@@ -8,7 +8,32 @@ import type { PendingInputLid } from "./pending-input-primary-action";
 type StatusEvent = ChatStatus & { sequence: number; time: number };
 type StatusLog = { signature: string; current: ChatStatus[]; events: StatusEvent[]; sequence: number };
 const sameStatus = (left: ChatStatus, right: ChatStatus) => left.id === right.id && left.text === right.text && left.detail === right.detail && left.busy === right.busy && left.action === right.action;
-const briefLoading = new Set(["conversation", "workspace", "history-page", "history-refresh", "handoffs", "workers", "native-subagents"]);
+const briefLoading = new Set(["conversation", "workspace", "history-page", "history-refresh", "handoffs", "workers", "native-subagents", "action", "models", "availability"]);
+type StatusLid = { text: string; busy: boolean; queueBadge?: string | null; queueDescription: string; queueState?: PendingInputLid["state"]; transient: boolean; immediate: boolean };
+
+function useStatusLid(candidate: StatusLid | undefined, active: boolean) {
+  const key = JSON.stringify([active, candidate?.text, candidate?.busy, candidate?.transient, candidate?.immediate]);
+  const pending = useRef({ key, since: Date.now() });
+  if (pending.current.key !== key) pending.current = { key, since: Date.now() };
+  const [shown, setShown] = useState<{ key: string; value: StatusLid; since: number }>();
+  useEffect(() => {
+    if (!active) { setShown(undefined); return; }
+    if (!candidate && !shown) return;
+    if (shown?.key === key) return;
+    const now = Date.now();
+    const hold = shown?.value.transient ? shown.since + 1000 - now : 0;
+    const delay = candidate?.transient ? pending.current.since + 300 - now : 0;
+    const wait = candidate?.immediate ? 0 : Math.max(0, hold, delay);
+    const update = () => setShown(candidate ? { key, value: candidate, since: Date.now() } : undefined);
+    if (!wait) { update(); return; }
+    const timer = setTimeout(update, wait);
+    return () => clearTimeout(timer);
+  }, [active, key, shown]);
+  if (!active) return undefined;
+  if (candidate?.immediate || shown?.key === key) return candidate;
+  if (shown?.value.transient && Date.now() < shown.since + 1000) return shown.value;
+  return candidate?.transient ? undefined : candidate;
+}
 
 /** Mounted only in activity details. Elapsed time is measured, not a progress
  * estimate, and never becomes a repeatedly announced live-region message. */
@@ -56,16 +81,14 @@ export function ComposerStatus({ statuses, active, actions, restoreFocus, queue,
   const lidText = queuePrimary ? queue!.lid.text : summary?.text;
   const queueDescription = queue?.lid.waitingLabel ?? "";
   const queueBadge = queue?.lid.waitingLabel;
-  const combinedText = [lidText, queueDescription].filter(Boolean).join(" · ");
   const lidBusy = queuePrimary ? queue!.lid.state === "running" || queue!.lid.state === "checking" : summary?.busy;
-  const summaryKey = JSON.stringify([summary?.id, summary?.text]);
-  const delayLoading = !!summary?.busy && briefLoading.has(summary.id);
-  const [visibleLoading, setVisibleLoading] = useState<string>();
-  useEffect(() => {
-    if (!active || !delayLoading) { setVisibleLoading(undefined); return; }
-    const timer = setTimeout(() => setVisibleLoading(summaryKey), 200);
-    return () => clearTimeout(timer);
-  }, [active, delayLoading, summaryKey]);
+  const transient = queuePrimary ? queue!.lid.text === "Checking queue…" : !!summary?.busy && !summary.action
+    && summary.id !== "sending" && summary.id !== "input-request" && summary.id !== "connection"
+    && (briefLoading.has(summary.id) || /^(Loading|Checking|Refreshing|Preparing|Updating)\b/.test(summary.text));
+  const immediate = !transient && (queuePrimary ? queue!.lid.state === "unconfirmed" || queue!.lid.state === "reconciliation" || queue!.lid.state === "paused"
+    : !!summary && (summary.id === "sending" || summary.id === "input-request" || summary.id === "connection" || summary.id === "worker-protocol" || !!summary.action || !summary.busy));
+  const lid = useStatusLid(lidText ? { text: lidText, busy: !!lidBusy, queueBadge, queueDescription, queueState: queue?.lid.state, transient, immediate } : undefined, active);
+  const combinedText = [lid?.text, lid?.queueDescription].filter(Boolean).join(" · ");
   const recent = [...currentLog.events].reverse().filter(event => !statuses.some(status => sameStatus(status, event)));
   useEffect(() => {
     const fresh = detailsRequest > consumedRequest.current && detailsRequest > 0;
@@ -86,10 +109,10 @@ export function ComposerStatus({ statuses, active, actions, restoreFocus, queue,
 
   return <>
     <div className="composer-status-slot">
-    {(queue || summary && (!delayLoading || visibleLoading === summaryKey)) && <div className="composer-status-lid">
-      <span className={lidBusy ? "pulse" : "composer-status-dot"} aria-hidden="true" />
-      <span className="composer-status-text" role="status" aria-live="polite" aria-atomic="true" aria-label={combinedText} title={combinedText}>{lidText}</span>
-      {queueBadge && <span className="pending-input-status-badge" data-state={queue?.lid.state} title={queueDescription} aria-hidden="true">{queueBadge}</span>}
+    {lid && <div className="composer-status-lid">
+      <span className={lid.busy ? "pulse" : "composer-status-dot"} aria-hidden="true" />
+      <span className="composer-status-text" role="status" aria-live="polite" aria-atomic="true" aria-label={combinedText} title={combinedText}>{lid.text}</span>
+      {lid.queueBadge && <span className="pending-input-status-badge" data-state={lid.queueState} title={lid.queueDescription} aria-hidden="true">{lid.queueBadge}</span>}
       {actions}
       {verifyStatus && <button type="button" className="text-button" disabled={!active || store.snapshot().actionBusy} onClick={() => retry(verifyStatus)}>Verify completion</button>}
       <button ref={trigger} type="button" className="composer-status-info" disabled={!active} aria-label={queue ? `Show activity and queue details: ${combinedText}` : "Show activity details"} aria-haspopup="dialog" aria-expanded={open} title={queue ? "Activity and queue details" : "Activity details"} onClick={() => { requestedFromComposer.current = false; setOpen(true); }}><FiInfo size={15} aria-hidden="true" /></button>

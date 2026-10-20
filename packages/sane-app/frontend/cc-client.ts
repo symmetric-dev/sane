@@ -117,6 +117,7 @@ export const conversationClient: ConversationClient = {
       return { conversationId: data.sessionId, queued: true, receipt: data.receipt };
     }
     if (typeof data.runId !== "string") throw new Error("Invalid run acknowledgement; check conversation history before retrying");
-    return { conversationId: data.sessionId, runId: data.runId };
+    if (data.messageId !== undefined && typeof data.messageId !== "string") throw new Error("Invalid message acknowledgement; check conversation history before retrying");
+    return { conversationId: data.sessionId, runId: data.runId, ...(data.messageId ? { messageId: data.messageId } : {}) };
   },
 };
