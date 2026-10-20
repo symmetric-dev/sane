@@ -1,6 +1,6 @@
 import { isAbsolute, join } from "node:path"
 
-export const CLAUDE_PRE_TOOL_USE_MATCHER = "mcp__sane__sane_link|mcp__sane__sane_context|mcp__sane__sane_handoff|mcp__sane__sane_handoff_status|mcp__sane__sane_worker_start|mcp__sane__sane_worker_status|mcp__sane__sane_worker_wait|mcp__sane__sane_worker_acknowledge|mcp__sane__sane_worker_cancel|mcp__sane__sane_worker_cancel_all|mcp__sane__sane_worker_complete|mcp__sane__sane_worker_notify|mcp__sane__sane_worker_message_parent|mcp__sane__sane_worker_message|Bash"
+export const CLAUDE_PRE_TOOL_USE_MATCHER = "mcp__sane__sane_share_code|mcp__sane__sane_link|mcp__sane__sane_context|mcp__sane__sane_handoff|mcp__sane__sane_handoff_status|mcp__sane__sane_worker_start|mcp__sane__sane_worker_status|mcp__sane__sane_worker_wait|mcp__sane__sane_worker_acknowledge|mcp__sane__sane_worker_cancel|mcp__sane__sane_worker_cancel_all|mcp__sane__sane_worker_complete|mcp__sane__sane_worker_notify|mcp__sane__sane_worker_message_parent|mcp__sane__sane_worker_message|Bash"
 
 export function nativeIntegrationConfiguration(input: { pluginDirectory: string; registrationFile: string; profileRoot: string; bindingRoot: string; bunExecutable: string; appConnectionFile?: string }) {
   const required = [input.pluginDirectory, input.registrationFile, input.profileRoot, input.bindingRoot, input.bunExecutable]

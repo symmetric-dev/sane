@@ -1,9 +1,9 @@
 import type { BranchOperation } from "./branches";
 import type { ConversationReadiness } from "./conversation-coordinator";
-import { workerProtocolStatus, type WorkerDelivery, type WorkerProtocolStatus, type WorkerRecord } from "./worker-contract";
+import { workerProtocolStatus, type SessionListDelivery, type SessionListWorker, type WorkerProtocolStatus, type WorkerRecord } from "./worker-contract";
 
 /** One synchronous response's detached store reads. Never an execution authority. */
-export function sessionListProjection(workers: readonly WorkerRecord[], deliveries: readonly WorkerDelivery[], branches: readonly BranchOperation[], otherOccupancy: Iterable<string>) {
+export function sessionListProjection(workers: readonly (SessionListWorker | WorkerRecord)[], deliveries: readonly SessionListDelivery[], branches: readonly BranchOperation[], otherOccupancy: Iterable<string>) {
   const workerSessions = new Map(workers.map(w => [w.sessionId, { id: w.id, parent: { sessionId: w.parent.sessionId, runId: w.parent.runId, toolCallId: w.parent.toolCallId } }]));
   const workerProtocol = new Map<string, WorkerProtocolStatus>();
   for (const worker of workers) {
@@ -17,7 +17,7 @@ export function sessionListProjection(workers: readonly WorkerRecord[], deliveri
     const siblings = children.get(worker.parent.sessionId) ?? [];
     siblings.push(worker.sessionId); children.set(worker.parent.sessionId, siblings);
     // Occupancy deliberately follows the existing outcome predicate, not state.
-    if (!worker.outcome) occupancy.add(worker.sessionId);
+    if (!("hasOutcome" in worker ? worker.hasOutcome : !!worker.outcome)) occupancy.add(worker.sessionId);
   }
   for (const delivery of deliveries) if (["claimed", "acceptance-unknown"].includes(delivery.state)) {
     deliveryParents.add(delivery.parentSessionId); occupancy.add(delivery.parentSessionId);

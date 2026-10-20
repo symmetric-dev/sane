@@ -10,7 +10,7 @@ export type CompletionBlocker = "descendants" | "consultation" | "uncertain-exec
 
 const TERMINAL_STATES = ["completed", "failed", "interrupted"] as const;
 
-export function isExplicitWorker(worker: Pick<WorkerRecord, "protocol">): boolean {
+export function isExplicitWorker(worker: { protocol?: Pick<WorkerProtocolPin, "id"> }): boolean {
   return explicitWorker(worker);
 }
 
@@ -40,18 +40,18 @@ export function explicitIdle(worker: WorkerRecord): boolean {
  * Legacy: non-terminal or active execution, unchanged.
  * Explicit: in-flight states and live owner/delivery occupy a slot; idle does not.
  */
-export function occupiesExecution(worker: WorkerRecord, activeExecution: boolean): boolean {
+export function occupiesExecution(worker: Pick<WorkerRecord, "state" | "assignment"> & { protocol?: Pick<WorkerProtocolPin, "id"> }, activeExecution: boolean): boolean {
   if (!isExplicitWorker(worker)) return !workerTerminal(worker) || activeExecution;
   if (workerTerminal(worker) || worker.assignment === "terminal") return activeExecution;
   if (worker.state === "idle") return activeExecution;
   return true;
 }
 
-export function unfinishedExplicit(worker: WorkerRecord): boolean {
+export function unfinishedExplicit(worker: Pick<WorkerRecord, "state" | "assignment"> & { protocol?: Pick<WorkerProtocolPin, "id"> }): boolean {
   return isExplicitWorker(worker) && worker.assignment !== "terminal" && !workerTerminal(worker);
 }
 
-export function continuationActive(worker: WorkerRecord): boolean {
+export function continuationActive(worker: { continuation?: Pick<NonNullable<WorkerRecord["continuation"]>, "state"> }): boolean {
   return !!worker.continuation && !TERMINAL_STATES.includes(worker.continuation.state as typeof TERMINAL_STATES[number]);
 }
 

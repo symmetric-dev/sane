@@ -105,7 +105,10 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
   else if (store.modelUnavailable()) add("models", "Waiting for the model catalog…", "Waiting for the OpenCode model catalog for this directory.", true);
   const executionUnavailable = store.executionUnavailable();
   if (executionUnavailable) add("execution", "Execution workspace unavailable", executionUnavailable);
-  if (!state.availability.canSend && state.availability.reason) {
+  // This local send restriction is not a separate availability problem. Its
+  // higher priority otherwise hides the animated sending status with a static dot.
+  const submitting = state.sending && !state.availability.code && state.availability.reason === "Submitting…";
+  if (!state.availability.canSend && state.availability.reason && !submitting) {
     // Compatibility with an older bridge is limited to this exact known busy
     // reason; arbitrary restrictions/errors must never be hidden as progress.
     const ordinaryBusy = state.availability.code === "conversation-busy" || (!state.availability.code

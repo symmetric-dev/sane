@@ -23,7 +23,10 @@ import { BranchAction, BranchLinks } from "./branch-ui";
 import { active, liveInputReady, type Message, type Run, type UsageSnapshot } from "./types";
 import { activityPosition, useActivityPresentation, type ActivityEntry, type ActivityDetail, type ActivityGroup, type ActivityPresentation } from "./transcript-activity";
 import { TranscriptActivity } from "./activity-ui";
-import { classifyTranscriptTool, createActivityEntry, resolveActivityDetail } from "./activity-model";
+import { classifyTranscriptTool, createActivityEntry, resolveActivityDetail, type StandardToolClassification } from "./activity-model";
+import { useCodeShares, type CodeShareProjection } from "./code-share-client";
+import { CodeShareStatus, PendingCodeShare, SharedCodeCard } from "./shared-code-card";
+import { isCodeShareTool, sharesForTool } from "./code-share-presentation";
 import { ActivityInspector, useActivityInspection } from "./activity-inspector";
 import { ActivityCodeView } from "./activity-code-view";
 import { convertTranscriptMessage, projectTranscriptMessages } from "./transcript-runtime";
@@ -66,10 +69,14 @@ function CodeBlock({ children }: { children?: ReactNode }) {
 }
 function Markdown({ text }: { text: string }) {
   const context = useContext(TranscriptContext);
-  return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href, title }) => <ChatFileLink href={href} title={title} sessionId={context?.sessionId ?? ""}>{children}</ChatFileLink>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>;
+  const sessionId = context?.sessionId ?? "";
+  // Sending changes transcript context even when every historical reply is
+  // unchanged. Reuse its rendered Markdown instead of parsing the history again
+  // before the browser can paint the new message and submission feedback.
+  return useMemo(() => <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href, title }) => <ChatFileLink href={href} title={title} sessionId={sessionId}>{children}</ChatFileLink>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>, [text, sessionId]);
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; codeShares?: CodeShareProjection };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 const ScienceTimelineContext = createContext<ScienceChatController | null>(null);
 export function useTranscriptIndex(messages: Message[]) {
@@ -99,8 +106,18 @@ function TranscriptActivityRow({ group }: { group: ActivityGroup }) {
 const renderHandoffMessage = (text: string) => <Markdown text={text} />;
 function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   const context = useContext(TranscriptContext)!;
+  const classification = classifyTranscriptTool({ sessionId: context.sessionId, source, part, workers: context.workers, handoffs: context.handoffs?.handoffs ?? [], nativeRuns: context.runs, nativeHarness: context.harness, readOnly: context.readOnly, codeShares: context.codeShares?.shares });
+  if (classification.kind === "code-share") return <>
+    {classification.shares.map(share => <SharedCodeCard key={share.id} share={share} />)}
+    {!!classification.shares.length && part.error && isCodeShareTool(part) && <p className="notice error" role="alert">The code sharing tool reported an error. The saved snapshot is retained; inspect the tool diagnostics below.</p>}
+    {!classification.shares.length && <PendingCodeShare projection={context.codeShares} running={active(source.status)} failed={part.error} />}
+    {classification.underlying && <TranscriptToolContent part={part} source={source} classification={classification.underlying} />}
+  </>;
+  return <TranscriptToolContent part={part} source={source} classification={classification} />;
+}
+function TranscriptToolContent({ part, source, classification }: { part: ToolPart; source: Message; classification: StandardToolClassification }) {
+  const context = useContext(TranscriptContext)!;
   const native = useNativeSubagents();
-  const classification = classifyTranscriptTool({ sessionId: context.sessionId, source, part, workers: context.workers, handoffs: context.handoffs?.handoffs ?? [], nativeRuns: context.runs, nativeHarness: context.harness, readOnly: context.readOnly });
   if (classification.kind === "native-subagent") {
     const key = classification.key;
     const summary = native?.summaries.get(nativeSubagentId(key));
@@ -136,8 +153,9 @@ function ChatMessageBody() {
    const showSystemLabel = !isUser && source?.role === "system";
   const next = context.messages[sourceIndex + 1];
   const continued = source?.role === "assistant" && next?.role === "assistant";
-  const activity = !!source && isActivityMessage(source);
-  const activityContinued = continued && activity && isActivityMessage(next) && !next.parts.every((_, index) => context.activities?.plan.positions.get(activityPosition(next.id, index)) === null);
+   const hasSharedCode = (source: Message) => source.parts.some(part => part.type === "tool" && (isCodeShareTool(part) || sharesForTool(context.sessionId, source, part, context.codeShares?.shares ?? []).length > 0));
+   const activity = !!source && isActivityMessage(source) && !hasSharedCode(source);
+   const activityContinued = continued && activity && isActivityMessage(next) && !hasSharedCode(next) && !next.parts.every((_, index) => context.activities?.plan.positions.get(activityPosition(next.id, index)) === null);
   const plain = (source?.parts ?? message.content).filter(p => p.type === "text").map(p => p.text).join("\n\n");
   const island = context.pageState?.transcript?.islands.find(island => island.messages.some(message => message.id === source?.id));
   const turnMessages = island?.messages ?? context.messages;
@@ -227,6 +245,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     && !state.messages.some(message => message.id === latestRun.nativeCommandId && message.normalized);
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
   const messages = useMemo(() => claudeReplyPresentation(withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), harness), [state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands, harness]);
+  const codeShares = useCodeShares(state.selected, { enabled: isActive && state.connected, refreshKey: messages, running });
   const transcriptIndex = useTranscriptIndex(messages);
   const runtimeMessages = useMemo(() => projectTranscriptMessages(messages), [messages]);
    const positions = useMemo(() => {
@@ -238,7 +257,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
      }
      return positions;
     }, [state.transcript, state.transcriptPaged, state.compactions, messages, state.nativeHistory]);
-  const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, handoffs: handoffs.handoffs, loading: state.loading, animate: isActive && state.connected && !state.actionBusy, nativeRuns: state.runs, nativeHarness: harness, compactionPositions: positions });
+  const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, handoffs: handoffs.handoffs, loading: state.loading, animate: isActive && state.connected && !state.actionBusy, nativeRuns: state.runs, nativeHarness: harness, compactionPositions: positions, codeShares: codeShares.shares });
   const loadedNativeSubagents = useMemo(() => new Set(messages.flatMap(source => source.parts.flatMap(part => {
     const key = part.type === "tool" ? nativeSubagentKey(state.selected, source, part, state.runs, harness) : null;
     return key ? [nativeSubagentId(key)] : [];
@@ -271,6 +290,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     reviewRequestHandled?.(reviewRequest.requestId);
   }, [isActive, hasRequests, reviewRequest, state.selected, review, reviewRequestHandled]);
   const safety = <>
+    <CodeShareStatus projection={codeShares} />
     {state.transcriptError && <p className="notice error" role="alert">{state.transcriptError}<button type="button" className="text-button" onClick={() => store.reconnect()}>Retry history</button></p>}
     {state.transcript && (state.compactions ?? []).some(record => !state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind !== "unplaced")) && <section aria-label="Compaction lifecycle without a transcript position"><CompactionMarkers records={(state.compactions ?? []).filter(record => !state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind !== "unplaced"))} /></section>}
     <CompactionMarkers records={!hasRequests && review.flow?.path ? state.transcript ? state.compactions?.filter(record => state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind === "tail")) : state.transcriptPaged ? undefined : state.compactions : undefined} />
@@ -280,7 +300,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     disabled: !isActive || state.actionBusy || state.sending || (chainLocked ? state.phase !== "ready" || state.config?.authenticated !== true : !state.connected),
     cancel: () => void store.cancel() });
   const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={review} science={science} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
-   return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow && !hasRequests ? " is-document-review" : ""}`}>
+   return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, codeShares, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow && !hasRequests ? " is-document-review" : ""}`}>
     <SessionSearch root={searchRoot} active={isActive && !(!hasRequests && review.flow?.path)} state={state} />
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}

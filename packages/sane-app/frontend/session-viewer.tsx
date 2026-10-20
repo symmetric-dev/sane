@@ -15,7 +15,9 @@ import { compactionsFor, compactionPositions } from "./compaction";
 import { CompactionMarkers } from "./compaction-ui";
 import type { CompactionRecord } from "../src/oc-contract";
 import { useHandoffs } from "./handoff-client";
-import { store } from "./store";
+import { store, useStore } from "./store";
+import { useCodeShares } from "./code-share-client";
+import { CodeShareStatus } from "./shared-code-card";
 import { getHarnessDescriptor } from "../shared/conversation/harness-capabilities";
 import { claudeReplyPresentation } from "./claude-reply-presentation";
 import { pollWhileVisible } from "./visibility";
@@ -88,9 +90,11 @@ function Viewer({ root }: { root: WorkerRecord }) {
   const transcriptIndex = useTranscriptIndex(messages);
   const runtimeMessages = useMemo(() => projectTranscriptMessages(messages), [messages]);
   const runs = view.sessionId === selected.sessionId ? view.runs : [];
+  const authenticated = useStore(state => state.config?.authenticated === true && state.connected);
+  const codeShares = useCodeShares(selected.sessionId, { enabled: authenticated, refreshKey: messages, running: runs.some(run => active(run.status)) });
   const compactions = view.sessionId === selected.sessionId ? view.compactions : [];
   const positions = useMemo(() => compactionPositions(compactions, messages), [compactions, messages]);
-  const activities = useActivityPresentation({ sessionId: selected.sessionId, messages, workers: projection.workers, deliveries: projection.deliveries, handoffs: handoffs.handoffs, loading: view.loading || view.sessionId !== selected.sessionId, animate: !view.error, nativeRuns: runs, nativeHarness: selected.launch.harness, compactionPositions: positions });
+  const activities = useActivityPresentation({ sessionId: selected.sessionId, messages, workers: projection.workers, deliveries: projection.deliveries, handoffs: handoffs.handoffs, loading: view.loading || view.sessionId !== selected.sessionId, animate: !view.error, nativeRuns: runs, nativeHarness: selected.launch.harness, compactionPositions: positions, codeShares: codeShares.shares });
   const inspection = useActivityInspection({ scope: JSON.stringify(["worker-viewer", root.id, selected.sessionId, selected.launch.harness]), active: view.sessionId === selected.sessionId, plan: activities.plan });
   const open = (w: WorkerRecord) => setTrail(t => t.at(-1)?.id === w.id ? t : [...t, w]);
   const runtime = useExternalStoreRuntime({ messages: runtimeMessages, convertMessage: convertTranscriptMessage, isRunning: runs.some(r => active(r.status)), isSendDisabled: true, onNew: async () => {} });
@@ -98,7 +102,8 @@ function Viewer({ root }: { root: WorkerRecord }) {
     <WorkerCard worker={worker} workers={projection.workers} runs={runs} open={open} />
     {waiting > 0 && <p className="notice" role="status">Waiting on {waiting} permission/question request(s). This viewer cannot answer worker prompts.</p>}
     {view.loading && <p role="status">Loading worker transcript…</p>}{view.error && <p className="notice error" role="alert">{view.error}</p>}
-    <TranscriptContext.Provider value={{ sessionId: selected.sessionId, harness: worker.launch.harness, messages, ...transcriptIndex, runs, workers: projection.workers, deliveries: projection.deliveries, handoffs, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, openWorker: open }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="worker-transcript"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /><CompactionMarkers records={positions.get("")} />{compactions.some(record => record.lifecycle === "running") && <p className="working" role="status">{view.error ? "Compaction state unavailable; waiting for worker evidence to reconnect." : "Compacting context…"}</p>}</ThreadPrimitive.Root></AssistantRuntimeProvider><ActivityInspector inspection={inspection} renderBody={renderActivityInspectorBody} /></TranscriptContext.Provider>
+    <CodeShareStatus projection={codeShares} />
+    <TranscriptContext.Provider value={{ sessionId: selected.sessionId, harness: worker.launch.harness, messages, ...transcriptIndex, runs, workers: projection.workers, deliveries: projection.deliveries, handoffs, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, openWorker: open, codeShares }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="worker-transcript"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /><CompactionMarkers records={positions.get("")} />{compactions.some(record => record.lifecycle === "running") && <p className="working" role="status">{view.error ? "Compaction state unavailable; waiting for worker evidence to reconnect." : "Compacting context…"}</p>}</ThreadPrimitive.Root></AssistantRuntimeProvider><ActivityInspector inspection={inspection} renderBody={renderActivityInspectorBody} /></TranscriptContext.Provider>
     <WorkerSection sessionId={selected.sessionId} open={open} />
   </ShellDialog>;
 }

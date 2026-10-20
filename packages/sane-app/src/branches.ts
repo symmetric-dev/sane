@@ -30,9 +30,11 @@ export class BranchStore {
     this.records = data.operations;
   }
   list() { return structuredClone(this.records); }
-  get(id: string) { return this.list().find(op => op.id === id); }
-  pending(sessionId: string) { return this.list().find(op => !["completed", "failed"].includes(op.state) && (op.sourceId === sessionId || op.destinationId === sessionId)); }
-  replaced(sessionId: string) { return this.list().find(op => op.sourceId === sessionId && op.replace && op.state === "completed"); }
+  get(id: string) { const op = this.records.find(op => op.id === id); return op && structuredClone(op); }
+  pending(sessionId: string) { const op = this.records.find(op => !["completed", "failed"].includes(op.state) && (op.sourceId === sessionId || op.destinationId === sessionId)); return op && structuredClone(op); }
+  replaced(sessionId: string) { const op = this.records.find(op => op.sourceId === sessionId && op.replace && op.state === "completed"); return op && structuredClone(op); }
+  /** Readiness needs root identities, never historical first-message payloads. */
+  blockingSourceIds() { return this.records.filter(op => op.state !== "failed" && (op.state !== "completed" || op.replace)).map(op => op.sourceId); }
   save(operation: BranchOperation) {
     const old = this.records.find(op => op.id === operation.id);
     if (old) {

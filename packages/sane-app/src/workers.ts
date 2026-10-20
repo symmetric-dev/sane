@@ -20,7 +20,7 @@ export type WorkerExecutor = {
   /** Optional evidence fingerprint for terminal observation caching. Must change for
    * every relevant run/log, continuation-delivery, or recovery/ownership change.
    * Return undefined whenever those dependencies cannot be proven stable.
-   * Selection callbacks receive detached metadata without historical results. */
+   * Selection callbacks receive detached scalar metadata, never worker payloads. */
   observationKey?(worker: WorkerSelection): string | undefined;
   cancel(worker: WorkerRecord): Promise<void>;
   /** Synchronous control fence for the entire selected set, before refresh.
@@ -64,14 +64,14 @@ export class WorkerService {
   private occupies(worker: WorkerSelection) { return occupiesExecution(worker, this.executor.hasActiveExecution(worker)); }
   /** Execution slots only. Explicit idle workers are excluded. */
   executionCount(checkout: string, exceptSessionId?: string) {
-    return this.store.listMatching(worker => worker.checkout === checkout && worker.sessionId !== exceptSessionId && this.occupies(worker)).length;
+    return this.store.countMatching(worker => worker.checkout === checkout && worker.sessionId !== exceptSessionId && this.occupies(worker));
   }
   executionOccupants() { return this.store.listMatching(worker => this.occupies(worker)); }
   private unfinishedCount(checkout: string, exceptId?: string) {
-    return this.store.listMatching(worker => worker.checkout === checkout && worker.id !== exceptId && unfinishedExplicit(worker)).length;
+    return this.store.countMatching(worker => worker.checkout === checkout && worker.id !== exceptId && unfinishedExplicit(worker));
   }
   private terminalObservationKey(w: WorkerSelection) {
-    if (!workerTerminal(w) || !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || this.executor.hasActiveExecution(w)) return;
+    if (!workerTerminal(w) || !w.hasOutcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || this.executor.hasActiveExecution(w)) return;
     return this.executor.observationKey?.(w);
   }
   private observationCurrent(w: WorkerSelection) {
@@ -81,13 +81,9 @@ export class WorkerService {
   /** Select before cloning histories. Outbox reconciliation/dispatch remain separate. */
   listForRefresh() { return this.store.listMatching(w => !this.observationCurrent(w)); }
   tree(parentSessionId: string) {
-    const all = this.store.list(), parents = new Set([parentSessionId]), result: WorkerRecord[] = [];
-    for (let changed = true; changed;) {
-      changed = false;
-      for (const w of all) if (parents.has(w.parent.sessionId) && !parents.has(w.sessionId)) { parents.add(w.sessionId); result.push(w); changed = true; }
-    }
-    return result;
+    return this.store.listDescendants(parentSessionId);
   }
+  hasBlockingDescendants(parentSessionId: string) { return this.store.hasBlockingDescendants(parentSessionId); }
   async start(caller: WorkerCaller, input: WorkerStart, assertActive: () => void = () => {}) {
     if (!input || !isWorkerAgentId(input.worker) || typeof input.requestId !== "string" || !input.requestId || input.requestId.length > 200 || typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 100000 || input.context !== undefined && (typeof input.context !== "string" || input.context.length > 100000)) error("invalid-worker-input", "Worker role, request ID and bounded prompt/context text required");
     const jobs = workerJobsProblem(input.worker, input.jobs);
@@ -159,15 +155,15 @@ export class WorkerService {
     return change.results ? this.refresh(updated) : updated;
   }
   private async scoped(caller: WorkerCaller, ids?: string[]) {
-    const p = await this.executor.parent(caller), tree = this.tree(p.sessionId);
-    if (ids !== undefined && (!Array.isArray(ids) || ids.length > 256 || ids.some(id => !tree.some(w => w.id === id)))) error("worker-scope", "Workers must belong to the caller's descendant tree");
-    return ids ? tree.filter(w => ids.includes(w.id)) : tree;
+    const p = await this.executor.parent(caller), descendants = new Set(this.store.descendantIds(p.sessionId));
+    if (ids !== undefined && (!Array.isArray(ids) || ids.length > 256 || ids.some(id => !descendants.has(id)))) error("worker-scope", "Workers must belong to the caller's descendant tree");
+    return this.store.listDescendants(p.sessionId, ids);
   }
   async status(caller: WorkerCaller, ids?: string[]) { return Promise.all((await this.scoped(caller, ids)).map(async w => this.present(await this.refresh(w)))); }
   /** Derived child-wait is not persisted, so it cannot clobber a newer parent or user wait. */
   private present(worker: WorkerRecord): WorkerRecord {
     if (!isExplicitWorker(worker) || worker.assignment === "terminal" || userOrParentWaitOpen(worker)) return worker;
-    if (this.tree(worker.sessionId).some(child => !workerTerminal(child) || continuationActive(child))) return { ...worker, wait: { reason: "children", since: worker.wait?.since ?? worker.updatedAt } };
+    if (this.store.hasMatchingDescendant(worker.sessionId, child => !workerTerminal(child) || continuationActive(child))) return { ...worker, wait: { reason: "children", since: worker.wait?.since ?? worker.updatedAt } };
     return worker;
   }
   async result(caller: WorkerCaller, id: string) { return (await this.status(caller, [id]))[0]!; }
@@ -195,9 +191,9 @@ export class WorkerService {
   }
   /** Authenticated App action; no native caller or active parent turn required. */
   async cancelForSession(parentSessionId: string, ids: string[] | "all", includeDescendants = false) {
-    const tree = this.tree(parentSessionId);
-    if (ids !== "all" && (!Array.isArray(ids) || !ids.length || ids.length > 256 || ids.some(id => !tree.some(w => w.id === id)))) error("worker-scope", "Explicit workers must belong to the selected parent session's tree");
-    return this.cancelSelected(ids === "all" ? tree : tree.filter(w => ids.includes(w.id)), includeDescendants);
+    const descendants = new Set(this.store.descendantIds(parentSessionId));
+    if (ids !== "all" && (!Array.isArray(ids) || !ids.length || ids.length > 256 || ids.some(id => !descendants.has(id)))) error("worker-scope", "Explicit workers must belong to the selected parent session's tree");
+    return this.cancelSelected(this.store.listDescendants(parentSessionId, ids === "all" ? undefined : ids), includeDescendants);
   }
   private async cancelSelected(selected: WorkerRecord[], includeDescendants: boolean) {
     if (includeDescendants) selected = [...new Map(selected.flatMap(w => [w, ...this.tree(w.sessionId)]).map(w => [w.id, w])).values()];

@@ -5,12 +5,15 @@ import { isHandoffTool, sentHandoffs } from "./handoff-presentation";
 import { nativeSubagentKey } from "./native-subagent-presentation";
 import { active, type Harness, type Message, type Run, type TextPart, type ToolPart } from "./types";
 import { dispatchedWorkers } from "./worker-presentation";
+import type { CodeShareRecord } from "../shared/code-share-contract";
+import { isCodeShareTool, sharesForTool } from "./code-share-presentation";
 
 type ActivityPart = Extract<TextPart, { type: "reasoning" }> | ToolPart;
 export type ActivityEntry = { id: string; messageId: string; index: number; type: "reasoning" | "tool"; name: string; status?: string; error?: boolean };
 export type ActivityDetail = { id: string; source: Message; index: number; part: ActivityPart };
 export type ActivitySegment = { id: string; type: ActivityEntry["type"]; name: string; entries: ActivityEntry[]; status?: string; error?: boolean };
-export type TranscriptToolClassification = { kind: "activity" } | { kind: "native-subagent"; key: NativeSubagentKey } | { kind: "handoff"; handoffs: HandoffPresentation[] } | { kind: "pending-handoff" } | { kind: "worker"; workers: WorkerRecord[] };
+export type StandardToolClassification = { kind: "activity" } | { kind: "native-subagent"; key: NativeSubagentKey } | { kind: "handoff"; handoffs: HandoffPresentation[] } | { kind: "pending-handoff" } | { kind: "worker"; workers: WorkerRecord[] };
+export type TranscriptToolClassification = StandardToolClassification | { kind: "code-share"; shares: CodeShareRecord[]; underlying?: StandardToolClassification };
 
 export function activityEntryId(source: Message, part: ActivityPart, index: number): string {
   let ordinal = 0;
@@ -45,18 +48,24 @@ export function resolveActivityDetail(entry: ActivityEntry, messagesById: Readon
   }
 }
 
-export function classifyTranscriptTool({ sessionId, source, part, workers, handoffs, nativeRuns, nativeHarness, readOnly }: {
-  sessionId: string; source: Message; part: ToolPart; workers: WorkerRecord[]; handoffs: HandoffPresentation[]; nativeRuns: Run[]; nativeHarness: Harness; readOnly?: boolean;
+export function classifyTranscriptTool({ sessionId, source, part, workers, handoffs, nativeRuns, nativeHarness, readOnly, codeShares = [] }: {
+  sessionId: string; source: Message; part: ToolPart; workers: WorkerRecord[]; handoffs: HandoffPresentation[]; nativeRuns: Run[]; nativeHarness: Harness; readOnly?: boolean; codeShares?: readonly CodeShareRecord[];
 }): TranscriptToolClassification {
-  if (readOnly) return { kind: "activity" };
-  const key = nativeSubagentKey(sessionId, source, part, nativeRuns, nativeHarness);
-  if (key) return { kind: "native-subagent", key };
-  const sent = sentHandoffs(part, sessionId, handoffs);
-  if (sent.length) return { kind: "handoff", handoffs: sent };
-  if (isHandoffTool(part)) return { kind: "pending-handoff" };
-  const dispatched = dispatchedWorkers(sessionId, source, part, workers);
-  if (dispatched.length) return { kind: "worker", workers: dispatched };
-  return { kind: "activity" };
+  const shares = sharesForTool(sessionId, source, part, codeShares);
+  const directShare = isCodeShareTool(part);
+  if (shares.length || directShare) return { kind: "code-share", shares, ...(!directShare ? { underlying: classifyStandardTool() } : part.error ? { underlying: { kind: "activity" as const } } : {}) };
+  return classifyStandardTool();
+  function classifyStandardTool(): StandardToolClassification {
+    if (readOnly) return { kind: "activity" };
+    const key = nativeSubagentKey(sessionId, source, part, nativeRuns, nativeHarness);
+    if (key) return { kind: "native-subagent", key };
+    const sent = sentHandoffs(part, sessionId, handoffs);
+    if (sent.length) return { kind: "handoff", handoffs: sent };
+    if (isHandoffTool(part)) return { kind: "pending-handoff" };
+    const dispatched = dispatchedWorkers(sessionId, source, part, workers);
+    if (dispatched.length) return { kind: "worker", workers: dispatched };
+    return { kind: "activity" };
+  }
 }
 
 export function consecutiveActivitySegments(entries: readonly ActivityEntry[]): ActivitySegment[] {

@@ -1570,7 +1570,17 @@ export class ChatStore {
       } catch (error) { if (current() && !this.expired(error) && read === this.compactReadSerial) this.update({ compactState: null, compactError: this.compactReadFeedback(error) }); }
     };
     const workers = async () => {
-      if (!this.client.workers || !this.workerPollDue(conversation)) return;
+      if (!this.client.workers) return;
+      // Match legacy acquisition: the listing proves worker-free membership,
+      // but never discard recovered deliveries or suppress an errored read.
+      const knownWorkers = workersFor(id);
+      const workerQuiet = !!conversation && !knownWorkers.workers.length && !knownWorkers.deliveries.length && !knownWorkers.error
+        && (conversation.directWorkerCount ?? 0) === 0 && !conversation.worker;
+      if (workerQuiet) {
+        if (current()) { this.recordWorkerPoll(conversation); this.update({ workerLoading: false }); }
+        return;
+      }
+      if (!this.workerPollDue(conversation)) return;
       if (!this.workerReady) this.update({ workerLoading: true });
       try { const projection = await this.client.workers(id, signal); if (current()) publishWorkers(id, projection); }
       catch (error) { if (current() && !this.expired(error)) publishWorkers(id, { ...workersFor(id), error: error instanceof Error ? error.message : "Worker status unavailable" }); }
@@ -1881,15 +1891,13 @@ export class ChatStore {
     }
   }
   send = async (text: string, nativeStopped = false, options: { preserveDraft?: boolean } = {}): Promise<SendOutcome> => {
-    const initialSelection = this.state.selected;
-    const pendingFence = this.pendingInputFence();
-    const initialDraft = this.draft(), initialDraftKey = this.draftKey();
-    if (this.pendingInputSupported() && this.state.selected && (!await this.freshPendingInputs(pendingFence) || pendingFence !== this.pendingInputFence())) return { status: "blocked" };
-    if (pendingFence !== this.pendingInputFence() || initialDraftKey !== this.draftKey() || !options.preserveDraft && !equalValue(initialDraft, this.draft())) return { status: "blocked" };
+    // Ordinary sends go directly to the authoritative POST, which checks durable
+    // input chains both before preparation and at dispatch. Queue/config GETs
+    // cannot make that check atomic and used to delay even the local feedback.
+    // Explicit queue mutations retain their fresh-context/recovery preflights.
     if (this.pendingInputChainLocked()) { this.update({ submissionError: "Resolve the existing input chain before sending ordinary input." }); return { status: "blocked" }; }
     if (this.state.availability.queueAfterRunId || this.state.availability.nativeQueue) { this.update({ submissionError: "Wait for the current run to finish before sending." }); return { status: "blocked" }; }
     if (options.preserveDraft && !this.state.selected) return { status: "blocked" };
-    if (this.state.selected !== initialSelection) return { status: "blocked" };
     const scienceSnapshots = options.preserveDraft ? [] : structuredClone(this.draft().scienceSnapshots ?? []);
     if (scienceSnapshots.length && (!this.state.selected || this.draft().text !== text || this.state.availability.queueAfterRunId || this.state.availability.nativeQueue)) { this.update({ submissionError: "Science snapshots require an ordinary idle-conversation send." }); return { status: "blocked" }; }
     const command = compactCommand(text);

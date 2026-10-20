@@ -3,11 +3,17 @@ import type { ConversationUpdateSource } from "../shared/conversation/conversati
 import { legacyProfileId } from "./agent-profiles-contract";
 import type { Admission } from "./app-store";
 import type { Association } from "./catalog-contract";
-import { projectClaudeFollowups } from "./claude-followup-projection";
+import { ClaudeFollowupProjectionCache } from "./claude-followup-projection";
 import type { ClaudeRunService } from "./claude-run-service";
-import { conversationRecency } from "./conversation-recency";
+import { ConversationRecencyCache } from "./conversation-recency";
 import type { Event, Run, Session } from "./history";
 import type { SessionListProjection } from "./session-list-projection";
+
+// Weak journal keys isolate bridge instances and release replaced/unloaded logs.
+// Only presentation facts are cached; liveness and readiness remain fresh reads.
+const recency = new ConversationRecencyCache();
+const followupProjection = new ClaudeFollowupProjectionCache();
+const emptyEvents: readonly Event[] = [];
 
 export type SessionListAvailability = { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string; liveInputRunId?: string };
 
@@ -25,6 +31,7 @@ export interface SessionListRow {
 export interface SessionListResponseInput {
   rows: readonly SessionListRow[];
   runs: readonly Run[];
+  /** Loaded journals append in place; replay/materialization uses a new array. */
   events: ReadonlyMap<string, readonly Event[]>;
   indexes: SessionListProjection;
   native: { active: Readonly<Record<string, { type: string }>>; error: string };
@@ -64,13 +71,21 @@ export function sessionDisplayTitle(session: Session, runs: readonly Run[], even
  * awaits. The sole service dependency is the existing followup liveness reader. */
 export function sessionListResponse(input: SessionListResponseInput, followups: Pick<ClaudeRunService, "followupPending">) {
   const { runs, events, indexes } = input;
-  const updatedAt = conversationRecency(runs, events);
-  const runsById = new Map(runs.map(run => [run.runId, run]));
+  const updatedAt = recency.project(runs, events);
+  const runsById = new Map<string, Run>(), runsBySession = new Map<string, Run[]>();
   // A failed prompt submission also consumes the recovery draft; compact does not.
-  const prompted = new Set(runs.filter(run => run.operation !== "compact").map(run => run.sessionId));
+  const prompted = new Set<string>();
+  for (const run of runs) {
+    runsById.set(run.runId, run);
+    const sessionRuns = runsBySession.get(run.sessionId);
+    if (sessionRuns) sessionRuns.push(run);
+    else runsBySession.set(run.sessionId, [run]);
+    if (run.operation !== "compact") prompted.add(run.sessionId);
+  }
   const branchDrafts = new Map(indexes.branches.filter(op => op.state === "completed" && op.firstMessage && !op.firstRunId && !prompted.has(op.destinationId)).map(op => [op.destinationId, op.firstMessage]));
   const sessions = input.rows.map(({ session, availability, association, admission, updateSource, activity }) => {
     const run = session.lastRunId ? runsById.get(session.lastRunId) : undefined;
+    const sessionRuns = runsBySession.get(session.sessionId) ?? [];
     return {
       ...session,
       ...(run?.sessionId === session.sessionId ? { lastRunStatus: run.status, lastRunOperation: run.operation ?? "prompt", lastRunEndedAt: run.endedAt } : {}),
@@ -85,11 +100,11 @@ export function sessionListResponse(input: SessionListResponseInput, followups: 
       ...(indexes.workerProtocol.has(session.sessionId) ? { workerProtocol: indexes.workerProtocol.get(session.sessionId) } : {}),
       directWorkerCount: indexes.workerCounts.get(session.sessionId) ?? 0,
       profileId: session.profileId ?? legacyProfileId(session.harness ?? "claude-code", session.agent),
-      title: sessionDisplayTitle(session, runs, events),
+      title: sessionDisplayTitle(session, sessionRuns, events),
       admission,
       ...association,
       ...nativeState(session, availability, input.native),
-      ...(session.harness === "claude-code" ? { queuedFollowups: projectClaudeFollowups(session.sessionId, runs, id => events.get(id) ?? [], id => followups.followupPending(id)) } : {}),
+      ...(session.harness === "claude-code" ? { queuedFollowups: followupProjection.project(session.sessionId, sessionRuns, id => events.get(id) ?? emptyEvents, id => followups.followupPending(id)) } : {}),
     };
   });
   return { sessions, admissions: input.admissions, availability: input.availability };

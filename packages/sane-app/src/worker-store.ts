@@ -3,25 +3,33 @@ import { join } from "node:path";
 import { atomicAppRecord } from "./app-store";
 import { uuid } from "./history";
 import { isWorkerAgentId, workerJobsProblem } from "sane-core/agent-catalog";
-import type { WorkerAttention, WorkerCompletion, WorkerExchange, WorkerOperationReceipt, WorkerProtocolPin, WorkerRecord, WorkerRecords, WorkerDelivery, WorkerWait } from "./worker-contract";
+import type { SessionListDelivery, SessionListWorker, WorkerAttention, WorkerCompletion, WorkerExchange, WorkerOperationReceipt, WorkerProtocolPin, WorkerRecord, WorkerRecords, WorkerDelivery, WorkerWait } from "./worker-contract";
 import { workerResults } from "./worker-contract";
-import { completionBlockers, sameProtocolPin, validProtocolPin, type CompletionBlocker } from "./worker-protocol";
+import { completionBlockers, sameProtocolPin, validProtocolPin, workerBlocksParentGate, type CompletionBlocker } from "./worker-protocol";
 
-/** Detached selection metadata; complete result history is only cloned after selection. */
-export type WorkerSelection = Omit<WorkerRecord, "results"> & {
+/** Detached scalar selection metadata, never a truncated WorkerRecord. */
+export type WorkerSelection = Pick<WorkerRecord, "id" | "sessionId" | "runId" | "checkout" | "state" | "assignment" | "cancelRequestedAt"> & {
+  parent: Pick<WorkerRecord["parent"], "sessionId">;
+  protocol?: Pick<WorkerProtocolPin, "id">;
+  continuation?: Pick<NonNullable<WorkerRecord["continuation"]>, "runId" | "state">;
+  hasOutcome: boolean;
   /** Any historical result may still need restoration of legacy truncated output. */
   requiresLegacyOutputObservation: boolean;
 };
 export function workerSelection(worker: WorkerRecord): WorkerSelection {
-  const { results, ...selection } = worker;
-  return { ...structuredClone(selection), requiresLegacyOutputObservation: workerResults(worker).some(result => result.outcome.summary.length === 4000) };
+  return {
+    id: worker.id, sessionId: worker.sessionId, runId: worker.runId, checkout: worker.checkout,
+    state: worker.state, assignment: worker.assignment, cancelRequestedAt: worker.cancelRequestedAt,
+    parent: { sessionId: worker.parent.sessionId }, hasOutcome: !!worker.outcome,
+    ...(worker.protocol ? { protocol: { id: worker.protocol.id } } : {}),
+    ...(worker.continuation ? { continuation: { runId: worker.continuation.runId, state: worker.continuation.state } } : {}),
+    requiresLegacyOutputObservation: workerResults(worker).some(result => result.outcome.summary.length === 4000),
+  };
 }
 
 const PROTOCOL_OPS = ["complete", "notify", "message-parent", "message-child"];
 const EXCHANGE_STATES = ["queued", "claimed", "acceptance-unknown", "accepted", "not-submitted"];
-function executionRun(worker: WorkerRecord, runId: string) {
-  return worker.runId === runId || worker.continuation?.runId === runId || !!worker.exchanges?.some(exchange => exchange.delivery.runId === runId);
-}
+const CLOSED_EXCHANGE_RECIPIENT = "Recipient assignment is no longer open; the exchange remains queued";
 function descendants(workers: WorkerRecord[], sessionId: string) {
   const parents = new Set([sessionId]), result: WorkerRecord[] = [];
   for (let changed = true; changed;) {
@@ -64,6 +72,14 @@ function validWorkerProtocol(worker: WorkerRecord) {
 /** Synchronous publication makes reservations and consumption atomic within the App owner. */
 export class WorkerStore {
   private records: WorkerRecords;
+  private workersById = new Map<string, WorkerRecord>();
+  private workersBySession = new Map<string, WorkerRecord>();
+  private workersByRequest = new Map<string, WorkerRecord>();
+  private workersByRun = new Map<string, WorkerRecord>();
+  private workersByExecutionRun = new Map<string, WorkerRecord>();
+  private childrenByParent = new Map<string, WorkerRecord[]>();
+  private workerPositions = new Map<string, number>();
+  private exchangesById = new Map<string, WorkerExchange>();
   private deliveriesByParent = new Map<string, WorkerDelivery[]>();
   private activeDeliveries: WorkerDelivery[] = [];
   private activeDeliveryParents = new Set<string>();
@@ -74,8 +90,43 @@ export class WorkerStore {
     this.records = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { version: 1, workers: [], suppressedParents: [] };
     this.normalize(this.records);
     this.validate(this.records);
+    this.indexWorkers();
     this.indexDeliveries();
     this.indexExchanges();
+  }
+  private indexWorkers() {
+    this.workersById.clear(); this.workersBySession.clear(); this.workersByRequest.clear();
+    this.workersByRun.clear(); this.workersByExecutionRun.clear(); this.childrenByParent.clear();
+    this.workerPositions.clear(); this.exchangesById.clear();
+    for (const [position, worker] of this.records.workers.entries()) {
+      this.workersById.set(worker.id, worker); this.workersBySession.set(worker.sessionId, worker);
+      this.workersByRequest.set(JSON.stringify([worker.parent.sessionId, worker.input.requestId]), worker);
+      this.workerPositions.set(worker.id, position);
+      const children = this.childrenByParent.get(worker.parent.sessionId) ?? [];
+      children.push(worker); this.childrenByParent.set(worker.parent.sessionId, children);
+      if (worker.runId && !this.workersByRun.has(worker.runId)) this.workersByRun.set(worker.runId, worker);
+      const executionRuns = [worker.runId, worker.continuation?.runId, ...(worker.exchanges ?? []).map(exchange => exchange.delivery.runId)];
+      for (const runId of executionRuns) if (typeof runId === "string" && !this.workersByExecutionRun.has(runId)) this.workersByExecutionRun.set(runId, worker);
+      for (const exchange of worker.exchanges ?? []) if (!this.exchangesById.has(exchange.id)) this.exchangesById.set(exchange.id, exchange);
+    }
+  }
+  /** Match the old repeated store-order scan, including children recorded before
+   * their parents. Each backwards edge moves discovery to the following pass. */
+  private descendantRecords(rootSessionId: string): WorkerRecord[] {
+    const seen = new Set([rootSessionId]);
+    const queue = [{ sessionId: rootSessionId, pass: 0, position: -1 }];
+    const found: { worker: WorkerRecord; pass: number; position: number }[] = [];
+    for (let i = 0; i < queue.length; i++) {
+      const parent = queue[i]!;
+      for (const worker of this.childrenByParent.get(parent.sessionId) ?? []) {
+        if (seen.has(worker.sessionId)) continue;
+        seen.add(worker.sessionId);
+        const position = this.workerPositions.get(worker.id)!;
+        const pass = parent.pass + (position < parent.position ? 1 : 0);
+        found.push({ worker, pass, position }); queue.push({ sessionId: worker.sessionId, pass, position });
+      }
+    }
+    return found.sort((a, b) => a.pass - b.pass || a.position - b.position).map(row => row.worker);
   }
   private indexDeliveries() {
     this.deliveriesByParent.clear();
@@ -149,35 +200,94 @@ export class WorkerStore {
   listMatching(matches: (worker: WorkerSelection) => boolean) {
     return structuredClone(this.records.workers.filter(worker => matches(workerSelection(worker))));
   }
+  countMatching(matches: (worker: WorkerSelection) => boolean) {
+    let count = 0;
+    for (const worker of this.records.workers) if (matches(workerSelection(worker))) count++;
+    return count;
+  }
+  descendantIds(rootSessionId: string) { return this.descendantRecords(rootSessionId).map(worker => worker.id); }
+  listDescendants(rootSessionId: string, ids?: readonly string[]) {
+    const selected = ids === undefined ? undefined : new Set(ids);
+    return structuredClone(this.descendantRecords(rootSessionId).filter(worker => !selected || selected.has(worker.id)));
+  }
+  hasMatchingDescendant(rootSessionId: string, matches: (worker: WorkerSelection) => boolean) {
+    return this.descendantRecords(rootSessionId).some(worker => matches(workerSelection(worker)));
+  }
+  hasBlockingDescendants(rootSessionId: string) {
+    return this.descendantRecords(rootSessionId).some(workerBlocksParentGate);
+  }
+  hasDescendant(rootSessionId: string, candidateSessionId: string) {
+    if (rootSessionId === candidateSessionId) return false;
+    const seen = new Set<string>();
+    let worker = this.workersBySession.get(candidateSessionId);
+    while (worker && !seen.has(worker.sessionId)) {
+      seen.add(worker.sessionId);
+      if (worker.parent.sessionId === rootSessionId) return true;
+      worker = this.workersBySession.get(worker.parent.sessionId);
+    }
+    return false;
+  }
+  sessionListWorkers(): SessionListWorker[] {
+    return this.records.workers.map(worker => ({
+      id: worker.id, sessionId: worker.sessionId, state: worker.state, assignment: worker.assignment,
+      parent: { sessionId: worker.parent.sessionId, runId: worker.parent.runId, toolCallId: worker.parent.toolCallId },
+      hasOutcome: !!worker.outcome,
+      ...(worker.protocol ? { protocol: { id: worker.protocol.id } } : {}),
+      ...(worker.wait ? { wait: { reason: worker.wait.reason } } : {}),
+      ...(worker.continuation ? { continuation: { state: worker.continuation.state } } : {}),
+    }));
+  }
+  sessionListDeliveries(): SessionListDelivery[] {
+    return (this.records.deliveries ?? []).map(delivery => ({ state: delivery.state, parentSessionId: delivery.parentSessionId }));
+  }
+  unfinishedSessionIds() { return this.records.workers.filter(worker => !worker.outcome).map(worker => worker.sessionId); }
+  outstandingAttention(limit = 64) {
+    const result: { workerId: string; workerSessionId: string; parentSessionId: string; requestId: string }[] = [];
+    if (!Number.isFinite(limit) || limit <= 0) return result;
+    const bound = Math.floor(limit);
+    for (const worker of this.records.workers) {
+      if (worker.protocol?.id !== "explicit-v1" || worker.wait?.reason !== "user" || !worker.wait.correlationId) continue;
+      if (result.length >= bound) break;
+      result.push({ workerId: worker.id, workerSessionId: worker.sessionId, parentSessionId: worker.parent.sessionId, requestId: worker.wait.correlationId });
+    }
+    return result;
+  }
   get(id: string) {
-    const w = this.records.workers.find(w => w.id === id);
+    const w = this.workersById.get(id);
     return w ? structuredClone(w) : undefined;
   }
   /** Historical reservation identity, independent of the current parent run or worker state. */
   getByRequest(parentSessionId: string, requestId: string) {
-    const w = this.records.workers.find(w => w.parent.sessionId === parentSessionId && w.input.requestId === requestId);
+    const w = this.workersByRequest.get(JSON.stringify([parentSessionId, requestId]));
     return w ? structuredClone(w) : undefined;
   }
   getBySession(sessionId: string) {
-    const w = this.records.workers.find(w => w.sessionId === sessionId);
+    const w = this.workersBySession.get(sessionId);
     return w ? structuredClone(w) : undefined;
   }
-  hasSession(sessionId: string) { return this.records.workers.some(w => w.sessionId === sessionId); }
+  hasSession(sessionId: string) { return this.workersBySession.has(sessionId); }
   /** Match only the recorded worker run, not continuation runs or historical result runs. */
   getByRun(runId: string) {
-    const w = this.records.workers.find(w => w.runId === runId);
+    const w = this.workersByRun.get(runId);
     return w ? structuredClone(w) : undefined;
   }
-  hasRun(runId: string) { return this.records.workers.some(w => w.runId === runId); }
+  hasRun(runId: string) { return this.workersByRun.has(runId); }
   /** Initial run, continuation, or exchange delivery. getByRun remains the initial run only. */
   getByExecutionRun(runId: string) {
-    const w = this.records.workers.find(worker => executionRun(worker, runId));
+    const w = this.workersByExecutionRun.get(runId);
     return w ? structuredClone(w) : undefined;
   }
-  hasExecutionRun(runId: string) { return this.records.workers.some(worker => executionRun(worker, runId)); }
+  hasExecutionRun(runId: string) { return this.workersByExecutionRun.has(runId); }
   hasActiveExchange(sessionId: string) { return this.activeExchangeRecipients.has(sessionId); }
   queuedExchanges(now = Date.now()) {
-    return this.records.workers.flatMap(worker => (worker.exchanges ?? []).filter(exchange => exchange.delivery.state === "queued" && (!exchange.delivery.retryAfter || Date.parse(exchange.delivery.retryAfter) <= now)).map(exchange => ({ workerId: worker.id, exchange: structuredClone(exchange) }))).sort((a, b) => a.exchange.createdAt.localeCompare(b.exchange.createdAt) || a.exchange.id.localeCompare(b.exchange.id));
+    return this.records.workers.flatMap(worker => (worker.exchanges ?? []).filter(exchange => {
+      if (exchange.delivery.state !== "queued") return false;
+      if (exchange.delivery.retryAfter && !(Date.parse(exchange.delivery.retryAfter) <= now)) return false;
+      const recipient = this.workersBySession.get(exchange.recipient.sessionId);
+      // Publish the ordinary refusal once before parking a terminal assignment.
+      // Closing is temporary: keep reconsidering it, and never infer acceptance.
+      return recipient?.assignment !== "terminal" || exchange.delivery.error !== CLOSED_EXCHANGE_RECIPIENT;
+    }).map(exchange => ({ workerId: worker.id, exchange: structuredClone(exchange) }))).sort((a, b) => a.exchange.createdAt.localeCompare(b.exchange.createdAt) || a.exchange.id.localeCompare(b.exchange.id));
   }
   exchangesToReconcile() {
     return this.records.workers.flatMap(worker => (worker.exchanges ?? []).filter(exchange => exchange.delivery.state === "claimed" || exchange.delivery.state === "acceptance-unknown").map(exchange => ({ workerId: worker.id, exchange: structuredClone(exchange) })));
@@ -187,7 +297,7 @@ export class WorkerStore {
     const ids = new Set(delivery.workerIds);
     return structuredClone(this.records.workers.filter(w => ids.has(w.id)));
   }
-  private commit(next: WorkerRecords) { this.normalize(next); this.validate(next); atomicAppRecord(this.dataDir, "workers.json", next); this.records = next; this.generation++; this.indexDeliveries(); this.indexExchanges(); }
+  private commit(next: WorkerRecords) { this.normalize(next); this.validate(next); atomicAppRecord(this.dataDir, "workers.json", next); this.records = next; this.generation++; this.indexWorkers(); this.indexDeliveries(); this.indexExchanges(); }
   insert(w: WorkerRecord) { this.commit({ ...this.records, workers: [...this.records.workers, structuredClone(w)] }); }
   update(id: string, change: Partial<WorkerRecord>) {
     const next = structuredClone(this.records), w = next.workers.find(w => w.id === id);
@@ -367,6 +477,10 @@ export class WorkerStore {
     return structuredClone(exchange);
   }
   noteExchange(exchangeId: string, error: string) {
+    const current = this.exchangesById.get(exchangeId);
+    // No await separates this read from publication. Repeated refusals must not
+    // copy the store, change its revision, or write unchanged durable evidence.
+    if (!current || current.delivery.error === error) return;
     const next = structuredClone(this.records);
     const located = next.workers.flatMap(worker => (worker.exchanges ?? []).map(exchange => ({ worker, exchange }))).find(item => item.exchange.id === exchangeId);
     if (!located || located.exchange.delivery.error === error) return;

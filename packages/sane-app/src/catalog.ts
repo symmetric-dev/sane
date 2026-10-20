@@ -249,12 +249,20 @@ export class CatalogService {
       let a: Association;
       if (workspaceId !== undefined || worktreeId !== undefined) {
         if (typeof workspaceId !== "string" || typeof worktreeId !== "string") error(400, "association-required", "workspaceId and worktreeId are required together");
-        const bound = await this.binding(workspaceId, worktreeId), discovered = await this.discover(cwd);
-        if (discovered.root !== bound.cwd) error(409, "cwd-worktree-mismatch", "cwd belongs to a different worktree (including nested repositories)");
+        const bound = await this.binding(workspaceId, worktreeId);
+        // binding already discovers the canonical root. Discover again only for
+        // a different cwd, where nested repository detection is still required.
+        if (cwd !== bound.cwd && (await this.discover(cwd)).root !== bound.cwd) error(409, "cwd-worktree-mismatch", "cwd belongs to a different worktree (including nested repositories)");
         a = { workspaceId, worktreeId, association: "resolved" };
-      } else if (prior) { await this.binding(prior.workspaceId!, prior.worktreeId!); const d = await this.discover(cwd); const w = this.find(prior.workspaceId!); if (d.root !== w.worktrees.find(t => t.worktreeId === prior.worktreeId)!.root) error(409, "cwd-worktree-mismatch", "Conversation cwd binding changed"); a = prior; }
-      else a = await this.registerInternal(cwd);
+      } else if (prior) {
+        const bound = await this.binding(prior.workspaceId!, prior.worktreeId!);
+        if (cwd !== bound.cwd && (await this.discover(cwd)).root !== bound.cwd) error(409, "cwd-worktree-mismatch", "Conversation cwd binding changed");
+        a = prior;
+      } else a = await this.registerInternal(cwd);
       if (prior && (prior.workspaceId !== a.workspaceId || prior.worktreeId !== a.worktreeId)) error(409, "association-immutable", "Conversation association cannot change");
+      // Existing immutable associations are already durable. Do not rewrite and
+      // fsync the entire catalog for every follow-up message after revalidation.
+      if (prior) return prior;
       this.catalog.associations[id] = a; await this.save("catalog.json", this.catalog); return a;
     });
   }

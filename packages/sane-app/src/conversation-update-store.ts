@@ -94,6 +94,15 @@ export function isConversationUpdateExpectedCheckpoint(value: unknown): value is
   } catch { return false; }
 }
 function bytes(value: unknown) { return encoder.encode(JSON.stringify(value)).byteLength; }
+/** Validated JSON owned by the store. Freeze once at its capture/load boundary,
+ * so sharing untouched components cannot expose committed state to callbacks. */
+function freezeJson<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeJson(child);
+    Object.freeze(value);
+  }
+  return value;
+}
 function json(value: unknown, depth = 0): value is UpdateJson {
   if (depth > 32) return false;
   if (value === null || typeof value === "boolean" || typeof value === "string") return true;
@@ -182,8 +191,12 @@ function sameCandidate(a: ConversationUpdateCandidate, b: ConversationUpdateCand
 /** Optional derived feed. Its queue and all failures are isolated from the primary journal. */
 export class ConversationUpdateStore {
   private record?: RecordValue;
-  /** Published checkpoint objects by full key. Not persisted. Rebuilt only when `this.record` is assigned. */
+  /** Published immutable objects only; indexes advance after successful persistence. */
   private checkpointsByKey = new Map<string, ConversationUpdateCheckpoint>();
+  private checkpointPositions = new Map<string, number>();
+  private latestById = new Map<string, ConversationUpdate>();
+  private boundariesById = new Map<string, string>();
+  private coverageCache?: ConversationUpdateCoverage[];
   private health: ConversationUpdateHealth = { state: "initializing" };
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
@@ -191,9 +204,19 @@ export class ConversationUpdateStore {
   constructor(private readonly dataDir: string, readonly storeId: string,
     private readonly options: { save?: typeof atomicAppRecord; now?: () => string } = {}) {}
 
-  /** Index the objects in the current record. An unset record yields an empty map. */
-  private reindexCheckpoints() {
+  /** Full rebuild only at load (or after row pruning for retained-row indexes). */
+  private reindex() {
     this.checkpointsByKey = new Map((this.record?.checkpoints ?? []).map(checkpoint => [checkpoint.key, checkpoint]));
+    this.checkpointPositions = new Map((this.record?.checkpoints ?? []).map((checkpoint, index) => [checkpoint.key, index]));
+    this.reindexRows();
+    this.coverageCache = undefined;
+  }
+  private reindexRows() {
+    this.latestById = new Map(); this.boundariesById = new Map();
+    for (const row of this.record?.rows ?? []) {
+      this.latestById.set(row.id, row);
+      if (row.nativeBoundaryId !== undefined) this.boundariesById.set(row.id, row.nativeBoundaryId);
+    }
   }
 
   /** ENOENT alone creates an epoch. Invalid or unsafe existing files are never overwritten. */
@@ -213,10 +236,10 @@ export class ConversationUpdateStore {
         (this.options.save ?? atomicAppRecord)(this.dataDir, "conversation-updates.json", record);
       }
       if (!validRecord(record, this.storeId)) throw new Error("Corrupt conversation-updates.json; operator reconciliation required");
-      this.record = record; this.reindexCheckpoints(); this.health = { state: "ready" }; return true;
+      this.record = freezeJson(record); this.reindex(); this.health = { state: "ready" }; return true;
     } catch {
       this.health = { state: "unavailable", reason: "Conversation update storage requires reconciliation" };
-      if (!this.record) this.reindexCheckpoints();
+      if (!this.record) this.reindex();
       return false;
     }
   }
@@ -249,25 +272,30 @@ export class ConversationUpdateStore {
     } catch { return false; }
   }
   getUpdate(id: string): ConversationUpdate | undefined {
-    const row = this.record?.rows.findLast(row => row.id === id);
+    const row = this.latestById.get(id);
     return row && structuredClone(row);
   }
   getCoverage(): ConversationUpdateCoverage[] {
-    const sources = new Map<string, ConversationUpdateCoverage>();
-    for (const checkpoint of this.record?.checkpoints ?? []) {
-      if (JSON.parse(checkpoint.key)[0] === "worker-attention") continue;
-      const native = JSON.parse(checkpoint.key)[0] === "native";
-      const coverage = checkpoint.coverage ?? { sourceKey: checkpoint.sourceKey, state: "ready" as const,
-        ...(native ? { through: checkpoint.through } : {}),
-        ...(native && checkpoint.baselineThrough !== undefined ? { baselineThrough: checkpoint.baselineThrough } : {}) };
-      const prior = sources.get(coverage.sourceKey);
-      // Explicit native checkpoints outrank App-run progress (different sequence domains).
-      if (!prior || JSON.parse(checkpoint.key)[0] === "native") sources.set(coverage.sourceKey, structuredClone(coverage));
+    if (!this.coverageCache) {
+      const sources = new Map<string, ConversationUpdateCoverage>();
+      for (const checkpoint of this.record?.checkpoints ?? []) {
+        const kind = JSON.parse(checkpoint.key)[0];
+        if (kind === "worker-attention") continue;
+        const native = kind === "native";
+        const coverage = checkpoint.coverage ?? { sourceKey: checkpoint.sourceKey, state: "ready" as const,
+          ...(native ? { through: checkpoint.through } : {}),
+          ...(native && checkpoint.baselineThrough !== undefined ? { baselineThrough: checkpoint.baselineThrough } : {}) };
+        const prior = sources.get(coverage.sourceKey);
+        // Explicit native checkpoints outrank App-run progress (different sequence domains).
+        if (!prior || native) sources.set(coverage.sourceKey, coverage);
+      }
+      this.coverageCache = [...sources.values()];
     }
-    if (this.health.state !== "ready") for (const coverage of sources.values()) {
+    const result = structuredClone(this.coverageCache);
+    if (this.health.state !== "ready") for (const coverage of result) {
       coverage.state = "unavailable"; coverage.reason = this.health.reason ?? "Conversation update storage is initializing";
     }
-    return [...sources.values()];
+    return result;
   }
   /** Atomic rows + reducer state + source progress. False means no usable publication;
    * on ambiguous I/O failure stop, rather than overwrite possibly committed disk state.
@@ -292,16 +320,21 @@ export class ConversationUpdateStore {
            || capturedExtras.nativeMessages !== undefined && (!isNativeMessages(capturedExtras.nativeMessages)
              || !capturedCheckpoint || JSON.parse(capturedCheckpoint.key)[0] !== "native"
              || capturedExtras.nativeMessages.sourceKey !== capturedCheckpoint.sourceKey))) throw new Error("Invalid native message identities");
-        const next = structuredClone(this.record);
-        const priorCheckpoint = capturedCheckpoint && next.checkpoints.find(value => value.key === capturedCheckpoint.key);
+        // Committed components are immutable. Copy only arrays/components that
+        // this transaction changes, never the complete retained feed/state.
+        const committed = this.record;
+        const next: RecordValue = { ...committed };
+        let changed = false;
+        const priorCheckpoint = capturedCheckpoint && this.checkpointsByKey.get(capturedCheckpoint.key);
         if (capturedCheckpoint && priorCheckpoint && (capturedCheckpoint.sourceKey !== priorCheckpoint.sourceKey
           || capturedCheckpoint.through < priorCheckpoint.through
           || priorCheckpoint.baselineThrough !== undefined && capturedCheckpoint.baselineThrough !== priorCheckpoint.baselineThrough)) throw new Error("Checkpoint regression");
-        const latest = new Map(next.rows.map(row => [row.id, row]));
-        const boundaries = new Map(next.rows.flatMap(row => row.nativeBoundaryId === undefined ? [] : [[row.id, row.nativeBoundaryId] as const]));
+        const latest = new Map<string, ConversationUpdate>();
+        const boundaries = new Map<string, string>();
+        const appended: ConversationUpdate[] = [];
         for (let candidate of captured) {
-          const prior = latest.get(candidate.id);
-          const boundary = boundaries.get(candidate.id);
+          const prior = latest.get(candidate.id) ?? this.latestById.get(candidate.id);
+          const boundary = boundaries.get(candidate.id) ?? this.boundariesById.get(candidate.id);
           if (boundary !== undefined && candidate.nativeBoundaryId !== undefined && candidate.nativeBoundaryId !== boundary) throw new Error("Occurrence native boundary changed");
           // Omission is not retraction of established authoritative identity.
           if (boundary !== undefined && candidate.nativeBoundaryId === undefined) candidate = { ...candidate, nativeBoundaryId: boundary };
@@ -318,22 +351,36 @@ export class ConversationUpdateStore {
             occurrenceSequence: prior?.occurrenceSequence ?? next.head, revision: (prior?.revision ?? 0) + 1,
             observedAt: candidate.observedAt ?? (this.options.now ?? (() => new Date().toISOString()))() };
           if (!isConversationUpdate(row)) throw new Error("Invalid update row");
-          next.rows.push(row); latest.set(row.id, row);
+          appended.push(freezeJson(row)); latest.set(row.id, row);
           if (row.nativeBoundaryId !== undefined) boundaries.set(row.id, row.nativeBoundaryId);
         }
+        if (appended.length) { next.rows = [...committed.rows, ...appended]; changed = true; }
         if (capturedCheckpoint) {
-          const index = next.checkpoints.findIndex(value => value.key === capturedCheckpoint.key);
           // Replace the checkpoint. Do not preserve journalBytes: this commit may cover a different file length.
-          if (index < 0) next.checkpoints.push(capturedCheckpoint); else next.checkpoints[index] = capturedCheckpoint;
+          // Equality work is bounded to the touched checkpoint, not both full records.
+          if (!priorCheckpoint || JSON.stringify(capturedCheckpoint) !== JSON.stringify(priorCheckpoint)) {
+            const index = this.checkpointPositions.get(capturedCheckpoint.key);
+            next.checkpoints = [...committed.checkpoints];
+            if (index === undefined) next.checkpoints.push(freezeJson(capturedCheckpoint));
+            else next.checkpoints[index] = freezeJson(capturedCheckpoint);
+            changed = true;
+          }
         }
         if (capturedExtras?.nativeMessages) {
           const { sourceKey, ids } = capturedExtras.nativeMessages;
-          const ledger = next.nativeMessages ??= [];
-          let messages = ledger.find(messages => messages.sourceKey === sourceKey);
-          if (!messages) { messages = { sourceKey, ids: [] }; ledger.push(messages); }
-          const known = new Set(messages.ids);
-          for (const id of ids) if (!known.has(id)) { messages.ids.push(id); known.add(id); }
+          const ledger = committed.nativeMessages ?? [];
+          const index = ledger.findIndex(messages => messages.sourceKey === sourceKey);
+          const messages = index < 0 ? undefined : ledger[index];
+          const known = new Set(messages?.ids ?? []), added: string[] = [];
+          for (const id of ids) if (!known.has(id)) { added.push(id); known.add(id); }
+          if (!messages || added.length) {
+            next.nativeMessages = [...ledger];
+            const updated = freezeJson({ sourceKey, ids: [...(messages?.ids ?? []), ...added] });
+            if (index < 0) next.nativeMessages.push(updated); else next.nativeMessages[index] = updated;
+            changed = true;
+          }
         }
+        if (!changed) return this.commitGuardCurrent(guard, capturedCheckpoint, captured, capturedExtras);
         // Keep change versions so fixed-through traversals remain genuine snapshots.
         // Pruning advances an explicit floor; expired traversals must re-bootstrap.
         let size = bytes(next), removed = 0;
@@ -345,13 +392,27 @@ export class ConversationUpdateStore {
         }
         if (removed) next.rows = next.rows.slice(removed);
         if (!validRecord(next, this.storeId)) throw new Error("Update checkpoint capacity exhausted or invalid transaction");
-        const changed = JSON.stringify(next) !== JSON.stringify(this.record);
         if (!this.commitGuardCurrent(guard, capturedCheckpoint, captured, capturedExtras)) return false;
-        if (changed) {
-          persistenceStarted = true;
-          (this.options.save ?? atomicAppRecord)(this.dataDir, "conversation-updates.json", next);
+        // Freeze new containers before calling the persistence boundary. Even a
+        // failing injected writer cannot mutate shared committed components.
+        Object.freeze(next.rows); Object.freeze(next.checkpoints);
+        if (next.nativeMessages) Object.freeze(next.nativeMessages);
+        Object.freeze(next);
+        persistenceStarted = true;
+        (this.options.save ?? atomicAppRecord)(this.dataDir, "conversation-updates.json", next);
+        this.record = next;
+        if (next.checkpoints !== committed.checkpoints && capturedCheckpoint) {
+          const index = this.checkpointPositions.get(capturedCheckpoint.key) ?? committed.checkpoints.length;
+          this.checkpointPositions.set(capturedCheckpoint.key, index);
+          this.checkpointsByKey.set(capturedCheckpoint.key, next.checkpoints[index]!);
+          this.coverageCache = undefined;
         }
-        this.record = next; this.reindexCheckpoints(); return true;
+        if (removed) this.reindexRows();
+        else for (const row of appended) {
+          this.latestById.set(row.id, row);
+          if (row.nativeBoundaryId !== undefined) this.boundariesById.set(row.id, row.nativeBoundaryId);
+        }
+        return true;
       } catch {
         // Invalid source evidence/budget exhaustion rejects this batch, not the
         // healthy committed store. Only ambiguous persistence poisons its owner.
@@ -375,24 +436,28 @@ export class ConversationUpdateStore {
       if (this.closed || this.health.state !== "ready" || !this.record) return false;
       let persistenceStarted = false;
       try {
-        const next = structuredClone(this.record);
-        let changed = false;
+        const replacements = new Map<string, ConversationUpdateCheckpoint>();
         for (const note of captured) {
           if (!object(note) || !text(note.key) || !integer(note.through) || note.through < 1 || !integer(note.bytes) || note.bytes < 1) continue;
-          const checkpoint = next.checkpoints.find(item => item.key === note.key);
+          const checkpoint = replacements.get(note.key) ?? this.checkpointsByKey.get(note.key);
           if (!checkpoint || checkpoint.through !== note.through) continue;
           let holds = false;
-          try { holds = settled(checkpoint); } catch { holds = false; }
+          // The settlement callback receives no reference to committed or
+          // transaction-owned state. It can only decide whether this note holds.
+          try { holds = settled(structuredClone(checkpoint)); } catch { holds = false; }
           if (!holds || checkpoint.journalBytes === note.bytes) continue;
-          checkpoint.journalBytes = note.bytes;
-          changed = true;
+          replacements.set(note.key, freezeJson({ ...checkpoint, journalBytes: note.bytes }));
         }
-        if (!changed) return true;
+        if (!replacements.size) return true;
+        const next: RecordValue = { ...this.record, checkpoints: [...this.record.checkpoints] };
+        for (const [key, checkpoint] of replacements) next.checkpoints[this.checkpointPositions.get(key)!] = checkpoint;
         if (!validRecord(next, this.storeId)) throw new Error("Invalid journal length note");
+        Object.freeze(next.checkpoints); Object.freeze(next);
         persistenceStarted = true;
         (this.options.save ?? atomicAppRecord)(this.dataDir, "conversation-updates.json", next);
         this.record = next;
-        this.reindexCheckpoints();
+        for (const [key, checkpoint] of replacements) this.checkpointsByKey.set(key, checkpoint);
+        this.coverageCache = undefined;
         return true;
       } catch {
         if (persistenceStarted) this.health = { state: "unavailable", reason: "Conversation update commit failed; reconciliation required" };

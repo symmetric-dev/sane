@@ -11,7 +11,8 @@ type Eligibility = boolean | undefined
  * {glob(action) matches id, resource "*", deny}: it disappears from the direct
  * list, Code Mode catalog, search and execute. Explicit denies (rather than
  * deny `sane_*` + allow handoff) keep sane_handoff/sane_handoff_status — the
- * kickoff bootstrap — visible without overriding any agent/user rule for them.
+ * kickoff bootstrap — and App-only sane_share_code visible without overriding
+ * any agent/user rule for them. Never replace these with a managed-only sane_* deny.
  * Visibility only: every handler still qualifies and authorizes the caller. */
 export const UNMANAGED_RULES: readonly OperationPermission[] = [
   { action: "sane_worker_*", resource: "*", effect: "deny" },

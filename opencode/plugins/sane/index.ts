@@ -1,9 +1,12 @@
 import { Plugin } from "@opencode/plugin"
-import { OpenCodeWorkerInvocations, qualifyOpenCodeCaller, type OpenCodeToolCaller } from "../../../packages/sane-cli/src/native-opencode.ts"
+import { resolve } from "node:path"
+import { OpenCodeWorkerInvocations, qualifyOpenCodeCaller, qualifyOpenCodeAppCaller, assertOpenCodeCodeSharePermissions, type OpenCodeToolCaller } from "../../../packages/sane-cli/src/native-opencode.ts"
 import { linkNativeCaller, nativeCallerContext, nativeShellCaller, nativeLinkSchema } from "../../../packages/sane-cli/src/native-caller.ts"
 import { handoffNativeCaller, nativeHandoffSchema, nativeHandoffStatusSchema } from "../../../packages/sane-cli/src/native-handoff.ts"
 import { nativeWorkerDescriptions, nativeWorkerOperations, nativeWorkerSchemas, SANE_MANAGED_ONLY } from "../../../packages/sane-cli/src/native-worker-contract.ts"
 import { workerNativeCaller } from "../../../packages/sane-cli/src/native-worker.ts"
+import { nativeShareCodeDescription, nativeShareCodeSchema, parseCodeShareInput } from "../../../packages/sane-cli/src/native-share-code-contract.ts"
+import { shareCodeNativeCaller } from "../../../packages/sane-cli/src/native-share-code.ts"
 import { registerExecutionOperations } from "./execution.ts"
 import { createSaneVisibility } from "./visibility.ts"
 
@@ -30,6 +33,23 @@ export const SanePlugin = Plugin.define({
       return { ...await qualify(tool), invocation }
     }
     await ctx.tool.transform(editor => {
+      editor.add({
+        name: "sane_share_code",
+        description: nativeShareCodeDescription,
+        input: nativeShareCodeSchema,
+        execute: async (input, tool) => {
+          // Allocate before any await: concurrent Code Mode callbacks have the
+          // same visible tool ID, but must bind different frozen snapshots.
+          const invocation = workerInvocations.codeShareCallback(tool)
+          const args = parseCodeShareInput(input)
+          if (typeof registration !== "string" || !registration.startsWith("/")) throw new Error("NATIVE_CONTEXT_UNAVAILABLE: configure an explicit absolute registrationFile plugin option.")
+          const { caller, client } = await qualifyOpenCodeAppCaller(registration, ctx, tool)
+          const path = resolve(caller.cwd, args.path)
+          const signal = (tool as typeof tool & { signal?: AbortSignal }).signal
+          await assertOpenCodeCodeSharePermissions(ctx, { ...tool, signal }, path, client)
+          return { content: JSON.stringify(await shareCodeNativeCaller(caller, args, ctx.options.appConnectionFile as string, invocation, signal)) }
+        },
+      })
       for (const operation of nativeWorkerOperations) editor.add({
         name: `sane_worker_${operation}`,
         description: nativeWorkerDescriptions[operation],

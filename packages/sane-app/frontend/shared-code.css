@@ -1,0 +1,17 @@
+.shared-code-card { min-width: 0; overflow: hidden; margin: .65rem 0; border: 1px solid var(--border); border-radius: 8px; background: var(--background); color: var(--foreground); font-size: .8rem; }
+.shared-code-card > header { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; padding: .5rem .65rem; border-bottom: 1px solid var(--border); }
+.shared-code-card > header strong { flex: 1 1 12rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, monospace); }
+.shared-code-card button, .shared-code-notice button { font: inherit; cursor: pointer; }
+.shared-code-card button[aria-pressed="true"] { font-weight: 700; text-decoration: underline; }
+.shared-code-card button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.shared-code-caption { margin: .4rem .65rem; opacity: .7; font-size: .72rem; }
+.shared-code-editor .cm-editor { background: transparent; font-size: .78rem; }
+.shared-code-editor .cm-scroller { max-height: 28rem; overflow: auto; overscroll-behavior: contain; }
+.shared-code-card .shared-code-highlight { background: color-mix(in srgb, #d6a83b 19%, transparent); }
+.shared-code-card .shared-code-comment { display: block; margin: .3rem .5rem; padding: .4rem .65rem; border-left: 3px solid #b89131; background: color-mix(in srgb, #d6a83b 12%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; font: .78rem/1.5 var(--font-sans, sans-serif); }
+.shared-code-fallback { max-height: 28rem; overflow: auto; padding: .5rem .65rem; }
+.shared-code-fallback pre { margin: 0; }
+.shared-code-line-number { opacity: .55; user-select: none; }
+.shared-code-feedback:empty { display: none; }
+.shared-code-feedback, .shared-code-pending { padding: .5rem .65rem; }
+.shared-code-notice { font-size: .8rem; overflow-wrap: anywhere; }

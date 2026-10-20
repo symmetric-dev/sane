@@ -53,6 +53,9 @@
   text-align: center;
 }
 .chat-input-with-send > .send.pending-input-primary > svg { display: none; }
+.chat-input-with-send > .send.pending-input-primary[aria-busy="true"] { opacity: .8; }
+.pending-input-send-progress { display: inline-flex; align-items: center; gap: 6px; }
+.pending-input-send-progress .pulse { background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
 .composer-status-lid > .pending-input-status-badge {
   flex-shrink: 0;
   font-size: 10px;

@@ -246,19 +246,19 @@ export class ClaudeRunService {
 
   hasQueuedFollowup(sessionId: string): boolean { return this.followups.has(sessionId); }
   /** Continue the original CLI, never resume the same session in a second process. */
-  private inputReady(owner: RunOwner, input: LiveInput): boolean {
+  private inputCurrent(owner: RunOwner, input: LiveInput): boolean {
     const supervised = this.supervision.get(owner);
     return !!supervised && this.validSupervision(supervised) && this.deps.owns(owner)
-      && !input.closed && input.turnComplete && !input.result.error
+      && !input.closed && !input.result.error
       && !!owner.child && owner.child.exitCode === null && owner.run.status === "running" && owner.run.operation !== "compact"
       && !owner.settled && !owner.stopRequested && !owner.cancelling && !owner.stopping && !owner.workerDeliveryId
       && !this.deps.closing() && !this.deps.storageFailed() && !this.deps.retained()
-      && !this.hasQueuedFollowup(owner.run.sessionId) && !this.deps.session(owner.run.sessionId)?.attachment
-      && this.activities.get(owner.run.runId)?.get().phase === "background";
+      && !this.hasQueuedFollowup(owner.run.sessionId) && !this.deps.session(owner.run.sessionId)?.attachment;
   }
   canSendInput(owner: RunOwner): boolean {
     const input = this.inputs.get(owner);
-    return !!input && !input.sending && this.inputReady(owner, input);
+    return !!input && !input.sending && input.turnComplete && this.inputCurrent(owner, input)
+      && this.activities.get(owner.run.runId)?.get().phase === "background";
   }
   async sendInput(owner: RunOwner, prompt: string, assertCurrent: () => void): Promise<{ runId: string; messageId: string }> {
     const input = this.inputs.get(owner);
@@ -270,7 +270,9 @@ export class ClaudeRunService {
       assertCurrent();
       await this.deps.emit(owner.run, "submission", { messageId, text: prompt, liveInput: true });
       assertCurrent();
-      if (!this.inputReady(owner, input)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Claude resumed or stopped before the follow-up could be sent");
+      // If a task finishes during journal I/O, the same CLI serializes its
+      // continuation and this message; do not drop an already-admitted send.
+      if (!this.inputCurrent(owner, input)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Claude stopped before the follow-up could be sent");
       input.turnComplete = false;
       input.pendingUuid = uuid;
       this.stoppedTurns.delete(owner.run.runId);

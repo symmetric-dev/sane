@@ -86,7 +86,7 @@ export function ComposerStatus({ statuses, active, actions, restoreFocus, queue,
     && summary.id !== "sending" && summary.id !== "input-request" && summary.id !== "connection"
     && (briefLoading.has(summary.id) || /^(Loading|Checking|Refreshing|Preparing|Updating)\b/.test(summary.text));
   const immediate = !transient && (queuePrimary ? queue!.lid.state === "unconfirmed" || queue!.lid.state === "reconciliation" || queue!.lid.state === "paused"
-    : !!summary && (summary.id === "sending" || summary.id === "input-request" || summary.id === "connection" || summary.id === "worker-protocol" || !!summary.action || !summary.busy));
+    : !!summary && (summary.id === "sending" || summary.id === "run" && summary.text === "Starting assistant…" || summary.id === "input-request" || summary.id === "connection" || summary.id === "worker-protocol" || !!summary.action || !summary.busy));
   const lid = useStatusLid(lidText ? { text: lidText, busy: !!lidBusy, queueBadge, queueDescription, queueState: queue?.lid.state, transient, immediate } : undefined, active);
   const combinedText = [lid?.text, lid?.queueDescription].filter(Boolean).join(" · ");
   const recent = [...currentLog.events].reverse().filter(event => !statuses.some(status => sameStatus(status, event)));

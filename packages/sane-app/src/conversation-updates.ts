@@ -33,6 +33,17 @@ type RunState = {
   suppressAppFailure: boolean;
   terminalIndexed: boolean;
 };
+type CommittedPrimaryEvent = { session: Session; run: Run; event: Event };
+type PrimaryBatch = {
+  key: string;
+  source: ConversationUpdateSource;
+  events: CommittedPrimaryEvent[];
+  bytes: number;
+  release: () => void;
+  timer?: ReturnType<typeof setTimeout>;
+  result: Promise<boolean>;
+};
+const PRIMARY_BATCH_EVENTS = 64, PRIMARY_BATCH_BYTES = 256 * 1024;
 export type NativeConversationUpdateBatch = {
   source: ConversationUpdateSource;
   candidates: ConversationUpdateCandidate[];
@@ -78,14 +89,18 @@ function terminalStatus(event: Event): "failed" | "interrupted" | undefined {
  * No feed/store error is thrown into launch, journal append, or run completion. */
 export class ConversationUpdates<State = UpdateJson> {
   private queue: Promise<unknown> = Promise.resolve();
+  /** Only the tail queue entry may collect more events; unrelated work seals it. */
+  private primaryBatch?: PrimaryBatch;
   /** Qualified producer checkpoint -> problem; aggregate by source only for coverage. */
   private readonly producerProblems = new Map<string, ConversationUpdateCoverage>();
   private closed = false;
+  private closing = false;
   constructor(readonly store: ConversationUpdateStore, private readonly options: ConversationUpdateServiceOptions<State> = {}) {}
 
   private enqueue(work: (guard?: ConversationUpdateCommitGuard) => Promise<boolean>, source?: ConversationUpdateSource,
     producerKey?: string, recovery = false, guard?: ConversationUpdateCommitGuard): Promise<boolean> {
-    if (this.closed) return Promise.resolve(false);
+    this.sealPrimaryBatch();
+    if (this.closed || this.closing) return Promise.resolve(false);
     const key = source && (producerKey ?? nativeUpdateCheckpointKey(source));
     // Latch deliberate rejection at the actual guard check, not after persistence:
     // a registration can become stale after a successful synchronous save.
@@ -131,21 +146,70 @@ export class ConversationUpdates<State = UpdateJson> {
     void this.ingestCommitted(session, run, event);
   }
   ingestCommitted(session: Session, run: Run, event: Event): Promise<boolean> {
+    if (this.closed || this.closing) return Promise.resolve(false);
     try {
+      // Standalone callers may mutate their envelopes immediately after return.
+      // Keep this one capture boundary even when the bridge also captured them.
       const captured = structuredClone({ session, run, event }), source = sessionSource(captured.session);
-      if (!source) return Promise.resolve(false);
-      return this.enqueue(() => this.projectEvent(captured.session, captured.run, captured.event, source), source,
-        appRunUpdateCheckpointKey(source, captured.run.runId));
-    } catch { return Promise.resolve(false); }
+      if (!source) { this.sealPrimaryBatch(); return Promise.resolve(false); }
+      const key = appRunUpdateCheckpointKey(source, captured.run.runId);
+      // Byte estimation is a batching decision, not a new admission rule for
+      // standalone callers with cloneable but non-JSON event payloads.
+      let size = PRIMARY_BATCH_BYTES;
+      try { size = Buffer.byteLength(JSON.stringify(captured)); } catch { /* Isolate in its own batch. */ }
+      let batch = this.primaryBatch;
+      if (batch && (batch.key !== key || batch.events.at(-1)!.event.seq + 1 !== captured.event.seq
+        || batch.events.length >= PRIMARY_BATCH_EVENTS || batch.bytes + size > PRIMARY_BATCH_BYTES)) {
+        this.sealPrimaryBatch(); batch = undefined;
+      }
+      if (!batch) {
+        const ready = Promise.withResolvers<void>();
+        batch = { key, source, events: [], bytes: 0, release: () => ready.resolve(), result: Promise.resolve(false) };
+        const reserved = batch;
+        // Reserve global queue order NOW, not when the timer runs. Nothing from
+        // another source/native producer/correlation may overtake these events.
+        // Members share one atomic commit result; a rejection leaves the entire
+        // producer slice at its old durable checkpoint for explicit replay.
+        batch.result = this.enqueue(async () => {
+          await ready.promise;
+          return this.projectPrimaryBatch(reserved.events, reserved.source);
+        }, source, key);
+        this.primaryBatch = batch;
+        batch.timer = setTimeout(() => this.sealPrimaryBatch(reserved), 0);
+      }
+      batch.events.push(captured); batch.bytes += size;
+      // Oversized single events remain admissible, but never share a batch.
+      if (batch.events.length >= PRIMARY_BATCH_EVENTS || batch.bytes >= PRIMARY_BATCH_BYTES) this.sealPrimaryBatch(batch);
+      return batch.result;
+    } catch { this.sealPrimaryBatch(); return Promise.resolve(false); }
   }
-  private async projectEvent(session: Session, run: Run, event: Event, source: ConversationUpdateSource): Promise<boolean> {
-    const key = appRunUpdateCheckpointKey(source, run.runId), prior = this.store.getCheckpoint(key);
-    this.validateEvent(session, run, event);
-    if (event.seq <= (prior?.through ?? 0)) return this.store.getHealth().state === "ready";
-    if (event.seq !== (prior?.through ?? 0) + 1) throw new Error("Replay primary history before advancing its checkpoint");
-    const state = runState(prior?.state, source.harness === "claude-code" ? this.options.projector : undefined);
-    const candidates = this.reduceEvent(session, run, event, source, state);
-    return this.store.commitCandidates(candidates, { key, sourceKey: updateSourceKey(source), through: event.seq,
+  private sealPrimaryBatch(batch = this.primaryBatch): void {
+    if (!batch || this.primaryBatch !== batch) return;
+    this.primaryBatch = undefined;
+    if (batch.timer !== undefined) clearTimeout(batch.timer);
+    batch.release();
+  }
+  private async projectPrimaryBatch(events: readonly CommittedPrimaryEvent[], source: ConversationUpdateSource): Promise<boolean> {
+    const key = appRunUpdateCheckpointKey(source, events[0]!.run.runId), prior = this.store.getCheckpoint(key);
+    let through = prior?.through ?? 0;
+    let state: RunState | undefined;
+    const candidates: ConversationUpdateCandidate[] = [];
+    for (const { session, run, event } of events) {
+      this.validateEvent(session, run, event);
+      if (appRunUpdateCheckpointKey(source, run.runId) !== key) throw new Error("Unqualified primary batch");
+      if (event.seq <= through) continue;
+      if (event.seq !== through + 1) throw new Error("Replay primary history before advancing its checkpoint");
+      state ??= runState(prior?.state, source.harness === "claude-code" ? this.options.projector : undefined);
+      // Candidate-free records still carry integrity/framework and reducer
+      // evidence. Never discard them or substitute only the last event.
+      // A projector may retain/mutate candidate objects in its reducer state.
+      // Earlier event publications must remain snapshots of that event.
+      const projected = this.reduceEvent(session, run, event, source, state);
+      if (projected.length) candidates.push(...structuredClone(projected));
+      through = event.seq;
+    }
+    if (!state) return this.store.getHealth().state === "ready";
+    return this.store.commitCandidates(candidates, { key, sourceKey: updateSourceKey(source), through,
       state: { ...state }, coverage: this.runCoverage(source) });
   }
   private validateEvent(session: Session, run: Run, event: Event) {
@@ -214,8 +278,9 @@ export class ConversationUpdates<State = UpdateJson> {
   }
   /** One store write for startup length notes. False means the store could not accept the batch. */
   noteJournalBytes(notes: readonly { session: Session; run: Run; through: number; bytes: number }[]): Promise<boolean> {
+    this.sealPrimaryBatch();
     if (!notes.length) return Promise.resolve(true);
-    if (this.closed) return Promise.resolve(false);
+    if (this.closed || this.closing) return Promise.resolve(false);
     let captured: { session: Session; run: Run; through: number; bytes: number }[];
     try { captured = structuredClone([...notes]); }
     catch { return Promise.resolve(false); }
@@ -231,8 +296,10 @@ export class ConversationUpdates<State = UpdateJson> {
         prepared.push({ key, through: note.through, bytes: note.bytes, session: note.session, run: note.run });
       }
       if (!prepared.length) return true;
+      const byKey = new Map<string, typeof prepared[number]>();
+      for (const note of prepared) if (!byKey.has(note.key)) byKey.set(note.key, note);
       return this.store.noteJournalBytes(prepared.map(({ key, through, bytes }) => ({ key, through, bytes })), checkpoint => {
-        const note = prepared.find(item => item.key === checkpoint.key);
+        const note = byKey.get(checkpoint.key);
         return !!note && note.through === checkpoint.through && this.checkpointSettled(note.session, note.run, checkpoint);
       });
     });
@@ -391,8 +458,8 @@ export class ConversationUpdates<State = UpdateJson> {
     }
     return this.store.page(request, snapshot, this.getCoverage());
   }
-  async flush(): Promise<void> { await this.queue; await this.store.flush(); }
-  async close(): Promise<void> { this.closed = true; await this.flush(); await this.store.close(); }
+  async flush(): Promise<void> { this.sealPrimaryBatch(); await this.queue; await this.store.flush(); }
+  async close(): Promise<void> { this.closing = true; await this.flush(); this.closed = true; await this.store.close(); }
 }
 
 export { ConversationUpdates as ConversationUpdateService };

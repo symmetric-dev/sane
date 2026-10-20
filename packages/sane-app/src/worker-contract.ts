@@ -107,12 +107,24 @@ export const workerResults = (w: WorkerRecord): WorkerResult[] => w.results ?? (
 export type WorkerDelivery = { id: string; parentSessionId: string; native: ConversationRef; run: Run; commandId: string; workerIds: string[]; resultRefs?: { workerId: string; revision: number; notificationId: string }[]; state: "claimed" | "acceptance-unknown" | "delivered" | "not-submitted"; createdAt: string; updatedAt: string; error?: string };
 export type WorkerRecords = { version: 1; workers: WorkerRecord[]; suppressedParents: string[]; deliveries?: WorkerDelivery[] };
 export const workerTerminal = (w: Pick<WorkerRecord, "state">) => ["completed", "failed", "interrupted"].includes(w.state);
-export const explicitWorker = (w: Pick<WorkerRecord, "protocol">) => w.protocol?.id === "explicit-v1";
+export const explicitWorker = (w: { protocol?: Pick<WorkerProtocolPin, "id"> }) => w.protocol?.id === "explicit-v1";
 
 /** Protocol presentation. Absent means keep the legacy run/state label. */
 export type WorkerProtocolStatus = "running" | "idle" | "awaiting-user" | "awaiting-parent" | "awaiting-children" | "closing" | "terminal" | "uncertain";
 const EXECUTING = new Set(["reserved", "launching", "running", "cancelling"]);
-type ProtocolSource = Pick<WorkerRecord, "protocol" | "assignment" | "state" | "wait" | "continuation">;
+export type WorkerProtocolSource = Pick<WorkerRecord, "assignment" | "state"> & {
+  protocol?: Pick<WorkerProtocolPin, "id">;
+  wait?: Pick<WorkerWait, "reason">;
+  continuation?: Pick<NonNullable<WorkerRecord["continuation"]>, "state">;
+};
+type ProtocolSource = WorkerProtocolSource;
+
+/** Detached sidebar metadata; no prompts, output, protocol receipts, or native payloads. */
+export type SessionListWorker = WorkerProtocolSource & Pick<WorkerRecord, "id" | "sessionId"> & {
+  parent: Pick<WorkerRecord["parent"], "sessionId" | "runId" | "toolCallId">;
+  hasOutcome: boolean;
+};
+export type SessionListDelivery = Pick<WorkerDelivery, "state" | "parentSessionId">;
 
 /** Running is native occupancy. Protocol waits are not "waiting", and idle is unfinished. */
 export function workerProtocolStatus(worker: ProtocolSource): WorkerProtocolStatus | undefined {
@@ -132,7 +144,7 @@ export function workerProtocolStatus(worker: ProtocolSource): WorkerProtocolStat
 }
 
 /** Idle unfinished and uncertain/unknown stay stoppable. Terminal workers are not. */
-export function workerStoppable(worker: ProtocolSource, executionActive = false, executionState = worker.state): boolean {
+export function workerStoppable(worker: ProtocolSource, executionActive = false, executionState: WorkerState | "starting" | "unknown" = worker.state): boolean {
   if (worker.assignment === "terminal" || workerTerminal(worker)) return false;
   if (executionActive || executionState === "uncertain" || executionState === "unknown" || worker.state === "uncertain" || worker.continuation?.state === "uncertain") return true;
   if (worker.assignment === "closing") return false;
