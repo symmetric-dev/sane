@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import type { WorkerDelivery, WorkerRecord } from "../src/worker-contract";
+import type { WorkerDelivery, WorkerExchange, WorkerRecord } from "../src/worker-contract";
 import { useWorkers, useWorkerPolling, openWorker, workerReference } from "./worker-client";
-import { WorkerCard, WorkerOutcomeReport, WorkerSection } from "./worker-ui";
-import { workerExchanges, workerReportDelivery } from "./worker-presentation";
+import { WorkerCard, WorkerExchangeMessage, WorkerOutcomeReport, WorkerSection } from "./worker-ui";
+import { receivedWorkerExchange, workerExchanges, workerReportDelivery } from "./worker-presentation";
 import type { Harness, PendingTurn, ToolPart } from "./types";
 import { AssistantRuntimeProvider, MessagePrimitive, ThreadPrimitive, useAuiState, useExternalStoreRuntime } from "@assistant-ui/react";
 import { ChatComposer } from "./chat-composer";
@@ -76,7 +76,7 @@ function Markdown({ text }: { text: string }) {
   return useMemo(() => <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href, title }) => <ChatFileLink href={href} title={title} sessionId={sessionId}>{children}</ChatFileLink>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>, [text, sessionId]);
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; codeShares?: CodeShareProjection };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; codeShares?: CodeShareProjection };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 const ScienceTimelineContext = createContext<ScienceChatController | null>(null);
 export function useTranscriptIndex(messages: Message[]) {
@@ -164,9 +164,12 @@ function ChatMessageBody() {
   const turnEndKnown = island && context.pageState?.transcript && source ? turnBoundaryKnown(context.pageState.transcript, island, source) : !island;
   const capabilities = store.capabilities(harness);
    const canBranch = !context.readOnly && capabilities.branch && context.branchEnabled && turnEndKnown && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? capabilities.branchFromNativeMessage && source.status === "completed" : context.runs.some(r => r.operation !== "compact" && r.id === source.runId && r.status === "completed"));
-  const delivery = !context.readOnly && source && workerReportDelivery(source, context.deliveries ?? [], workerExchanges(context.workers));
+  const exchanges = context.exchanges ?? workerExchanges(context.workers);
+  const exchange = !context.readOnly && source && receivedWorkerExchange(source, context.sessionId, exchanges);
+  const delivery = !context.readOnly && source && workerReportDelivery(source, context.deliveries ?? [], exchanges);
   if (harness === "opencode" && source?.role === "system" && source.nativeSubagentResult) return <MessagePrimitive.Root className="message native-subagent-result-message"><NativeSubagentResult source={source} /></MessagePrimitive.Root>;
   if (harness === "opencode" && source?.role === "system" && source.nativeShellResult) return <MessagePrimitive.Root className="message native-shell-result-message"><NativeShellResult source={source} /></MessagePrimitive.Root>;
+  if (exchange) return <MessagePrimitive.Root className="message worker-exchange-message"><WorkerExchangeMessage exchange={exchange} renderMessage={renderHandoffMessage} />{source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}</MessagePrimitive.Root>;
   if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} /></MessagePrimitive.Root>;
   const handoff = !context.readOnly && source && receivedHandoff(source, context.sessionId, context.handoffs?.handoffs ?? []);
   if (handoff) return <MessagePrimitive.Root className="message handoff-received-message"><HandoffCard presentation={handoff} direction="received" stale={context.handoffs?.error} renderMessage={renderHandoffMessage} />{source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}</MessagePrimitive.Root>;
@@ -219,9 +222,11 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const projection = useWorkers(state.selected);
   const parentForStatus = workerReference(state.selected)?.parent.sessionId;
   useWorkerPolling(parentForStatus && parentForStatus !== state.selected ? parentForStatus : null);
+  const parentProjection = useWorkers(parentForStatus ?? "");
   const nativeSubagents = useNativeSubagents();
   const handoffs = useHandoffs(state.selected, isActive && state.connected);
   const workers = projection.workers;
+  const exchanges = useMemo(() => workerExchanges([...workers, ...parentProjection.workers.filter(worker => worker.sessionId === state.selected && !workers.some(item => item.id === worker.id))]), [workers, parentProjection.workers, state.selected]);
   const parentId = workerReference(state.selected)?.parent.sessionId;
   const [ack, setAck] = useState("");
   const conversation = state.conversations.find(c => c.id === state.selected);
@@ -257,7 +262,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
      }
      return positions;
     }, [state.transcript, state.transcriptPaged, state.compactions, messages, state.nativeHistory]);
-  const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, handoffs: handoffs.handoffs, loading: state.loading, animate: isActive && state.connected && !state.actionBusy, nativeRuns: state.runs, nativeHarness: harness, compactionPositions: positions, codeShares: codeShares.shares });
+  const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, exchanges, handoffs: handoffs.handoffs, loading: state.loading, animate: isActive && state.connected && !state.actionBusy, nativeRuns: state.runs, nativeHarness: harness, compactionPositions: positions, codeShares: codeShares.shares });
   const loadedNativeSubagents = useMemo(() => new Set(messages.flatMap(source => source.parts.flatMap(part => {
     const key = part.type === "tool" ? nativeSubagentKey(state.selected, source, part, state.runs, harness) : null;
     return key ? [nativeSubagentId(key)] : [];
@@ -300,7 +305,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     disabled: !isActive || state.actionBusy || state.sending || (chainLocked ? state.phase !== "ready" || state.config?.authenticated !== true : !state.connected),
     cancel: () => void store.cancel() });
   const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={review} science={science} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
-   return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, codeShares, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow && !hasRequests ? " is-document-review" : ""}`}>
+   return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, exchanges, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, codeShares, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow && !hasRequests ? " is-document-review" : ""}`}>
     <SessionSearch root={searchRoot} active={isActive && !(!hasRequests && review.flow?.path)} state={state} />
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}

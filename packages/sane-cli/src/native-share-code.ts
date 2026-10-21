@@ -2,7 +2,7 @@ import { lstatSync, readFileSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import { DomainError, normalizeNativeSource } from "../../sane-core/src/server.ts"
 import type { NativeCaller } from "./native-caller.ts"
-import { parseCodeShareInput, type CodeShareReceipt, type NativeCodeShareRequest } from "./native-share-code-contract.ts"
+import { codeShareInputSnippets, parseCodeShareInput, type CodeShareReceipt, type NativeCodeShareRequest } from "./native-share-code-contract.ts"
 
 type Invocation = NativeCodeShareRequest["invocation"]
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value)
@@ -20,7 +20,13 @@ export function claudeCodeShareInvocation(caller: NativeCaller): Invocation {
 function projectReceipt(value: unknown, input: NativeCodeShareRequest["input"]): CodeShareReceipt {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
   const receipt = value as Record<string, unknown>
-  if (receipt.type !== "sane.code-share" || receipt.version !== 1 || !text(receipt.shareId) || receipt.path !== input.path || receipt.startLine !== input.startLine || receipt.endLine !== input.endLine) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
+  if (receipt.type !== "sane.code-share" || !text(receipt.shareId)) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
+  if ("snippets" in input) {
+    const expected = codeShareInputSnippets(input).map(({ path, startLine, endLine }) => ({ path, startLine, endLine }))
+    if (receipt.version !== 2 || !Array.isArray(receipt.snippets) || receipt.snippets.length !== expected.length || receipt.snippets.some((snippet, index) => !snippet || typeof snippet !== "object" || snippet.path !== expected[index]!.path || snippet.startLine !== expected[index]!.startLine || snippet.endLine !== expected[index]!.endLine)) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
+    return { type: "sane.code-share", version: 2, shareId: receipt.shareId, snippets: expected }
+  }
+  if (receipt.version !== 1 || receipt.path !== input.path || receipt.startLine !== input.startLine || receipt.endLine !== input.endLine) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
   return { type: "sane.code-share", version: 1, shareId: receipt.shareId, path: input.path, startLine: input.startLine, endLine: input.endLine }
 }
 

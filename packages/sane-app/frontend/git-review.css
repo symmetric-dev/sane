@@ -1,0 +1,14 @@
+.git-changes-tree {
+  flex:1;
+  min-width:0;
+  min-height:0;
+  overflow:auto;
+}
+.git-diff-preview {
+  display:flex;
+  flex-direction:column;
+  flex:1;
+  min-width:0;
+  min-height:0;
+  overflow:hidden;
+}

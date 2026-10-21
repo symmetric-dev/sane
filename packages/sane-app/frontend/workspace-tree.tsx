@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
 import { FiChevronDown, FiChevronRight, FiRefreshCw, FiPlus } from "react-icons/fi";
-import { asyncDataLoaderFeature, hotkeysCoreFeature, syncDataLoaderFeature, type TreeInstance } from "@headless-tree/core";
+import { asyncDataLoaderFeature, hotkeysCoreFeature, type TreeInstance } from "@headless-tree/core";
 import { useTree } from "@headless-tree/react";
 import type { GitComparison, GitEntry, WorkspaceEntry } from "../src/workspace-contract";
 import { dirty } from "./workspace-store";
@@ -9,14 +9,13 @@ import { FileOperationDialog } from "./workspace-file-actions";
 import { WorkspaceSearchFiles, useWorkspaceSearchContext } from "./workspace-search";
 import { useWorkspaceFileOperations, workspaceFileScopeKey } from "./workspace-file-shortcuts";
 import { FILE_SHORTCUTS, shortcutHint } from "./shortcut-definitions";
+import { GitChangesTree } from "./git-review";
 
 type TreeNode = {
   kind: WorkspaceEntry["kind"] | "group" | "error" | "notice";
   path: string; name: string; comparison?: GitComparison; entry?: GitEntry; detail?: string;
 };
 const codeId = (kind: TreeNode["kind"], path: string) => `${kind}:${path}`;
-const gitId = (kind: TreeNode["kind"], comparison: GitComparison, path: string) => `${kind}:${comparison}:${path}`;
-const groups = ["staged", "unstaged", "untracked"] as const;
 const isFolder = (node: TreeNode) => node.kind === "directory" || node.kind === "group";
 const loadingNode: TreeNode = { kind: "notice", path: "", name: "Loading…" };
 const apply = <T,>(value: SetStateAction<T>, previous: T) => typeof value === "function" ? (value as (previous: T) => T)(previous) : value;
@@ -176,49 +175,10 @@ function CodeTree() {
 
 function GitTree() {
   const controller = useWorkspace(), presentation = usePresentation("git"), git = controller.root!.git;
-  const hierarchy = useMemo(() => {
-    const nodes = new Map<string, TreeNode>(), children = new Map<string, string[]>();
-    nodes.set("root", { kind: "directory", path: "", name: "Changes" });
-    children.set("root", []);
-    const add = (id: string, node: TreeNode, parent: string) => {
-      if (nodes.has(id)) return;
-      nodes.set(id, node); children.set(id, []); children.get(parent)!.push(id);
-    };
-    for (const comparison of groups) {
-      const entries = git?.entries.filter(entry => entry.comparisons.includes(comparison)) ?? [];
-      const group = gitId("group", comparison, "");
-      add(group, { kind: "group", path: "", comparison, name: `${comparison[0].toUpperCase()}${comparison.slice(1)} (${entries.length})` }, "root");
-      for (const entry of entries) {
-        const parts = entry.path.split("/");
-        let parent = group;
-        for (let index = 0; index < parts.length - 1; index++) {
-          const path = parts.slice(0, index + 1).join("/"), id = gitId("directory", comparison, path);
-          add(id, { kind: "directory", path, comparison, name: parts[index]! }, parent); parent = id;
-        }
-        add(gitId("file", comparison, entry.path), { kind: "file", path: entry.path, name: parts.at(-1)!, comparison, entry }, parent);
-      }
-    }
-    for (const ids of children.values()) if (ids !== children.get("root")) ids.sort((a, b) => {
-      const left = nodes.get(a)!, right = nodes.get(b)!;
-      return Number(isFolder(right)) - Number(isFolder(left)) || left.name.localeCompare(right.name);
-    });
-    return { nodes, children };
-  }, [git]);
-  const tree = useTree<TreeNode>({
-    rootItemId: "root", ...presentation,
-    getItemName: item => item.getItemData().name,
-    isItemFolder: item => isFolder(item.getItemData()),
-    onPrimaryAction: item => {
-      const node = item.getItemData();
-      if (node.kind === "file") controller.activate({ view: "git", path: node.path, comparison: node.comparison! });
-    },
-    dataLoader: { getItem: id => hierarchy.nodes.get(id) ?? loadingNode, getChildren: id => hierarchy.children.get(id) ?? [] },
-    features: [syncDataLoaderFeature, hotkeysCoreFeature],
-  });
-  useEffect(() => { tree.rebuildTree(); }, [tree, hierarchy]);
-  if (!git) return <p className="workspace-tree-status" role="status">{controller.error || "Loading changes…"}</p>;
-  if (!git.available) return <p className="workspace-tree-status">{git.reason || "This workspace is not in a Git repository."}</p>;
-  return <><TreeRows tree={tree} mode="git" />{!git.entries.length && <p className="workspace-tree-status">No changes in this workspace.</p>}{git.truncated && <p className="workspace-tree-status">Change listing is truncated.</p>}</>;
+  return <GitChangesTree git={git} selectedPath={controller.root!.selected} comparison={controller.root!.comparison}
+    presentation={presentation} error={controller.error}
+    isUnsaved={path => { const buffer = controller.root!.buffers.get(path); return Boolean(buffer && dirty(buffer)); }}
+    onSelect={(path, comparison) => controller.activate({ view: "git", path, comparison })} />;
 }
 
 export function WorkspaceSidebar() {

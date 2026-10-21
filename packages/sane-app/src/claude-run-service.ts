@@ -294,7 +294,9 @@ export class ClaudeRunService {
   }
   private finishInput(owner: RunOwner) {
     const input = this.inputs.get(owner);
-    if (!input || input.closed || input.sending || !input.turnComplete) return;
+    // A session-level failure need not acknowledge a user UUID, but must still
+    // close input so the CLI can settle instead of waiting for another prompt.
+    if (!input || input.closed || input.sending || (!input.turnComplete && !input.result.error)) return;
     if (!input.result.error && this.activities.get(owner.run.runId)?.get().backgroundTaskCount) return;
     input.closed = true;
     void Promise.resolve().then(() => owner.child!.stdin.end()).catch(() => this.terminate(owner));
@@ -463,10 +465,13 @@ export class ClaudeRunService {
         if (isClaudeRootRecord(data) && data?.type === "result" && data.session_id === nativeSessionId) {
           const input = this.inputs.get(owner);
           // A background continuation can finish while a user send is pending.
-          // Only the result answering that UUID may make its turn idle again.
+          // Resume can also emit a task-notification result BEFORE the initial
+          // command starts. Missing UUIDs never acknowledge a pending prompt,
+          // even the initial one; every streamed prompt carries our UUID. A
+          // synthetic turn may consume queued user input, so match its echoed
+          // UUIDs rather than rejecting all task-origin results.
           const answersInput = !input?.pendingUuid || data.user_message_uuid === input.pendingUuid
-            || Array.isArray(data.user_message_uuids) && data.user_message_uuids.includes(input.pendingUuid)
-            || input.pendingUuid === run.runId && data.user_message_uuid === undefined && data.user_message_uuids === undefined;
+            || Array.isArray(data.user_message_uuids) && data.user_message_uuids.includes(input.pendingUuid);
           if (answersInput) {
             if (input) { input.pendingUuid = undefined; input.turnComplete = !(data.queued_turn_count > 0); }
             if (!input || input.turnComplete) activity?.turnFinished();

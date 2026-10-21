@@ -16,6 +16,13 @@ export function workerExchanges(workers: readonly Pick<WorkerRecord, "exchanges"
   return workers.flatMap(worker => worker.exchanges ?? []);
 }
 
+/** Match durable delivery evidence, never the prompt's title or JSON payload. */
+export function receivedWorkerExchange(message: Message, sessionId: string, exchanges: readonly WorkerExchange[]): WorkerExchange | undefined {
+  if (message.role !== "user") return;
+  return exchanges.find(exchange => exchange.recipient.sessionId === sessionId
+    && (exchange.delivery.commandId === message.id || !!exchange.delivery.runId && exchange.delivery.runId === message.runId));
+}
+
 export function dispatchedWorkers(sessionId: string, message: Message, tool: ToolPart, workers: WorkerRecord[]): WorkerRecord[] {
   if (!tool.toolCallId) return [];
   return workers.filter(w => w.parent.sessionId === sessionId && w.parent.toolCallId === tool.toolCallId && (message.runId === "native-import" || w.parent.runId === message.runId));

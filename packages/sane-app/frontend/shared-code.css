@@ -15,3 +15,26 @@
 .shared-code-feedback:empty { display: none; }
 .shared-code-feedback, .shared-code-pending { padding: .5rem .65rem; }
 .shared-code-notice { font-size: .8rem; overflow-wrap: anywhere; }
+.shared-code-open, .shared-code-page-button { display: inline-flex; align-items: center; justify-content: center; gap: .35rem; }
+.shared-code-controls { display: flex; align-items: center; gap: .5rem; padding: .35rem .65rem; border-top: 1px solid var(--border); }
+.shared-code-pagination { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: center; gap: .75rem; }
+.shared-code-open { flex-shrink: 0; margin-left: auto; }
+.shared-code-open, .shared-code-page-button { min-width: 2rem; min-height: 2rem; font-size: 1rem; }
+.shared-code-page-button:disabled { opacity: .4; cursor: default; }
+.shell-dialog.shared-code-dialog { width: 84vw; min-width: 72vw; max-width: 96vw; height: 84dvh; min-height: 72dvh; max-height: 94dvh; overflow: hidden; }
+.shared-code-dialog .shell-dialog-content { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; padding: 0; }
+.shared-code-dialog .shell-dialog-content > header { flex-shrink: 0; margin: 0; padding: .8rem 1rem; border-bottom: 1px solid var(--border); }
+.shared-code-dialog .shell-dialog-heading { min-width: 0; }
+.shared-code-dialog .shell-dialog-heading h2 { font-size: 1rem; }
+.shared-code-dialog .shell-dialog-subtitle { margin: .2rem 0 0; font-size: .8rem; color: var(--muted-foreground); }
+.shared-code-expanded { display: flex; flex-direction: column; flex: 1; min-height: 0; margin: 0; border: 0; border-radius: 0; }
+.shared-code-dialog .shared-code-card > header { flex-shrink: 0; justify-content: initial; margin: 0; }
+.shared-code-expanded > :not(.shared-code-editor, .shared-code-fallback) { flex-shrink: 0; }
+.shared-code-expanded .shared-code-editor { flex: 1; min-height: 0; }
+.shared-code-expanded .cm-editor { height: 100%; }
+.shared-code-expanded .cm-scroller { max-height: none; }
+.shared-code-expanded .shared-code-fallback { flex: 1; min-height: 0; max-height: none; }
+@media (max-width: 640px) {
+  .shell-dialog.shared-code-dialog { width: 96vw; height: 92dvh; max-height: 96dvh; }
+  .shared-code-open, .shared-code-page-button { min-width: 2.75rem; min-height: 2.75rem; }
+}

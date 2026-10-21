@@ -3,6 +3,7 @@ import { OpenCode, type OpenCodeClient } from "@opencode/client";
 import type { CompactionLifecycle, CompactionMetadata, FormField, HarnessModel, Interaction, InteractionReply, MessagePart, MessageSnapshot, NativeCommandBoundary } from "./oc-contract";
 import { nativeMessageId, validModel, validVariant } from "./history";
 import { settleCommandInterval, type CommandSettlement } from "./opencode-command-settlement";
+import { matchesOpenCodeWorkerPart, type NativeWorkerInvocation } from "../../sane-cli/src/native-worker-contract";
 
 // HTTP shapes from https://opencode.ai/v2/openapi.json and the V2 client guide.
 // Discovery connects to a registered service; this adapter never manages its process.
@@ -17,7 +18,7 @@ export type OpenCodeReplyTransport = {
 export type ModelRef = { id: string; providerID: string; variant?: string };
 export type NativeAgent = { id: string; model?: ModelRef };
 export type OpenCodeLaunch = { agent?: string; model?: ModelRef };
-type NativeSession = { id: string; parentID?: string; location?: { directory?: string }; agent?: string; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; revert?: unknown; metadata?: Record<string, unknown>; time: { created: number; updated: number; idle?: number } };
+type NativeSession = { id: string; parentID?: string; location?: { directory?: string }; agent?: string; permissions?: unknown; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; revert?: unknown; metadata?: Record<string, unknown>; time: { created: number; updated: number; idle?: number } };
 type NativeInput = { id: string; sessionID?: string; type?: string; delivery?: string; time?: { created: number }; payload?: { metadata?: Record<string, unknown> } };
 export type NativeQueuedHandoffAdmission = { id: string; sessionID: string; type: "user"; delivery: "queue"; time: { created: number } };
 /** Only the actual inbox/ack DTO proves delivery policy. Committed User messages
@@ -29,7 +30,7 @@ export function isQueuedHandoffAdmission(value: unknown, sessionId: string, comm
     && !!input.time && typeof input.time === "object" && !Array.isArray(input.time) && Number.isFinite(input.time.created);
 }
 type NativePart = { type: string; id?: string; name?: string; text?: string; state?: { status: string; input?: unknown; content?: unknown; error?: unknown; metadata?: Record<string, unknown> } };
-export type NativeMessage = { id: string; type: string; metadata?: Record<string, unknown>; time: { created: number; completed?: number }; model?: ModelRef; text?: string; content?: NativePart[]; error?: unknown; retry?: MessageSnapshot["retry"]; cost?: number; tokens?: unknown; outcome?: string; status?: string; reason?: string; summary?: string; preTokens?: number; postTokens?: number; durationMs?: number };
+export type NativeMessage = { id: string; type: string; agent?: string; metadata?: Record<string, unknown>; time: { created: number; completed?: number }; model?: ModelRef; text?: string; content?: NativePart[]; error?: unknown; retry?: MessageSnapshot["retry"]; cost?: number; tokens?: unknown; outcome?: string; status?: string; reason?: string; summary?: string; preTokens?: number; postTokens?: number; durationMs?: number };
 export type NativeCompactAdmission = { id: string; sessionID: string; type: "compaction"; time: { created: number }; delivery: "queue" | "steer"; payload?: unknown };
 export type NativeCompactionProjection = { messages: NativeMessage[]; compaction?: CompactionMetadata; outcome?: "succeeded" | "failed" | "skipped" };
 export type NativeCompactionObservation = NativeCompactionProjection & { pending: boolean; active: boolean; observed: boolean };
@@ -104,6 +105,17 @@ function strictInbox(data: unknown, sessionId: string, commandId: string): Nativ
 }
 export class OpenCodeReplyTransportLimitError extends OpenCodeError {
   constructor() { super("OpenCode reply transport exceeded 16 MiB raw response budget"); }
+}
+export const permissionPatternMatches = (pattern: string, value: string) => new RegExp(`^${pattern.split(/([*?])/).map(part => part === "*" ? ".*" : part === "?" ? "." : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("")}$`, "s").test(value);
+/** Native rules are ordered: the last matching rule wins. Unknown/ask is not proof. */
+export function openCodePermissionAllows(rules: unknown, action: string, resource = "*"): boolean {
+  if (!Array.isArray(rules)) return false;
+  let effect: unknown;
+  for (const rule of rules) {
+    if (!rule || typeof rule.action !== "string" || typeof rule.resource !== "string" || !["allow", "ask", "deny"].includes(rule.effect)) return false;
+    if (permissionPatternMatches(rule.action, action) && permissionPatternMatches(rule.resource, resource)) effect = rule.effect;
+  }
+  return effect === "allow";
 }
 export class OpenCodeAdapter {
   private explicit?: Connection;
@@ -353,6 +365,23 @@ export class OpenCodeAdapter {
     return data;
   }
   async session(id: string) { return (await this.request<{ data: NativeSession }>(this.path(id))).data; }
+  /** Read-only capability proof for an already-qualified worker-start invocation.
+   * Base sessions may omit agent; the exact assistant tool message records it.
+   * Never use permission.create here: an ask would create an approval request. */
+  async parentCanMessageWorker(id: string, cwd: string, invocation: NativeWorkerInvocation): Promise<boolean> {
+    if (!invocation.messageId) return false;
+    const { data: message } = await this.request<{ data: NativeMessage }>(this.path(id) + `/message/${encodeURIComponent(invocation.messageId)}`);
+    if (message?.id !== invocation.messageId || message.type !== "assistant" || typeof message.agent !== "string" || !message.agent
+      || !Array.isArray(message.content) || !message.content.some(part => matchesOpenCodeWorkerPart("start", invocation, message.id, part))) return false;
+    const [session, agent] = await Promise.all([
+      this.session(id),
+      this.request<{ location: { directory: string }; data: { id: string; permissions: unknown } }>(`/api/agent/${encodeURIComponent(message.agent)}?location%5Bdirectory%5D=${encodeURIComponent(cwd)}`),
+    ]);
+    if (session?.id !== id || session.location?.directory !== cwd || session.agent !== undefined && session.agent !== message.agent
+      || agent?.location?.directory !== cwd || agent.data?.id !== message.agent || !Array.isArray(agent.data.permissions)
+      || session.permissions !== undefined && !Array.isArray(session.permissions)) return false;
+    return openCodePermissionAllows([...agent.data.permissions, ...(session.permissions ?? []) as unknown[]], "sane_worker_message");
+  }
   async boundSaneSession(id: string): Promise<string | null> {
     const session = await this.session(id);
     if (session?.id !== id) throw new OpenCodeError("Native SANE session binding identity differs from the conversation", 409);

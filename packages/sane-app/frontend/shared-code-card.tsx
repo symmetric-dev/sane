@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Compartment, EditorState, type Extension, type Range } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, keymap, lineNumbers } from "@codemirror/view";
 import { searchKeymap } from "@codemirror/search";
@@ -8,10 +8,12 @@ import { css } from "@codemirror/lang-css";
 import { html } from "@codemirror/lang-html";
 import { markdown } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
-import type { CodeShareRecord } from "../shared/code-share-contract";
+import { FiChevronLeft, FiChevronRight, FiMaximize2 } from "react-icons/fi";
+import { codeSharePages, type CodeShareRecord, type CodeShareSnapshot } from "../shared/code-share-contract";
 import type { CodeShareProjection } from "./code-share-client";
 import { resolvedEditorTheme } from "./workspace-theme";
 import { themeSettings } from "./theme-settings";
+import { ShellDialog } from "./shell-dialog";
 import "./shared-code.css";
 
 function languageExtension(language: string): Extension {
@@ -30,7 +32,7 @@ class CommentWidget extends WidgetType {
   }
   ignoreEvent() { return false; }
 }
-function annotations(share: CodeShareRecord, state: EditorState) {
+function annotations(share: CodeShareSnapshot, state: EditorState) {
   const ranges: Range<Decoration>[] = [];
   const highlights = share.input.highlights ?? [];
   // Union line backgrounds even when annotation ranges overlap.
@@ -51,10 +53,9 @@ function annotations(share: CodeShareRecord, state: EditorState) {
   return EditorView.decorations.of(Decoration.set(ranges, true));
 }
 
-export function SharedCodeCard({ share }: { share: CodeShareRecord }) {
+function CodeSnippetView({ snippet: share, wrap, description }: { snippet: CodeShareSnapshot; wrap: boolean; description: string }) {
   const host = useRef<HTMLDivElement>(null), view = useRef<{ editor: EditorView; wrapping: Compartment } | null>(null);
-  const [wrap, setWrap] = useState(false), [fallback, setFallback] = useState(false), [copied, setCopied] = useState("");
-  const description = useId();
+  const [fallback, setFallback] = useState(false);
   useEffect(() => {
     const wrapping = new Compartment(), theme = new Compartment();
     let editor: EditorView | undefined, unsubscribe: (() => void) | undefined;
@@ -77,17 +78,62 @@ export function SharedCodeCard({ share }: { share: CodeShareRecord }) {
     return () => { unsubscribe?.(); editor?.destroy(); view.current = null; };
   }, [share, description]);
   useEffect(() => { view.current?.editor.dispatch({ effects: view.current.wrapping.reconfigure(wrap ? EditorView.lineWrapping : []) }); }, [wrap, share]);
-  return <section className="shared-code-card" aria-label={`Shared code: ${share.input.path}`}>
-    <header><strong title={share.input.path}>{share.input.path}</strong><span>L{share.input.startLine}–{share.input.endLine}</span><span>{share.language}</span><button type="button" aria-pressed={wrap} onClick={() => setWrap(value => !value)}>Wrap</button><button type="button" onClick={async () => { try { await navigator.clipboard.writeText(share.code); setCopied("Copied"); } catch { setCopied("Copy unavailable"); } }}>Copy code</button></header>
-    <p id={description} className="shared-code-caption">Frozen snapshot · not the current file{share.input.highlights?.length ? " · Highlighted lines and annotations refer to original line numbers." : ""}</p>
-    <span className="shared-code-feedback" role="status">{copied}</span>
+  return <>
     <div ref={host} hidden={fallback} className="shared-code-editor" />
     {fallback && <div className="shared-code-fallback"><pre aria-label="Plain-text frozen code snapshot" style={{ whiteSpace: wrap ? "pre-wrap" : "pre" }}>{share.code.split("\n").map((line, index) => {
       const original = share.input.startLine + index;
       const highlighted = share.input.highlights?.some(range => range.startLine <= original && original <= range.endLine);
       return <Fragment key={index}>{share.input.highlights?.filter(range => range.startLine === original && range.comment !== undefined).map((range, ordinal) => <span key={ordinal} role="note" className="shared-code-comment" aria-label={`Annotation for lines ${range.startLine}–${range.endLine}`}>{range.comment}</span>)}<span className={highlighted ? "shared-code-highlight" : undefined}><span className="shared-code-line-number" aria-hidden="true">{original} </span>{line}{index < share.input.endLine - share.input.startLine ? "\n" : ""}</span></Fragment>;
     })}</pre></div>}
+  </>;
+}
+
+function CodeShareReader({ snippet, page, count, previous, next, wrap, toggleWrap, openModal, expanded = false }: {
+  snippet: CodeShareSnapshot; page: number; count: number; previous: () => void; next: () => void;
+  wrap: boolean; toggleWrap: () => void; openModal?: () => void; expanded?: boolean;
+}) {
+  const description = useId();
+  const [copied, setCopied] = useState<{ snippet: CodeShareSnapshot; message: string } | null>(null);
+  return <section className={`shared-code-card${expanded ? " shared-code-expanded" : ""}`} aria-label={`Shared code: ${snippet.input.path}`}>
+    <header>
+      <strong title={snippet.input.path}>{snippet.input.path}</strong>
+      <span>L{snippet.input.startLine}–{snippet.input.endLine}</span><span>{snippet.language}</span>
+      <button type="button" aria-pressed={wrap} onClick={toggleWrap}>Wrap</button>
+      <button type="button" onClick={async () => {
+        try { await navigator.clipboard.writeText(snippet.code); setCopied({ snippet, message: "Copied" }); }
+        catch { setCopied({ snippet, message: "Copy unavailable" }); }
+      }}>Copy code</button>
+    </header>
+    <p id={description} className="shared-code-caption">Frozen snapshot · not the current file{snippet.input.highlights?.length ? " · Highlighted lines and annotations refer to original line numbers." : ""}</p>
+    <span className="shared-code-feedback" role="status">{copied?.snippet === snippet ? copied.message : ""}</span>
+    <CodeSnippetView key={page} snippet={snippet} wrap={wrap} description={description} />
+    {(count > 1 || openModal) && <footer className="shared-code-controls">
+      {count > 1 && <nav className="shared-code-pagination" aria-label="Code snippet pages">
+        <button type="button" className="shared-code-page-button" aria-label="Previous snippet" disabled={page === 0} onClick={previous}><FiChevronLeft aria-hidden="true" /></button>
+        <span role="status" aria-live="polite" aria-atomic="true">Snippet {page + 1} of {count}</span>
+        <button type="button" className="shared-code-page-button" aria-label="Next snippet" disabled={page === count - 1} onClick={next}><FiChevronRight aria-hidden="true" /></button>
+      </nav>}
+      {openModal && <button type="button" className="shared-code-open" aria-label="Open in modal" title="Open in modal" onClick={openModal}><FiMaximize2 aria-hidden="true" /></button>}
+    </footer>}
   </section>;
+}
+
+export function SharedCodeCard({ share }: { share: CodeShareRecord }) {
+  const snippets = useMemo(() => codeSharePages(share), [share]);
+  const [page, setPage] = useState(0), [wrap, setWrap] = useState(false), [expanded, setExpanded] = useState(false);
+  const selected = Math.min(page, snippets.length - 1);
+  const reader = {
+    snippet: snippets[selected], page: selected, count: snippets.length,
+    previous: () => setPage(current => Math.max(0, current - 1)),
+    next: () => setPage(current => Math.min(snippets.length - 1, current + 1)),
+    wrap, toggleWrap: () => setWrap(current => !current),
+  };
+  return <>
+    <CodeShareReader {...reader} openModal={() => setExpanded(true)} />
+    {expanded && <ShellDialog title="Shared code" subtitle={`Snippet ${selected + 1} of ${snippets.length}`} className="shared-code-dialog" close={() => setExpanded(false)}>
+      <CodeShareReader {...reader} expanded />
+    </ShellDialog>}
+  </>;
 }
 
 export function CodeShareStatus({ projection }: { projection?: CodeShareProjection }) {

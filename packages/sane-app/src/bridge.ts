@@ -23,7 +23,7 @@ import { claudeSourceRoot } from "./claude-source";
 import { decodeLog, lastJournalSeq, validCompactRequest, uuid, efforts, type SaneSessionContext, type Session, type Run, type Event, type Metadata, type TerminationUncertainty } from "./history";
 import { projectCompactions } from "./compaction";
 import type { CompactEligibility, CompactRequest, CompactResponse, MessageSnapshot } from "./oc-contract";
-import { OpenCodeAdapter, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeUnavailableError } from "./opencode";
+import { OpenCodeAdapter, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeUnavailableError, openCodePermissionAllows, permissionPatternMatches } from "./opencode";
 import { readOpenCodeWorkerContinuation, type OpenCodeWorkerContinuation } from "./opencode-worker-continuation";
 import { OpenCodeRunService, type FrameworkDelivery } from "./opencode-run-service";
 import { OpenCodeObservationService } from "./opencode-observation-service";
@@ -58,6 +58,7 @@ import { ScienceSubmissionStore, ScienceSubmissionError, ScienceSubmissionStorag
 import { canonicalJSON } from "./prepared-input-codec";
 import type { ScienceSnapshotReference, ScienceSubmissionView } from "../shared/conversation/types";
 import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
+import { GitOperationsService } from "./git-operations";
 import { CatalogService } from "./catalog";
 import { WorkspaceCreationService } from "./workspace-creation";
 import { TerminalService, type TerminalSocketData } from "./terminal";
@@ -298,6 +299,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let chromePush: ChromePushService | undefined;
   const searches = createWorkspaceSearchLifecycle();
   let workspaceCreations: WorkspaceCreationService | undefined;
+  let gitOperations: GitOperationsService | undefined;
   async function abortStartup() {
     closing = true;
     const repositoryReadDrain = router?.stopReads();
@@ -313,7 +315,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await boundedStartupCleanup(() => drainStartupExecution?.());
     await boundedStartupCleanup(() => queueDrain);
     await Promise.all([
-      () => chromePush?.close(), () => workspaceCreations?.close(), () => science?.close(),
+      () => chromePush?.close(), () => workspaceCreations?.close(), () => gitOperations?.close(), () => science?.close(),
       () => replyIntegration?.close(), () => updateService?.close(), () => searches.close(),
     ].map(cleanup => boundedStartupCleanup(cleanup)));
     await boundedStartupCleanup(() => router?.close());
@@ -526,6 +528,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     Object.freeze(binding.protectedPaths); Object.freeze(binding);
     return { binding, validate, dispose: lease.dispose };
   });
+  gitOperations = new GitOperationsService(catalog, worktrees, options.dataDir, () => domainProtectedPaths);
   const events = new Map<string, Event[]>();
   const deferredJournals = new Set<string>();
   let materializeDeferred: ((runId: string) => Event[]) | undefined;
@@ -2072,10 +2075,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const failWorkerBeforeSubmit = (workerId: string, summary: string) => {
     workerStore.update(workerId, { state: "failed", error: summary, outcome: { status: "failed", at: new Date().toISOString(), summary, log: null }, notification: { id: `worker-outcome:${workerId}`, state: "pending" } });
   };
-  const messageGrant = (permissions: { action?: unknown; effect?: unknown; resource?: unknown }[]) => permissions.some(rule => rule.action === "sane_worker_message" && rule.effect === "allow" && (rule.resource === "*" || rule.resource === undefined));
-  /** Latest canonical-execution permissions or launch settings for this parent run. A stale earlier allow is not a current grant. */
-  const parentCanMessage = async (parentRunId: string): Promise<boolean> => {
-    const records = journalEvents(parentRunId);
+  const messageGrant = (permissions: { action?: unknown; effect?: unknown; resource?: unknown }[]) => permissions.some(rule => rule.action === "sane_worker_message" && rule.effect === "allow" && rule.resource === "*") && openCodePermissionAllows(permissions, "sane_worker_message");
+  /** Journal decisions are authoritative. Only ordinary OC parents need native
+   * permission proof instead of canonical role context or Claude launch settings. */
+  const parentCanMessage = async (worker: WorkerRecord): Promise<boolean> => {
+    const records = journalEvents(worker.parent.runId);
     for (let index = records.length - 1; index >= 0; index -= 1) {
       const event = records[index]!;
       if (event.kind === "context" && event.data && typeof event.data === "object") {
@@ -2088,11 +2092,32 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       try {
         const text = await readFile(settings.path, "utf8");
         if (createHash("sha256").update(text).digest("hex") !== settings.sha256) return false;
-        const parsed = JSON.parse(text) as { permissions?: { allow?: unknown } };
-        return Array.isArray(parsed.permissions?.allow) && parsed.permissions.allow.includes("mcp__sane__sane_worker_message");
+        const parsed = JSON.parse(text) as { permissions?: { allow?: unknown; ask?: unknown; deny?: unknown } };
+        const permissions = parsed.permissions;
+        if (!permissions || [permissions.allow, permissions.ask, permissions.deny].some(rules => rules !== undefined && (!Array.isArray(rules) || rules.some(rule => typeof rule !== "string")))) return false;
+        const matches = (rules: unknown) => Array.isArray(rules) && rules.some(rule => permissionPatternMatches(rule, "mcp__sane__sane_worker_message"));
+        return matches(permissions.allow) && !matches(permissions.deny) && !matches(permissions.ask);
       } catch { return false; }
     }
-    return false;
+    const parent = worker.parent, invocation = parent.invocation;
+    const session = meta.sessions.find(s => s.sessionId === parent.sessionId);
+    const run = meta.runs.find(r => r.runId === parent.runId && r.sessionId === parent.sessionId);
+    const admission = admissions.get(parent.sessionId);
+    if (parent.native.harness !== "oc" || !invocation || invocation.toolCallId !== parent.toolCallId || !session || !run || !admission
+      || session.harness !== "opencode" || session.attachment || session.saneExecution || run.saneExecution || run.operation === "compact"
+      || session.nativeSessionId !== parent.native.nativeId || session.authorityId !== parent.native.authorityId
+      || nativeSource("opencode") !== parent.native.authorityId || admission.state !== "ready" || admission.binding.domain.mode !== "repository"
+      || admission.source.descriptor.harness !== "oc" || admission.source.authorityId !== parent.native.authorityId || admission.nativeId !== parent.native.nativeId
+      || admission.binding.executionCheckout !== session.cwd || run.cwd !== session.cwd || worker.checkout !== session.cwd) return false;
+    const pin = dispatchSnapshot(session), admissionPin = JSON.stringify(admission);
+    const current = () => !closing && !storageFailed && !meta.reconciliationRequired && meta.sessions.includes(session) && meta.runs.includes(run)
+      && dispatchSnapshot(session) === pin && JSON.stringify(admissions.get(parent.sessionId)) === admissionPin
+      && nativeSource("opencode") === parent.native.authorityId && !branches.pending(parent.sessionId) && !branches.replaced(parent.sessionId);
+    try {
+      if (!current()) return false;
+      const allowed = await oc.parentCanMessageWorker(parent.native.nativeId, session.cwd, invocation);
+      return current() && allowed;
+    } catch { return false; }
   };
   const admitExplicitWorker = async (worker: WorkerRecord, pinned: { saneExecution?: CanonicalExecutionRef; saneContext?: SaneSessionContext }): Promise<{ pin?: WorkerProtocolPin; reject?: string }> => {
     const packageRef = pinned.saneContext?.package;
@@ -2100,8 +2125,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!canonicalContextEnabled || !packageRef || !executionRevision) return {};
     const { bundle } = await contextPackages.load(packageRef);
     if (!bundle.assets.some(asset => asset.text.includes("submit your final result with sane_worker_complete"))) return {};
-    const tools = await proveInstalledExplicitWorkerRuntime(claudeRoot);
-    if (!tools || !await parentCanMessage(worker.parent.runId)) return { reject: "Explicit completion instructions are selected, but the installed runtime or the launching parent's messaging tool is not proven. This launch was not submitted." };
+    const childHarness = worker.launch.harness === "opencode" ? "oc" : "cc";
+    const tools = await proveInstalledExplicitWorkerRuntime(claudeRoot, childHarness);
+    if (!tools) return { reject: "Explicit completion instructions are selected, but the worker's installed runtime is not proven. This launch was not submitted." };
+    if (worker.parent.native.harness !== childHarness && !await proveInstalledExplicitWorkerRuntime(claudeRoot, worker.parent.native.harness)) return { reject: "Explicit completion instructions are selected, but the parent's installed messaging runtime is not proven. This launch was not submitted." };
+    if (!await parentCanMessage(worker)) return { reject: "Explicit completion instructions are selected, but the launching parent's messaging permission is not proven. This launch was not submitted." };
     const operations: WorkerProtocolOperation[] = ["complete"];
     if (worker.input.worker === "implementer" || worker.input.worker === "scout-crew") operations.push("notify", "message-parent");
     return { pin: { id: "explicit-v1", operations, executionRevision, contextRevision: packageRef.revision, runtimeCapabilities: [...tools] } };
@@ -3167,6 +3195,24 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const workspaceId = decodeURIComponent(aliasMatch[1]!), worktreeId = decodeURIComponent(aliasMatch[2]!);
           const input = await body(req);
           return json({ workspace: await catalog.setAlias(workspaceId, worktreeId, input?.alias ?? null) });
+        } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
+      }
+      const gitOperationsMatch = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/git-operations$/.exec(path);
+      if (gitOperationsMatch) {
+        try {
+          const workspaceId = decodeURIComponent(gitOperationsMatch[1]!), worktreeId = decodeURIComponent(gitOperationsMatch[2]!);
+          const token = auth.terminalToken(req);
+          if (req.method === "GET") {
+            const result = await gitOperations!.get(workspaceId, worktreeId, url.searchParams.get("bindingRevision"));
+            if (!token || auth.terminalToken(req) !== token) return json({ error: "Authentication revoked" }, 401);
+            return json(result);
+          }
+          if (req.method === "POST") {
+            assertDomainMutationOpen();
+            const input = await body(req);
+            return json(await gitOperations!.run(workspaceId, worktreeId, input, () => !closing && !storageFailed && !retainOwner && !meta.reconciliationRequired && startupReady && !!token && auth.terminalToken(req) === token));
+          }
+          return json({ error: "Method not allowed" }, 405);
         } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
       }
       const catalogMatch = /^\/api\/workspaces\/([^/]+)(?:\/worktrees\/([^/]+)(?:\/(list|file|copy|rename|git|diff|search|paths))?)?$/.exec(path);
@@ -4295,6 +4341,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const pushDrain = chromePush?.close();
     const searchDrain = searches.close();
     const creationDrain = workspaceCreations?.close();
+    const gitOperationsDrain = gitOperations?.close();
     const scienceDrain = science?.close();
     // Observe immediately; later shutdown stages still supervise retained ownership.
     void scienceDrain?.catch(() => { retainOwner = true; });
@@ -4308,6 +4355,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await boundedStartupCleanup(() => Promise.all([...queueServiceTasks]));
     await coordinatorDrain;
     await creationDrain;
+    await gitOperationsDrain;
     await boundedStartupCleanup(() => scienceDrain);
     await nativeSubagentDrain;
     try { await workers.drainLaunches(); } catch (error) { failClosed(error, "shutdown-worker-drain"); }

@@ -1,4 +1,4 @@
-import { CODE_SHARE_LIMITS, parseCodeShareInput, resolveCodeShareLanguage, type CodeShareRecord, type NativeCodeShareRequest, type CodeShareReceipt } from "../shared/code-share-contract";
+import { CODE_SHARE_LIMITS, codeShareInputSnippets, codeSharePages, parseCodeShareInput, resolveCodeShareLanguage, type CodeShareRecord, type CodeShareSnapshot, type NativeCodeShareRequest, type CodeShareReceipt } from "../shared/code-share-contract";
 import { exact } from "./app-store";
 import { canonicalJSON } from "./prepared-input-codec";
 import { body } from "./bridge-http";
@@ -41,6 +41,7 @@ export class CodeShareService {
     this.pending.set(key, operation);
     try {
       const share = await operation;
+      if (share.version === 2) return { type: "sane.code-share", version: 2, shareId: share.id, snippets: codeSharePages(share).map(({ input: { path, startLine, endLine } }) => ({ path, startLine, endLine })) };
       return { type: "sane.code-share", version: 1, shareId: share.id, path: share.input.path, startLine: share.input.startLine, endLine: share.input.endLine };
     } finally { if (this.pending.get(key) === operation) this.pending.delete(key); }
   }
@@ -51,16 +52,32 @@ export class CodeShareService {
     authorization.assertCurrent();
     if (old) return old; // Recovery must work after source deletion/checkout loss.
     const { sessionId, runId, workspaceId, worktreeId, bindingRevision } = authorization;
-    const file = await this.workspace.file(`${workspaceId}/${worktreeId}`, bindingRevision, request.input.path);
+    const files = new Map<string, Awaited<ReturnType<WorkspaceService["file"]>>>();
+    const snippets: CodeShareSnapshot[] = [];
+    let totalBytes = 0;
+    for (const input of codeShareInputSnippets(request.input)) {
+      authorization.assertCurrent();
+      // Reuse one captured revision when several pages reference the same file.
+      const file = files.get(input.path) ?? await this.workspace.file(`${workspaceId}/${worktreeId}`, bindingRevision, input.path);
+      files.set(input.path, file);
+      authorization.assertCurrent();
+      if (file.text === null || file.revision === null) throw new CodeShareError(400, "code-share-text", "Only UTF-8 text files up to 256 KiB can be shared");
+      // Like CodeMirror, splitting normalized LF includes an empty EOF line.
+      const lines = file.text.split("\n"), { startLine, endLine } = input;
+      if (endLine > lines.length) throw new CodeShareError(400, "code-share-range", `The requested range exceeds the source document: ${input.path}`);
+      const code = lines.slice(startLine - 1, endLine).join("\n"), bytes = Buffer.byteLength(code);
+      if (bytes > CODE_SHARE_LIMITS.bytes) throw new CodeShareError(400, "code-share-size", "Each snippet must be at most 64 KiB");
+      totalBytes += bytes;
+      if (totalBytes > CODE_SHARE_LIMITS.totalBytes) throw new CodeShareError(400, "code-share-size", "Combined snippet code exceeds 256 KiB");
+      snippets.push({ input, sourceRevision: file.revision, language: resolveCodeShareLanguage(input.path, input.format), code });
+    }
     await authorization.refresh?.();
     authorization.assertCurrent();
-    if (file.text === null || file.revision === null) throw new CodeShareError(400, "code-share-text", "Only UTF-8 text files up to 256 KiB can be shared");
-    // WorkspaceService decodes strict UTF-8 and normalizes CRLF/CR to LF.
-    // Like CodeMirror, splitting LF includes the empty final line after EOF LF.
-    const lines = file.text.split("\n"), { startLine, endLine } = request.input;
-    if (endLine > lines.length) throw new CodeShareError(400, "code-share-range", "The requested range exceeds the source document");
-    const code = lines.slice(startLine - 1, endLine).join("\n");
-    if (Buffer.byteLength(code) > CODE_SHARE_LIMITS.bytes) throw new CodeShareError(400, "code-share-size", "The excerpt exceeds 64 KiB");
-    return this.store.commit({ version: 1, id: codeShareId(key), sessionId, native: { harness: request.caller.source.harness, authorityId: request.caller.authorityId, nativeId: request.caller.nativeId }, anchor: { runId, toolCallId: request.invocation.toolCallId, messageId: request.invocation.messageId ?? null, invocationId: request.invocation.invocationId, wrapper: request.invocation.wrapper ?? null }, workspaceId, worktreeId, bindingRevision, sourceRevision: file.revision, language: resolveCodeShareLanguage(request.input.path, request.input.format), createdAt: new Date().toISOString(), input: request.input, code }, authorization.assertCurrent);
+    const identity = { id: codeShareId(key), sessionId, native: { harness: request.caller.source.harness, authorityId: request.caller.authorityId, nativeId: request.caller.nativeId }, anchor: { runId, toolCallId: request.invocation.toolCallId, messageId: request.invocation.messageId ?? null, invocationId: request.invocation.invocationId, wrapper: request.invocation.wrapper ?? null }, workspaceId, worktreeId, bindingRevision, createdAt: new Date().toISOString() };
+    // Commit the complete collection atomically; a failed page saves no pages.
+    const record: CodeShareRecord = "snippets" in request.input
+      ? { ...identity, version: 2, input: request.input, snippets }
+      : { ...identity, version: 1, ...snippets[0]! };
+    return this.store.commit(record, authorization.assertCurrent);
   }
 }

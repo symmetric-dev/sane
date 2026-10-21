@@ -1,9 +1,9 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { WorkerDelivery, WorkerRecord } from "../src/worker-contract";
+import type { WorkerDelivery, WorkerExchange, WorkerRecord } from "../src/worker-contract";
 import type { HandoffPresentation } from "../src/handoff-contract";
 import type { CompactionRecord } from "../src/oc-contract";
 import type { Harness, Message, Run } from "./types";
-import { workerExchanges, workerReportDelivery } from "./worker-presentation";
+import { receivedWorkerExchange, workerExchanges, workerReportDelivery } from "./worker-presentation";
 import { receivedHandoff } from "./handoff-presentation";
 import { ACTIVITY_ANIMATION_MAX_MS } from "./activity-visuals";
 import { classifyTranscriptTool, createActivityEntry, type ActivityEntry } from "./activity-model";
@@ -19,7 +19,7 @@ export type ActivityPresentation = { plan: ActivityPlan; entrances: Map<string, 
 export const activityPosition = (messageId: string, index: number) => JSON.stringify([messageId, index]);
 
 /** Presentation only: preserve native messages and break at every text part. */
-export function planTranscriptActivities(sessionId: string, messages: Message[], workers: WorkerRecord[], deliveries: WorkerDelivery[] = [], handoffs: HandoffPresentation[] = [], nativeRuns: Run[] = [], nativeHarness: Harness = "claude-code", compactionPositions?: ReadonlyMap<string, readonly CompactionRecord[]>, readOnly: boolean = false, codeShares?: readonly CodeShareRecord[]): ActivityPlan {
+export function planTranscriptActivities(sessionId: string, messages: Message[], workers: WorkerRecord[], deliveries: WorkerDelivery[] = [], handoffs: HandoffPresentation[] = [], nativeRuns: Run[] = [], nativeHarness: Harness = "claude-code", compactionPositions?: ReadonlyMap<string, readonly CompactionRecord[]>, readOnly: boolean = false, codeShares?: readonly CodeShareRecord[], exchanges: readonly WorkerExchange[] = workerExchanges(workers)): ActivityPlan {
   const positions = new Map<string, ActivityGroup | null>();
   const entries: ActivityEntry[] = [];
   const byId = new Map<string, ActivityEntry>();
@@ -45,7 +45,7 @@ export function planTranscriptActivities(sessionId: string, messages: Message[],
   };
   for (const source of messages) {
     if (compactionPositions?.get(source.id)?.length) flush();
-    if (!readOnly && (workerReportDelivery(source, deliveries, workerExchanges(workers)) || receivedHandoff(source, sessionId, handoffs))) { flush(); continue; }
+    if (!readOnly && (receivedWorkerExchange(source, sessionId, exchanges) || workerReportDelivery(source, deliveries, exchanges) || receivedHandoff(source, sessionId, handoffs))) { flush(); continue; }
     if (source.role !== "assistant") {
       flush();
       source.parts.forEach((part, index) => {
@@ -86,10 +86,10 @@ export function planTranscriptActivities(sessionId: string, messages: Message[],
 }
 
 /** Seed loaded history; only later arrivals get a single, consumable entrance. */
-export function useActivityPresentation({ sessionId, messages, workers, deliveries, handoffs, loading, animate, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares }: {
-  sessionId: string; messages: Message[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; handoffs?: HandoffPresentation[]; loading: boolean; animate: boolean; nativeRuns?: Run[]; nativeHarness?: Harness; compactionPositions?: ReadonlyMap<string, readonly CompactionRecord[]>; readOnly?: boolean; codeShares?: readonly CodeShareRecord[];
+export function useActivityPresentation({ sessionId, messages, workers, deliveries, exchanges, handoffs, loading, animate, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares }: {
+  sessionId: string; messages: Message[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffPresentation[]; loading: boolean; animate: boolean; nativeRuns?: Run[]; nativeHarness?: Harness; compactionPositions?: ReadonlyMap<string, readonly CompactionRecord[]>; readOnly?: boolean; codeShares?: readonly CodeShareRecord[];
 }): ActivityPresentation {
-  const plan = useMemo(() => planTranscriptActivities(sessionId, messages, workers, deliveries, handoffs, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares), [sessionId, messages, workers, deliveries, handoffs, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares]);
+  const plan = useMemo(() => planTranscriptActivities(sessionId, messages, workers, deliveries, handoffs, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares, exchanges), [sessionId, messages, workers, deliveries, exchanges, handoffs, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares]);
   const messagesById = useMemo(() => new Map(messages.map(message => [message.id, message])), [messages]);
   const observed = useRef<{ sessionId: string; seen: Set<string>; tail?: string } | null>(null);
   const [entrances, setEntrances] = useState(new Map<string, ActivityEntrance>());

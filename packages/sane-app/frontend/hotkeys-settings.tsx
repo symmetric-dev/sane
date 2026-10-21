@@ -41,7 +41,7 @@ export function HotkeysSettings() {
         <p className="muted">Use the left Alt key. Right Alt (AltGr) stays available for typing special characters.</p>
         <ShortcutTable definitions={GLOBAL_SHORTCUTS} labelledBy="hotkeys-navigation" />
         <p className="muted">Navigation shortcuts work in chat inputs, file editors, and the terminal. Flows uses Cmd/Ctrl + P in the chat composer. Shortcuts pause while a dialog is open, except workspace selection can be toggled closed with its shortcut. They never submit a message. Opening the Terminal flow starts a shell if the selected worktree has none.</p>
-        <p className="muted">With the Flows launcher focused: S opens Status, R opens Review Documents, T opens Terminal, and P opens Python. Escape dismisses the innermost control, then returns from a nested flow screen, then exits to chat. In Terminal, i enters Interact mode; Escape releases control, and another Escape exits to chat.</p>
+        <p className="muted">With the Flows launcher focused: S opens Status, R opens Review Documents, T opens Terminal, G opens Git, and P opens Python. Escape dismisses the innermost control, then returns from a nested flow screen, then exits to chat. In Terminal, i enters Interact mode; Escape releases control, and another Escape exits to chat. Git operates directly on the selected browsing worktree, without sending an agent message.</p>
       </section>
     </div>
     <div role="tabpanel" id="hotkeys-panel-files" aria-labelledby="hotkeys-tab-files" hidden={tab !== "files"} tabIndex={0}>

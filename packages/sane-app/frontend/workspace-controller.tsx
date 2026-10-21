@@ -10,6 +10,7 @@ import { acquireWorktreeDirectories, type DirectoryResult, type DirectoryRequest
 export type { DirectoryResult } from "./workspace-directory-cache";
 import { fencePath, notifyWorkspace, openBuffer, pathFence, refreshBuffer, renameBuffer, requestFence, rootState, subscribeWorkspace, workspaceEpoch, workspaceFailure, workspaceSnapshot, type Buffer, type TreePresentation } from "./workspace-store";
 import { jitteredDelay } from "./visibility";
+import { gitReadRevision, subscribeGitInvalidations } from "./git-invalidation";
 
 export type ActiveView = CatalogNavigation["view"];
 export type WorkspaceActivation = { view: "code"; path: string; location?: WorkspaceLocation; source?: "files" | "search" } | { view: "git"; path: string; comparison: GitComparison };
@@ -48,10 +49,11 @@ function useController(conversationId: string | null, view: ActiveView, navigate
   const scopeError = revoked ? resolvedSelection.auth !== workspaceEpoch() ? WORKSPACE_AUTH_EXPIRED : WORKSPACE_SOURCE_UNAVAILABLE : "";
   const latestScope = useRef<Scope | undefined>(scope); latestScope.current = scope;
   const workspace = scope?.workspace;
+  const gitRevision = useSyncExternalStore(subscribeGitInvalidations, () => scope ? gitReadRevision(scope.id, scope.workspace.bindingRevision) : 0);
   const root = workspace ? rootState(workspace) : undefined;
   const selected = root?.selected ?? "", comparisonKind = root?.comparison ?? "unstaged";
   const buffer = root?.buffers.get(selected);
-  const selectionKey = scope ? JSON.stringify([scope.generation, workspace!.workspaceId, view, selected, comparisonKind, openAttempt]) : "";
+  const selectionKey = scope ? JSON.stringify([scope.generation, workspace!.workspaceId, view, selected, comparisonKind, openAttempt, view === "git" ? gitRevision : 0]) : "";
   const currentScope = (candidate: Scope) => candidate.id === identity.current.conversationId && candidate.bindingRevision === identity.current.bindingRevision && candidate.generation === generation.current && candidate.auth === workspaceEpoch() && candidate.reader.current();
 
   useEffect(() => {
@@ -112,7 +114,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     let active = true, busy = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const request = selectionRequest.current;
-    const current = () => active && currentScope(scope) && request === selectionRequest.current && identity.current.view === view && root.selected === selected && root.comparison === comparisonKind;
+    const current = () => active && currentScope(scope) && request === selectionRequest.current && identity.current.view === view && root.selected === selected && root.comparison === comparisonKind && gitRevision === gitReadRevision(scope.id, scope.workspace.bindingRevision);
     const refresh = async () => {
       clearTimeout(timer); timer = undefined;
       if (document.hidden || busy || !current()) return;
@@ -145,7 +147,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     void refresh();
     window.addEventListener("focus", refresh); document.addEventListener("visibilitychange", refresh);
     return () => { active = false; clearTimeout(timer); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
-  }, [scope, view, selected, comparisonKind, openAttempt]);
+  }, [scope, view, selected, comparisonKind, openAttempt, gitRevision]);
 
   // One directory freshness owner for both desktop/mobile trees. HT retains its
   // own children cache, so the subscribers reconcile only loaded, reachable rows;

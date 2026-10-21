@@ -6,6 +6,11 @@ type Entry = {
 
 const entries = new Map<string, Entry>();
 
+/** Retire cached AND in-flight entries. Existing callers still need their own response fence. */
+export function invalidateCoalescedRequests(matches: (url: string) => boolean = () => true) {
+  for (const key of entries.keys()) if (matches(key.slice(4))) entries.delete(key);
+}
+
 function joinEntry(entry: Entry, callerSignal: AbortSignal | null): Promise<Response> {
   if (!callerSignal) return entry.promise.then((response) => response.clone());
   if (callerSignal.aborted) return Promise.reject(callerSignal.reason);

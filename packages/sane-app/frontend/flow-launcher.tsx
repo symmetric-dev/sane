@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { FiBookOpen, FiCode, FiCompass, FiGrid, FiTerminal } from "react-icons/fi";
+import { FiBookOpen, FiCode, FiCompass, FiGitBranch, FiGrid, FiTerminal } from "react-icons/fi";
 import { FlowNavigation } from "./flow-navigation";
 import "./flow-launcher.css";
 
@@ -8,6 +8,7 @@ const flows = [
   { id: "view-status", title: "View Status", icon: FiCompass, key: "s" },
   { id: "sane-review", title: "Review Documents", icon: FiBookOpen, key: "r" },
   { id: "terminal", title: "Terminal", icon: FiTerminal, key: "t" },
+  { id: "git", title: "Git", icon: FiGitBranch, key: "g" },
   { id: "python", title: "Python", icon: FiCode, key: "p" },
 ] as const;
 export type FlowId = typeof flows[number]["id"];

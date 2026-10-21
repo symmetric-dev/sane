@@ -7,6 +7,8 @@ import { bufferLanguage, createBufferState, language, wrapping, wrappingExtensio
 import { codeSettings } from "./code-settings";
 import { editorTheme, resolvedEditorTheme } from "./workspace-theme";
 import { themeSettings } from "./theme-settings";
+import { invalidateCoalescedRequests } from "./request-coalescing";
+import { gitReadRevision, subscribeGitInvalidations } from "./git-invalidation";
 
 export type Buffer = {
   path: string; state: EditorState; baseText: string; file: WorkspaceFile; disk?: WorkspaceFile;
@@ -14,7 +16,7 @@ export type Buffer = {
   attach: (view: EditorView | null) => void;
 };
 export type TreePresentation = { expandedItems: string[]; focusedItem: string | null };
-export type RootState = { root: string; workspace: Workspace; generation: number; selected: string; buffers: Map<string, Buffer>; pathVersions: Map<string, number>; mutations: Set<string>; gitVersion: number; git?: WorkspaceGit; comparison: GitComparison; codeTree: TreePresentation; gitTree: TreePresentation };
+export type RootState = { root: string; workspace: Workspace; generation: number; selected: string; buffers: Map<string, Buffer>; pathVersions: Map<string, number>; mutations: Set<string>; gitVersion: number; gitInvalidationRevision: number; git?: WorkspaceGit; comparison: GitComparison; codeTree: TreePresentation; gitTree: TreePresentation };
 const roots = new Map<string, RootState>();
 function reconfigureBuffer(buffer: Buffer, effects: StateEffect<unknown> | readonly StateEffect<unknown>[]) {
   if (buffer.view) {
@@ -50,13 +52,29 @@ export const notifyWorkspace = () => { version++; listeners.forEach(listener => 
 export const workspaceEpoch = () => epoch;
 export const dirty = (buffer: Buffer) => buffer.state.doc.toString() !== buffer.baseText;
 export const workspaceHasDirtyBuffers = () => [...roots.values()].some(root => [...root.buffers.values()].some(dirty));
-export function invalidateWorkspaceRequests() { epoch++; for (const root of roots.values()) { root.generation++; root.mutations.clear(); for (const buffer of root.buffers.values()) { buffer.saving = false; buffer.checking = false; } } notifyWorkspace(); }
-export function resetWorkspaceState() { epoch++; roots.clear(); notifyWorkspace(); }
+/** Read-only Git presentation lookup; does not acquire a root or change its workspace metadata. */
+export function workspaceBufferIsDirty(catalogWorkspaceId: string, worktreeId: string, bindingRevision: string, root: string, path: string) {
+  const buffer = roots.get(JSON.stringify([catalogWorkspaceId, worktreeId, bindingRevision, root]))?.buffers.get(path);
+  return !!buffer && dirty(buffer);
+}
+export function invalidateWorkspaceRequests() { invalidateCoalescedRequests(); epoch++; for (const root of roots.values()) { root.generation++; root.git = undefined; root.gitVersion++; root.mutations.clear(); for (const buffer of root.buffers.values()) { buffer.saving = false; buffer.checking = false; } } notifyWorkspace(); }
+export function resetWorkspaceState() { invalidateCoalescedRequests(); epoch++; roots.clear(); notifyWorkspace(); }
 const requestId = (workspace: Workspace) => JSON.stringify([workspace.catalogWorkspaceId, workspace.worktreeId]);
 const rootKey = (workspace: Workspace) => JSON.stringify([workspace.catalogWorkspaceId, workspace.worktreeId, workspace.bindingRevision, workspace.root]);
+subscribeGitInvalidations(() => {
+  let changed = false;
+  for (const root of roots.values()) {
+    const revision = gitReadRevision(requestId(root.workspace), root.workspace.bindingRevision);
+    if (revision === root.gitInvalidationRevision) continue;
+    root.gitInvalidationRevision = revision; root.gitVersion++; root.git = undefined; changed = true;
+  }
+  // Retire stale Git presentation even while its shell view is inactive. Buffers
+  // and both Files/Git bookmarks remain untouched.
+  if (changed) notifyWorkspace();
+});
 export function rootState(workspace: Workspace) {
   let root = roots.get(rootKey(workspace));
-  if (!root) { root = { root: workspace.root, workspace, generation: 0, selected: "", buffers: new Map(), pathVersions: new Map(), mutations: new Set(), gitVersion: 0, comparison: "unstaged", codeTree: { expandedItems: [], focusedItem: null }, gitTree: { expandedItems: ["group:staged:", "group:unstaged:", "group:untracked:"], focusedItem: null } }; roots.set(rootKey(workspace), root); }
+  if (!root) { root = { root: workspace.root, workspace, generation: 0, selected: "", buffers: new Map(), pathVersions: new Map(), mutations: new Set(), gitVersion: 0, gitInvalidationRevision: gitReadRevision(requestId(workspace), workspace.bindingRevision), comparison: "unstaged", codeTree: { expandedItems: [], focusedItem: null }, gitTree: { expandedItems: ["group:staged:", "group:unstaged:", "group:untracked:"], focusedItem: null } }; roots.set(rootKey(workspace), root); }
   if (root.workspace.bindingRevision !== workspace.bindingRevision) {
     root.generation++; root.git = undefined; root.mutations.clear();
     for (const buffer of root.buffers.values()) { buffer.checking = false; buffer.saving = false; }
@@ -66,10 +84,11 @@ export function rootState(workspace: Workspace) {
 }
 export function workspaceFailure(error: unknown) {
   if (error instanceof WorkspaceError && error.status === 401) {
+    invalidateCoalescedRequests();
     // Invalidate every outstanding workspace request. The shell handles sign-in.
     epoch++;
     for (const root of roots.values()) {
-      root.generation++; root.mutations.clear();
+      root.generation++; root.git = undefined; root.gitVersion++; root.mutations.clear();
       for (const buffer of root.buffers.values()) { buffer.checking = false; buffer.saving = false; }
     }
     notifyWorkspace();

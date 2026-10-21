@@ -1,6 +1,7 @@
 import type { WorkspaceList, WorkspaceFile, WorkspaceGit, WorkspaceDiff, GitComparison, WorkspaceSearch, WorkspaceSearchInput, WorkspacePaths, WorkspacePathsInput } from "../src/workspace-contract";
 import type { WorktreeResolution } from "../src/catalog-contract";
 import { coalescedFetch } from "./request-coalescing";
+import { invalidateWorkspaceGit } from "./git-invalidation";
 
 export class WorkspaceError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
@@ -25,6 +26,7 @@ export function subscribeWorkspaceMutations(listener: (mutation: WorkspaceMutati
 }
 async function mutation<T>(scopeId: string, workspaceId: string, paths: string[], write: () => Promise<T>): Promise<T> {
   const notify = () => {
+    invalidateWorkspaceGit(scopeId, workspaceId);
     for (const listener of mutationListeners) {
       // Metadata reconciliation must never turn a committed write into a failure.
       try { listener({ scopeId, workspaceId, paths }); } catch { /* Independent owner. */ }

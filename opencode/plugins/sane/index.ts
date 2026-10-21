@@ -5,7 +5,7 @@ import { linkNativeCaller, nativeCallerContext, nativeShellCaller, nativeLinkSch
 import { handoffNativeCaller, nativeHandoffSchema, nativeHandoffStatusSchema } from "../../../packages/sane-cli/src/native-handoff.ts"
 import { nativeWorkerDescriptions, nativeWorkerOperations, nativeWorkerSchemas, SANE_MANAGED_ONLY } from "../../../packages/sane-cli/src/native-worker-contract.ts"
 import { workerNativeCaller } from "../../../packages/sane-cli/src/native-worker.ts"
-import { nativeShareCodeDescription, nativeShareCodeSchema, parseCodeShareInput } from "../../../packages/sane-cli/src/native-share-code-contract.ts"
+import { codeShareInputSnippets, nativeShareCodeDescription, nativeShareCodeSchema, parseCodeShareInput } from "../../../packages/sane-cli/src/native-share-code-contract.ts"
 import { shareCodeNativeCaller } from "../../../packages/sane-cli/src/native-share-code.ts"
 import { registerExecutionOperations } from "./execution.ts"
 import { createSaneVisibility } from "./visibility.ts"
@@ -44,9 +44,10 @@ export const SanePlugin = Plugin.define({
           const args = parseCodeShareInput(input)
           if (typeof registration !== "string" || !registration.startsWith("/")) throw new Error("NATIVE_CONTEXT_UNAVAILABLE: configure an explicit absolute registrationFile plugin option.")
           const { caller, client } = await qualifyOpenCodeAppCaller(registration, ctx, tool)
-          const path = resolve(caller.cwd, args.path)
           const signal = (tool as typeof tool & { signal?: AbortSignal }).signal
-          await assertOpenCodeCodeSharePermissions(ctx, { ...tool, signal }, path, client)
+          for (const path of new Set(codeShareInputSnippets(args).map(snippet => resolve(caller.cwd, snippet.path)))) {
+            await assertOpenCodeCodeSharePermissions(ctx, { ...tool, signal }, path, client)
+          }
           return { content: JSON.stringify(await shareCodeNativeCaller(caller, args, ctx.options.appConnectionFile as string, invocation, signal)) }
         },
       })

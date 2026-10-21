@@ -653,70 +653,69 @@ function hookPathFromCommand(command: string): string | undefined {
   return path && isAbsolute(path) ? path : undefined
 }
 /**
- * Prove the live installed closure, not the source tree. Returns the verified
- * tool names, or undefined when any required artifact is missing or stale.
+ * Prove the selected harness's live installed closure, not the source tree or
+ * another harness's installation. Returns verified tool names, or undefined
+ * when any required artifact is missing or stale.
  * Callers must reject explicit admission rather than treating source constants as deployment.
  */
-export async function proveInstalledExplicitWorkerRuntime(profileRoot: string): Promise<readonly string[] | undefined> {
+export async function proveInstalledExplicitWorkerRuntime(profileRoot: string, harness: "cc" | "oc"): Promise<readonly string[] | undefined> {
   try {
-    if (!isAbsolute(profileRoot)) return
-    const settingsPath = join(profileRoot, "settings.json")
-    const settingsStat = await lstat(settingsPath)
-    if (!settingsStat.isFile() || settingsStat.isSymbolicLink()) return
-    const settings = JSON.parse(await readFile(settingsPath, "utf8")) as unknown
-    if (!isPlainObject(settings) || !isPlainObject(settings.hooks) || !Array.isArray(settings.hooks.PreToolUse)) return
-    const saneHooks: { path: string; matcher: string }[] = []
-    for (const entry of settings.hooks.PreToolUse) {
-      if (!isPlainObject(entry) || typeof entry.matcher !== "string" || !Array.isArray(entry.hooks)) continue
-      for (const hook of entry.hooks) {
-        if (!isPlainObject(hook) || hook.type !== "command" || typeof hook.command !== "string") continue
-        const path = hookPathFromCommand(hook.command)
-        if (path) saneHooks.push({ path, matcher: entry.matcher })
+    let pluginRoot = join(homedir(), ".config", "opencode", "plugins", "sane")
+    let hookPath: string | undefined
+    if (harness === "cc") {
+      if (!isAbsolute(profileRoot)) return
+      const settingsPath = join(profileRoot, "settings.json")
+      const settingsStat = await lstat(settingsPath)
+      if (!settingsStat.isFile() || settingsStat.isSymbolicLink()) return
+      const settings = JSON.parse(await readFile(settingsPath, "utf8")) as unknown
+      if (!isPlainObject(settings) || !isPlainObject(settings.hooks) || !Array.isArray(settings.hooks.PreToolUse)) return
+      const saneHooks: { path: string; matcher: string }[] = []
+      for (const entry of settings.hooks.PreToolUse) {
+        if (!isPlainObject(entry) || typeof entry.matcher !== "string" || !Array.isArray(entry.hooks)) continue
+        for (const hook of entry.hooks) {
+          if (!isPlainObject(hook) || hook.type !== "command" || typeof hook.command !== "string") continue
+          const path = hookPathFromCommand(hook.command)
+          if (path) saneHooks.push({ path, matcher: entry.matcher })
+        }
       }
+      hookPath = saneHooks[0]?.path
+      if (!hookPath || !hookPath.endsWith(INSTALLED_HOOK_SUFFIX) || saneHooks.some(hook => hook.path !== hookPath || !matcherIncludesExplicitTools(hook.matcher))) return
+      pluginRoot = resolve(dirname(hookPath), "../../../..")
+      if (!pluginRoot.endsWith(`${sep}.config${sep}opencode${sep}plugins${sep}sane`)) return
     }
-    const hookPath = saneHooks[0]?.path
-    if (!hookPath || !hookPath.endsWith(INSTALLED_HOOK_SUFFIX) || saneHooks.some(hook => hook.path !== hookPath || !matcherIncludesExplicitTools(hook.matcher))) return
-    const hookStat = await lstat(hookPath)
-    if (!hookStat.isFile() || hookStat.isSymbolicLink()) return
-    const runtimeSrc = dirname(hookPath)
-    const pluginRoot = resolve(runtimeSrc, "../../../..")
-    if (!pluginRoot.endsWith(`${sep}.config${sep}opencode${sep}plugins${sep}sane`)) return
-    const files = {
-      plugin: join(pluginRoot, "index.ts"),
-      claude: join(runtimeSrc, "native-claude.ts"),
-      configuration: join(runtimeSrc, "native-configuration.ts"),
-      contract: join(runtimeSrc, "native-worker-contract.ts"),
-      mcp: join(runtimeSrc, "native-claude-mcp.ts"),
-      opencode: join(runtimeSrc, "native-opencode.ts"),
-      hook: hookPath,
-    }
-    for (const path of Object.values(files)) {
+    const runtimeSrc = join(pluginRoot, "runtime", "packages", "sane-cli", "src")
+    const readInstalled = async (path: string) => {
       const stat = await lstat(path)
-      if (!stat.isFile() || stat.isSymbolicLink()) return
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Installed runtime artifact must be a regular file")
+      return readFile(path, "utf8")
     }
-    const [plugin, claude, configuration, contract, mcp, opencode, hook] = await Promise.all(Object.values(files).map(path => readFile(path, "utf8")))
-    if (!plugin!.includes("nativeWorkerOperations") || !plugin!.includes("sane_worker_${operation}") || !plugin!.includes("qualifyWorker(tool, operation)") || !plugin!.includes("runtime/packages/sane-cli/src/native-worker-contract")) return
-    if (!EXPLICIT_WORKER_TOOLS.every(tool => quotedTool(tool, claude!)) || !claude!.includes("claudeNativeTools")) return
-    if (!matcherIncludesExplicitTools(configuration!.match(/CLAUDE_PRE_TOOL_USE_MATCHER\s*=\s*"([^"]+)"/)?.[1] ?? "")) return
-    if (!EXPLICIT_WORKER_OPERATIONS.every(operation => quotedTool(operation, contract!)) || !contract!.includes("nativeWorkerOperations")) return
-    if (!mcp!.includes("nativeWorkerOperations")) return
-    if (!/opencode:\s*\{[^}]*\boperation\b/.test(opencode!)) return
-    if (!hook!.includes("claudeNativeTools")) return
+    const contract = await readInstalled(join(runtimeSrc, "native-worker-contract.ts"))
+    if (!EXPLICIT_WORKER_OPERATIONS.every(operation => quotedTool(operation, contract)) || !contract.includes("nativeWorkerOperations")) return
     const home = resolve(pluginRoot, "../../../..")
-    const claudeConfigPath = join(home, ".claude.json")
-    const opencodeConfigPath = join(home, ".config", "opencode", "opencode.json")
-    for (const path of [claudeConfigPath, opencodeConfigPath]) {
-      const stat = await lstat(path)
-      if (!stat.isFile() || stat.isSymbolicLink()) return
+    if (harness === "oc") {
+      const [plugin, opencode, config] = await Promise.all([
+        readInstalled(join(pluginRoot, "index.ts")), readInstalled(join(runtimeSrc, "native-opencode.ts")),
+        readInstalled(join(home, ".config", "opencode", "opencode.json")),
+      ])
+      if (!plugin.includes("nativeWorkerOperations") || !plugin.includes("sane_worker_${operation}") || !plugin.includes("qualifyWorker(tool, operation)") || !plugin.includes("runtime/packages/sane-cli/src/native-worker-contract")) return
+      if (!/opencode:\s*\{[^}]*\boperation\b/.test(opencode)) return
+      const parsed = JSON.parse(config) as unknown
+      if (!isPlainObject(parsed) || !Array.isArray(parsed.plugins)) return
+      if (!parsed.plugins.some(value => value === pluginRoot || isPlainObject(value) && value.package === pluginRoot)) return
+    } else {
+      const mcpPath = join(runtimeSrc, "native-claude-mcp.ts")
+      const [claude, configuration, mcp, hook, config] = await Promise.all([
+        readInstalled(join(runtimeSrc, "native-claude.ts")), readInstalled(join(runtimeSrc, "native-configuration.ts")),
+        readInstalled(mcpPath), readInstalled(hookPath!), readInstalled(join(home, ".claude.json")),
+      ])
+      if (!EXPLICIT_WORKER_TOOLS.every(tool => quotedTool(tool, claude)) || !claude.includes("claudeNativeTools")) return
+      if (!matcherIncludesExplicitTools(configuration.match(/CLAUDE_PRE_TOOL_USE_MATCHER\s*=\s*"([^"]+)"/)?.[1] ?? "")) return
+      if (!mcp.includes("nativeWorkerOperations") || !hook.includes("claudeNativeTools")) return
+      const parsed = JSON.parse(config) as unknown
+      if (!isPlainObject(parsed) || !isPlainObject(parsed.mcpServers) || !isPlainObject(parsed.mcpServers.sane)) return
+      const args = parsed.mcpServers.sane.args
+      if (!Array.isArray(args) || !args.includes(mcpPath)) return
     }
-    const claudeConfig = JSON.parse(await readFile(claudeConfigPath, "utf8")) as unknown
-    const opencodeConfig = JSON.parse(await readFile(opencodeConfigPath, "utf8")) as unknown
-    if (!isPlainObject(claudeConfig) || !isPlainObject(claudeConfig.mcpServers) || !isPlainObject(claudeConfig.mcpServers.sane)) return
-    const args = claudeConfig.mcpServers.sane.args
-    if (!Array.isArray(args) || !args.includes(files.mcp)) return
-    if (!isPlainObject(opencodeConfig) || !Array.isArray(opencodeConfig.plugins)) return
-    const listed = opencodeConfig.plugins.some(value => value === pluginRoot || isPlainObject(value) && value.package === pluginRoot)
-    if (!listed) return
     return [...EXPLICIT_WORKER_TOOLS]
   } catch {
     return

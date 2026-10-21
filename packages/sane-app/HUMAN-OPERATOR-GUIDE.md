@@ -114,6 +114,45 @@ stale; after confirmed completion, SANE waits for new usage rather than displayi
 an invented zero percent. Skipped or failed compaction does not prove a context
 reset.
 
+### Git operations from chat
+
+Open **Flows → Git** from a conversation to review saved changes, stage or
+unstage whole files, enter a commit message, commit, and explicitly push. These
+are direct Git controls, not agent requests, and require no assigned workstream.
+Like Terminal, Git uses the **selected browsing workspace/worktree**, which may
+differ from the conversation's execution checkout. Check the displayed target
+and branch before making changes.
+
+On phones, switch between **Changes**, **Diff**, and **Commit & push** to give
+each step the full review area. Selecting a changed file opens its diff; switching
+views preserves your selection and commit-message draft. Desktop keeps the
+side-by-side review layout.
+
+Git review shares the existing staged, unstaged, and untracked comparisons with
+the Files Git view, but does not move its file selection. Unsaved editor buffers
+are never saved automatically or included by staging. Commit uses the staged
+index; it does not automatically stage other changes. Push is a separate action
+with an explicit remote and branch. Force-push, pull/rebase, branch switching,
+amend, hunk staging, and conflict resolution are not provided here.
+
+Commit and push use the host's normal Git identity, hooks, signing, and credential
+setup. Interactive authentication may require attention in an external terminal.
+SSH uses batch-mode OpenSSH and the usual SSH configuration/agent; custom
+`core.sshCommand`, `GIT_SSH`, and `GIT_SSH_COMMAND` overrides are not used by this UI.
+If the checkout or Git state changes after review, refresh and review again before
+retrying. If an operation's outcome is unknown, inspect the repository before
+starting another mutation; a lost response is not evidence that nothing changed.
+
+This first version rejects conflicted/sparse indexes, active Git sequencers,
+symlink/hard-linked staging operands, and protected or undisplayed staged paths.
+Whole-file staging captures at most 16 MiB per file and 64 MiB per snapshot;
+unsupported text previews alone do not prevent staging. Push supports one
+HTTP(S), SSH, or Git push URL and the checked-out branch's same name on the
+remote, not local-path, custom-helper, mirror, or multi-destination pushes.
+Commit-message drafts remain in memory when leaving the flow, but not across a
+page reload. Admitted operation receipts survive App restart and prevent replay
+of the same request ID.
+
 ### Search files
 
 In Files or Git view, press **Cmd+Shift+F** on macOS or **Ctrl+Shift+F** on Windows/Linux,

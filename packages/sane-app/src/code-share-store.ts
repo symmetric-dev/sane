@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { atomicAppRecord, exact } from "./app-store";
 import { canonicalJSON } from "./prepared-input-codec";
-import { isCodeShareRecord, type CodeShareRecord, type NativeCodeShareRequest } from "../shared/code-share-contract";
+import { codeSharePages, isCodeShareRecord, type CodeShareRecord, type NativeCodeShareRequest } from "../shared/code-share-contract";
 
 export class CodeShareError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); }
@@ -49,13 +49,14 @@ export class CodeShareStore {
     const ids = new Set<string>(), keys = new Set<string>(), sizes = new Map<string, number>(), counts = new Map<string, number>();
     for (const share of shares) {
       if (!isCodeShareRecord(share)) throw new Error("Invalid code share record");
-      exact(share, ["version", "id", "sessionId", "native", "anchor", "workspaceId", "worktreeId", "bindingRevision", "sourceRevision", "language", "createdAt", "input", "code"]);
+      exact(share, ["version", "id", "sessionId", "native", "anchor", "workspaceId", "worktreeId", "bindingRevision", "createdAt", "input", ...(share.version === 1 ? ["sourceRevision", "language", "code"] : ["snippets"])]);
+      if (share.version === 2) for (const snippet of share.snippets) exact(snippet, ["sourceRevision", "language", "input", "code"]);
       exact(share.native, ["harness", "authorityId", "nativeId"]);
       exact(share.anchor, ["runId", "toolCallId", "messageId", "invocationId", "wrapper"]);
-      if (share.code.includes("\0") || (share.native.harness === "cc"
+      if (codeSharePages(share).some(snippet => snippet.code.includes("\0")) || (share.native.harness === "cc"
         ? share.anchor.wrapper !== null || share.anchor.invocationId !== share.anchor.toolCallId
         : share.anchor.messageId === null || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(share.anchor.invocationId))) throw new Error("Invalid code share invocation");
-      if (share.id !== codeShareId(identity(share)) || !/^[a-f0-9]{64}$/.test(share.sourceRevision) || ids.has(share.id) || keys.has(identity(share))) throw new Error("Conflicting code share identity");
+      if (share.id !== codeShareId(identity(share)) || codeSharePages(share).some(snippet => !/^[a-f0-9]{64}$/.test(snippet.sourceRevision)) || ids.has(share.id) || keys.has(identity(share))) throw new Error("Conflicting code share identity");
       ids.add(share.id); keys.add(identity(share));
       const size = (sizes.get(share.sessionId) ?? 0) + Buffer.byteLength(JSON.stringify(share));
       const count = (counts.get(share.sessionId) ?? 0) + 1;

@@ -9,6 +9,7 @@ import { FileOperationDialog, type FileOperation } from "./workspace-file-action
 import { WorkspaceSearchPanel, useWorkspaceSearchContext } from "./workspace-search";
 import { useWorkspaceFileOperations } from "./workspace-file-shortcuts";
 import { WorkspaceQuickOpenButton } from "./workspace-quick-open";
+import { GitDiffPreview } from "./git-review";
 import "./workspace.css";
 export { WorkspaceProvider } from "./workspace-controller";
 export { WorkspaceSidebar } from "./workspace-tree";
@@ -71,16 +72,6 @@ export function WorkspaceView() {
       : localCompare ? buffer.disk?.text === null || buffer.missing ? <p className="workspace-notice">Disk contents unavailable for comparison.</p> : <WorkspaceDiffEditor viewRef={controller.diffEditor} path={buffer.path} before={buffer.disk?.text ?? buffer.baseText} after={buffer.state.doc.toString()} label="Disk → Local unsaved buffer" />
       : !buffer.file.editable ? <div className="workspace-empty"><h2>File cannot be edited</h2><p>{buffer.file.reason || "Unsupported file"}. Only existing, writable UTF-8 text files up to 256 KiB are editable.</p></div>
       : <WorkspaceEditor key={`${workspace.root}\0${buffer.path}`} state={buffer.state} onView={buffer.attach} />
-      : controller.diffLoading ? <div className="workspace-empty">Loading diff…</div>
-      : !selected ? <div className="workspace-empty"><h2>Select a changed file</h2><p>Review staged, unstaged, and untracked saved contents.</p></div>
-      : !comparison ? <div className="workspace-empty"><h2>No changes for this selection</h2><p>Select a file from one of the change groups.</p></div>
-      : <>
-        <div className="workspace-notice">{comparison.comparison} · {comparison.comparison === "staged" ? "HEAD → Index" : comparison.comparison === "untracked" ? "Empty → Working tree" : "Index → Working tree"} · {comparison.beforeMode ?? "absent"} → {comparison.afterMode ?? "absent"}{comparison.originalPath ? ` · renamed from ${comparison.originalPath}` : ""}{buffer && dirty(buffer) ? " · Unsaved local edits are not shown" : ""}</div>
-        {comparison.reason ? <div className="workspace-empty"><h2>Text diff unavailable</h2><p>{comparison.reason}</p></div>
-          : comparison.modeOnly ? <div className="workspace-empty"><h2>File mode changed</h2><p>Text contents are unchanged.</p></div>
-          : comparison.before === comparison.after ? <div className="workspace-empty">No text changes.</div>
-          : comparison.before !== null && comparison.after !== null ? <WorkspaceDiffEditor viewRef={controller.diffEditor} path={comparison.path} before={comparison.before} after={comparison.after} label={comparison.comparison === "staged" ? "HEAD → Index" : comparison.comparison === "untracked" ? "Empty → Working tree" : "Index → Working tree"} />
-          : <div className="workspace-empty">Text contents unavailable.</div>}
-      </>}</WorkspaceSearchPanel>
+      : <GitDiffPreview diff={comparison} loading={controller.diffLoading} selectedPath={selected} viewRef={controller.diffEditor} unsaved={Boolean(buffer && dirty(buffer))} />}</WorkspaceSearchPanel>
   </section>;
 }

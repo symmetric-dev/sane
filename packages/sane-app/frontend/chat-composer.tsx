@@ -26,6 +26,8 @@ import { PendingInputDetails } from "./pending-input-ui";
 import { pendingInputContextReady, pendingInputLid, pendingInputPrimaryAction, unresolvedOperations } from "./pending-input-primary-action";
 import { ScienceComposer, type ScienceChatController } from "./science-chat";
 import { ScienceShareDraftPreview } from "./science-sharing";
+import { captureGitTarget, GitFlow } from "./git-flow";
+import type { GitTarget } from "./git-operations-client";
 
 function pendingScopeFor(state: State) {
   const conversation = state.conversations.find(item => item.id === state.selected);
@@ -125,7 +127,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   const workspace = workspaces.find(item => item.workspaceId === conversation?.workspaceId);
   const flowScope = JSON.stringify([pendingScope, conversation?.workspaceId, conversation?.worktreeId, conversation?.replacedBy, workspace?.commonDir, workspace?.kind]);
   const [status, setStatus] = useState<{ scope: string; identity: WorkstreamStatusStart } | null>(null);
-  const [localFlow, setLocalFlow] = useState<{ scope: string; page: "flows" | "terminal" } | null>(null);
+  const [localFlow, setLocalFlow] = useState<{ scope: string; page: "flows" | "terminal" | "git"; gitTarget?: GitTarget } | null>(null);
   const localPage = localFlow?.scope === flowScope ? localFlow.page : null;
   const statusFlow = status?.scope === flowScope && !review?.flow ? status : null;
   const hasRequests = pendingInteractions(state, store.capabilities()).length > 0;
@@ -242,8 +244,9 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
       restoreFocus={() => !flowOpen ? normalComposer.current?.querySelector("textarea") ?? document.body : document.body} />
     {hasRequests && <Interactions key={flowScope} state={state} active={active && !helpOpen && !pickerOpen} navigation={navigation} showNotice={false} />}
     <div ref={flowComposer} className="composer-flow-slot" hidden={hasRequests} style={{ display: hasRequests ? "none" : "contents" }}>
-      {localPage === "flows" && active && !hasRequests && <ChatWorkstreamActions key={flowScope} conversation={conversation} active={active} close={() => setLocalFlow(null)} onDocuments={review ? identity => { setStatus(null); void review.start(identity); } : undefined} onStatus={identity => setStatus({ scope: flowScope, identity })} onTerminal={() => setLocalFlow({ scope: flowScope, page: "terminal" })} onPython={() => { setLocalFlow(null); science?.start(); }} pythonUnavailable={!science?.available ? "Select a conversation to use Python" : science.disabled || chainLocked ? "Python is currently unavailable" : undefined} />}
+      {localPage === "flows" && active && !hasRequests && <ChatWorkstreamActions key={flowScope} conversation={conversation} active={active} close={() => setLocalFlow(null)} onDocuments={review ? identity => { setStatus(null); void review.start(identity); } : undefined} onStatus={identity => setStatus({ scope: flowScope, identity })} onTerminal={() => setLocalFlow({ scope: flowScope, page: "terminal" })} onGit={() => { const gitTarget = captureGitTarget(); if (gitTarget) setLocalFlow({ scope: flowScope, page: "git", gitTarget }); }} onPython={() => { setLocalFlow(null); science?.start(); }} pythonUnavailable={!science?.available ? "Select a conversation to use Python" : science.disabled || chainLocked ? "Python is currently unavailable" : undefined} />}
       {localPage === "terminal" && active && !hasRequests && <TerminalProvider view="terminal"><section className="workstream-status-composer terminal-composer" aria-label="Terminal flow"><header className="workstream-status-heading"><TerminalHeader /><FlowNavigation back={() => setLocalFlow({ scope: flowScope, page: "flows" })} exit={() => setLocalFlow(null)} /></header><TerminalView exit={() => setLocalFlow(null)} /></section></TerminalProvider>}
+      {localPage === "git" && localFlow?.gitTarget && active && !hasRequests && <GitFlow target={localFlow.gitTarget} back={() => setLocalFlow({ scope: flowScope, page: "flows" })} exit={() => setLocalFlow(null)} />}
       {!conversation?.replacedBy && review?.flow && <DocumentReviewComposer review={review} active={active && !hasRequests} disabled={reviewBlocked} back={() => setLocalFlow({ scope: flowScope, page: "flows" })} navigation={navigation} />}
       {!conversation?.replacedBy && statusFlow && <WorkstreamStatusComposer key={JSON.stringify([statusFlow.scope, statusFlow.identity])} identity={statusFlow.identity} active={active && !hasRequests} close={() => setStatus(null)} back={() => { setStatus(null); setLocalFlow({ scope: flowScope, page: "flows" }); }} navigation={navigation} />}
       {!conversation?.replacedBy && scienceFlow && science && active && !hasRequests && <ScienceComposer key={science.scope} science={science} back={() => setLocalFlow({ scope: flowScope, page: "flows" })} navigation={navigation} />}
