@@ -7,7 +7,7 @@ remains subsequent work.
 
 ## Setup
 
-Requires uv 0.12.5 or newer. From the repository root:
+Requires uv 0.13.5 or newer. From the repository root:
 
 ```sh
 bun run --cwd packages/sane-science setup:python
@@ -256,7 +256,7 @@ const context = availability.state === "ready" ? availability.context
   : (() => { throw new Error(availability.message) })()
 const science = new ScienceWorkspaceService(context)
 
-await science.provision() // explicit uv --locked install; needs uv >=0.12.5
+await science.provision() // explicit uv --locked install; needs uv >=0.13.5
 const notebookPath = await science.createNotebook("experiment.py")
 const opened = await science.openNotebook({ notebookPath, port: 28731 })
 const ref = opened.ref // exact notebook path + owned launch generation

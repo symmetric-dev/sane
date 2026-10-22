@@ -26,5 +26,9 @@ Design, Engineering, Planning, and Execution, with Research available throughout
 - [Execution feedback loop](proposals/EXECUTION_FEEDBACK_LOOP.md) — proposed
   report-to-job feedback, Planning amendments, and post-execution documentation;
   includes remaining decisions. Not current operating instructions.
+- [Structured document model and handoff authorization](proposals/STRUCTURED_DOCUMENT_MODEL.md) —
+  plan for moving workstream and worker documents from `.md` files to database-backed
+  major artifacts and sections accessed via MCP, and replacing separate phase approvals
+  with authorized handoffs.
 
 For development commands and repository structure, see the [root README](../README.md).

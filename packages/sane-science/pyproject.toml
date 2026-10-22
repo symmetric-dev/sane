@@ -11,7 +11,7 @@ dependencies = [
 
 [tool.uv]
 package = false
-required-version = ">=0.12.5"
+required-version = ">=0.13.5"
 # Applies to direct and transitive registry artifacts at resolution time.
 exclude-newer = "1 week"
 prerelease = "disallow"

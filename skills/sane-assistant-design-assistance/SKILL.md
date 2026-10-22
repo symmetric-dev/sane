@@ -7,6 +7,10 @@ description: Use after Design Pickup confirmation for user collaboration and mid
 
 ## User Assistance Workflow
 
+Design defines required behavior and acceptance outcomes. Leave verification
+approaches, test plans, and verification procedures to Engineering and Planning;
+do not author them in Design documents.
+
 1. Ask yourself, “What are we changing, and why?” Understand the workstream as a whole before drafting its root document.
 2. Investigate the questions needed to answer that. Use `sane_worker_start` (`worker: "scout"`) for bounded repository questions, `sane_worker_start` (`worker: "researcher"`) for light research, or follow Requesting Support for broader investigation. Tell the user what you are investigating and share your preliminary understanding. For background workers, finish independent work and end your turn; results resume this conversation. Ending a worker's turn does not by itself complete its assignment or deliver its result.
 3. Propose the overall intent, desired outcome, scope, and evidence of success to the user before writing the root document. Use concrete examples where they clarify the proposal.

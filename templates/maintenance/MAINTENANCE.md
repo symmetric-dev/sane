@@ -27,11 +27,13 @@ compliance, performance, or enabling future work. -->
 and what must be preserved. Keep external dependencies and delivery uncertainty
 in Dependencies, Assumptions, and Risks. -->
 
-## Verification
+## Acceptance Outcomes
 
-<!-- Define observable evidence for accepting the maintenance: automated checks,
-user-run validation, and compatibility or regression evidence. A user check is
-required evidence, not an automatic approval. -->
+<!-- Define observable outcomes for accepting the maintenance, including
+compatibility, preserved behavior, and expected results of any required user
+validation. State what must be true; leave verification approaches and procedures
+to Engineering and Planning. User validation does not automatically approve the
+work. -->
 
 ## Dependencies, Assumptions, and Risks
 

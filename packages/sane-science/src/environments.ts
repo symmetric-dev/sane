@@ -165,8 +165,8 @@ export async function provisionScienceEnvironment(workspace: ScienceWorkspace, o
     admitVenv(fs)
     const uvVersion = await run(uv, ["--version"], fs, 15_000)
     const version = /^uv (\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(uvVersion)
-    if (!version || !(Number(version[1]) > 0 || Number(version[2]) > 12 || Number(version[2]) === 12 && Number(version[3]) >= 5)) {
-      throw new ScienceEnvironmentError("PROVISION_FAILED", `uv >=0.12.5 is required; found ${uvVersion}`)
+    if (!version || !(Number(version[1]) > 0 || Number(version[2]) > 13 || Number(version[2]) === 13 && Number(version[3]) >= 5)) {
+      throw new ScienceEnvironmentError("PROVISION_FAILED", `uv >=0.13.5 is required; found ${uvVersion}`)
     }
     const ownerPath = join(fs.paths.root, ownerName)
     if (!fs.read(ownerPath)) fs.writeExclusive(ownerPath, `default:1:${expected.fingerprint}\n`)

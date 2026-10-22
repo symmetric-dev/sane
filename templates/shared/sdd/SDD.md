@@ -36,11 +36,6 @@ chronology, rejected options, and superseded designs. Keep unresolved material
 decisions explicit in the relevant section rather than presenting them as
 approved architecture. -->
 
-## Verification Approach
-
-<!-- How the direction-level claims above get evidenced. Detailed test plans
-belong in the solution specs. -->
-
 ## Solution Areas
 
 <!-- List the solution areas this direction requires, with their intended

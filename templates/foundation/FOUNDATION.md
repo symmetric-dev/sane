@@ -44,9 +44,10 @@ implementation structure, packages, commands, or configuration values. -->
 
 ## Acceptance Outcomes and User Validation
 
-<!-- Define observable evidence for accepting the foundation. Include required
-automated verification and any user-run setup, server, integration, or
-end-to-end checks. A user check is required evidence, not an automatic approval. -->
+<!-- Define observable outcomes for accepting the foundation, including expected
+results of any required user validation. State what must be true; leave
+verification approaches and procedures to Engineering and Planning. User
+validation does not automatically approve the work. -->
 
 ## Long-Term Horizon and Deferred Work
 
