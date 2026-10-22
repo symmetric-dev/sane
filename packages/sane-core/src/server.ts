@@ -16,7 +16,7 @@ import { LIFECYCLE_PHASES, lifecyclePhase as policyPhase, type Lifecycle, type L
 import { providePhase as provision } from "./provision.ts"
 import { validatePhaseDocs } from "./validation.ts"
 import { assertJobProgress, registerPlannedJobs } from "./job-policy.ts"
-import type { Handoff, HandoffRecipient, HandoffStatus } from "./contracts.ts"
+import type { Handoff, HandoffDenialNotification, HandoffRecipient, HandoffStatus } from "./contracts.ts"
 import { handoffInput, equivalentHandoffInputs } from "./handoff.ts"
 import { documentDescriptors } from "./document-catalog.ts"
 import { isStoredSlot, canonicalSlot, equivalentSlots } from "./slots.ts"
@@ -287,6 +287,43 @@ export class RepositoryDomain {
   listHandoffsForPolling(): Handoff[] {
     this.validatePolling()
     return this.rows("SELECT * FROM handoffs WHERE status IN ('queued','acceptance_unknown','accepted','running') ORDER BY created_at,id").map(row => this.handoffDTO(row))
+  }
+  /** The committed human decision is the outbox intent, including after a crash
+   * between recording a denial and returning its HTTP response. */
+  listHandoffDenialsForPolling(): Handoff[] {
+    this.validatePolling()
+    return this.rows(`SELECT h.* FROM handoffs h WHERE h.status='failed' AND h.run_id IS NULL
+      AND EXISTS (SELECT 1 FROM audit_events a WHERE a.entity_id=h.id AND a.operation='handoff_state_changed'
+        AND json_extract(a.details,'$.previousStatus')='awaiting_approval' AND json_extract(a.details,'$.status')='failed')
+      AND COALESCE((SELECT json_extract(a.details,'$.state') FROM audit_events a
+        WHERE a.entity_id=h.id AND a.operation='handoff_denial_notification' ORDER BY a.id DESC LIMIT 1),'pending')!='accepted'
+      ORDER BY h.created_at,h.id`).map(row => this.handoffDTO(row))
+  }
+  getHandoffDenialNotification(id: string): HandoffDenialNotification | undefined {
+    this.validateRead()
+    const row = this.rows("SELECT details,timestamp FROM audit_events WHERE entity_id=? AND operation='handoff_denial_notification' ORDER BY id DESC LIMIT 1", id)[0]
+    if (!row) return
+    const value = JSON.parse(row.details)
+    if (!value || !["claimed", "accepted", "not-submitted"].includes(value.state)
+      || [value.sessionId, value.runId, value.commandId].some(v => typeof v !== "string" || !v)) fail("CORRUPT_STORE", "Invalid handoff denial notification.")
+    return { ...value, updatedAt: row.timestamp }
+  }
+  recordHandoffDenialNotification(id: string, change: Omit<HandoffDenialNotification, "updatedAt">, context: MutationContext): HandoffDenialNotification {
+    return this.transaction(context, () => {
+      if (context.actor.kind !== "system") fail("INVALID_CONTEXT", "App execution owner required.")
+      const h = this.getHandoff(id)
+      if (h.status !== "failed" || h.runId || !this.rows("SELECT id FROM audit_events WHERE entity_id=? AND operation='handoff_state_changed' AND json_extract(details,'$.previousStatus')='awaiting_approval' AND json_extract(details,'$.status')='failed' LIMIT 1", id).length) fail("CONFLICT", "Handoff was not denied before dispatch.")
+      text(change.sessionId, "sender App session ID"); text(change.runId, "notification run ID"); text(change.commandId, "notification command ID")
+      const old = this.getHandoffDenialNotification(id)
+      if (old?.state === change.state && old.sessionId === change.sessionId && old.runId === change.runId && old.commandId === change.commandId) return old
+      if (change.state === "claimed") {
+        if (old && old.state !== "not-submitted") fail("CONFLICT", "Denial notification is already claimed or accepted.")
+        if (old && (old.sessionId !== change.sessionId || old.runId === change.runId || old.commandId === change.commandId)) fail("CONFLICT", "Retry requires the original sender and fresh delivery identities.")
+      } else if (!["accepted", "not-submitted"].includes(change.state) || old?.state !== "claimed"
+        || old.sessionId !== change.sessionId || old.runId !== change.runId || old.commandId !== change.commandId) fail("CONFLICT", "Denial notification claim changed.")
+      this.event(context, "handoff_denial_notification", h.workstreamId, id, { state: change.state, sessionId: change.sessionId, runId: change.runId, commandId: change.commandId })
+      return this.getHandoffDenialNotification(id)!
+    })
   }
   admitHandoff(sender: ConversationRef, input: unknown, recipient: HandoffRecipient, context: MutationContext): Handoff {
     const args = handoffInput(input)

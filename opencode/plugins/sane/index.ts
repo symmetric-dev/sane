@@ -5,7 +5,7 @@ import { linkNativeCaller, nativeCallerContext, nativeShellCaller, nativeLinkSch
 import { handoffNativeCaller, nativeHandoffSchema, nativeHandoffStatusSchema } from "../../../packages/sane-cli/src/native-handoff.ts"
 import { nativeWorkerDescriptions, nativeWorkerOperations, nativeWorkerSchemas, SANE_MANAGED_ONLY } from "../../../packages/sane-cli/src/native-worker-contract.ts"
 import { workerNativeCaller } from "../../../packages/sane-cli/src/native-worker.ts"
-import { codeShareInputSnippets, nativeShareCodeDescription, nativeShareCodeSchema, parseCodeShareInput } from "../../../packages/sane-cli/src/native-share-code-contract.ts"
+import { codeShareInputSnippets, isInlineCodeShareSnippet, nativeShareCodeDescription, nativeShareCodeSchema, parseCodeShareInput } from "../../../packages/sane-cli/src/native-share-code-contract.ts"
 import { shareCodeNativeCaller } from "../../../packages/sane-cli/src/native-share-code.ts"
 import { registerExecutionOperations } from "./execution.ts"
 import { createSaneVisibility } from "./visibility.ts"
@@ -45,9 +45,12 @@ export const SanePlugin = Plugin.define({
           if (typeof registration !== "string" || !registration.startsWith("/")) throw new Error("NATIVE_CONTEXT_UNAVAILABLE: configure an explicit absolute registrationFile plugin option.")
           const { caller, client } = await qualifyOpenCodeAppCaller(registration, ctx, tool)
           const signal = (tool as typeof tool & { signal?: AbortSignal }).signal
-          for (const path of new Set(codeShareInputSnippets(args).map(snippet => resolve(caller.cwd, snippet.path)))) {
+          const snippets = codeShareInputSnippets(args)
+          for (const path of new Set(snippets.flatMap(snippet => isInlineCodeShareSnippet(snippet) ? [] : [resolve(caller.cwd, snippet.path)]))) {
             await assertOpenCodeCodeSharePermissions(ctx, { ...tool, signal }, path, client)
           }
+          // Inline content needs share permission, but has no filesystem read.
+          if (snippets.some(isInlineCodeShareSnippet)) await assertOpenCodeCodeSharePermissions(ctx, { ...tool, signal }, "inline", client, "inline")
           return { content: JSON.stringify(await shareCodeNativeCaller(caller, args, ctx.options.appConnectionFile as string, invocation, signal)) }
         },
       })

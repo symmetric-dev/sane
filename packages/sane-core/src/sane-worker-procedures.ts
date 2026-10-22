@@ -1,6 +1,6 @@
 import type { WorkerAgentId } from "./agent-catalog.ts"
 
-const explicitCompletion = "Follow the worker protocol identified in your session context. For an App-managed explicit-completion assignment, submit your final result with sane_worker_complete. Ending a turn pauses execution; it does not complete the assignment. Native subagents return their result normally."
+const explicitCompletion = "Submit your final result using `sane_worker_complete`. Ending a turn only pauses execution; ordinary final text does not complete the assignment or deliver its result to your parent."
 const explicitInteraction = "Use sane_worker_notify for a user-facing update requiring attention; SANE supplies the worker-session link. Use sane_worker_message_parent to consult your launching parent without completing the assignment. If awaiting a reply, end your turn and resume from the response. A consultation is not a finished blocked attempt. Scout Crew completes only after incorporating required findings."
 const withProtocol = (text: string, interaction = false) => `${text}\n\n${explicitCompletion}${interaction ? `\n\n${explicitInteraction}` : ""}`
 
@@ -86,10 +86,10 @@ Your prompt states whether this is a checkpoint review or a prerequisite-gap ass
   scout: withProtocol(`# SANE Procedure: Scout
 
 - Workstream documents are read-only context; read only those your prompt names and do not discover wider workstream context.
-- Return findings inline to the launching agent, not in a workstream document.`),
+- Include findings directly in your \`sane_worker_complete\` result, not in a workstream document.`),
 
   "scout-crew": withProtocol(`# SANE Procedure: Scout Crew
 
 - Launch scouts using \`sane_worker_start\` with \`worker: "scout"\`. They do not receive this assignment; write each scout assignment in repository terms with absolute paths.
-- Workstream documents are read-only context; read only those your prompt names. Return the synthesis inline to the launching agent.`, true),
+- Workstream documents are read-only context; read only those your prompt names. Include the synthesis directly in your \`sane_worker_complete\` result, not in a separate report file.`, true),
 }

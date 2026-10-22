@@ -1,4 +1,5 @@
-import { CODE_SHARE_LIMITS, codeShareInputSnippets, codeSharePages, parseCodeShareInput, resolveCodeShareLanguage, type CodeShareRecord, type CodeShareSnapshot, type NativeCodeShareRequest, type CodeShareReceipt } from "../shared/code-share-contract";
+import { createHash } from "node:crypto";
+import { CODE_SHARE_LIMITS, codeShareInputSnippets, codeShareSnippetRange, isInlineCodeShareSnippet, normalizeCodeShareText, parseCodeShareInput, resolveCodeShareLanguage, type CodeShareFileSnapshot, type CodeShareRecord, type CodeShareSnapshot, type NativeCodeShareRequest, type CodeShareReceipt } from "../shared/code-share-contract";
 import { exact } from "./app-store";
 import { canonicalJSON } from "./prepared-input-codec";
 import { body } from "./bridge-http";
@@ -27,7 +28,7 @@ export interface CodeShareAuthorization {
 }
 export class CodeShareService {
   private pending = new Map<string, Promise<CodeShareRecord>>();
-  constructor(private store: CodeShareStore, private workspace: WorkspaceService, private resolveSession: (request: NativeCodeShareRequest) => string, private authorize: (request: NativeCodeShareRequest, old?: CodeShareRecord) => Promise<CodeShareAuthorization>) {}
+  constructor(private store: CodeShareStore, private workspace: Pick<WorkspaceService, "file">, private resolveSession: (request: NativeCodeShareRequest) => string, private authorize: (request: NativeCodeShareRequest, old?: CodeShareRecord) => Promise<CodeShareAuthorization>) {}
   async handle(req: Request): Promise<CodeShareReceipt> {
     if (req.method !== "POST") throw new CodeShareError(405, "method-not-allowed", "Use POST");
     let raw: unknown;
@@ -41,7 +42,8 @@ export class CodeShareService {
     this.pending.set(key, operation);
     try {
       const share = await operation;
-      if (share.version === 2) return { type: "sane.code-share", version: 2, shareId: share.id, snippets: codeSharePages(share).map(({ input: { path, startLine, endLine } }) => ({ path, startLine, endLine })) };
+      if (share.version === 3) return { type: "sane.code-share", version: 3, shareId: share.id, snippets: share.snippets.map(({ input }) => codeShareSnippetRange(input)) };
+      if (share.version === 2) return { type: "sane.code-share", version: 2, shareId: share.id, snippets: share.snippets.map(({ input: { path, startLine, endLine } }) => ({ path, startLine, endLine })) };
       return { type: "sane.code-share", version: 1, shareId: share.id, path: share.input.path, startLine: share.input.startLine, endLine: share.input.endLine };
     } finally { if (this.pending.get(key) === operation) this.pending.delete(key); }
   }
@@ -57,27 +59,37 @@ export class CodeShareService {
     let totalBytes = 0;
     for (const input of codeShareInputSnippets(request.input)) {
       authorization.assertCurrent();
-      // Reuse one captured revision when several pages reference the same file.
-      const file = files.get(input.path) ?? await this.workspace.file(`${workspaceId}/${worktreeId}`, bindingRevision, input.path);
-      files.set(input.path, file);
-      authorization.assertCurrent();
-      if (file.text === null || file.revision === null) throw new CodeShareError(400, "code-share-text", "Only UTF-8 text files up to 256 KiB can be shared");
-      // Like CodeMirror, splitting normalized LF includes an empty EOF line.
-      const lines = file.text.split("\n"), { startLine, endLine } = input;
-      if (endLine > lines.length) throw new CodeShareError(400, "code-share-range", `The requested range exceeds the source document: ${input.path}`);
-      const code = lines.slice(startLine - 1, endLine).join("\n"), bytes = Buffer.byteLength(code);
+      let snippet: CodeShareSnapshot;
+      if (isInlineCodeShareSnippet(input)) {
+        const code = normalizeCodeShareText(input.code);
+        snippet = { input, sourceRevision: createHash("sha256").update(code).digest("hex"), language: resolveCodeShareLanguage("", input.format), code };
+      } else {
+        // Reuse one captured revision when several pages reference the same file.
+        const file = files.get(input.path) ?? await this.workspace.file(`${workspaceId}/${worktreeId}`, bindingRevision, input.path);
+        files.set(input.path, file);
+        authorization.assertCurrent();
+        if (file.text === null || file.revision === null) throw new CodeShareError(400, "code-share-text", "Only UTF-8 text files up to 256 KiB can be shared");
+        // Like CodeMirror, splitting normalized LF includes an empty EOF line.
+        const lines = file.text.split("\n"), { startLine, endLine } = input;
+        if (endLine > lines.length) throw new CodeShareError(400, "code-share-range", `The requested range exceeds the source document: ${input.path}`);
+        snippet = { input, sourceRevision: file.revision, language: resolveCodeShareLanguage(input.path, input.format), code: lines.slice(startLine - 1, endLine).join("\n") };
+      }
+      const bytes = Buffer.byteLength(snippet.code);
       if (bytes > CODE_SHARE_LIMITS.bytes) throw new CodeShareError(400, "code-share-size", "Each snippet must be at most 64 KiB");
       totalBytes += bytes;
       if (totalBytes > CODE_SHARE_LIMITS.totalBytes) throw new CodeShareError(400, "code-share-size", "Combined snippet code exceeds 256 KiB");
-      snippets.push({ input, sourceRevision: file.revision, language: resolveCodeShareLanguage(input.path, input.format), code });
+      snippets.push(snippet);
     }
     await authorization.refresh?.();
     authorization.assertCurrent();
     const identity = { id: codeShareId(key), sessionId, native: { harness: request.caller.source.harness, authorityId: request.caller.authorityId, nativeId: request.caller.nativeId }, anchor: { runId, toolCallId: request.invocation.toolCallId, messageId: request.invocation.messageId ?? null, invocationId: request.invocation.invocationId, wrapper: request.invocation.wrapper ?? null }, workspaceId, worktreeId, bindingRevision, createdAt: new Date().toISOString() };
     // Commit the complete collection atomically; a failed page saves no pages.
+    const fileSnippets = snippets.filter((snippet): snippet is CodeShareFileSnapshot => !isInlineCodeShareSnippet(snippet.input));
     const record: CodeShareRecord = "snippets" in request.input
-      ? { ...identity, version: 2, input: request.input, snippets }
-      : { ...identity, version: 1, ...snippets[0]! };
+      ? fileSnippets.length === snippets.length
+        ? { ...identity, version: 2, input: { snippets: fileSnippets.map(snippet => snippet.input) }, snippets: fileSnippets }
+        : { ...identity, version: 3, input: request.input, snippets }
+      : { ...identity, version: 1, ...snippets[0]!, input: request.input };
     return this.store.commit(record, authorization.assertCurrent);
   }
 }

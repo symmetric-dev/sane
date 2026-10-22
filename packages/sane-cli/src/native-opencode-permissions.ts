@@ -56,13 +56,13 @@ async function assertLegacyPermission(client: Client, input: PermissionInput, si
 
 /** Prefer the documented current API. The compatibility client must come from
  * the same process/source/session qualification, never from tool arguments. */
-export async function assertOpenCodeCodeSharePermissions(ctx: { permission: unknown }, tool: OpenCodeToolCaller & { signal?: AbortSignal }, path: string, legacyClient: Client): Promise<void> {
+export async function assertOpenCodeCodeSharePermissions(ctx: { permission: unknown }, tool: OpenCodeToolCaller & { signal?: AbortSignal }, resource: string, legacyClient: Client, kind: "file" | "inline" = "file"): Promise<void> {
   const permission = ctx.permission as PermissionAssertion | undefined
-  for (const action of ["sane_share_code", "read"]) {
+  for (const action of kind === "inline" ? ["sane_share_code"] : ["sane_share_code", "read"]) {
     const input: PermissionInput = {
       sessionID: tool.sessionID, agent: tool.agent,
       source: { type: "tool", messageID: tool.messageID, id: tool.id },
-      action, resources: [path], save: [path],
+      action, resources: [resource], save: [resource],
     }
     tool.signal?.throwIfAborted()
     if (typeof permission?.assert === "function") await permission.assert(input, { signal: tool.signal })

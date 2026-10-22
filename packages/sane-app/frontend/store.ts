@@ -1101,7 +1101,7 @@ export class ChatStore {
     const id = this.state.selected, current = this.beginAction();
     try {
       await this.listingMutation(() => this.client.replyHandoff!(id, approvalId, reply));
-      if (current()) { wakePolls(id); this.replied.add(approvalId); this.update({ handoffApprovals: this.state.handoffApprovals.filter(i => i.id !== approvalId), interactions: this.state.interactions.filter(i => i.id !== approvalId), actionNotice: reply.decision === "allow" ? "Handoff allowed. Waiting for delivery to reconcile." : "Handoff denied. The sender was notified." }); }
+      if (current()) { wakePolls(id); this.replied.add(approvalId); this.update({ handoffApprovals: this.state.handoffApprovals.filter(i => i.id !== approvalId), interactions: this.state.interactions.filter(i => i.id !== approvalId), actionNotice: reply.decision === "allow" ? "Handoff allowed. Waiting for delivery to reconcile." : "Handoff denied. The reason is queued for the sender." }); }
     } catch (error) {
       if (current() && !this.expired(error)) this.update({ interactionError: `${error instanceof Error ? error.message : "Handoff reply failed."} No automatic retry was made; check the pending approval before replying again.` });
     } finally { if (current()) this.update({ actionBusy: false }); }

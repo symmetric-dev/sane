@@ -50,7 +50,7 @@ export class CodeShareStore {
     for (const share of shares) {
       if (!isCodeShareRecord(share)) throw new Error("Invalid code share record");
       exact(share, ["version", "id", "sessionId", "native", "anchor", "workspaceId", "worktreeId", "bindingRevision", "createdAt", "input", ...(share.version === 1 ? ["sourceRevision", "language", "code"] : ["snippets"])]);
-      if (share.version === 2) for (const snippet of share.snippets) exact(snippet, ["sourceRevision", "language", "input", "code"]);
+      if (share.version !== 1) for (const snippet of share.snippets) exact(snippet, ["sourceRevision", "language", "input", "code"]);
       exact(share.native, ["harness", "authorityId", "nativeId"]);
       exact(share.anchor, ["runId", "toolCallId", "messageId", "invocationId", "wrapper"]);
       if (codeSharePages(share).some(snippet => snippet.code.includes("\0")) || (share.native.harness === "cc"

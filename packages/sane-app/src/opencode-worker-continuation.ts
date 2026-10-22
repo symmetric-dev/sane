@@ -22,6 +22,20 @@ function backgroundResult(message: NativeMessage): boolean {
   return metadata.source === "subagent" && typeof metadata.childID === "string" && /^ses_[a-zA-Z0-9]+$/.test(metadata.childID);
 }
 
+function nativeDateInstructionContext(message: NativeMessage, command: NativeMessage): boolean {
+  const metadata = message.metadata;
+  // Native session.instructions.updated projects a System message with source
+  // keys from its instruction delta. Only the evidenced built-in date refresh
+  // is exempt: arbitrary instruction sources (including environment changes)
+  // are not proven safe context. Do not infer ownership from instruction prose.
+  return message.type === "system" && typeof message.text === "string"
+    && message.time.completed === undefined && message.time.created >= command.time.created
+    && !!metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    && Object.keys(metadata).length === 2 && Object.keys(metadata).every(key => key === "notice" || key === "instructionSources")
+    && metadata.notice === "instructions" && Array.isArray(metadata.instructionSources)
+    && metadata.instructionSources.length === 1 && metadata.instructionSources[0] === "core/date";
+}
+
 /** Worker authorization only, not command completion or queued-input delivery
  * evidence. A native callback can be live after an App command has completed.
  * Bind it to the actual preceding user command, never the App's latest Run.
@@ -82,6 +96,9 @@ export async function readOpenCodeWorkerContinuation(
     } else if (message.type === "idle") {
       if (reachedTarget || message.outcome === "interrupted") return reject();
       activated = false; afterIdle = true;
+    } else if (message.type === "system") {
+      if (reachedTarget || !nativeDateInstructionContext(message, command)) return reject();
+      // Context only: neither activates continuation nor supplies evidence IDs.
     } else if (message.type !== "assistant") {
       // Manual/unknown compaction and other native inputs remain boundaries.
       if (reachedTarget || message.type !== "compaction" || message.reason !== "auto" || message.status !== "completed") return reject();

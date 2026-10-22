@@ -1,6 +1,9 @@
-import { parseNativeWorkerRequest, projectNativeWorkerReply, type NativeWorkerRequest, type NativeWorkerResultRef, type NativeWorkerAcknowledgement } from "../../sane-cli/src/native-worker-contract";
+import { randomUUID } from "node:crypto";
+import { parseNativeWorkerRequest, projectNativeWorkerReply, type NativeWorkerOperation, type NativeWorkerRequest, type NativeWorkerResultRef, type NativeWorkerAcknowledgement } from "../../sane-cli/src/native-worker-contract";
 import { type WorkerCaller, type WorkerRecord, type WorkerStart } from "./worker-contract";
 import { AgentProfileResolutionError } from "./agent-profiles-contract";
+import { AppStoreError } from "./app-store";
+import { PendingInputStorageError } from "./pending-input-contract";
 import { WorkstreamAdapterError } from "./workstreams";
 import { WorkerCapacityError, WorkerCompletionBlockedError, WorkerUnfinishedCapacityError } from "./workers";
 import { completionBlockedMessage, workerWaitUnsettled } from "./worker-protocol";
@@ -109,6 +112,55 @@ const publicWorkerErrors: Readonly<Record<string, string>> = {
   "unfinished-capacity": "Checkout unfinished explicit worker capacity is reached. Idle explicit assignments still count until they complete or are cancelled. This request did not admit a worker. Inspect sane_worker_status before retrying only a missing assignment. Do not relaunch through native subagents.",
 };
 
+type WorkerFailurePhase = "deadline" | "parse" | "qualification" | "identity" | "dispatch" | "reply";
+type WorkerFailureCategory = "worker-store-validation" | "storage" | "adapter" | "type" | "range" | "syntax" | "unexpected";
+
+/** Only fixed categories leave this classifier, never exception content. */
+function workerFailureCategory(error: unknown): WorkerFailureCategory {
+  try {
+    // The store currently throws a plain Error at its validation boundary.
+    // Exact-match its known sentinel without invoking message getters or logging
+    // any message (including near matches); no substring/regex classification.
+    if (error instanceof Error && Object.getOwnPropertyDescriptor(error, "message")?.value === "Corrupt workers.json; operator reconciliation required") return "worker-store-validation";
+    if (error instanceof AppStoreError || error instanceof PendingInputStorageError) return "storage";
+    if (error instanceof WorkstreamAdapterError) return error.code === "storage-unavailable" ? "storage" : "adapter";
+    if (error instanceof TypeError) return "type";
+    if (error instanceof RangeError) return "range";
+    if (error instanceof SyntaxError) return "syntax";
+  } catch { /* Even exception inspection must not interfere with the response. */ }
+  return "unexpected";
+}
+
+const unavailableGuidance: Readonly<Record<NativeWorkerOperation | "unknown", string>> = {
+  start: "Admission is unconfirmed; other starts in the same batch may have succeeded. Admitted workers continue independently. Recover only with the same trusted invocation and unchanged payload; a new start may duplicate work. Do not relaunch through native subagents while admission is unresolved.",
+  complete: "Final outcome acceptance is unconfirmed; this response proves neither rejection nor assignment completion. If recovery is needed, retry only the same trusted completion invocation and unchanged outcome, not the assignment itself.",
+  notify: "Notification acceptance is unconfirmed. If recovery is needed, retry only the same trusted invocation and unchanged payload; a new invocation may duplicate attention.",
+  message_parent: "Parent message acceptance is unconfirmed. If recovery is needed, retry only the same trusted invocation and unchanged payload; a new invocation may duplicate the message or consultation.",
+  message: "Child message acceptance is unconfirmed. If recovery is needed, retry only the same trusted invocation and unchanged payload; a new invocation may duplicate the message.",
+  acknowledge: "Acknowledgement receipt is unconfirmed. Inspect notification arbitration state before explicitly acknowledging the same exact references again; this failure does not prove notifications were consumed.",
+  cancel: "Cancellation is unconfirmed. Inspect the selected workers before retrying cancellation of those same IDs; do not assume execution has stopped.",
+  cancel_all: "Cancellation is unconfirmed. Inspect the caller's worker tree before retrying; do not assume execution has stopped or broaden cancellation to unrelated workers.",
+  status: "Worker status could not be confirmed. Workers continue independently; retry status after the App is available.",
+  wait: "Worker wait results could not be confirmed. Workers continue independently; inspect status rather than repeating wait to hold the session open. End the turn to allow report-back.",
+  unknown: "The worker operation result is unconfirmed. Check existing worker state before retrying any state-changing operation.",
+};
+
+let workerFailureSequence = 0;
+function unexpectedWorkerResponse(error: unknown, operation: NativeWorkerOperation | "unknown", phase: WorkerFailurePhase): Response {
+  let errorId: string;
+  try { errorId = randomUUID(); }
+  catch { errorId = `worker-${Date.now().toString(36)}-${(++workerFailureSequence).toString(36)}`; }
+  try {
+    // Fixed-size, server-owned metadata only. No caller IDs, request/result
+    // objects or exception objects: even apparently harmless fields may be text.
+    console.error("[SANE native worker failure]", JSON.stringify({ errorId, operation, phase, category: workerFailureCategory(error) }));
+  } catch { /* Diagnostics must never mask the original unavailable response. */ }
+  return Response.json({
+    error: `App worker operation failed unexpectedly. ${unavailableGuidance[operation]} Inspect sane_worker_status and App diagnostics (reference ${errorId}). Do not rerun or relaunch an assignment solely because this request failed.`,
+    code: "worker-unavailable",
+  }, { status: 503 });
+}
+
 function context(signal: AbortSignal, deadline: number): NativeWorkerRequestContext {
   return {
     signal, deadline,
@@ -148,6 +200,8 @@ export function createNativeWorkerHandler(deps: NativeWorkerHandlerDependencies)
     const started = Date.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let qualificationTimer: ReturnType<typeof setTimeout> | undefined;
+    let operation: NativeWorkerOperation | "unknown" = "unknown";
+    let phase: WorkerFailurePhase = "deadline";
     try {
       const requestedDeadline = deps.deadline?.(request) ?? started + 16000;
       if (!Number.isFinite(requestedDeadline)) throw new NativeWorkerRequestError(503, "worker-deadline", "App worker request deadline is unavailable.");
@@ -156,21 +210,26 @@ export function createNativeWorkerHandler(deps: NativeWorkerHandlerDependencies)
       timer = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
       const ctx = context(AbortSignal.any([request.signal, controller.signal]), deadline);
       let input: NativeWorkerRequest;
+      phase = "parse";
       try { input = parseNativeWorkerRequest(await bounded(ctx, () => request.json())); }
       catch (error) {
         if (error instanceof NativeWorkerRequestError) throw error;
         throw new NativeWorkerRequestError(400, "invalid-worker-input", "Invalid worker request. Supply a qualified caller, trusted invocation, supported operation and its bounded arguments; cancel requires explicit worker IDs.");
       }
+      operation = input.operation;
+      phase = "qualification";
       const qualification = new AbortController();
       const qualificationDeadline = Math.min(deadline, started + 8000);
       qualificationTimer = setTimeout(() => qualification.abort(), Math.max(0, qualificationDeadline - Date.now()));
       const qualificationContext = context(AbortSignal.any([ctx.signal, qualification.signal]), qualificationDeadline);
       const resolved = await bounded(qualificationContext, () => deps.resolveCaller(input, qualificationContext));
       clearTimeout(qualificationTimer);
+      phase = "identity";
       ctx.assertActive();
       if (!resolved.sessionId || !resolved.caller.runId || resolved.caller.toolCallId !== input.invocation.toolCallId || resolved.caller.toolCallId.length > 300) throw new NativeWorkerRequestError(409, "worker-identity", "Worker invocation could not be bound to an App-owned run. Retry only after native tool evidence is available.");
       const caller: WorkerCaller = { ...resolved.caller, envelope: input.caller };
       const op = deps.operations;
+      phase = "dispatch";
       const result = await bounded(ctx, async () => {
         switch (input.operation) {
           case "start": return { worker: await op.start(caller, input.input, ctx) };
@@ -202,6 +261,7 @@ export function createNativeWorkerHandler(deps: NativeWorkerHandlerDependencies)
           }
         }
       });
+      phase = "reply";
       ctx.assertActive();
       return Response.json(projectNativeWorkerReply(result));
     } catch (error) {
@@ -210,8 +270,7 @@ export function createNativeWorkerHandler(deps: NativeWorkerHandlerDependencies)
       if (error instanceof WorkerCompletionBlockedError) return Response.json({ error: completionBlockedMessage(error.blockers), code: error.code }, { status: error.status });
       if (error instanceof WorkstreamAdapterError && Object.hasOwn(publicWorkerErrors, error.code)) return Response.json({ error: publicWorkerErrors[error.code], code: error.code }, { status: error.status });
       if (error instanceof AgentProfileResolutionError) return Response.json({ error: "Worker profile configuration is invalid or missing. Configure the caller's workerProfiles or App workerDefaults with a compatible worker profile for this role. This request did not admit a worker; other starts in the same batch may have succeeded. Inspect sane_worker_status before retrying only missing assignments.", code: "worker-profile" }, { status: 409 });
-      // Never serialize arbitrary executor/storage errors, prompts or credentials.
-      return Response.json({ error: "App worker operation failed unexpectedly. Admission may be unconfirmed and other starts in the same batch may have succeeded; admitted workers continue independently. Inspect sane_worker_status and App diagnostics before a new start. Do not relaunch assignments through native subagents while admission is unresolved.", code: "worker-unavailable" }, { status: 503 });
+      return unexpectedWorkerResponse(error, operation, phase);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       if (qualificationTimer !== undefined) clearTimeout(qualificationTimer);

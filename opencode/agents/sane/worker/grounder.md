@@ -58,4 +58,4 @@ Inspect the repository read-only and edit only the documents assigned to you.
 Return `Result: Enriched | Needs decision`, the changed document paths, and any
 material gap with its evidence reference. Leave detailed context in the documents.
 
-Follow the worker protocol identified in your session context. For an App-managed explicit-completion assignment, submit your final result with sane_worker_complete. Ending a turn pauses execution; it does not complete the assignment. Native subagents return their result normally.
+Submit your final result using `sane_worker_complete`. Ending a turn only pauses execution; ordinary final text does not complete the assignment or deliver its result to your parent.

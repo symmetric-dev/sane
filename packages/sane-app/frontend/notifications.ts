@@ -281,7 +281,7 @@ class NotificationStore {
     const items = [...grouped.values()].sort((a, b) => compareItems(b, a));
     // Preserve full coverage evidence privately for replay/diagnostics. Routine
     // qualification/initialization and unrelated session problems are not copy.
-    const deliveryIssues = this.scope !== null && this.feedEnabled ? [...this.catalog?.values() ?? []].filter(eligible).flatMap(c => {
+    const deliveryIssues = this.scope !== null && this.feedEnabled ? [...this.catalog?.values() ?? []].filter(c => eligible(c)).flatMap(c => {
       const native = nativeNotificationSource(c), source = c.harness === "opencode" ? native : appNotificationSource(c);
       if (!source) return [];
       const coverage = this.memory.resume.coverage.find(row => row.sourceKey === updateSourceKey(source));

@@ -42,7 +42,7 @@ export async function workspaceOperationWait<T>(operation: () => Promise<T>, opt
 }
 type SearchBinding = { cwd: string; bindingRevision?: string; protectedPaths?: string[] };
 type SessionLookup = (id: string, options?: WorkspaceOperationOptions) => SearchBinding | undefined | Promise<SearchBinding | undefined>;
-type Bound = Workspace & { data: string; dev: number; ino: number; protectedPaths: string[]; operation?: WorkspaceOperationOptions };
+type Bound = Workspace & { data: string; dev: number; ino: number; protectedPaths: string[]; operation?: WorkspaceOperationOptions; shareSane?: true };
 type GitRoot = { root: string; prefix: string };
 type Blob = { bytes: Buffer; mode: string | null; reason?: DiffReason };
 type GitOptions = { signal?: AbortSignal; timeoutMs?: number; timing?: OperationTiming; timingStage?: string };
@@ -97,14 +97,14 @@ export class WorkspaceService {
     return bound;
   }
   private lexical(bound: Bound, path: unknown, rootAllowed = false): string {
-    if (typeof path !== "string" || path.length > 4096 || path.includes("\0") || path.includes("\\") || isAbsolute(path) || (path === "" ? !rootAllowed : path.split("/").some(p => !p || p === "." || p === ".." || [".git", ".sane"].includes(p.toLowerCase())))) fail(400, "invalid-path", "Use an exact workspace-relative path");
+    if (typeof path !== "string" || path.length > 4096 || path.includes("\0") || path.includes("\\") || isAbsolute(path) || (path === "" ? !rootAllowed : path.split("/").some((p, index) => !p || p === "." || p === ".." || p.toLowerCase() === ".git" || p.toLowerCase() === ".sane" && !(bound.shareSane && index === 0 && p === ".sane")))) fail(400, "invalid-path", "Use an exact workspace-relative path");
     const target = resolve(bound.root, path);
     if (!inside(bound.root, target) || inside(bound.data, target) || bound.protectedPaths.some(path => inside(path, target))) fail(403, "path-forbidden", "Path is not accessible");
     return target;
   }
   private async checked(bound: Bound, path: string, rootAllowed = false, missing = false): Promise<string> {
     const target = this.lexical(bound, path, rootAllowed);
-    const fresh = await this.bind(bound.sessionId, bound.workspaceId, bound.operation);
+    const fresh = { ...await this.bind(bound.sessionId, bound.workspaceId, bound.operation), ...(bound.shareSane ? { shareSane: true as const } : {}) };
     if (fresh.root !== bound.root || fresh.dev !== bound.dev || fresh.ino !== bound.ino) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
     this.lexical(fresh, path, rootAllowed);
     return this.checkedComponents(bound, path, target, missing);
@@ -215,6 +215,13 @@ export class WorkspaceService {
   }
   async file(sessionId: string, workspaceId: unknown, path: string): Promise<WorkspaceFile> {
     const bound = await this.bind(sessionId, workspaceId), disk = await this.disk(bound, path);
+    try { const result = await this.fileResult(bound, path, disk); await this.checked(bound, path); return result; }
+    finally { await disk.handle.close(); }
+  }
+  /** Read-only code-share capability. Never used by browsing or mutation routes;
+   * only the root .sane segment is exempt from the ordinary path policy. */
+  async codeShareFile(sessionId: string, workspaceId: unknown, path: string): Promise<WorkspaceFile> {
+    const bound: Bound = { ...await this.bind(sessionId, workspaceId), shareSane: true }, disk = await this.disk(bound, path);
     try { const result = await this.fileResult(bound, path, disk); await this.checked(bound, path); return result; }
     finally { await disk.handle.close(); }
   }

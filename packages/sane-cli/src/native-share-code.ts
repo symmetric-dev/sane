@@ -2,7 +2,7 @@ import { lstatSync, readFileSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import { DomainError, normalizeNativeSource } from "../../sane-core/src/server.ts"
 import type { NativeCaller } from "./native-caller.ts"
-import { codeShareInputSnippets, parseCodeShareInput, type CodeShareReceipt, type NativeCodeShareRequest } from "./native-share-code-contract.ts"
+import { codeShareInputSnippets, codeShareSnippetRange, parseCodeShareInput, type CodeShareReceipt, type NativeCodeShareRequest } from "./native-share-code-contract.ts"
 
 type Invocation = NativeCodeShareRequest["invocation"]
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value)
@@ -22,9 +22,10 @@ function projectReceipt(value: unknown, input: NativeCodeShareRequest["input"]):
   const receipt = value as Record<string, unknown>
   if (receipt.type !== "sane.code-share" || !text(receipt.shareId)) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
   if ("snippets" in input) {
-    const expected = codeShareInputSnippets(input).map(({ path, startLine, endLine }) => ({ path, startLine, endLine }))
-    if (receipt.version !== 2 || !Array.isArray(receipt.snippets) || receipt.snippets.length !== expected.length || receipt.snippets.some((snippet, index) => !snippet || typeof snippet !== "object" || snippet.path !== expected[index]!.path || snippet.startLine !== expected[index]!.startLine || snippet.endLine !== expected[index]!.endLine)) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
-    return { type: "sane.code-share", version: 2, shareId: receipt.shareId, snippets: expected }
+    const expected = codeShareInputSnippets(input).map(codeShareSnippetRange), version = expected.some(snippet => "kind" in snippet) ? 3 : 2
+    if (receipt.version !== version || !Array.isArray(receipt.snippets) || receipt.snippets.length !== expected.length || receipt.snippets.some((snippet, index) => !snippet || typeof snippet !== "object" || snippet.kind !== ("kind" in expected[index]! ? "inline" : undefined) || Object.entries(expected[index]!).some(([key, value]) => snippet[key] !== value))) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
+    if (version === 3) return { type: "sane.code-share", version: 3, shareId: receipt.shareId, snippets: expected }
+    return { type: "sane.code-share", version: 2, shareId: receipt.shareId, snippets: expected.flatMap(snippet => "path" in snippet ? [{ path: snippet.path, startLine: snippet.startLine, endLine: snippet.endLine }] : []) }
   }
   if (receipt.version !== 1 || receipt.path !== input.path || receipt.startLine !== input.startLine || receipt.endLine !== input.endLine) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
   return { type: "sane.code-share", version: 1, shareId: receipt.shareId, path: input.path, startLine: input.startLine, endLine: input.endLine }

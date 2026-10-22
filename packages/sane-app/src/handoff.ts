@@ -26,7 +26,7 @@ export function projectHandoffEnqueue(h: Handoff) {
   return { requestId: h.input.requestId, id: h.id, to: h.input.to, status: h.status, recipientSessionId: h.recipient.sessionId, runId: h.runId, ...(h.input.kickoff ? { workstreamId: h.workstreamId } : {}) };
 }
 export function projectHandoffStatus(h: Handoff) {
-  return { id: h.id, status: h.status, revision: h.revision, ...(h.input.kickoff ? { workstreamId: h.workstreamId } : {}) };
+  return { id: h.id, status: h.status, revision: h.revision, ...(h.evidence ? { evidence: h.evidence } : {}), ...(h.input.kickoff ? { workstreamId: h.workstreamId } : {}) };
 }
 
 // Legacy-minus-prefix recipient titles. Legacy `readyTitle` named handoff
@@ -215,6 +215,7 @@ export class HandoffService {
   }
   async list(workspaceId: string) { return (await this.router.forPolling(workspaceId)).domain.listHandoffs(); }
   async listForPolling(workspaceId: string) { return (await this.router.forPolling(workspaceId)).domain.listHandoffsForPolling(); }
+  async denialsForPolling(workspaceId: string) { return (await this.router.forPolling(workspaceId)).domain.listHandoffDenialsForPolling(); }
   async forSession(sessionId: string): Promise<HandoffPresentation[]> {
     const session = this.sessions().find(s => s.sessionId === sessionId);
     if (!session) throw new WorkstreamAdapterError(404, "session-not-found", "Unknown conversation");

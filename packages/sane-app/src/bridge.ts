@@ -453,7 +453,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (worker?.protocol?.id !== "explicit-v1") return dynamic;
     const waiting = worker.wait?.reason ?? "none";
     const correlation = worker.wait?.correlationId;
-    return `${dynamic}\n\nWorker protocol: explicit-v1.\nPermitted operations: ${worker.protocol.operations.join(", ")}.\nWaiting: ${waiting}.${correlation ? `\nMessage correlation: ${correlation}.` : ""}\nFollow the worker protocol identified in your session context. For an App-managed explicit-completion assignment, submit your final result with sane_worker_complete. Ending a turn pauses execution; it does not complete the assignment.\nIncoming messages are attributed updates, not a new assignment.`;
+    return `${dynamic}\n\nWorker protocol: explicit-v1.\nPermitted operations: ${worker.protocol.operations.join(", ")}.\nWaiting: ${waiting}.${correlation ? `\nMessage correlation: ${correlation}.` : ""}\nSubmit your final result using \`sane_worker_complete\`. Ending a turn only pauses execution; ordinary final text does not complete the assignment or deliver its result to your parent.\nIncoming messages are attributed updates, not a new assignment.`;
   };
   const canonicalComposition = async (sessionId: string): Promise<ContextComposition | null> => {
     const session = meta.sessions.find(s => s.sessionId === sessionId);
@@ -1872,7 +1872,24 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       || canonicalJSON(admission.source) !== canonicalJSON(source)) return denyCodeShareIdentity();
     return session.sessionId;
   }
-  const codeShareService = new CodeShareService(codeShares, worktrees, codeShareSession, async (request, old) => {
+  // SANE state belongs to the repository's primary checkout, even when the
+  // admitted conversation executes in a linked worktree. Discovery is read-only
+  // and does not require an initialized domain or workstream enrollment.
+  const codeShareState = new WorkspaceService(async key => {
+    const [workspaceId, worktreeId] = key.split("/");
+    const binding = await catalog.binding(workspaceId!, worktreeId!);
+    let cwd = binding.cwd;
+    if (binding.protectedPaths.length) {
+      const discovery = discoverRepository(cwd);
+      if (discovery.commonDir !== binding.protectedPaths[0]) throw new WorkspaceError(409, "binding-invalid", "Code share repository binding changed");
+      cwd = discovery.primaryCheckout;
+    }
+    return { ...binding, cwd, protectedPaths: [...binding.protectedPaths, ...domainProtectedPaths] };
+  }, options.dataDir);
+  const codeShareFiles: Pick<WorkspaceService, "file"> = {
+    file: (key, revision, path) => path.startsWith(".sane/") ? codeShareState.codeShareFile(key, revision, path) : worktrees.file(key, revision, path),
+  };
+  const codeShareService = new CodeShareService(codeShares, codeShareFiles, codeShareSession, async (request, old) => {
     const sessionId = codeShareSession(request), session = meta.sessions.find(s => s.sessionId === sessionId)!;
     const admission = admissions.get(sessionId)!, binding = admission.binding, admissionPin = JSON.stringify(admission), sessionPin = dispatchSnapshot(session);
     const owner = owners.get(sessionId), protectionPin = JSON.stringify(domainProtectedPaths);
@@ -2636,6 +2653,97 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (["completed", "failed"].includes(h.status)) handoffReservations.delete(h.recipient.sessionId);
     return h;
   }
+  const denialDeliveryId = (id: string, runId: string) => `handoff-denial:${id}:${runId}`;
+  const denialReconciliations = new Map<string, Promise<void>>();
+  function reconcileHandoffDenial(workspaceId: string, id: string): Promise<void> {
+    const pending = denialReconciliations.get(id);
+    if (pending) return pending;
+    // The poller and lifecycle callback can observe acceptance concurrently.
+    // Coalesce them so an old reconciliation cannot release a newer reservation.
+    const task = Promise.resolve().then(() => reconcileHandoffDenialOnce(workspaceId, id)).finally(() => { denialReconciliations.delete(id); });
+    denialReconciliations.set(id, task);
+    return task;
+  }
+  async function reconcileHandoffDenialOnce(workspaceId: string, id: string) {
+    const domain = (await router!.forWorkspace(workspaceId)).domain;
+    const h = domain.getHandoff(id), notification = domain.getHandoffDenialNotification(id);
+    if (h.recipient.ownerId !== store.manifest.storeId || notification?.state !== "claimed") return;
+    handoffReservations.add(notification.sessionId);
+    const advance = (state: "accepted" | "not-submitted") => {
+      handoffMutation(() => domain.recordHandoffDenialNotification(id, { ...notification, state }, { actor: { kind: "system" }, correlationId: id }));
+      handoffReservations.delete(notification.sessionId);
+      if (state === "accepted") handoffProblems.delete(id);
+    };
+    const run = meta.runs.find(r => r.runId === notification.runId && r.sessionId === notification.sessionId);
+    if (!run) {
+      if (owners.has(notification.sessionId) || admitting.has(notification.sessionId) || storageFailed) return;
+      // A crash after claiming but before publishing a run is retryable only
+      // when the original journal proves it never crossed native submission.
+      try {
+        const raw = await readFile(join(options.dataDir, `${notification.runId}.jsonl`), "utf8");
+        const records = raw ? decodeLog(raw, { runId: notification.runId, sessionId: notification.sessionId } as Run).events : [];
+        if (records.some(e => e.kind !== "submission" && !(e.kind === "status" && (e.data as { status?: string } | null)?.status === "running" && Object.keys((e.data ?? {}) as object).length === 1))) {
+          await recordHandoffProblem(workspaceId, id, "Denial notification has an unpublished run with uncertain submission; no automatic resend."); return;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          await recordHandoffProblem(workspaceId, id, "Denial notification journal is unreadable; no automatic resend."); return;
+        }
+      }
+      advance("not-submitted"); return;
+    }
+    const evidence = exchangeDeliveryEvidence({ id: denialDeliveryId(id, notification.runId), commandId: notification.commandId,
+      native: h.sender, sessionId: notification.sessionId, runId: notification.runId }, run, journalEvents(run.runId));
+    if (evidence === "accepted") {
+      await serial;
+      if (!storageFailed) advance("accepted");
+    } else if (evidence === "not-submitted" && owners.get(notification.sessionId)?.settled !== false) advance("not-submitted");
+    else await recordHandoffProblem(workspaceId, id, "Denial recorded; sender notification acceptance is unconfirmed. The original notification will not be resent.");
+  }
+  async function dispatchHandoffDenial(workspaceId: string, id: string) {
+    const domain = (await router!.forWorkspace(workspaceId)).domain;
+    const h = domain.getHandoff(id), notification = domain.getHandoffDenialNotification(id);
+    if (h.recipient.ownerId !== store.manifest.storeId || h.status !== "failed" || h.runId
+      || notification?.state === "accepted" || notification?.state === "claimed") return;
+    // Only definite non-submission can retry, with a bounded retry cadence.
+    if (notification && Date.now() - Date.parse(notification.updatedAt) < 30_000) return;
+    const session = meta.sessions.find(s => toNativeHarness(sessionHarness(s)) === h.sender.harness
+      && s.authorityId === h.sender.authorityId && s.nativeSessionId === h.sender.nativeId);
+    if (!session) throw new WorkstreamAdapterError(409, "handoff-sender-unavailable", "Denial recorded; the original sender is unavailable. Notification remains pending.");
+    const descriptor = requireOperation(sessionHarness(session), "prompt");
+    if (session.attachment && descriptor.policies.attachedSendRequiresNativeStopped) throw new WorkstreamAdapterError(409, "native-acknowledgement-required", "Denial recorded; automatic notification cannot resume an attached Claude conversation without an external-stopped acknowledgement.");
+    if (session.hidden || workerStore.suppressed(session.sessionId) || handoffReservations.has(session.sessionId) || handoffDispatches.has(session.sessionId)) return;
+    const admission = admissions.get(session.sessionId);
+    if (!admission || admission.state !== "ready" || admission.binding.workspaceId !== workspaceId
+      || admission.binding.domain.mode !== "repository" || admission.binding.domain.repositoryId !== h.repositoryId
+      || admission.nativeId !== h.sender.nativeId || admission.source.authorityId !== h.sender.authorityId
+      || admission.source.descriptor.harness !== h.sender.harness) throw new WorkstreamAdapterError(409, "handoff-sender-changed", "Denial recorded; the original sender admission must be reconciled before notification.");
+    if (!availability(session.sessionId, true, true).canSend) return;
+    const lease = reserve({ kind: "handoff", requestId: `denial:${id}` }, session.sessionId);
+    try {
+      const snapshot = dispatchSnapshot(session);
+      const cwd = await execution(session.sessionId);
+      if (session.harness === "opencode") await oc.assertIdle(session.nativeSessionId!, cwd);
+      const ready = coordinator.inspectReadiness({ conversationId: session.sessionId, intent: { kind: "handoff", requestId: `denial:${id}` }, phase: "dispatch", lease });
+      if (!ready.ready || session.hidden || workerStore.suppressed(session.sessionId) || handoffReservations.has(session.sessionId) || handoffDispatches.has(session.sessionId)) return;
+      assertDispatchSnapshot(session.sessionId, snapshot);
+      domain.assertConversationWritable(h.sender);
+      const { run, commandId } = newDispatchRun({ ...session, cwd });
+      handoffMutation(() => domain.recordHandoffDenialNotification(id, { state: "claimed", sessionId: session.sessionId, runId: run.runId, commandId }, { actor: { kind: "system" }, correlationId: id }));
+      handoffReservations.add(session.sessionId);
+      const prompt = ["Handoff denied by the user", `Handoff ID: ${h.id}`, `Request ID: ${h.input.requestId}`,
+        `Workstream: ${h.workstreamId}`, `Destination: ${h.input.to}`,
+        "The user denied this handoff before dispatch. It was not sent to the recipient. The handoff is failed, not awaiting approval.",
+        "User's denial reason:", h.evidence ?? "Operator denied handoff delivery",
+        "Continue the discussion here with the user. Do not retry or replace this handoff without their direction."].join("\n\n");
+      executePrompt(lease, session, run, prompt, true, "handoff", {
+        // Reuse executor non-submission evidence and stop/hidden guards only;
+        // this delivery is not a WorkerDelivery or a recipient handoff attempt.
+        requestId: `denial:${id}`, workerDeliveryId: denialDeliveryId(id, run.runId),
+        reconciliation: { order: "after-release", run: async () => { if (!storageFailed) await reconcileHandoffDenial(workspaceId, id); } },
+      });
+    } finally { coordinator.releaseAdmission(lease); }
+  }
   async function dispatchHandoff(workspaceId: string, id: string) {
     let h = (await router!.forWorkspace(workspaceId)).domain.getHandoff(id);
     if (!availability(h.recipient.sessionId, true, true, true).canSend || handoffReservations.has(h.recipient.sessionId)) return;
@@ -2712,9 +2820,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         failure = undefined;
       }
       if (failure && performance.now() < failure.retryAt) continue;
-      let deliveries;
+      let deliveries, denials;
       try {
         deliveries = await handoffs.listForPolling(w.workspaceId);
+        denials = await handoffs.denialsForPolling(w.workspaceId);
         handoffPollFailures.delete(w.workspaceId);
       } catch {
         const delay = Math.min((failure?.delay ?? 2500) * 2, 30000);
@@ -2722,6 +2831,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         continue;
       }
       for (const h of deliveries.filter(h => h.recipient.ownerId === store.manifest.storeId && !["awaiting_approval", "queued", "completed", "failed"].includes(h.status))) handoffReservations.add(h.recipient.sessionId);
+      for (const h of denials.filter(h => h.recipient.ownerId === store.manifest.storeId)) {
+        if (closing || storageFailed) return;
+        try {
+          await reconcileHandoffDenial(w.workspaceId, h.id);
+          await dispatchHandoffDenial(w.workspaceId, h.id);
+        } catch (error) {
+          if (storageFailed) throw error;
+          await recordHandoffProblem(w.workspaceId, h.id, error instanceof Error ? error.message : "Denial recorded; sender notification remains pending.");
+        }
+      }
       for (const h of deliveries.filter(h => h.recipient.ownerId === store.manifest.storeId && !["awaiting_approval", "completed", "failed"].includes(h.status))) {
         if (closing || storageFailed) return;
         try {
@@ -4286,6 +4405,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   for (const w of (await catalog.list()).workspaces.filter(w => w.kind === "repository")) {
     try {
       for (const h of await handoffs.listForPolling(w.workspaceId)) if (h.recipient.ownerId === store.manifest.storeId && !["queued", "completed", "failed"].includes(h.status)) handoffReservations.add(h.recipient.sessionId);
+      const domain = (await router!.forPolling(w.workspaceId)).domain;
+      for (const h of await handoffs.denialsForPolling(w.workspaceId)) {
+        if (h.recipient.ownerId !== store.manifest.storeId) continue;
+        const notification = domain.getHandoffDenialNotification(h.id);
+        if (notification?.state === "claimed") handoffReservations.add(notification.sessionId);
+      }
     } catch (error) {
       // A positively uninitialized repository has no handoff domain to recover.
       // Unavailable/corrupt initialized domains are NOT safe empty outboxes.

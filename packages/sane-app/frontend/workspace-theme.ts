@@ -27,8 +27,15 @@ export const workspaceEditorTheme = [EditorView.theme({
   { tag: [tags.number, tags.bool, tags.null], color: "var(--ws-number)" },
   { tag: tags.comment, color: "var(--muted-foreground)", fontStyle: "italic" },
   { tag: [tags.function(tags.variableName), tags.tagName], color: "var(--ws-function)" },
-  { tag: [tags.heading, tags.strong], fontWeight: "bold" },
-  { tag: tags.link, color: "var(--primary)", textDecoration: "underline" },
+  { tag: tags.heading, color: "var(--ws-keyword)", fontWeight: "bold" },
+  { tag: tags.strong, fontWeight: "bold" },
+  { tag: tags.emphasis, fontStyle: "italic" },
+  { tag: tags.monospace, color: "var(--ws-string)", backgroundColor: "var(--muted)", borderRadius: "2px" },
+  { tag: tags.quote, color: "var(--muted-foreground)", fontStyle: "italic" },
+  { tag: [tags.processingInstruction, tags.contentSeparator], color: "var(--ws-number)" },
+  { tag: tags.labelName, color: "var(--ws-function)" },
+  { tag: tags.strikethrough, textDecoration: "line-through" },
+  { tag: [tags.link, tags.url], color: "var(--ws-function)", textDecoration: "underline" },
 ]))];
 
 export const editorTheme = new Compartment();

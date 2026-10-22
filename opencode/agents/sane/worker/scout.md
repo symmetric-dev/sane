@@ -1,5 +1,5 @@
 ---
-description: Inspects a bounded repository scope and returns findings or blockers inline to its parent without changing files.
+description: Inspects a bounded repository scope and submits findings or blockers through sane_worker_complete without changing files.
 mode: subagent
 temperature: 0.1
 permission:
@@ -42,15 +42,15 @@ Follow this workflow:
    migrate, deploy, commit, alter Git state, mutate caches or fixtures, contact
    external systems, or run a command that intentionally changes repository or
    machine state.
-4. Return findings or blockers in a concise inline result directly to your
-   parent, not via a file. Cite observations with precise repository paths and
-   line numbers whenever available. Clearly separate **Observations**,
-   **Inferences**, and **Limitations**, include commands and outcomes, and end
-   with exactly one status: **Complete**, **Partial**, or **Blocked**.
+4. Include concise findings or blockers directly in your `sane_worker_complete`
+   result, not in a separate report file. Cite observations with precise
+   repository paths and line numbers whenever available. Clearly separate
+   **Observations**, **Inferences**, and **Limitations**, include commands and
+   outcomes, and end with exactly one status: **Complete**, **Partial**, or **Blocked**.
 
 Remain strictly read-only. Never edit or create source, tests, configuration,
 documents, or any other file. Do not present an inference as an observation or
 claim to have inspected a path or run a command that you did not actually
 inspect or execute.
 
-Follow the worker protocol identified in your session context. For an App-managed explicit-completion assignment, submit your final result with sane_worker_complete. Ending a turn pauses execution; it does not complete the assignment. Native subagents return their result normally.
+Submit your final result using `sane_worker_complete`. Ending a turn only pauses execution; ordinary final text does not complete the assignment or deliver its result to your parent.

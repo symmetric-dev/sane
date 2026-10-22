@@ -5,11 +5,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { bracketMatching, indentOnInput } from "@codemirror/language";
 import { searchKeymap } from "@codemirror/search";
 import { unifiedMergeView } from "@codemirror/merge";
-import { javascript } from "@codemirror/lang-javascript";
-import { json } from "@codemirror/lang-json";
-import { css } from "@codemirror/lang-css";
-import { html } from "@codemirror/lang-html";
-import { markdown } from "@codemirror/lang-markdown";
+import { editorLanguage } from "./editor-languages";
 import { editorTheme, resolvedEditorTheme, workspaceThemeExtension } from "./workspace-theme";
 import { codeSettings, shouldWrap } from "./code-settings";
 import { themeSettings } from "./theme-settings";
@@ -20,13 +16,7 @@ const noWrapping: Extension = [];
 export const wrappingExtension = (path: string) => shouldWrap(path, codeSettings.snapshot()) ? EditorView.lineWrapping : noWrapping;
 
 export function language(path: string): Extension {
-  const ext = path.split(".").pop()?.toLowerCase();
-  if (["js", "mjs", "cjs", "jsx", "ts", "tsx"].includes(ext || "")) return javascript({ typescript: ext === "ts" || ext === "tsx", jsx: ext === "jsx" || ext === "tsx" });
-  if (ext === "json") return json();
-  if (ext === "css") return css();
-  if (ext === "html" || ext === "htm") return html();
-  if (ext === "md" || ext === "markdown") return markdown();
-  return [];
+  return editorLanguage(path.split(".").pop() ?? "");
 }
 export function createBufferState(path: string, text: string, update: (state: EditorState) => void, save: () => void) {
   return EditorState.create({ doc: text, extensions: [workspaceThemeExtension(), bufferLanguage.of(language(path)), wrapping.of(wrappingExtension(path)), lineNumbers(), history(), drawSelection(), highlightActiveLine(), highlightActiveLineGutter(), indentOnInput(), bracketMatching(),

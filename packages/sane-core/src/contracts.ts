@@ -17,6 +17,8 @@ export interface HandoffKickoff { workstream: string; title: string; type: Works
 export interface HandoffExecutionConfig { profileId: string; agent: string; model?: string; effort?: string }
 export interface HandoffRecipient { ownerId: string; sessionId: string; ref: ConversationRef | null; harness: Harness; authorityId: string; checkout: CheckoutPin; executionConfig?: HandoffExecutionConfig }
 export interface Handoff { id: string; repositoryId: string; sender: ConversationRef; workstreamId: string; input: HandoffInput; recipient: HandoffRecipient; status: HandoffStatus; revision: number; attemptId: string | null; nativeCommandId: string | null; runId: string | null; evidence: string | null; createdAt: string; updatedAt: string; origin?: { kind: "kickoff"; sender: ConversationRef; requestId: string } }
+/** Independent sender delivery; never reopens or dispatches the denied handoff. */
+export interface HandoffDenialNotification { state: "claimed" | "accepted" | "not-submitted"; sessionId: string; runId: string; commandId: string; updatedAt: string }
 export type NativeSourceDescriptor = { version: 1; harness: "cc"; kind: "local-profile"; profileRoot: string } | { version: 1; harness: "oc"; kind: "local-registration"; registrationFile: string }
 export interface NativeAuthority { descriptor: NativeSourceDescriptor; authorityId: string }
 /** Compatibility name for conversation assignments, not lifecycle approval phases. */

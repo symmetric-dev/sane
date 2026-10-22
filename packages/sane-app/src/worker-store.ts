@@ -381,6 +381,9 @@ export class WorkerStore {
     const receipt: WorkerOperationReceipt = { requestId: input.requestId, fingerprint: input.fingerprint, invocationKey: input.invocationKey, operation: "complete", receipt: { id: crypto.randomUUID(), state: "accepted", revision: 1 }, at: now };
     w.completion = { requestId: input.requestId, fingerprint: input.fingerprint, invocationKey: input.invocationKey, at: now, outcome: input.outcome, receipt: receipt.receipt };
     w.assignment = "closing";
+    // Receipt acceptance ends idle; "running" holds the assignment for settlement,
+    // without reopening its Run or publishing an outcome before observation.
+    if (w.state === "idle") w.state = "running";
     w.operationReceipts = [...(w.operationReceipts ?? []), receipt];
     w.updatedAt = now;
     this.commit(next);

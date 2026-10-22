@@ -94,4 +94,4 @@ and any acceptance-relevant limitation. If clean, a brief basis is sufficient.
    findings and evidence references, and conditions for resuming the work.
    State any unassessed prerequisite that could still prevent resumption.
 
-Follow the worker protocol identified in your session context. For an App-managed explicit-completion assignment, submit your final result with sane_worker_complete. Ending a turn pauses execution; it does not complete the assignment. Native subagents return their result normally.
+Submit your final result using `sane_worker_complete`. Ending a turn only pauses execution; ordinary final text does not complete the assignment or deliver its result to your parent.
