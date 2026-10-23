@@ -1,11 +1,11 @@
 import { useEffect, useRef } from "react";
-import { FiBookOpen, FiCode, FiCompass, FiGitBranch, FiGrid, FiTerminal } from "react-icons/fi";
+import { FiBookOpen, FiCode, FiGitBranch, FiGrid, FiTerminal } from "react-icons/fi";
 import { FlowNavigation } from "./flow-navigation";
+import "./workstream-status.css";
 import "./flow-launcher.css";
 
 // UI catalog only: each selection launches its existing, independently scoped flow.
 const flows = [
-  { id: "view-status", title: "View Status", icon: FiCompass, key: "s" },
   { id: "sane-review", title: "Review Documents", icon: FiBookOpen, key: "r" },
   { id: "terminal", title: "Terminal", icon: FiTerminal, key: "t" },
   { id: "git", title: "Git", icon: FiGitBranch, key: "g" },

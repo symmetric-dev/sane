@@ -25,7 +25,7 @@ export interface NativeAuthority { descriptor: NativeSourceDescriptor; authority
 export type Phase = StoredSlot
 export interface CheckoutPin { path: string; commonDir: string; gitDir: string; device: number; inode: number; commonDevice: number; commonInode: number; gitDevice: number; gitInode: number }
 export interface RepositoryDiscovery { primaryCheckout: string; commonDir: string; stateRoot: string; databasePath: string; primaryPin: CheckoutPin; invocationCheckout: CheckoutPin }
-export interface RepositoryContext extends RepositoryDiscovery { repositoryId: string; schemaVersion: 1 | 2 | 3 | 4 }
+export interface RepositoryContext extends RepositoryDiscovery { repositoryId: string; schemaVersion: 1 | 2 | 3 | 4 | 5 }
 export type StoreAvailability = { state: "ready"; context: RepositoryContext } | { state: "uninitialized" | "unsupported" | "corrupt" | "unavailable" | "stale-binding"; code: DomainErrorCode; message: string; path: string }
 export type MutationActor = { kind: "local" | "human" | "system" } | { kind: "native"; repositoryId: string; ref: ConversationRef }
 export interface MutationContext { actor: MutationActor; correlationId: string; expectedRevision?: number }
@@ -42,5 +42,4 @@ export interface ResearchIndex { registered: { topic: string; reportPath: string
 export type WorkstreamDocumentPhase = "design" | "engineering" | "planning" | "execution" | "research" | "resources"
 export interface WorkstreamDocument { path: string; title: string; phase: WorkstreamDocumentPhase; kind: "primary" | "supporting" | "resource"; required: boolean; exists: boolean; revision: string | null }
 export interface WorkstreamDocumentCatalog { repositoryId: string; workstreamId: string; documents: WorkstreamDocument[] }
-export interface ApprovalEvidence { id: string; workstreamId: string; phase: "design" | "engineering" | "planning" | "execution"; userReference: string; hashVersion: number; snapshotHash: string; createdAt: string; actorEventId: number; gitCommit: string | null; files: { path: string; hash: string }[] }
 export type DomainErrorCode = "INVALID_INPUT" | "NOT_INITIALIZED" | "ALREADY_INITIALIZED" | "UNSUPPORTED_SCHEMA" | "INCOMPLETE_INITIALIZATION" | "CORRUPT_STORE" | "UNAVAILABLE" | "INVALID_CONTEXT" | "STALE_BINDING" | "NOT_FOUND" | "CONFLICT" | "BUSY" | "INVALID_CHECKOUT" | "AMBIGUOUS_TARGET" | "INVALID_ARTIFACT" | "STORAGE_ERROR" | "FEATURE_UNAVAILABLE" | "NATIVE_CONTEXT_UNAVAILABLE" | "SOURCE_UNAVAILABLE"

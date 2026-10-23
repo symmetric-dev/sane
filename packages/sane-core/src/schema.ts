@@ -1,5 +1,5 @@
 /** Relational domain. Upgrades are explicit; adapters use RepositoryDomain. */
-export const SCHEMA_VERSION = 4 as const
+export const SCHEMA_VERSION = 5 as const
 // BEFORE INSERT runs even when REPLACE's implicit DELETE triggers are disabled.
 // Cover every identity/unique conflict, including the partial active indexes.
 const protectedInsertConflicts: Record<string, string> = {
@@ -164,4 +164,10 @@ export const SCHEMA_V3 = SCHEMA_V2
 export const SCHEMA_V4 = SCHEMA_V3
   .replace("CHECK(version=3)", "CHECK(version=4)")
   .replace("CHECK(status IN ('queued','acceptance_unknown','accepted','running','completed','failed'))", "CHECK(status IN ('awaiting_approval','queued','acceptance_unknown','accepted','running','completed','failed'))")
-export const SCHEMA = SCHEMA_V4
+/** v5 removes phase approval requirements for job registration while preserving
+ * historical approvals and approval_files tables and triggers. */
+export const SCHEMA_V5 = SCHEMA_V4
+  .replace("CHECK(version=4)", "CHECK(version=5)")
+  .replace("planning_approval_id TEXT NOT NULL, approval_phase TEXT NOT NULL DEFAULT 'planning' CHECK(approval_phase='planning'),", "planning_approval_id TEXT, approval_phase TEXT DEFAULT 'planning' CHECK(approval_phase IS NULL OR approval_phase='planning'),")
+  .replace("OR NEW.planning_approval_id!=OLD.planning_approval_id;", "OR NEW.planning_approval_id IS NOT OLD.planning_approval_id;")
+export const SCHEMA = SCHEMA_V5

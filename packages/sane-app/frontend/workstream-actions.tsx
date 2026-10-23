@@ -10,7 +10,6 @@ import type { Conversation } from "./types";
 import { workstreamRequest } from "./workstreams-client";
 import { refreshWorkstreamOverview, useWorkstreamOverviewState } from "./workstream-overview";
 import type { DocumentReviewStart } from "./document-review-model";
-import type { WorkstreamStatusStart } from "./workstream-status";
 import { assignmentClass, assignmentLabel, assignmentStats, supportAssignments } from "./assignment-semantics";
 import "./workstream-actions.css";
 
@@ -39,7 +38,7 @@ function useActionMembership(workspaceId: string | null, sessionId: string | nul
   return { overview: state.overview, loading: active && !state.overview && state.loading, failed: active && !!state.error, retry: () => { void refresh().catch(() => {}); }, refresh };
 }
 
-export function ChatWorkstreamActions({ conversation, active, onDocuments, onStatus, close, onTerminal, onGit, onPython, pythonUnavailable }: { conversation?: Conversation; active: boolean; onDocuments?: (identity: DocumentReviewStart) => void; onStatus?: (identity: WorkstreamStatusStart) => void; close: () => void; onTerminal: () => void; onGit: () => void; onPython: () => void; pythonUnavailable?: string }) {
+export function ChatWorkstreamActions({ conversation, active, onDocuments, close, onTerminal, onGit, onPython, pythonUnavailable }: { conversation?: Conversation; active: boolean; onDocuments?: (identity: DocumentReviewStart) => void; close: () => void; onTerminal: () => void; onGit: () => void; onPython: () => void; pythonUnavailable?: string }) {
   const { workspaces } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   // Chat association, never the workspace currently being browsed in Settings.
   const workspaceId = conversation?.workspaceId ?? null;
@@ -51,7 +50,7 @@ export function ChatWorkstreamActions({ conversation, active, onDocuments, onSta
   const detail = membership.overview?.workstreams.find(item => item.workstream.id === workstreamId);
   const reason = !active ? "Open this chat to use Flows" : !conversation ? "Select an existing conversation" : conversation.replacedBy ? "This chat was replaced" : !workspaceId ? "This chat has no workspace" : workspace?.kind === "directory" ? "Flows require a repository" : !workspace ? "Chat workspace is unavailable" : membership.loading ? "Loading workstream membership…" : membership.failed ? "Workstream membership unavailable; retry loading" : !rows.length || !rows[0].conversation ? "This chat is not enrolled" : !workstreamId ? "This chat is unassigned" : !detail ? "Workstream unavailable" : "Flows";
   const membershipReady = eligible && !membership.loading && !membership.failed;
-  const flowsAvailable = membershipReady && rows.length === 1 && !!detail && !!onDocuments && !!onStatus;
+  const flowsAvailable = membershipReady && rows.length === 1 && !!detail && !!onDocuments;
   const flowsReason = !active ? "Open this chat to use Flows"
     : conversation && !conversation.replacedBy && workspace?.kind === "directory" ? "Requires a SANE repository"
     : membershipReady && rows.length > 1 ? "Chat workstream membership is ambiguous"
@@ -59,7 +58,7 @@ export function ChatWorkstreamActions({ conversation, active, onDocuments, onSta
     : membershipReady && !workstreamId ? "Assign this chat to a workstream"
     : flowsAvailable ? "Flows" : reason;
   return <>
-    <FlowLauncher subtitle={detail?.workstream.title} close={close} unavailable={{ "view-status": flowsAvailable ? undefined : flowsReason, "sane-review": flowsAvailable ? undefined : flowsReason, python: pythonUnavailable, git: gitTargetUnavailable() }} onSelect={flow => {
+    <FlowLauncher subtitle={detail?.workstream.title} close={close} unavailable={{ "sane-review": flowsAvailable ? undefined : flowsReason, python: pythonUnavailable, git: gitTargetUnavailable() }} onSelect={flow => {
       if (!active) return;
       if (flow === "terminal") { onTerminal(); return; }
       if (flow === "git") { if (!gitTargetUnavailable()) onGit(); return; }
@@ -67,8 +66,7 @@ export function ChatWorkstreamActions({ conversation, active, onDocuments, onSta
       if (!flowsAvailable || !workspaceId || !conversation || !detail) return;
       const identity = { sessionId: conversation.id, workspaceId, repositoryId: detail.workstream.repositoryId, workstreamId: detail.workstream.id };
       close();
-      if (flow === "view-status") onStatus?.(identity);
-      else onDocuments?.(identity);
+      onDocuments?.(identity);
     }} />
     {eligible && membership.failed && <button type="button" className="text-button composer-actions-retry" title="Retry workstream membership" aria-label="Retry workstream membership" onClick={membership.retry}>Retry</button>}
   </>;
@@ -90,7 +88,6 @@ export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, se
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false);
   const [readFailed, setReadFailed] = useState(false), [refreshFailed, setRefreshFailed] = useState(false);
   const [outcome, setOutcome] = useState("");
-  const [confirm, setConfirm] = useState(false), [approvalRef, setApprovalRef] = useState("");
   const guard = useRef({ mounted: true, epoch: 0, locked: false });
   const callbacks = useRef({ onChanged, isCurrent }); callbacks.current = { onChanged, isCurrent };
   // Keep identity captured at opening. A changed binding must not retarget a write.
@@ -136,7 +133,7 @@ export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, se
   }
 
   async function act(action: WorkstreamAction) {
-    if (!isPhase(tab) || !detail || loading || readFailed || refreshFailed || guard.current.locked || !callbacks.current.isCurrent() || action === "approve" && (!confirm || !approvalRef.trim())) return;
+    if (!isPhase(tab) || !detail || loading || readFailed || refreshFailed || guard.current.locked || !callbacks.current.isCurrent()) return;
     guard.current.locked = true;
     const epoch = ++guard.current.epoch, phase = tab;
     setBusy(true); setOutcome("");
@@ -144,11 +141,10 @@ export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, se
     try {
       const fresh = await read(epoch);
       if (!current(epoch)) return;
-      const input: WorkstreamActionInput = { id: identity.id, phase, repositoryId: identity.repositoryId, expectedRevision: fresh.workstream.revision, ...(identity.sessionId ? { sessionId: identity.sessionId } : {}), ...(action === "approve" ? { approvalRef: approvalRef.trim() } : {}) };
+      const input: WorkstreamActionInput = { id: identity.id, phase, repositoryId: identity.repositoryId, expectedRevision: fresh.workstream.revision, ...(identity.sessionId ? { sessionId: identity.sessionId } : {}) };
       const result = await workstreamRequest<WorkstreamActionResult>(identity.workspaceId, action, input);
       if (!current(epoch)) return;
-      setOutcome(result.ok ? action === "validate" ? "Valid" : action === "approve" ? "Approved" : "Provided" : action === "validate" ? "Validation failed" : "Action failed");
-      setConfirm(false); setApprovalRef("");
+      setOutcome(result.ok ? action === "validate" ? "Valid" : "Provided" : action === "validate" ? "Validation failed" : "Action failed");
       // The operation has returned: a subsequent read error must never replay it.
       try {
         await read(epoch);
@@ -157,7 +153,31 @@ export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, se
         if (current(epoch)) { setReadFailed(false); setRefreshFailed(false); }
       } catch { if (current(epoch)) setRefreshFailed(true); }
     } catch {
-      if (current(epoch)) { setOutcome("Action failed"); setReadFailed(true); setConfirm(false); setApprovalRef(""); }
+      if (current(epoch)) { setOutcome("Action failed"); setReadFailed(true); }
+    } finally {
+      if (current(epoch)) { guard.current.locked = false; setBusy(false); }
+    }
+  }
+
+  async function complete() {
+    if ((tab !== "root" && tab !== "execution") || !detail || detail.workstream.lifecycle.status === "done" || loading || readFailed || refreshFailed || guard.current.locked || !callbacks.current.isCurrent()) return;
+    guard.current.locked = true;
+    const epoch = ++guard.current.epoch;
+    setBusy(true); setOutcome("");
+    try {
+      const fresh = await read(epoch);
+      if (!current(epoch)) return;
+      await workstreamRequest(identity.workspaceId, "complete", { id: identity.id, repositoryId: identity.repositoryId, expectedRevision: fresh.workstream.revision, ...(identity.sessionId ? { sessionId: identity.sessionId } : {}) });
+      if (!current(epoch)) return;
+      setOutcome("Marked as done");
+      try {
+        await read(epoch);
+        if (!current(epoch)) return;
+        await callbacks.current.onChanged();
+        if (current(epoch)) { setReadFailed(false); setRefreshFailed(false); }
+      } catch { if (current(epoch)) setRefreshFailed(true); }
+    } catch {
+      if (current(epoch)) { setOutcome("Action failed"); setReadFailed(true); }
     } finally {
       if (current(epoch)) { guard.current.locked = false; setBusy(false); }
     }
@@ -165,12 +185,12 @@ export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, se
 
   function select(next: Tab) {
     if (guard.current.locked) return;
-    setTab(next); setConfirm(false); setApprovalRef(""); setOutcome("");
+    setTab(next); setOutcome("");
   }
   const blocked = loading || busy || readFailed || refreshFailed || !detail;
+  const isDone = detail?.workstream.lifecycle.status === "done";
   const phaseStatus = (phase: LifecyclePhase) => detail?.workstream.lifecycle.phases.find(row => row.phase === phase)?.status;
   const conversations = (phase: LifecyclePhase) => detail?.activePhases.filter(row => row.phase === phase).length ?? 0;
-  const confirmLabel = tab === "planning" ? "Approve & register jobs" : tab === "execution" ? "Approve & complete jobs" : "Confirm approval";
 
   return <ShellDialog title="Workstream" subtitle={detail?.workstream.title ?? initialDetail.workstream.title} close={() => { if (!guard.current.locked) close(); }} closeDisabled={busy} restoreFocus={restoreFocus} className="workstream-actions-dialog">
     <div className="workstream-actions-layout">
@@ -204,17 +224,12 @@ export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, se
         </>}
         {outcome && <p className="workstream-actions-outcome" role="status">{outcome}</p>}
         {(readFailed || refreshFailed) && <div className="workstream-actions-read-error"><span role="status">{refreshFailed ? "Refresh failed; action was not retried." : outcome === "Action failed" ? "Refresh before trying another action." : "Couldn't load current state."}</span><button type="button" className="text-button" disabled={busy} onClick={() => void refresh()}>Refresh</button></div>}
-        {onDocuments && <button type="button" className="text-button" disabled={blocked || confirm} onClick={() => onDocuments()}><FiBookOpen size={14} aria-hidden="true" />Sane Review</button>}
-        {isPhase(tab) && <footer className="workstream-actions-footer">
-          {confirm && <div role="group" aria-label="Approval confirmation" className="workstream-actions-confirm">
-            <label htmlFor={`${id}-approval`}>Approval reference</label><input autoFocus id={`${id}-approval`} value={approvalRef} required disabled={busy} placeholder="Approval reference" onChange={event => setApprovalRef(event.target.value)} onKeyDown={event => {
-              if (event.key !== "Enter") return;
-              event.preventDefault(); event.stopPropagation();
-              void act("approve");
-            }} />
-            <div><button type="button" disabled={blocked || !approvalRef.trim()} onClick={() => void act("approve")}>{confirmLabel}</button><button type="button" disabled={busy} onClick={() => { setConfirm(false); setApprovalRef(""); }}>Cancel</button></div>
-          </div>}
-          <div className="workstream-actions-buttons"><button type="button" disabled={blocked || confirm} onClick={() => void act("validate")}>Validate</button><button type="button" disabled={blocked || confirm} onClick={() => setConfirm(true)}>Approve</button><button type="button" disabled={blocked || confirm} onClick={() => void act("provide")}>Provide</button></div>
+        {onDocuments && <button type="button" className="text-button" disabled={blocked} onClick={() => onDocuments()}><FiBookOpen size={14} aria-hidden="true" />Sane Review</button>}
+        {(tab === "root" || isPhase(tab)) && <footer className="workstream-actions-footer">
+          <div className="workstream-actions-buttons">
+            {isPhase(tab) && <><button type="button" disabled={blocked} onClick={() => void act("validate")}>Validate</button><button type="button" disabled={blocked} onClick={() => void act("provide")}>Provide</button></>}
+            {(tab === "root" || tab === "execution") && <button type="button" disabled={blocked || isDone} onClick={() => void complete()}>{isDone ? "Done" : "Mark as done"}</button>}
+          </div>
         </footer>}
       </section>
     </div>

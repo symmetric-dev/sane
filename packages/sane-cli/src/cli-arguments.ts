@@ -114,7 +114,7 @@ export function classifyCaller(signals: CallerSignals, flags: Readonly<Record<st
   return { actorKind: "local" }
 }
 
-const retired = new Set(["candidate", "link", "handoff", "worktree", "merge", "delete", "archive", "purge", "rename"])
+const retired = new Set(["candidate", "link", "handoff", "worktree", "merge", "delete", "archive", "purge", "rename", "approve"])
 const phases: readonly string[] = LIFECYCLE_PHASES
 const flagsBoolean = new Set(["json", "verbose", "refresh-templates", "register", "clear", "dry-run"])
 const managed = ["harness", "authority", "native-id"]
@@ -123,7 +123,7 @@ const common = ["repo", "workstream", "json", "verbose", ...callerFlags]
 const commandFlags: Record<string, string[]> = {
   "native-config": ["plugin-directory", "registration-file", "profile-root", "binding-root", "bun-executable", "app-connection-file", "format"],
   init: ["dry-run"], upgrade: ["dry-run"], inspect: [], create: ["name", "title", "type", "dry-run"], list: [], detail: [], status: [], view: [], select: ["dry-run"],
-  provide: ["refresh-templates"], validate: ["id"], approve: ["ref"], job: ["register"], research: ["topic", "path"],
+  provide: ["refresh-templates"], validate: ["id"], job: ["register"], research: ["topic", "path"],
   sessions: ["slot"], audit: [], "default-checkout": ["checkout", "clear"],
   authority: ["source"], conversation: [...managed, ...parent, "checkout"], phase: [...managed, "assignment-id"],
 }
@@ -185,10 +185,9 @@ export function parseCliCommand(args: readonly string[], signals: CallerSignals 
       case "select": count(0); requireFlags("workstream"); if (caller.actorKind !== "local") fail("Selection is only for local invocations."); break
       case "upgrade": count(0); if (caller.actorKind !== "local") throw new ParseFailure("NATIVE_CONTEXT_UNAVAILABLE", "Schema upgrade requires an explicit local/human invocation outside enrolled native tools and shells."); break
       case "sessions": count(0); if (options.slot && !isStoredSlot(options.slot)) fail("Invalid phase/support slot."); break
-      case "provide": case "approve": case "validate":
+      case "provide": case "validate":
         count(1, command === "validate" ? 2 : 1)
-        if (!phases.includes(positionals[0]!)) fail("Invalid approval phase.")
-        if (command === "approve") requireFlags("ref")
+        if (!phases.includes(positionals[0]!)) fail("Invalid lifecycle phase.")
         if (command === "validate") {
           if (positionals.length === 2) { if (positionals[0] !== "execution" || positionals[1] !== "report") fail("Invalid report validation."); requireFlags("id"); safeId(options.id as string) }
           else if (options.id) fail("--id requires execution report.")

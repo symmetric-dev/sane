@@ -7,10 +7,9 @@
  * `--verbose`, single-line JSON for `--json`.
  *
  * Caps live here (the CLI formatting layer) rather than in sane-core because
- * several full shapes feed domain writes: `validatePhase.fileHashes` feeds
- * approval-file inserts, `validatePhase.files` feeds job registration, and
- * `getStatus` feeds the App bridge. Truncating at the source would change
- * behavior; truncating the CLI projection only shrinks reply bodies.
+ * several full shapes feed domain writes: `validatePhase.files` feeds job
+ * registration, and `getStatus` feeds the App bridge. Truncating at the source
+ * would change behavior; truncating the CLI projection only shrinks reply bodies.
  */
 import type { CliIntent } from "./cli-arguments.ts"
 
@@ -89,10 +88,12 @@ function conversationSummary(conversation: unknown): Rec {
 }
 
 function nextForStatus(id: string, phases: Rec[], jobs: Rec[]): string {
-  const pending = phases.find((p) => p.status !== "approved")
-  if (pending) return `sane approve ${pending.phase} --ref OWNER --workstream ${id}`
   const open = jobs.find((j) => j.status !== "completed")
   if (open) return `sane job ${open.job_id} ${open.status === "planned" ? "running" : "completed"} --workstream ${id}`
+  const pending = phases.find((p) => p.status === "pending")
+  if (pending) return `sane provide ${pending.phase} --workstream ${id}`
+  const active = phases.find((p) => p.status === "in_progress")
+  if (active) return `sane validate ${active.phase} --workstream ${id}`
   return `none — ${id} complete`
 }
 
@@ -102,7 +103,6 @@ function statusSummary(status: unknown): Rec {
   const lifecycle = rec(workstream.lifecycle)
   const id = str(workstream.id)
   const phases = arr<Rec>(lifecycle.phases).map((p) => ({ phase: str(p.phase), status: str(p.status) }))
-  const approvals = arr<Rec>(lifecycle.approvals).map((a) => ({ phase: str(a.phase), ref: str(a.approval_ref) }))
   const jobs = sample<Rec>(lifecycle.jobs, EVIDENCE_LIST_CAP)
   const audit = arr(s.audit)
   const warnings = arr<string>(rec(s.research).warnings)
@@ -112,7 +112,6 @@ function statusSummary(status: unknown): Rec {
     status: str(lifecycle.status),
     revision: workstream.revision ?? null,
     phases,
-    approvals: approvals.length,
     jobs: jobs.list.map((j) => ({ job_id: str(j.job_id), status: str(j.status) })),
     ...cappedFields("jobs", jobs),
     auditTotal: audit.length,
@@ -129,6 +128,8 @@ function validateSummary(validation: unknown, intent: CliIntent): Rec {
   const ws = str(intent.workstream)
   const problems = sample<string>(v.problems, COMPACT_SAMPLE)
   const warnings = sample<string>(v.warnings, COMPACT_WARNING_SAMPLE)
+  const order = PHASE_ORDER.indexOf(phase)
+  const nextPhase = order >= 0 && order < PHASE_ORDER.length - 1 ? PHASE_ORDER[order + 1] : null
   return {
     workstream: ws,
     phase,
@@ -142,7 +143,7 @@ function validateSummary(validation: unknown, intent: CliIntent): Rec {
     warningTotal: warnings.total,
     ...cappedFields("warnings", warnings),
     next: v.ok === true
-      ? `sane approve ${phase} --ref OWNER --workstream ${ws}`
+      ? nextPhase ? `sane provide ${nextPhase} --workstream ${ws}` : `none — ${ws} complete`
       : `fix ${problems.total} problems, then re-run sane validate ${phase} --workstream ${ws}`,
   }
 }
@@ -197,28 +198,6 @@ export function compactSummary(operation: string, result: unknown, intent: CliIn
       return { workstream: ws, phase: str(intent.positionals[0]), created: arr(r.created).length, existed: arr(r.existed).length, refreshed: arr(r.refreshed).length }
     case "validate":
       return validateSummary(result, intent)
-    case "approve": {
-      const files = sample<string>(r.files, EVIDENCE_LIST_CAP)
-      const jobs = sample<Rec>(r.jobs, EVIDENCE_LIST_CAP)
-      const order = PHASE_ORDER.indexOf(str(r.phase))
-      const nextPhase = order >= 0 && order < PHASE_ORDER.length - 1 ? PHASE_ORDER[order + 1] : null
-      return {
-        workstream: str(r.workstreamId),
-        phase: str(r.phase),
-        approval_ref: str(r.approval_ref),
-        sane_hash: str(r.sane_hash),
-        approved_at: str(r.approved_at),
-        files: files.list,
-        fileTotal: files.total,
-        ...cappedFields("files", files),
-        jobs: jobs.list,
-        ...cappedFields("jobs", jobs),
-        warnings: arr(r.warnings).length,
-        next: str(r.phase) === "planning"
-          ? `sane job --register --workstream ${str(r.workstreamId)}`
-          : nextPhase ? `sane provide ${nextPhase} --workstream ${str(r.workstreamId)}` : `none — ${str(r.workstreamId)} complete`,
-      }
-    }
     case "job.register": {
       const jobs = sample<Rec>(r.jobs, EVIDENCE_LIST_CAP)
       const warnings = sample<string>(r.warnings, COMPACT_WARNING_SAMPLE)
@@ -358,7 +337,7 @@ export function formatCompactLines(operation: string, compact: unknown): string[
       return [
         `${str(c.workstream)} [${str(c.type)}] status=${str(c.status)} revision=${String(c.revision)}`,
         `phases: ${phases}`,
-        `jobs: ${jobText} · approvals: ${Number(c.approvals)} · audit: ${Number(c.auditTotal)} events · research warnings: ${Number(c.researchWarnings)}`,
+        `jobs: ${jobText} · audit: ${Number(c.auditTotal)} events · research warnings: ${Number(c.researchWarnings)}`,
         `next: ${str(c.next)}`,
       ]
     }
@@ -388,18 +367,6 @@ export function formatCompactLines(operation: string, compact: unknown): string[
         for (const w of arr<string>(c.warnings)) lines.push(`  warning: ${w}`)
         if (c.warningsTruncated) lines.push(`  … +${Number(c.warningTotal) - arr(c.warnings).length} more warnings (use --verbose)`)
       }
-      lines.push(`next: ${str(c.next)}`)
-      return lines
-    }
-    case "approve": {
-      const lines = [
-        `Approved ${str(c.phase)} for ${str(c.workstream)} (ref ${str(c.approval_ref)})`,
-        `hash ${str(c.sane_hash)}`,
-      ]
-      const jobs = arr<Rec>(c.jobs)
-      if (jobs.length) lines.push(`jobs: ${jobs.map((j) => `${str(j.job_id)}=${str(j.status)}`).join(" ")}`)
-      if (c.jobsTruncated) lines.push(`… jobs truncated (use --verbose)`)
-      if (Number(c.warnings) > 0) lines.push(`warnings: ${Number(c.warnings)} (use --verbose)`)
       lines.push(`next: ${str(c.next)}`)
       return lines
     }

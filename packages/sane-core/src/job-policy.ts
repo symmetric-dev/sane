@@ -33,11 +33,3 @@ export function registerPlannedJobs<T extends { job_id: string; spec_path: strin
 export function assertJobProgress(jobId: string, current: JobStatus, next: JobStatus): void {
   if (jobStatusOrder(next) < jobStatusOrder(current)) throw new Error(`Job "${jobId}" cannot move ${current} -> ${next} (backward moves rejected; statuses only track forward progress).`)
 }
-
-/** The caller owns the transaction and storage; effects/order match ordinary approval. */
-export function approvalEffects<T>(phase: string, ports: { registerJobs: () => T[]; completeJobs: () => T[]; recordApproval: () => void; approvePhase: () => void }): T[] {
-  const jobs = phase === "planning" ? ports.registerJobs() : phase === "execution" ? ports.completeJobs() : []
-  ports.recordApproval()
-  ports.approvePhase()
-  return jobs
-}

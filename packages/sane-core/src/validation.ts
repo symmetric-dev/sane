@@ -11,8 +11,8 @@
  * - engineering: one or more `design/solutions/*.md`.
  * - planning: `execution/PLAN.md`, one or more `execution/jobs/*.md`, and one
  *   `execution/verification/<checkpoint-id>.md` per Plan checkpoint.
- * - execution: `execution/FINAL_REPORT.md` plus registered completed-job
- *   report coverage and checkpoint Test Reports at approval.
+ * - execution: `execution/FINAL_REPORT.md` plus registered job
+ *   report coverage and checkpoint Test Reports.
  * - execution report --id: only the assigned report, checked against its spec.
  *
  * General content rules per file: must exist, must be non-empty, and must contain
@@ -23,9 +23,7 @@
  * Execution job reports additionally enforce their title,
  * section structure, populated sections, and resolved placeholders.
  *
- * Research index divergences and approved-but-changed docs are warnings,
- * never failures. `sane approve <phase>` runs this validation first
- * and refuses to record when problems exist.
+ * Research index divergences are warnings, never failures.
  */
 import { LifecycleAccessError, ordinaryLifecycleFileSystem, type LifecycleFileSystem } from "./lifecycle-filesystem.ts"
 import { basename, join } from "node:path"
@@ -38,13 +36,11 @@ import { LIFECYCLE_PHASES, type LifecycleJob } from "./lifecycle.ts"
 
 export interface ValidationState {
   jobs: Pick<LifecycleJob, "job_id" | "spec_path" | "report_path" | "status">[]
-  approval: { sane_hash: string; approval_ref: string } | null
   researchWarnings?: () => Promise<string[]>
 }
 function sha256Hex(value: string | Buffer): string { return createHash("sha256").update(value).digest("hex") }
 function listJobs(state: ValidationState, _identity: unknown) { return state.jobs }
 function getJob(state: ValidationState, _identity: unknown, id: string) { return state.jobs.find(job => job.job_id === id) }
-function getApproval(state: ValidationState, _identity: unknown, _phase: string) { return state.approval }
 
 export const VALIDATE_PHASES = LIFECYCLE_PHASES
 export type ValidatePhase = (typeof VALIDATE_PHASES)[number]
@@ -107,7 +103,7 @@ async function listMarkdownFiles(fs: LifecycleFileSystem, directory: string): Pr
 
 /**
  * Validate one phase's documents inside an already-resolved workstream
- * directory. Pure logic shared by `validate` and `approve`.
+ * directory.
  */
 export async function validatePhaseDocs(
   db: ValidationState,
@@ -115,7 +111,7 @@ export async function validatePhaseDocs(
   workstreamDir: string,
   phase: ValidatePhase,
   type: WorkstreamType,
-  options: { reportId?: string; completingJobs?: boolean } = {},
+  options: { reportId?: string } = {},
   fs: LifecycleFileSystem = ordinaryLifecycleFileSystem,
 ): Promise<ValidatePhaseResult & { captureHashes: { path: string; hash: string }[] }> {
   const problems: string[] = []
@@ -188,7 +184,7 @@ export async function validatePhaseDocs(
       const path = job.report_path ?? `execution/reports/${basename(job.spec_path)}`
       if (reportPaths.has(path)) problems.push(`${path}:1: Report path is assigned to multiple jobs; assign one report per job.`)
       reportPaths.add(path)
-      if (options.completingJobs || job.status === "completed" || await fileExists(fs, join(workstreamDir, path))) await checkReport(job)
+      await checkReport(job)
     }
     for (const name of await listMarkdownFiles(fs, join(workstreamDir, "execution/reports"))) {
       if (!reportPaths.has(`execution/reports/${name}`)) problems.push(`execution/reports/${name}:1: Report has no registered job assignment.`)
@@ -197,7 +193,7 @@ export async function validatePhaseDocs(
     const reportNames = await listMarkdownFiles(fs, join(workstreamDir, "execution/test-reports"))
     for (const name of specs) {
       const path = `execution/test-reports/${name}`
-      if (options.completingJobs || reportNames.includes(name)) await checkFile(path)
+      await checkFile(path)
     }
     for (const name of reportNames) {
       if (!specs.includes(name)) problems.push(`execution/test-reports/${name}: no matching Verification Spec`)
@@ -264,20 +260,7 @@ export async function validatePhaseDocs(
     // Research check is best-effort; document problems decide validity.
   }
 
-  // Approved-but-changed docs warn (approvals stay authority).
-  const approval = getApproval(
-    db,
-    { repoRoot: identity.repoRoot, user: identity.user, workstreamId: identity.workstreamId },
-    phase,
-  )
   const hash = sha256Hex([...hashes].sort().join("\n"))
-  if (options.reportId === undefined && approval && approval.sane_hash !== hash) {
-    warnings.push(
-      phase === "planning"
-        ? `planning is approved (${approval.approval_ref}) but its documents differ from the approved snapshot; routine amendments within existing authorization may continue without reapproval. Planning must escalate decisions exceeding that authorization directly to the user.`
-        : `${phase} is approved (${approval.approval_ref}) but its documents changed since approval; re-approve to refresh authority.`,
-    )
-  }
 
   files.sort()
   return {

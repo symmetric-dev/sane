@@ -167,13 +167,9 @@ export class RepositoryDomain {
   validateExecutionCheckout(path: string): CheckoutPin { this.guard(); return pinCheckout(path, this.context.commonDir) }
   private lifecycle(workstreamId: string): Lifecycle {
     const ws = this.workstreamRow(workstreamId)
-    const states = this.rows("SELECT p.*,a.user_reference FROM phase_states p LEFT JOIN approvals a ON a.id=p.current_approval_id WHERE p.workstream_id=?", workstreamId)
-    const approvals = this.rows("SELECT a.* FROM approvals a JOIN phase_states p ON p.current_approval_id=a.id WHERE p.workstream_id=? ORDER BY a.created_at,a.id", workstreamId).map(a => {
-      const files = this.rows("SELECT relative_path FROM approval_files WHERE approval_id=? ORDER BY relative_path", a.id).map(f => f.relative_path as string)
-      return { id: a.id, phase: a.phase, artifact_path: files.join(", "), files, sane_hash: a.snapshot_hash, approval_ref: a.user_reference, approved_at: a.created_at }
-    })
-    const mutations = this.auditRows(workstreamId).filter(e => ["phase_approved", "phase_status_changed", "jobs_registered", "job_progressed", "job_report_assigned", "workstream_status_changed"].includes(e.operation)).map(e => ({ actor: e.actor, correlationId: e.correlationId, timestamp: e.timestamp, operation: e.operation }))
-    return { status: ws.status, phases: LIFECYCLE_PHASES.map(phase => { const p = states.find(s => s.phase === phase) ?? fail("CORRUPT_STORE", "Missing lifecycle phase."); return { phase, status: p.status, owner_role: phase, approval_ref: p.user_reference ?? null } }), approvals, jobs: this.jobs(workstreamId), mutations }
+    const states = this.rows("SELECT * FROM phase_states WHERE workstream_id=?", workstreamId)
+    const mutations = this.auditRows(workstreamId).filter(e => ["phase_status_changed", "jobs_registered", "job_progressed", "job_report_assigned", "workstream_status_changed"].includes(e.operation)).map(e => ({ actor: e.actor, correlationId: e.correlationId, timestamp: e.timestamp, operation: e.operation }))
+    return { status: ws.status, phases: LIFECYCLE_PHASES.map(phase => { const p = states.find(s => s.phase === phase) ?? fail("CORRUPT_STORE", "Missing lifecycle phase."); return { phase, status: p.status === "approved" ? "delivered" : p.status, owner_role: phase } }), jobs: this.jobs(workstreamId), mutations }
   }
   private jobs(workstreamId: string): LifecycleJob[] { return this.rows("SELECT job_id,spec_path,report_path,status,updated_at FROM jobs WHERE workstream_id=? ORDER BY job_id", workstreamId) }
   private workstreamDTO(row: any): Workstream { return { repositoryId: this.repositoryId, id: row.id, title: row.title, type: row.type, defaultCheckout: this.readPin(row.default_pin_id), createdAt: row.created_at, updatedAt: row.updated_at, revision: row.revision, lifecycle: this.lifecycle(row.id) } }
@@ -224,6 +220,23 @@ export class RepositoryDomain {
     this.transaction(context, () => { this.revision(workstreamId, context); this.run("UPDATE workstreams SET status=? WHERE id=?", status, workstreamId); this.touch(workstreamId); this.event(context, "workstream_status_changed", workstreamId, workstreamId, { status }) })
     return this.getWorkstream(workstreamId)
   }
+  completeWorkstream(workstreamId: string, context: MutationContext): Workstream {
+    this.transaction(context, () => {
+      this.revision(workstreamId, context)
+      const ws = this.workstreamRow(workstreamId)
+      const execState = this.row("SELECT status FROM phase_states WHERE workstream_id=? AND phase='execution'", workstreamId)
+      if (execState?.status !== "delivered") {
+        this.run("UPDATE phase_states SET status='delivered',revision=revision+1 WHERE workstream_id=? AND phase='execution'", workstreamId)
+        this.event(context, "phase_status_changed", workstreamId, "execution", { status: "delivered" })
+      }
+      if (ws.status !== "done") {
+        this.run("UPDATE workstreams SET status='done' WHERE id=?", workstreamId)
+        this.event(context, "workstream_status_changed", workstreamId, workstreamId, { status: "done" })
+      }
+      this.touch(workstreamId)
+    })
+    return this.getWorkstream(workstreamId)
+  }
   setWorkstreamTitle(workstreamId: string, title: string, context: MutationContext): Workstream {
     text(title, "title")
     this.transaction(context, () => { this.revision(workstreamId, context); this.run("UPDATE workstreams SET title=? WHERE id=?", title, workstreamId); this.touch(workstreamId); this.event(context, "workstream_title_changed", workstreamId, workstreamId, { title }) })
@@ -231,7 +244,7 @@ export class RepositoryDomain {
   }
   setPhaseStatus(workstreamId: string, requestedPhase: string, status: "pending" | "in_progress" | "delivered" | "blocked", context: MutationContext): void {
     const phase = lifecyclePhase(requestedPhase)
-    if (!["pending", "in_progress", "delivered", "blocked"].includes(status)) fail("INVALID_INPUT", "Use approvePhase for explicit document approval.")
+    if (!["pending", "in_progress", "delivered", "blocked"].includes(status)) fail("INVALID_INPUT", "Invalid phase status.")
     this.transaction(context, () => { this.revision(workstreamId, context); this.run("UPDATE phase_states SET status=?,revision=revision+1 WHERE workstream_id=? AND phase=?", status, workstreamId, phase); this.touch(workstreamId); this.event(context, "phase_status_changed", workstreamId, phase, { status }) })
   }
   declareNativeAuthority(source: NativeSourceDescriptor, context: MutationContext) {
@@ -562,6 +575,13 @@ export class RepositoryDomain {
       if (old.length) return old[0]!
       const assignment: PhaseAssignment = { id: randomUUID(), membershipId: membership.id, ref, workstreamId: membership.workstream_id, phase, startedAt: now(), endedAt: null }
       this.run("INSERT INTO phase_assignments VALUES(?,?,?,?,NULL)", assignment.id, membership.id, phase, assignment.startedAt)
+      if ((LIFECYCLE_PHASES as readonly string[]).includes(phase)) {
+        const state = this.row("SELECT status FROM phase_states WHERE workstream_id=? AND phase=?", membership.workstream_id, phase)
+        if (state?.status === "pending") {
+          this.run("UPDATE phase_states SET status='in_progress',revision=revision+1 WHERE workstream_id=? AND phase=?", membership.workstream_id, phase)
+          this.event(context, "phase_status_changed", membership.workstream_id, phase, { status: "in_progress" })
+        }
+      }
       this.touch(membership.workstream_id); this.event(context, "phase_assigned", membership.workstream_id, assignment.id, { ref, phase })
       return assignment
     })
@@ -593,10 +613,6 @@ export class RepositoryDomain {
   }
   getWorkstreamStatus(workstreamId: string): WorkstreamStatus { this.validateRead(); return this.workstreamStatus(this.workstreamDTO(this.workstreamRow(workstreamId))) }
   getLifecycleStatus(workstreamId: string) { const w = this.getWorkstream(workstreamId); return { workstreamId, type: w.type, incomplete: false, lifecycle: w.lifecycle } }
-  getApprovalHistory(workstreamId: string) {
-    this.validateRead(); this.workstreamRow(workstreamId)
-    return this.rows("SELECT * FROM approvals WHERE workstream_id=? ORDER BY created_at,id", workstreamId).map(a => ({ id: a.id as string, workstreamId, phase: a.phase as (typeof LIFECYCLE_PHASES)[number], userReference: a.user_reference as string, hashVersion: a.hash_version as number, snapshotHash: a.snapshot_hash as string, createdAt: a.created_at as string, actorEventId: a.actor_event_id as number, gitCommit: a.git_commit as string | null, files: this.rows("SELECT relative_path,content_hash FROM approval_files WHERE approval_id=? ORDER BY relative_path", a.id).map(f => ({ path: f.relative_path as string, hash: f.content_hash as string })) }))
-  }
   private statusDTO(status: WorkstreamStatus) {
     const audit = this.auditRows(status.workstream.id)
     return { ...status, research: this.researchIndex(status.workstream.id), audit, unresolvedArtifactOperations: this.unresolvedOperations(audit) }
@@ -727,7 +743,16 @@ export class RepositoryDomain {
       this.transaction(context, () => { this.revision(workstreamId, context); this.event(context, "artifact_operation_started", workstreamId, operationId, { kind: "provide", phase }) }); started = true
       const result = await provision(root, workstream.type, phase, options.refreshTemplates ?? false, fs)
       fs.assertTree(); const manifest = this.manifest(workstreamId)
-      this.transaction(context, () => { this.touch(workstreamId); this.event(context, "artifact_operation_completed", workstreamId, operationId, { manifest }) })
+      this.transaction(context, () => {
+        if (!options.refreshTemplates) {
+          const state = this.row("SELECT status FROM phase_states WHERE workstream_id=? AND phase=?", workstreamId, phase)
+          if (state?.status === "pending") {
+            this.run("UPDATE phase_states SET status='in_progress',revision=revision+1 WHERE workstream_id=? AND phase=?", workstreamId, phase)
+            this.event(context, "phase_status_changed", workstreamId, phase, { status: "in_progress" })
+          }
+        }
+        this.touch(workstreamId); this.event(context, "artifact_operation_completed", workstreamId, operationId, { manifest })
+      })
       return { workstreamId, phase, ...result }
     } catch (error) {
       if (started) { try { this.transaction(context, () => this.event(context, "artifact_operation_failed", workstreamId, operationId, { partial: true, error: String(error).slice(0,2000) })) } catch {} }
@@ -735,12 +760,12 @@ export class RepositoryDomain {
     } finally { release() }
   }
   provideWorkstream(workstreamId: string, phase: string, refreshTemplates: boolean, context: MutationContext) { return this.providePhase(workstreamId, phase, { refreshTemplates }, context) }
-  async validatePhase(workstreamId: string, requestedPhase: string, options: { reportId?: string; completingJobs?: boolean } = {}) {
+  async validatePhase(workstreamId: string, requestedPhase: string, options: { reportId?: string } = {}) {
     const phase = lifecyclePhase(requestedPhase)
     if (options.reportId !== undefined && (phase !== "execution" || typeof options.reportId !== "string" || !options.reportId.trim())) fail("INVALID_INPUT", "Scoped report validation requires Execution and a job ID.")
     const { workstream, root, fs } = this.lifecycleContext(workstreamId), before = this.manifest(workstreamId)
     try {
-      const result = await validatePhaseDocs({ jobs: workstream.lifecycle.jobs, approval: workstream.lifecycle.approvals.find(a => a.phase === phase) ?? null, researchWarnings: async () => this.getResearchIndex(workstreamId).warnings }, { repoRoot: this.primaryCheckout, user: "local", workstreamId }, root, phase, workstream.type, options, fs)
+      const result = await validatePhaseDocs({ jobs: workstream.lifecycle.jobs, researchWarnings: async () => this.getResearchIndex(workstreamId).warnings }, { repoRoot: this.primaryCheckout, user: "local", workstreamId }, root, phase, workstream.type, options, fs)
       fs.assertTree()
       const manifest = this.manifest(workstreamId)
       if (result.captureHashes.some(capture => manifest.find(file => file.path === capture.path)?.hash !== capture.hash)) fail("CONFLICT", "Validated capture bytes differ from final artifact evidence.")
@@ -748,47 +773,21 @@ export class RepositoryDomain {
       return { ...result, revision: workstream.revision, manifest, fileHashes: result.files.map(path => ({ path, hash: manifest.find(f => f.path === path)!.hash })) }
     } catch (error) { return artifactError(error) }
   }
-  validateWorkstream(workstreamId: string, phase: string, options: { reportId?: string; completingJobs?: boolean } = {}) { return this.validatePhase(workstreamId, phase, options) }
-  private registerValidatedJobs(workstreamId: string, files: string[], approvalId: string): LifecycleJob[] {
+  validateWorkstream(workstreamId: string, phase: string, options: { reportId?: string } = {}) { return this.validatePhase(workstreamId, phase, options) }
+  private registerValidatedJobs(workstreamId: string, files: string[], approvalId: string | null = null): LifecycleJob[] {
     return registerPlannedJobs(this.jobs(workstreamId), files, spec => {
       const job: LifecycleJob = { job_id: spec.jobId, spec_path: spec.specPath, report_path: null, status: "planned", updated_at: now() }
-      this.run("INSERT INTO jobs(workstream_id,job_id,spec_path,status,updated_at,planning_approval_id) VALUES(?,?,?,?,?,?)", workstreamId, job.job_id, job.spec_path, job.status, job.updated_at, approvalId)
+      this.run("INSERT INTO jobs(workstream_id,job_id,spec_path,status,updated_at,planning_approval_id,approval_phase) VALUES(?,?,?,?,?,?,?)", workstreamId, job.job_id, job.spec_path, job.status, job.updated_at, approvalId, approvalId ? "planning" : null)
       return job
     })
   }
-  async approvePhase(workstreamId: string, requestedPhase: string, userReference: string, context: MutationContext) {
-    this.mutationContext(context); id(workstreamId); text(userReference, "userReference"); const phase = lifecyclePhase(requestedPhase)
-    const release = acquireArtifactLock(this.stateRoot, workstreamId)
-    try {
-      const validation = await this.validatePhase(workstreamId, phase, { completingJobs: phase === "execution" })
-      if (!validation.ok) fail("CONFLICT", `Cannot approve ${phase}:\n${validation.problems.join("\n")}`)
-      // Synchronous final recheck after async validation, immediately before BEGIN.
-      if (JSON.stringify(validation.manifest) !== JSON.stringify(this.manifest(workstreamId))) fail("CONFLICT", "Artifact manifest changed before approval.")
-      return this.transaction(context, () => {
-        this.revision(workstreamId, context, validation.revision)
-        const approvalId = randomUUID(), timestamp = now()
-        const event = this.event(context, "phase_approved", workstreamId, approvalId, { phase, userReference, snapshotHash: validation.hash })
-        this.run("INSERT INTO approvals VALUES(?,?,?,?,1,?,?,?,NULL)", approvalId, workstreamId, phase, userReference, validation.hash, timestamp, event)
-        for (const file of validation.fileHashes) this.run("INSERT INTO approval_files VALUES(?,?,?)", approvalId, file.path, file.hash)
-        let jobs: LifecycleJob[] = []
-        if (phase === "planning") jobs = this.registerValidatedJobs(workstreamId, validation.files, approvalId)
-        if (phase === "execution") { this.run("UPDATE jobs SET status='completed',revision=revision+1,updated_at=? WHERE workstream_id=? AND status!='completed'", timestamp, workstreamId); jobs = this.jobs(workstreamId) }
-        this.run("UPDATE phase_states SET status='approved',current_approval_id=?,revision=revision+1 WHERE workstream_id=? AND phase=?", approvalId, workstreamId, phase)
-        this.touch(workstreamId)
-        return { workstreamId, id: approvalId, phase, files: validation.files, sane_hash: validation.hash, approval_ref: userReference, approved_at: timestamp, jobs, warnings: validation.warnings }
-      })
-    } finally { release() }
-  }
-  approveWorkstream(workstreamId: string, phase: string, reference: string, context: MutationContext) { return this.approvePhase(workstreamId, phase, reference, context) }
   async registerJobs(workstreamId: string, context: MutationContext) {
     this.mutationContext(context); id(workstreamId); const release = acquireArtifactLock(this.stateRoot, workstreamId)
     try {
-      const approved = this.row("SELECT current_approval_id FROM phase_states WHERE workstream_id=? AND phase='planning'", workstreamId)?.current_approval_id
-      if (!approved) fail("CONFLICT", "Cannot register jobs without existing Planning approval.")
       const validation = await this.validatePhase(workstreamId, "planning")
       if (!validation.ok) fail("CONFLICT", validation.problems.join("\n"))
       if (JSON.stringify(validation.manifest) !== JSON.stringify(this.manifest(workstreamId))) fail("CONFLICT", "Artifacts changed before job registration.")
-      return this.transaction(context, () => { this.revision(workstreamId, context, validation.revision); const jobs = this.registerValidatedJobs(workstreamId, validation.files, approved); this.touch(workstreamId); this.event(context, "jobs_registered", workstreamId, approved, { jobs: jobs.map(j => j.job_id) }); return { jobs, warnings: validation.warnings } })
+      return this.transaction(context, () => { this.revision(workstreamId, context, validation.revision); const jobs = this.registerValidatedJobs(workstreamId, validation.files, null); this.touch(workstreamId); this.event(context, "jobs_registered", workstreamId, null, { jobs: jobs.map(j => j.job_id) }); return { jobs, warnings: validation.warnings } })
     } finally { release() }
   }
   registerWorkstreamJobs(workstreamId: string, context: MutationContext) { return this.registerJobs(workstreamId, context) }

@@ -219,7 +219,7 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
         update({ documents: finalDocuments, entries: reconciledEntries({ ...value, entries }, finalDocuments), selected: reconcileSelection(value, finalDocuments), path: null, error: "Documents changed during validation. Review them again before sending." });
         return;
       }
-      const summary = ["Document review", `Workstream: ${value.identity.workstreamId}`, `Repository: ${value.identity.repositoryId}`, "These are document review decisions, not lifecycle phase approvals.", "", ...value.selected.flatMap(path => {
+      const summary = ["Document review", `Workstream: ${value.identity.workstreamId}`, `Repository: ${value.identity.repositoryId}`, "These are document review decisions, not lifecycle phase transitions.", "", ...value.selected.flatMap(path => {
         const document = documents.find(item => item.path === path)!, entry = entries[path];
         return [`## ${document.title}`, `Path: ${document.path}`, `Phase: ${document.phase}`, `Content revision: ${entry.revision}`, `Decision: ${entry.decision === "accepted" ? "Accepted" : "Needs changes"}`, `Feedback:\n${entry.savedFeedback.trim() || "(none)"}`, ""];
       })].join("\n");

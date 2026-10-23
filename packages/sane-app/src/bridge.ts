@@ -66,7 +66,7 @@ import { ScienceService, scienceRoute } from "./science";
 import { ScienceChatService, scienceChatRoute } from "./science-chat-service";
 import { ScienceStore } from "./science-store";
 import { RepositoryRouter, RepositoryStoreError, WorkstreamAdapterError, authenticatedWorkstreamRoute, validateWorkstreamInput, flushAndCloseWorkstreams } from "./workstreams";
-import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult } from "./workstreams-contract";
+import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult, WorkstreamCompleteInput, WorkstreamCompleteResult } from "./workstreams-contract";
 import { validateAppStore, assertSourceConfiguration, atomicAppRecord, atomicNativeHistory, loadAgentProfiles, validateAgentProfiles, AppStoreError, type Admission, type SourceConfiguration } from "./app-store";
 import { builtinProfiles, genericSessionTitle, legacyProfileId, storedAssistantLabel, resolveAssistantProfile, BASE_PROFILE_IDS, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { AdmissionService } from "./admission";
@@ -348,24 +348,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       assertDomainInitializationIdle(pendingInputs?.store.readRecords().conversations ?? [], workspaceId, discovery);
       if ([...lifecycleReservations.values()].some(scope => scope.commonDir === discovery.commonDir)) throw new WorkstreamAdapterError(409, "workstream-action-pending", "A repository phase action is in progress");
     },
-    beforeLifecycle: (domain, approval) => {
+    beforeLifecycle: (domain) => {
       assertDomainMutationOpen();
-      // Approval fences the selected phase, including its delegated workers.
-      // Provisioning still reserves the repository because it writes templates.
-      const phaseRelevant = approval ? (sessionId: string): boolean => {
-        const assignments = domain.getWorkstreamStatus(approval.workstreamId).activePhases.filter(row => row.phase === approval.phase);
-        const seen = new Set<string>();
-        let current: string | undefined = sessionId;
-        while (current && !seen.has(current)) {
-          seen.add(current);
-          const session = meta.sessions.find(row => row.sessionId === current);
-          if (session && assignments.some(row => row.ref.nativeId === session.nativeSessionId && row.ref.authorityId === session.authorityId
-            && row.ref.harness === (session.harness === "opencode" ? "oc" : "cc"))) return true;
-          current = workerStore.getBySession(current)?.parent.sessionId;
-        }
-        return false;
-      } : undefined;
-      const scope = { workspaceId: "", commonDir: domain.context.commonDir, roots: [domain.primaryCheckout, domain.context.invocationCheckout.path], phaseRelevant };
+      const scope = { workspaceId: "", commonDir: domain.context.commonDir, roots: [domain.primaryCheckout, domain.context.invocationCheckout.path] };
       assertLifecycleIdle(scope.workspaceId, domain.repositoryId, scope);
       lifecycleReservations.set(domain.repositoryId, scope);
       return () => { if (lifecycleReservations.delete(domain.repositoryId)) notifyPendingInput("domain"); };
@@ -3213,8 +3198,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
              return queueDomainCommitted(() => workstreams.manage(input.ref, input.operation, input));
           }
           validateWorkstreamInput(path === "/api/workstreams" ? "create" : operation, input);
-          if (operation === "validate" || operation === "approve" || operation === "provide") {
-            const action: WorkstreamAction = operation, actionInput = input as WorkstreamActionInput;
+          if (operation === "validate" || operation === "provide" || operation === "complete") {
+            const actionInput = input as WorkstreamActionInput | WorkstreamCompleteInput;
             let adapter = await router!.forWorkspace(workspaceId, actionInput.repositoryId);
             if (actionInput.sessionId !== undefined) {
               const session = meta.sessions.find(candidate => candidate.sessionId === actionInput.sessionId);
@@ -3227,15 +3212,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
               if (adapter.invocation(session).workstream?.id !== actionInput.id) throw new WorkstreamAdapterError(409, "workstream-mismatch", "Conversation belongs to another workstream");
             }
             if (adapter.status(actionInput.id).workstream.revision !== actionInput.expectedRevision) throw new DomainError("CONFLICT", "Workstream changed; refresh its current state before retrying");
+            if (operation === "complete") {
+              await adapter.complete(actionInput.id, actionInput.expectedRevision);
+              return { action: "complete", id: actionInput.id, ok: true } satisfies WorkstreamCompleteResult;
+            }
+            const action: WorkstreamAction = operation, phaseInput = input as WorkstreamActionInput;
             if (action === "validate") {
-              const result = await adapter.validate(actionInput.id, actionInput.phase);
-              return { action, phase: actionInput.phase, ok: result.ok } satisfies WorkstreamActionResult;
+              const result = await adapter.validate(phaseInput.id, phaseInput.phase);
+              return { action, phase: phaseInput.phase, ok: result.ok } satisfies WorkstreamActionResult;
             }
             // The adapter reserves at the actual backend call, covering callers
             // other than HTTP and enqueue/preflight throughout core's awaits.
-            if (action === "approve") await adapter.approve(actionInput.id, actionInput.phase, actionInput.approvalRef!, actionInput.expectedRevision);
-            else await adapter.provide(actionInput.id, actionInput.phase, false, actionInput.expectedRevision);
-            return { action, phase: actionInput.phase, ok: true } satisfies WorkstreamActionResult;
+            await adapter.provide(phaseInput.id, phaseInput.phase, false, phaseInput.expectedRevision);
+            return { action, phase: phaseInput.phase, ok: true } satisfies WorkstreamActionResult;
           }
             if (path === "/api/workstreams") return queueDomainCommitted(() => workstreams.create({ id: input.id, title: input.title, type: input.type, defaultCheckout: input.defaultCheckout }));
            if (operation === "default-checkout") return queueDomainCommitted(() => workstreams.setDefaultCheckout(input.id, input.checkout));

@@ -14,6 +14,11 @@ const same = (a: ConversationRef, b: ConversationRef) => a.harness === b.harness
 const sameSlot = (a: string, b: string) => isStoredSlot(a) && isStoredSlot(b) && equivalentSlots(a, b);
 const system = (id: string): MutationContext => ({ actor: { kind: "system" }, correlationId: id });
 const human = (id: string): MutationContext => ({ actor: { kind: "human" }, correlationId: id });
+const UPSTREAM_DELIVERED_PHASE: Partial<Record<string, "design" | "engineering" | "planning">> = {
+  engineering: "design",
+  planning: "engineering",
+  execution: "planning",
+};
 
 // C11 agent-facing native projections. The full Handoff row stays server-side
 // (verbose form reachable via GET /api/handoffs?workspaceId= and the
@@ -194,6 +199,13 @@ export class HandoffService {
     // Bound deliveries revalidate the exact admission/session pin before
     // entering the queued pipeline; unbound createNew stays unchecked.
     if (current.recipient.ref) this.assertRecipientReady(current);
+    if (!current.recipient.ref && !current.input.kickoff) {
+      if (current.input.to === "execution") await domain.registerJobs(current.workstreamId, human(handoffId));
+      const upstream = UPSTREAM_DELIVERED_PHASE[current.input.to];
+      if (upstream && domain.getWorkstream(current.workstreamId).lifecycle.phases.find(p => p.phase === upstream)?.status !== "delivered") {
+        domain.setPhaseStatus(current.workstreamId, upstream, "delivered", human(handoffId));
+      }
+    }
     return domain.advanceHandoff(handoffId, expectedRevision, { status: "queued", ...(trimmed ? { evidence: trimmed } : { evidence: "Approved handoff delivery" }) }, human(handoffId));
   }
   /**
@@ -277,6 +289,13 @@ export class HandoffService {
       const admission = this.admissions.get(h.recipient.sessionId);
       if (!admission || admission.state !== "ready" || !admission.nativeId) throw new WorkstreamAdapterError(409, "admission-pending", "Recipient admission requires reconciliation");
       await this.router.execution(admission);
+      if (!h.input.kickoff) {
+        if (h.input.to === "execution") await domain.registerJobs(h.workstreamId, system(h.id));
+        const upstream = UPSTREAM_DELIVERED_PHASE[h.input.to];
+        if (upstream && domain.getWorkstream(h.workstreamId).lifecycle.phases.find(p => p.phase === upstream)?.status !== "delivered") {
+          domain.setPhaseStatus(h.workstreamId, upstream, "delivered", system(h.id));
+        }
+      }
       const ref = { harness: admission.source.descriptor.harness, authorityId: admission.source.authorityId, nativeId: admission.nativeId };
       this.assertRecipientReady({ ...h, recipient: { ...h.recipient, ref } });
       const current = domain.getHandoff(h.id);

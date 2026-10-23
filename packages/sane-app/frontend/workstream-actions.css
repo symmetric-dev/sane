@@ -30,10 +30,6 @@
 .workstream-actions-buttons { display:flex; flex-wrap:wrap; gap:8px; }
 .workstream-actions-footer button { font-size:12px; padding:7px 10px; border:1px solid var(--border); border-radius:8px; }
 .workstream-actions-footer button:hover:not(:disabled) { background:var(--accent); }
-.workstream-actions-confirm { display:grid; gap:8px; margin-bottom:14px; }
-.workstream-actions-confirm label { font-size:12px; }
-.workstream-actions-confirm input { min-width:0; width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--card); }
-.workstream-actions-confirm>div { display:flex; gap:8px; flex-wrap:wrap; }
 @media(max-width:480px) {
   .workstream-actions-panel { padding:16px 12px; gap:14px; }
   .workstream-actions-binder { flex-basis:50px; padding-inline:4px; }

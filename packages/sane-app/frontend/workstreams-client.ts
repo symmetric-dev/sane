@@ -6,7 +6,7 @@ import { workspaceEpoch, workspaceFailure } from "./workspace-store";
 
 type WorkstreamMutation = { workspaceId: string; operation: string };
 const mutationListeners = new Set<(mutation: WorkstreamMutation) => void>();
-const mutationOperations = new Set(["", "init", "manage", "default-checkout", "associate", "phase/assign", "phase/end", "approve", "provide"]);
+const mutationOperations = new Set(["", "init", "manage", "default-checkout", "associate", "phase/assign", "phase/end", "provide", "complete"]);
 export function subscribeWorkstreamMutations(listener: (mutation: WorkstreamMutation) => void): () => void {
   mutationListeners.add(listener);
   return () => { mutationListeners.delete(listener); };

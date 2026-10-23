@@ -19,12 +19,12 @@ export const USAGE = `Usage: sane <command> [--repo PATH] [--workstream ID] [--j
     Merge opencode output into opencode.json; Claude uses both MCP and settings outputs.
   init [--dry-run] | upgrade [--dry-run] | inspect | list
     upgrade is local/human only: back up the store and stop other SANE processes first.
-    Upgrades sane-domain v1/v2 to v3 explicitly; rerun locally to finish an interrupted upgrade.
+    Upgrades sane-domain stores to v5 explicitly; rerun locally to finish an interrupted upgrade.
   create --name ID --type feature|foundation|issue|maintenance [--title TEXT] [--dry-run]
   select --workstream ID [--dry-run]
   view|detail|status [ID] | audit | sessions [--slot SLOT]
   provide PHASE [--refresh-templates] | validate PHASE
-  validate execution report --id JOB | approve PHASE --ref USER_REFERENCE
+  validate execution report --id JOB
   job JOB [running|completed] | job --register
   research index | research register --topic SLUG --path research/REPORT.md
   research unregister --topic SLUG
@@ -41,7 +41,7 @@ Slots: design, engineering, planning, execution (lifecycle);
   research, research:<safe-topic>, curation, experimentation (support tracks).
   Legacy knowledge/prototype inputs match aliases; new assignments use canonical slots.
   Safe topics: 1–96 lowercase a-z/0-9/_/- characters, starting with a-z/0-9.
-  provide/validate/approve accept lifecycle phases only.
+  provide/validate accept lifecycle phases only.
 Caller envelope: SANE_CALLER_CONTEXT v1 full envelope or compact shell
   reference {version,harness,nativeId} (authority + paths resolve server-side);
   explicit equivalent requires all of
@@ -188,12 +188,10 @@ async function executeCliFull(args: readonly string[], runtime: CliRuntime = {})
       }
       case "provide": return await domain.providePhase(workstream(), phase, { refreshTemplates: Boolean(o["refresh-templates"]) }, mutation)
       case "validate": return await domain.validatePhase(workstream(), phase, { reportId: arg("id") })
-      case "approve": return await domain.approvePhase(workstream(), phase, arg("ref"), mutation)
       case "job.register": return await domain.registerJobs(workstream(), mutation)
       case "job.context": {
         const id = workstream()
         return { ...domain.getJobContext(id, phase, nativeRef), repositoryId: domain.repositoryId,
-          planningApproval: domain.getWorkstream(id).lifecycle.approvals.find(a => a.phase === "planning") ?? null,
           supportingDocuments: domain.listArtifacts(id).filter(path => !path.startsWith("resources/") && !path.startsWith("execution/reports/")) }
       }
       case "job.update": return domain.updateJob(workstream(), phase, intent.positionals[1] as "running" | "completed", mutation)

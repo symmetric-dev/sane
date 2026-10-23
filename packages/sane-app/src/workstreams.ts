@@ -30,8 +30,8 @@ export type WorkstreamMutationHooks = {
   /** App-only occupancy fence. Core/native callers never receive this hook. */
   beforeMutation?: (domain: RepositoryDomain, input: WorkstreamMutation) => void;
   beforeInitialize?: (workspaceId: string, discovery: RepositoryDiscovery) => void;
-  /** Reserve lifecycle writes; approval occupancy is scoped to its workstream and phase. */
-  beforeLifecycle?: (domain: RepositoryDomain, approval?: { workstreamId: string; phase: string }) => (() => void);
+  /** Reserve lifecycle writes. */
+  beforeLifecycle?: (domain: RepositoryDomain) => (() => void);
   mutationFailed?: (error: unknown) => void;
 };
 /** Only actual writers use this classifier; target/read proof failures stay scoped. */
@@ -73,9 +73,9 @@ export class WorkstreamAdapter {
       mutationFailure(error, this.hooks.mutationFailed);
     }
   }
-  private async lifecycle<T>(action: () => Promise<T>, approval?: { workstreamId: string; phase: string }): Promise<T> {
+  private async lifecycle<T>(action: () => Promise<T>): Promise<T> {
     let release: (() => void) | undefined;
-    synchronousMutationHook(() => { const result = this.hooks.beforeLifecycle?.(this.domain, approval); if (typeof result === "function") release = result; return result; }, this.hooks.mutationFailed);
+    synchronousMutationHook(() => { const result = this.hooks.beforeLifecycle?.(this.domain); if (typeof result === "function") release = result; return result; }, this.hooks.mutationFailed);
     try {
       return await action();
     } catch (error) {
@@ -97,8 +97,8 @@ export class WorkstreamAdapter {
   list() { return this.domain.listWorkstreams(); }
   lifecycleStatus(id: string) { return this.domain.getLifecycleStatus(id); }
   provide(id: string, phase: string, refreshTemplates = false, expectedRevision?: number) { return this.lifecycle(() => this.domain.providePhase(id, phase, { refreshTemplates }, mutation(expectedRevision))); }
+  complete(id: string, expectedRevision?: number) { return this.lifecycle(async () => this.domain.completeWorkstream(id, mutation(expectedRevision))); }
   validate(id: string, phase: string, reportId?: string) { return this.domain.validatePhase(id, phase, { reportId }); }
-  approve(id: string, phase: string, approvalRef: string, expectedRevision?: number) { return this.lifecycle(() => this.domain.approvePhase(id, phase, approvalRef, mutation(expectedRevision)), { workstreamId: id, phase }); }
   registerJobs(id: string) { return this.domain.registerJobs(id, mutation()); }
   updateJob(id: string, jobId: string, status: "running" | "completed") { return this.domain.updateJob(id, jobId, status, mutation()); }
   job(id: string, jobId: string, session?: AppConversation) { return this.domain.getJobContext(id, jobId, session ? this.reference(session) : null); }
@@ -285,17 +285,23 @@ export function validateWorkstreamInput(operation: string, input: unknown): asse
   if (!object(input)) return invalid("request object");
   const string = (field: string) => { if (typeof input[field] !== "string" || !input[field]) invalid(field); };
   switch (operation) {
-    case "validate": case "approve": case "provide": {
-      const fields = ["id", "phase", "repositoryId", "expectedRevision", "sessionId", "approvalRef"];
+    case "validate": case "provide": {
+      const fields = ["id", "phase", "repositoryId", "expectedRevision", "sessionId"];
       if (Object.keys(input).some(field => !fields.includes(field))) invalid("action field");
       if (typeof input.id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(input.id)) invalid("id");
       if (!["design", "engineering", "planning", "execution"].includes(input.phase as string)) invalid("phase");
       if (!uuid(input.repositoryId)) invalid("repositoryId");
       if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0) invalid("expectedRevision");
       if ("sessionId" in input && !uuid(input.sessionId)) invalid("sessionId");
-      if (operation === "approve" || "approvalRef" in input) {
-        if (typeof input.approvalRef !== "string" || !input.approvalRef.trim() || input.approvalRef.includes("\0")) invalid("approvalRef");
-      }
+      break;
+    }
+    case "complete": {
+      const fields = ["id", "repositoryId", "expectedRevision", "sessionId"];
+      if (Object.keys(input).some(field => !fields.includes(field))) invalid("action field");
+      if (typeof input.id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(input.id)) invalid("id");
+      if (!uuid(input.repositoryId)) invalid("repositoryId");
+      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0) invalid("expectedRevision");
+      if ("sessionId" in input && !uuid(input.sessionId)) invalid("sessionId");
       break;
     }
     case "create": string("id"); string("title"); if (!["feature", "foundation", "issue", "maintenance"].includes(input.type as string)) invalid("type"); break;

@@ -2,7 +2,7 @@ import { isAssistantAgentId, isWorkerAgentId, type StoredSaneAgentIdentity, type
 import { SANE_WORKER_PROCEDURES } from "./sane-worker-procedures.ts"
 
 /** Bump whenever framework or assignment text changes; sessions keep the version they were created with. */
-export const SANE_CONTEXT_VERSION = 4
+export const SANE_CONTEXT_VERSION = 5
 
 export const SANE_CORE_CONTEXT = `# SANE Context
 
@@ -10,7 +10,7 @@ export const SANE_CORE_CONTEXT = `# SANE Context
 
 SANE means **Sane Agentic Noesis Edifice**. It is a structured, reasonable, and agile way for people and agents to acquire and apply knowledge in service of deliberate change.
 
-A **workstream** groups the documents and state for an undertaking. Its documents describe current requirements, solutions, and outcomes; the CLI and sessions hold progress, approvals, and collaboration history. Implementation happens in the target repository, not in a separate duplicate tree.
+A **workstream** groups the documents and state for an undertaking. Its documents describe current requirements, solutions, and outcomes; the CLI and sessions hold progress and collaboration history. Implementation happens in the target repository, not in a separate duplicate tree.
 
 The user directs the work and makes decisions with the assistant.
 
@@ -54,16 +54,15 @@ View current status with \`sane view\` and use the CLI to record state.
    the session starts from a handoff.
 2. **Assistance:** work with the user within the agreed scope. This may include
    handoff or handling updates from other sessions, following your role's skill.
-3. **Delivery:** check outputs, present them for review, and obtain the applicable
-   user approval. The user records phase approval with \`sane approve <phase>\`,
-   which validates first. Delivery may include handoff when the user requests it.
+3. **Delivery:** validate outputs with \`sane validate <phase>\` and present them
+   for user review. Delivery may include handoff when the user requests it.
    If revisions are requested, return to Assistance and then Delivery.
 
 ## State Statuses
 
-- \`pending\` — Not started or not approved.
+- \`pending\` — Not started.
 - \`in_progress\` — Session is in progress.
-- \`approved\` — User explicitly approved the tracked outcome.
+- \`delivered\` — Phase work has been delivered.
 
 A worker notification or consultation is not completion. Respond to an authorized ongoing child with \`sane_worker_message\`; retain its worker identity. Dispatch dependent work only after its terminal outcome. Ending your own turn permits asynchronous replies.`
 

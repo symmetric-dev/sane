@@ -8,7 +8,7 @@ description: Use when starting a new SANE Execution Assistant session.
 ## Workstream Setup
 
 1. Run `sane provide execution`.
-2. Run `sane status` and confirm Planning is approved. Reuse state already obtained during setup when current.
+2. Run `sane status` to inspect registered jobs and current progress. Reuse state already obtained during setup when current.
 3. Link this session with `sane_link` (`slot: "execution"`).
 
 ## Required Inputs
