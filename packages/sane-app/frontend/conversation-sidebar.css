@@ -34,8 +34,7 @@
 
 .history-list .worktree-group-toggle,
 .history-list .worktree-group-select,
-.history-list .worktree-group-new,
-.history-list .worktree-group-remove {
+.history-list .worktree-group-new {
   border:1px solid transparent;
   transform:none;
 }
@@ -56,11 +55,6 @@
 .history-list .worktree-group-new:hover:not(:disabled) {
   background:var(--history-hover);
   color:var(--foreground);
-}
-
-.history-list .worktree-group-remove:hover:not(:disabled) {
-  background:var(--history-hover);
-  color:var(--error);
 }
 
 .history-list .worktree-group-select {
@@ -111,14 +105,7 @@
   background:var(--background);
 }
 
-.worktree-group-shortcut {
-  flex-shrink:0;
-  font-size:10px;
-  color:var(--muted-foreground);
-}
-
-.history-list .worktree-group-new,
-.history-list .worktree-group-remove {
+.history-list .worktree-group-new {
   display:inline-flex;
   align-items:center;
   justify-content:center;
@@ -138,21 +125,6 @@
   padding:1px 5px;
   border:1px solid currentColor;
   border-radius:999px;
-}
-
-.worktree-remove-dialog p {
-  margin:0 0 10px;
-  font-size:12px;
-  line-height:1.5;
-}
-
-.worktree-remove-dialog .dialog-actions {
-  margin-top:16px;
-}
-
-.worktree-remove-dialog .worktree-remove-confirm {
-  background:var(--error);
-  color:#fff;
 }
 
 .worktree-group-items {

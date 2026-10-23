@@ -1,4 +1,5 @@
 import { worktreeDisplay, worktreeLabel } from "./catalog-selector";
+import { compareConversationActivity } from "./conversation-activity";
 import type { ConversationSidebarMode, ConversationSidebarModel } from "./conversation-sidebar-model";
 import type { Conversation } from "./types";
 
@@ -10,7 +11,6 @@ export type WorktreeBucket = {
   root?: string;
   title?: string;
   available: boolean;
-  removable: boolean;
   conversations: Conversation[];
 };
 
@@ -22,14 +22,14 @@ export function conversationSidebarGroups(model: ConversationSidebarModel, mode:
   return groups.flatMap(group => {
     if (filter.workspaceId === "unavailable" && group.id !== null) return [];
     if (scoped && group.id !== filter.workspaceId) return [];
-    const conversations = visible.filter(c => group.id ? c.workspaceId === group.id : !c.workspaceId || !repository.workspaces.some(w => w.workspaceId === c.workspaceId));
+    const conversations = visible.filter(c => group.id ? c.workspaceId === group.id : !c.workspaceId || !repository.workspaces.some(w => w.workspaceId === c.workspaceId)).sort(compareConversationActivity);
     const workspace = group.id ? repository.workspaces.find(w => w.workspaceId === group.id) : undefined;
     const buckets: WorktreeBucket[] = [];
     if (!workspace) {
       if (conversations.length) buckets.push({
         key: "unavailable:unavailable", workspaceId: null, worktreeId: null,
         label: "Unavailable worktree", title: "Recorded history without an available worktree",
-        available: false, removable: false, conversations,
+        available: false, conversations,
       });
     } else {
       const isCurrentWorkspace = workspace.workspaceId === nav.workspaceId;
@@ -44,7 +44,6 @@ export function conversationSidebarGroups(model: ConversationSidebarModel, mode:
           label: worktreeDisplay(tree), root: tree.root,
           title: `${worktreeLabel(tree)} · ${tree.root}${tree.state !== "available" ? " (Unavailable)" : ""}`,
           available: tree.state === "available",
-          removable: workspace.kind === "repository" && workspace.worktrees.length > 1 && tree.gitDir !== workspace.commonDir,
           conversations: treeConversations,
         });
       }
@@ -53,7 +52,7 @@ export function conversationSidebarGroups(model: ConversationSidebarModel, mode:
       if (showUnmatched && unmatched.length && (!filteredWorktreeId || unmatched.some(c => c.worktreeId === filteredWorktreeId))) buckets.push({
         key: `${workspace.workspaceId}:unavailable`, workspaceId: workspace.workspaceId, worktreeId: null,
         label: "Unavailable worktree", title: "Conversations from an unavailable or removed worktree",
-        available: false, removable: false, conversations: unmatched,
+        available: false, conversations: unmatched,
       });
     }
     return buckets.length ? [{ ...group, buckets }] : [];

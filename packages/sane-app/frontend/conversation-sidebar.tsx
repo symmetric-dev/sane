@@ -1,13 +1,11 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { FiBell, FiChevronDown, FiChevronRight, FiGitBranch, FiTrash2, FiUsers } from "react-icons/fi";
-import { catalog } from "./catalog";
+import { FiBell, FiChevronDown, FiChevronRight, FiGitBranch, FiUsers } from "react-icons/fi";
 import { store, type State } from "./store";
 import { AgentAvatar } from "./agent-visuals";
 import { formatTitle } from "./conversation-filter";
 import { ConversationFilterDialog } from "./conversation-filter-dialog";
 import { ConversationMenu, PhaseBadge, StatusIcon } from "./conversation-row";
 import { Icon } from "./nav";
-import { ShellDialog } from "./shell-dialog";
 import { workerReference as knownWorker } from "./worker-client";
 import { notificationStore } from "./notifications";
 import type { ConversationSidebarMode, ConversationSidebarModel } from "./conversation-sidebar-model";
@@ -49,10 +47,6 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
   // Dialog visibility is presentation-local: opening the drawer must not create two modal dialogs.
   const [dialogOpen, setDialogOpen] = useState(false);
   const [expandedWorktrees, setExpandedWorktrees] = useState<Record<string, boolean>>({});
-  const [removingBucket, setRemovingBucket] = useState<WorktreeBucket | null>(null);
-  const [removeBusy, setRemoveBusy] = useState(false);
-  const [removeError, setRemoveError] = useState("");
-  const [removeNeedsForce, setRemoveNeedsForce] = useState(false);
   const notifications = useSyncExternalStore(notificationStore.subscribe, notificationStore.snapshot);
   const unreadSessions = new Set(notifications.items.map(item => item.conversationId));
   const history = mode === "history";
@@ -93,28 +87,6 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
     onSelect("");
   };
 
-  const openRemoveDialog = (bucket: WorktreeBucket) => {
-    setRemovingBucket(bucket);
-    setRemoveBusy(false);
-    setRemoveError("");
-    setRemoveNeedsForce(false);
-  };
-
-  const confirmRemoveBucket = async (force: boolean) => {
-    if (!removingBucket?.workspaceId || !removingBucket.worktreeId || removeBusy) return;
-    setRemoveBusy(true);
-    setRemoveError("");
-    const result = await catalog.removeWorktree(removingBucket.workspaceId, removingBucket.worktreeId, force);
-    setRemoveBusy(false);
-    if (result.ok) {
-      setRemovingBucket(null);
-      setRemoveNeedsForce(false);
-      return;
-    }
-    setRemoveError(result.error);
-    if (result.code === "worktree-dirty") setRemoveNeedsForce(true);
-  };
-
   let renderedBuckets = 0;
 
   return <>
@@ -123,21 +95,6 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
       <button type="button" className="history-filter-button" aria-label={history ? "Open session filters" : "Open conversation filters"} title={history ? "Filter sessions" : "Filter conversations"} onClick={() => setDialogOpen(true)}>Filter{activeFilterCount ? ` · ${activeFilterCount}` : ""}</button>
     </div>
     {dialogOpen && <ConversationFilterDialog value={filter} onChange={setFilter} defaults={model.defaults} workspaces={repository.workspaces} navigation={nav} overview={overview} resultCount={visible.length} onClose={() => setDialogOpen(false)} />}
-    {removingBucket && <ShellDialog title="Remove worktree" closeDisabled={removeBusy} close={() => { if (!removeBusy) setRemovingBucket(null); }}>
-      <div className="worktree-remove-dialog">
-        <p><strong>{removingBucket.label}</strong></p>
-        {removingBucket.root && <p className="context-path">{removingBucket.root}</p>}
-        {removingBucket.available
-          ? <p className="muted">Removes this linked worktree checkout directory on disk (<code>git worktree remove</code>) and unregisters it from SANE. Committed branches and recorded conversation history are kept.</p>
-          : <p className="muted">This worktree directory is already missing or unavailable on disk. Removing it will prune its stale Git worktree metadata (<code>git worktree prune</code>) and remove it from SANE. Recorded conversation history is kept.</p>}
-        {removeError && <p className="notice error" role="alert">{removeError}</p>}
-        <div className="dialog-actions">
-          <button type="button" disabled={removeBusy} onClick={() => setRemovingBucket(null)}>Cancel</button>
-          {removeNeedsForce && <button type="button" className="worktree-remove-confirm" disabled={removeBusy} onClick={() => void confirmRemoveBucket(true)}>{removeBusy ? "Removing…" : "Force remove (discard uncommitted files)"}</button>}
-          {!removeNeedsForce && <button type="button" className="worktree-remove-confirm" disabled={removeBusy} onClick={() => void confirmRemoveBucket(false)}>{removeBusy ? "Removing…" : "Remove worktree"}</button>}
-        </div>
-      </div>
-    </ShellDialog>}
     {!!hits.length && <div className="history-hits" aria-label="Message matches"><p className="muted">Message matches · best effort</p>{hits.slice(0, 3).map((hit, index) => {
       const conversation = state.conversations.find(c => c.id === hit.sessionId);
       return <button key={`${hit.sessionId}:${hit.runId ?? "title"}:${index}`} type="button" className="history-hit" disabled={!history && state.sending} onClick={() => onSelect(hit.sessionId)} title={conversation?.title ? `${conversation.title}\n${conversation.cwd}` : conversation?.cwd || hit.sessionId}><span>{formatTitle(conversation?.title, basename(conversation?.cwd))}</span><small className="muted"> {hit.snippet}</small></button>;
@@ -175,7 +132,6 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
               >
                 <FiGitBranch size={13} className="worktree-group-icon" aria-hidden="true" />
                 <span className="worktree-group-name">{bucket.label}</span>
-                {shortcut && <kbd className="worktree-group-shortcut" title="Open latest conversation">{shortcutHint(shortcut)}</kbd>}
                 {!bucket.available && bucket.worktreeId && <span className="worktree-group-unavailable" title="Worktree directory missing or unavailable">Missing</span>}
                 {hasUnread && <span className="conversation-sidebar-unread" title="Unread update in worktree"><FiBell size={12} aria-hidden="true" /><span className="sr-only">Unread update</span></span>}
                 <span className="worktree-group-count" aria-label={`${bucket.conversations.length} ${bucket.conversations.length === 1 ? "conversation" : "conversations"}`}>{bucket.conversations.length}</span>
@@ -190,18 +146,6 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
                   onClick={() => newInBucket(bucket)}
                 >
                   <Icon name="plus" />
-                </button>
-              )}
-              {!history && bucket.removable && (
-                <button
-                  type="button"
-                  className="worktree-group-remove"
-                  disabled={state.sending}
-                  aria-label={`Remove worktree ${bucket.label}`}
-                  title={`Remove worktree ${bucket.label}`}
-                  onClick={() => openRemoveDialog(bucket)}
-                >
-                  <FiTrash2 size={12} aria-hidden="true" />
                 </button>
               )}
             </div>
