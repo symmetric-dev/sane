@@ -52,6 +52,8 @@ import { claudeReplyPresentation } from "./claude-reply-presentation";
 import { ChatFileLink } from "./chat-file-link";
 import { pendingInputStopAction } from "./pending-input-ui";
 import { ScienceChatBlocks, useScienceChat, type ScienceChatController, type ScienceChatIntegration } from "./science-chat";
+import { useUserQuestions, type UserQuestionsController } from "./user-questions-client";
+import { UserQuestionsReference } from "./user-questions";
 
 export { convertMessage } from "./transcript-runtime";
 
@@ -76,7 +78,7 @@ function Markdown({ text }: { text: string }) {
   return useMemo(() => <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href, title }) => <ChatFileLink href={href} title={title} sessionId={sessionId}>{children}</ChatFileLink>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>, [text, sessionId]);
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; codeShares?: CodeShareProjection };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; codeShares?: CodeShareProjection; userQuestions?: UserQuestionsController };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 const ScienceTimelineContext = createContext<ScienceChatController | null>(null);
 export function useTranscriptIndex(messages: Message[]) {
@@ -140,7 +142,8 @@ export function ChatMessage() {
   if (gap && state) return <HistoryGap state={state} island={gap} />;
   const island = state?.transcript?.islands.find(island => island.messages.some(message => message.id === id));
   const first = island?.messages[0]?.id === id, last = island?.messages.at(-1)?.id === id;
-  return <>{first && state && island && state.transcript?.islands[0] === island && <HistoryEdge state={state} island={island} direction="older" />}<CompactionMarkers records={context.compactionPositions?.get(id)} /><div data-transcript-message={id} tabIndex={-1}><ChatMessageBody /></div>{science && <ScienceChatBlocks science={science} position="after-message" messageId={id} />}{last && state && island && state.transcript?.islands.at(-1) === island && <HistoryEdge state={state} island={island} direction="newer" />}</>;
+  const source = context.messagesById?.get(id) ?? context.messages.find(message => message.id === id);
+  return <>{first && state && island && state.transcript?.islands[0] === island && <HistoryEdge state={state} island={island} direction="older" />}<CompactionMarkers records={context.compactionPositions?.get(id)} /><div data-transcript-message={id} tabIndex={-1}><ChatMessageBody />{source && <UserQuestionsReference questions={context.userQuestions} source={source} sessionId={context.sessionId} />}</div>{science && <ScienceChatBlocks science={science} position="after-message" messageId={id} />}{last && state && island && state.transcript?.islands.at(-1) === island && <HistoryEdge state={state} island={island} direction="newer" />}</>;
 }
 function ChatMessageBody() {
   const message = useAuiState(s => s.message);
@@ -251,6 +254,17 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
   const messages = useMemo(() => claudeReplyPresentation(withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), harness), [state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands, harness]);
   const codeShares = useCodeShares(state.selected, { enabled: isActive && state.connected, refreshKey: messages, running });
+  const questionsReadOnlyReason = !isActive ? "Open this conversation in Chat to answer questions."
+    : !state.connected || !(state.interactive ?? state.connected) ? "Questions are read-only while disconnected."
+    : conversation?.replacedBy ? "This conversation has been replaced. Questions are read-only."
+    : parentId || conversation?.worker || store.conversationKind() === "worker" ? "Questions in worker conversations are read-only."
+    : conversation?.attachment ? "Questions in attached conversations are read-only."
+    : !conversation ? "Waiting for the conversation to load." : undefined;
+  const questionsScope = useMemo(() => state.config?.storeId && conversation?.authorityId && conversation.nativeSessionId ? {
+    storeId: state.config.storeId, sessionId: state.selected, harness: conversation.harness,
+    nativeSessionId: conversation.nativeSessionId, authorityId: conversation.authorityId,
+  } : null, [state.config?.storeId, state.selected, conversation?.harness, conversation?.nativeSessionId, conversation?.authorityId]);
+  const userQuestions = useUserQuestions(questionsScope, { enabled: isActive && state.connected, editable: !questionsReadOnlyReason, refreshKey: messages, running });
   const transcriptIndex = useTranscriptIndex(messages);
   const runtimeMessages = useMemo(() => projectTranscriptMessages(messages), [messages]);
    const positions = useMemo(() => {
@@ -304,8 +318,8 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const statusActions = pendingInputStopAction({ chainLocked, appRunning, cancelRun: capabilities.cancelRun === true, nativeQueueWaiting,
     disabled: !isActive || state.actionBusy || state.sending || (chainLocked ? state.phase !== "ready" || state.config?.authenticated !== true : !state.connected),
     cancel: () => void store.cancel() });
-  const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={review} science={science} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
-   return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, exchanges, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, codeShares, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow && !hasRequests ? " is-document-review" : ""}`}>
+  const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} questions={userQuestions} questionsReadOnlyReason={questionsReadOnlyReason} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={review} science={science} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
+   return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, exchanges, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, codeShares, userQuestions, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow && !hasRequests ? " is-document-review" : ""}`}>
     <SessionSearch root={searchRoot} active={isActive && !(!hasRequests && review.flow?.path)} state={state} />
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}

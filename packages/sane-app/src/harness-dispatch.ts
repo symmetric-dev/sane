@@ -13,7 +13,9 @@ export class DispatchProofUnavailableError extends Error {}
  * own its one RunOwner registry and all admission/journal/domain mutations. */
 export type HarnessDispatchAdapter<O extends RunOwner = RunOwner> = {
   readonly id: string;
-  readonly automation: Readonly<Record<AutomationDispatchOrigin, DispatchSupport>>;
+  /** Missing origins are unsupported, never implicitly enabled. New consumers
+   * can opt in without forcing unrelated adapters to advertise a capability. */
+  readonly automation: Readonly<Partial<Record<AutomationDispatchOrigin, DispatchSupport>>>;
   readonly readiness: (source: DispatchSource, origin: DispatchOrigin) => Promise<PinnedDispatchReadiness>;
   readonly execute: (owner: O, prompt: string, resume: boolean, ready: (admitted: boolean) => void) => Promise<void>;
   readonly successfulSettlement: (owner: O, source: DispatchSource, guards: () => DispatchTerminalGuards) => Promise<DispatchReadiness>;
@@ -47,6 +49,7 @@ export class HarnessDispatchRegistry<O extends RunOwner = RunOwner> {
     if (this.adapters.has(adapter.id)) throw new HarnessDispatchError("duplicate-dispatch-harness", `Dispatch harness already registered: ${adapter.id}`);
     this.adapters.set(adapter.id, Object.freeze({ ...adapter, automation: Object.freeze({
       "queued-user": adapter.automation?.["queued-user"] && Object.freeze({ ...adapter.automation["queued-user"] }),
+      "questionnaire-response": adapter.automation?.["questionnaire-response"] && Object.freeze({ ...adapter.automation["questionnaire-response"] }),
       "worker-report": adapter.automation?.["worker-report"] && Object.freeze({ ...adapter.automation["worker-report"] }),
       "worker-exchange": adapter.automation?.["worker-exchange"] && Object.freeze({ ...adapter.automation["worker-exchange"] }),
       handoff: adapter.automation?.handoff && Object.freeze({ ...adapter.automation.handoff }),

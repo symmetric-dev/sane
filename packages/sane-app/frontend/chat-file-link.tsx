@@ -22,12 +22,13 @@ function chatFilePath(href: string): string | null {
   return segments.length ? segments.join("/") : null;
 }
 
-const ChatFileNavigation = createContext<((sessionId: string, path: string) => string | undefined) | null>(null);
+type ExpectedFileScope = { workspaceId: string; worktreeId: string; bindingRevision: string };
+const ChatFileNavigation = createContext<((sessionId: string, path: string, expected?: ExpectedFileScope) => string | undefined) | null>(null);
 
 /** Shell-owned navigation keeps standalone/read-only transcript renderers independent of Files. */
 export function ChatFileNavigationProvider({ children, navigate }: { children: ReactNode; navigate: (view: ActiveView) => void }) {
   const controller = useWorkspace();
-  const open = (sessionId: string, path: string) => {
+  const open = (sessionId: string, path: string, expected?: ExpectedFileScope) => {
     const state = store.snapshot(), repository = catalog.snapshot();
     const conversation = state.conversations.find(item => item.id === sessionId);
     if (state.phase !== "ready" || state.selected !== sessionId || repository.navigation.view !== "chat") return "Open this conversation in Chat before opening its files.";
@@ -35,6 +36,7 @@ export function ChatFileNavigationProvider({ children, navigate }: { children: R
     const { workspaceId, worktreeId } = conversation;
     const worktree = repository.workspaces.find(item => item.workspaceId === workspaceId)?.worktrees.find(item => item.worktreeId === worktreeId);
     if (!repository.ready || !worktree || worktree.state !== "available") return "This conversation's execution worktree is unavailable. Reconnect or refresh the workspace catalog.";
+    if (expected && (workspaceId !== expected.workspaceId || worktreeId !== expected.worktreeId || worktree.bindingRevision !== expected.bindingRevision)) return "The referenced execution worktree has changed. This historical reference cannot be opened in the current checkout.";
     const scope = controller.scope, navigation = repository.navigation;
     if (scope?.id === worktreeScope(workspaceId, worktreeId) && scope.auth === workspaceEpoch()
       && scope.bindingRevision === worktree.bindingRevision && scope.reader.current()
@@ -51,7 +53,7 @@ export function ChatFileNavigationProvider({ children, navigate }: { children: R
   return <ChatFileNavigation.Provider value={open}>{children}</ChatFileNavigation.Provider>;
 }
 
-export function ChatFileLink({ children, href, title, sessionId }: { children?: ReactNode; href?: string; title?: string; sessionId: string }) {
+export function ChatFileLink({ children, href, title, sessionId, expectedScope }: { children?: ReactNode; href?: string; title?: string; sessionId: string; expectedScope?: ExpectedFileScope }) {
   const open = useContext(ChatFileNavigation);
   const [failure, setFailure] = useState<{ key: string; message: string }>();
   const key = JSON.stringify([sessionId, href]);
@@ -61,7 +63,7 @@ export function ChatFileLink({ children, href, title, sessionId }: { children?: 
   if (!path || !open) return <span title={title || "File link unavailable: use a worktree-relative file path in Chat."}>{children}</span>;
   return <><a href={`#file=${encodeURIComponent(path)}`} title={title || `Open ${path} in Files`} onClick={event => {
     event.preventDefault();
-    const message = open(sessionId, path);
+    const message = open(sessionId, path, expectedScope);
     setFailure(message ? { key, message } : undefined);
   }}>{children}</a>{failure?.key === key && <span role="alert" className="muted"> — {failure.message}</span>}</>;
 }

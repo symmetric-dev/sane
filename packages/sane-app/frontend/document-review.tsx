@@ -8,7 +8,15 @@ import "./document-review.css";
 
 const label = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 
-export function DocumentReviewComposer({ review, disabled, active, back, navigation }: { review: DocumentReviewController; disabled: boolean; active: boolean; back?: () => void; navigation?: ReactNode }) {
+export function DocumentReviewComposer({ review, disabled, active, back, navigation, acknowledgment, exitToChatRequest }: {
+  review: DocumentReviewController;
+  disabled: boolean;
+  active: boolean;
+  back?: () => void;
+  navigation?: ReactNode;
+  acknowledgment?: ReactNode;
+  exitToChatRequest?: object;
+}) {
   const flow = review.flow!;
   const cancelButton = useRef<HTMLButtonElement>(null);
   const cancelDestination = useRef<"flows" | "chat">("chat");
@@ -19,6 +27,20 @@ export function DocumentReviewComposer({ review, disabled, active, back, navigat
   const entry = document ? flow.entries[document.path] : undefined;
   const resource = document?.kind === "resource" || document?.phase === "resources";
   const blocked = !active || flow.busy;
+  // A reveal belongs only to the review already mounted when it was requested.
+  // Keep it pending while suspended/busy, but never replay it into a new review.
+  const consumedExit = useRef({ identity: flow.identity, request: exitToChatRequest });
+  useEffect(() => {
+    if (consumedExit.current.identity !== flow.identity) {
+      consumedExit.current = { identity: flow.identity, request: exitToChatRequest };
+      cancelDestination.current = "chat";
+      return;
+    }
+    if (blocked || !exitToChatRequest || consumedExit.current.request === exitToChatRequest) return;
+    consumedExit.current.request = exitToChatRequest;
+    cancelDestination.current = "chat";
+    cancel();
+  }, [exitToChatRequest, blocked, flow.identity]);
   const decisionBlocked = blocked || flow.loading || flow.reading || !!flow.error || !entry?.readRevision;
   const count = flow.selected.filter(path => !!flow.entries[path]?.decision).length;
   // Launch/relaunch focus follows dialog cleanup; reader feedback keeps its autoFocus.
@@ -60,6 +82,7 @@ export function DocumentReviewComposer({ review, disabled, active, back, navigat
       </div>
     </>}
     </div>
+    {acknowledgment}
     {document ? <div className="document-review-toolbar"><div><span className="document-review-status" role="status">{resource ? "Reference" : status(document.path)}</span></div><div>{!resource && <><button type="button" disabled={decisionBlocked} onClick={() => review.decide("accepted")}><FiCheck aria-hidden="true" />Accept document</button><button type="button" className="document-review-primary" disabled={decisionBlocked || !entry?.feedback.trim()} onClick={() => review.decide("needs-changes")}>Save feedback</button></>}{navigation}</div></div> : <div className="document-review-toolbar"><span className="document-review-status" role="status">{count} of {flow.selected.length} selected documents decided</span><div><button type="button" className="document-review-primary" disabled={blocked || disabled || !review.ready} onClick={() => void review.submit()}>{flow.busy ? "Sending review…" : "Send review"}</button>{navigation}</div></div>}
   </section>;
 }

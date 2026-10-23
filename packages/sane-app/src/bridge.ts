@@ -10,6 +10,11 @@ import { CodeShareStore, CodeShareError } from "./code-share-store";
 import { CodeShareService } from "./code-share-service";
 import { denyCodeShareIdentity, matchesCodeShareTool, matchesCodeSharePart, readCodeShareContinuation } from "./code-share-evidence";
 import type { NativeCodeShareRequest } from "../shared/code-share-contract";
+import type { UserQuestionsRecord } from "../shared/user-questions-contract";
+import { UserQuestionsStore, UserQuestionsError } from "./user-questions-store";
+import { UserQuestionsService } from "./user-questions-service";
+import { denyUserQuestionsIdentity, matchesUserQuestionsTool, matchesUserQuestionsPart, readUserQuestionsContinuation } from "./user-questions-evidence";
+import { UserQuestionsDelivery, UserQuestionsDeliveryDeferred, UserQuestionsDeliverySuperseded, type UserQuestionsDeliveryDenial } from "./user-questions-delivery";
 import { httpErrorResponse, toHttpError } from "./bridge-errors";
 import { newDispatchRun, newNativeCommandId } from "./dispatch-run";
 import { toNativeHarness, toSessionHarness } from "./harness-names";
@@ -936,7 +941,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Read-only inspection and a source-owned child launch do not compete for
     // this recipient's turn. Every mutating recipient intent does, independently
     // of delivery origin or a copied queue request ID.
-    if (sessionId && phase !== "enqueue" && ["user-prompt", "worker-report", "worker-exchange", "handoff", "prepare-recipient", "branch", "compact", "branch-recovery", "enroll", "retry-admission", "attach"].includes(intent.kind) && pendingInputs?.hasChain(sessionId)
+    if (sessionId && phase !== "enqueue" && ["user-prompt", "questionnaire-response", "worker-report", "worker-exchange", "handoff", "prepare-recipient", "branch", "compact", "branch-recovery", "enroll", "retry-admission", "attach"].includes(intent.kind) && pendingInputs?.hasChain(sessionId)
       && !pendingInputBridge?.allowsReadiness(options)) return { ready: false as const, reason: "A durable input chain is active; use the explicit pending-inputs API", code: "pending-input-chain-active" };
     return undefined;
   }
@@ -1522,7 +1527,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       throw error;
     }
   }
-  const automation = { "queued-user": { supported: true as const }, "worker-report": { supported: true as const }, "worker-exchange": { supported: true as const }, handoff: { supported: true as const } };
+  const automation = { "queued-user": { supported: true as const }, "questionnaire-response": { supported: true as const }, "worker-report": { supported: true as const }, "worker-exchange": { supported: true as const }, handoff: { supported: true as const } };
   dispatchRegistry.register(createClaudeDispatchAdapter({
     automation,
     readiness: async source => ({ source, readiness: { ready: false, reason: "Claude automatic readiness requires the exact completed process lifecycle", code: "dispatch-proof-unproven" } }),
@@ -1613,7 +1618,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           }
         }
         const ownLease = coordinator.holdsAdmission(lease, current.sessionId);
-        const intent: ConversationOperationIntent = { kind: options.coordinatorIntent ?? (origin === "handoff" ? "handoff" : origin === "worker-report" ? "worker-report" : origin === "worker-exchange" ? "worker-exchange" : "user-prompt"), requestId: options.requestId };
+        const intent: ConversationOperationIntent = { kind: options.coordinatorIntent ?? (origin === "handoff" ? "handoff" : origin === "worker-report" ? "worker-report" : origin === "worker-exchange" ? "worker-exchange" : origin === "questionnaire-response" ? "questionnaire-response" : "user-prompt"), requestId: options.requestId };
         const input = { conversationId: current.sessionId, intent, phase: "dispatch" as const, ...(ownLease ? { lease } : {}) };
         const ready = pendingInputBridge!.releasedReadiness(owner, input);
         return { source: dispatchSource(current), installation: JSON.stringify([dispatchSnapshot(current), admission, association, repository]),
@@ -1711,7 +1716,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if ((receipt.intent.version === 2 ? receipt.intent.rolePrefix : "") !== ordinaryRolePrefix(prepared)) throw new UserInputPreparationError("Science dispatch role instructions changed", 409);
     }
     if (context && (context.delivery !== "idle-only" && context.delivery !== "native-queued-handoff"
-      || !["user", "queued-user", "worker-report", "worker-exchange", "handoff"].includes(context.origin))) throw new UserInputPreparationError("Explicit admission requires a known delivery policy and origin", 409);
+      || !["user", "queued-user", "questionnaire-response", "worker-report", "worker-exchange", "handoff"].includes(context.origin))) throw new UserInputPreparationError("Explicit admission requires a known delivery policy and origin", 409);
     if (publish !== undefined && typeof publish !== "function") throw new UserInputPreparationError("Lifecycle publisher must be a function", 409);
     const nativeHandoff = context?.delivery === "native-queued-handoff";
     if (nativeHandoff && (harness !== "opencode" || context.origin !== "queued-user" || context.intent.kind !== "user-prompt"
@@ -1847,6 +1852,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const installedSnapshot = structuredClone(configured);
     const lifecycle = executePrompt(lease, session, run, effectivePrompt, prepared.resume, origin, {
       requestId: intent.requestId,
+      coordinatorIntent: intent.kind,
       validate: () => { assertDispatch(); assertContext(); assertPreparedUserInputCurrent(prepared, preparationState(), createdSnapshot); },
       link: context?.link && (() => context.link!(identity)), evidence: context?.evidence, delivery,
       ...(nativeHandoff ? { nativeQueuedHandoff: identity } : {}), publish,
@@ -1882,7 +1888,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   };
   const qualifiedWorkerInvocations = new WeakMap<NativeWorkerInvocation, { admission: Admission; session: Session; starting: boolean; continuation?: WorkerContinuationAuthorization }>();
   const codeShares = new CodeShareStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "code-share-storage"));
-  function codeShareSession(request: NativeCodeShareRequest) {
+  function codeShareSession(request: Pick<NativeCodeShareRequest, "caller">) {
     let source;
     try { source = normalizeNativeSource(request.caller.source); } catch { return denyCodeShareIdentity(); }
     const caller = request.caller;
@@ -2005,6 +2011,121 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (error instanceof OpenCodeError) return json({ error: error.message, code: "code-share-native-evidence" }, error.status);
       return json({ error: "Code share authorization or storage unavailable", code: "code-share-unavailable" }, 503);
     }
+  }
+  const userQuestions = new UserQuestionsStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "user-questions-storage"));
+  userQuestions.recover();
+  const userQuestionsService = new UserQuestionsService(userQuestions, codeShareSession, async (request, old) => {
+    const sessionId = codeShareSession(request), session = meta.sessions.find(s => s.sessionId === sessionId)!;
+    if (session.agentKind === "worker") return denyUserQuestionsIdentity();
+    const admission = admissions.get(sessionId)!, binding = admission.binding;
+    const admissionPin = JSON.stringify(admission), sessionPin = dispatchSnapshot(session), owner = owners.get(sessionId);
+    const available = () => {
+      if (!startupReady || closing || storageFailed || retainOwner || !ownsStorage() || meta.reconciliationRequired) return denyUserQuestionsIdentity();
+      if (codeShareSession(request) !== sessionId || JSON.stringify(admissions.get(sessionId)) !== admissionPin
+        || dispatchSnapshot(session) !== sessionPin || meta.sessions.find(s => s.sessionId === sessionId) !== session
+        || branches.pending(sessionId) || branches.replaced(sessionId)) return denyUserQuestionsIdentity();
+    };
+    const identity = (runId: string) => ({ sessionId, native: { harness: request.caller.source.harness, authorityId: request.caller.authorityId, nativeId: request.caller.nativeId },
+      anchor: { runId, toolCallId: request.invocation.toolCallId, messageId: request.invocation.messageId ?? null, invocationId: request.invocation.invocationId, wrapper: request.invocation.wrapper ?? null },
+      workspaceId: binding.workspaceId, worktreeId: binding.worktreeId, bindingRevision: binding.bindingRevision, cwd: binding.executionCheckout });
+    available();
+    if (old) {
+      if (old.sessionId !== sessionId || old.workspaceId !== binding.workspaceId || old.worktreeId !== binding.worktreeId
+        || old.bindingRevision !== binding.bindingRevision || old.cwd !== binding.executionCheckout
+        || !meta.runs.some(run => run.sessionId === sessionId && run.runId === old.anchor.runId && run.cwd === old.cwd && run.operation !== "compact")) return denyUserQuestionsIdentity();
+      return { identity: identity(old.anchor.runId), assertCurrent: available };
+    }
+    const current = () => {
+      available();
+      if (owners.get(sessionId) !== owner || owner && (owner.settled || owner.stopRequested || owner.cancelling || owner.run.status !== "running" || owner.run.operation === "compact")
+        || !owner && (admitting.has(sessionId) || lifecycleReserved(sessionId)) || coordinator.hasReconciliation(sessionId) || recoveredInputConversations.has(sessionId)) return denyUserQuestionsIdentity();
+    };
+    let run = owner?.run, refresh: (() => Promise<void>) | undefined;
+    if (owner && run && run.cwd === binding.executionCheckout) {
+      let evidenced = false;
+      for (let attempt = 0; attempt < 3 && !evidenced; attempt++) {
+        current();
+        if (request.caller.source.harness === "cc") {
+          evidenced = journalEvents(run.runId).some(event => {
+            const data = event.data as any;
+            if (event.kind === "hook") return data?.event === "PreToolUse" && isClaudeRootRecord(data.payload)
+              && data.payload?.session_id === request.caller.nativeId && (!request.invocation.messageId || data.payload?.message_id === request.invocation.messageId)
+              && data.payload?.tool_use_id === request.invocation.toolCallId && matchesUserQuestionsTool(request, data.payload?.tool_name, data.payload?.tool_input);
+            return event.kind === "stdout" && isClaudeRootRecord(data) && data?.type === "assistant" && data.session_id === request.caller.nativeId
+              && (!request.invocation.messageId || data.message?.id === request.invocation.messageId) && Array.isArray(data.message?.content)
+              && data.message.content.some((part: any) => part.type === "tool_use" && part.id === request.invocation.toolCallId && matchesUserQuestionsTool(request, part.name, part.input));
+          });
+        } else if (run.nativeCommandId && run.nativePhase === "accepted") {
+          const commandId = run.nativeCommandId;
+          const snapshot = await oc.snapshot(request.caller.nativeId, commandId, session.cwd);
+          current();
+          const target = snapshot.messages.findLast(message => message.type === "assistant");
+          evidenced = !snapshot.boundary && !snapshot.pending && !snapshot.outcome && snapshot.currentInputId === commandId
+            && !!target && target.time.completed === undefined && !!target.content?.some(part => matchesUserQuestionsPart(request, target.id, part));
+          if (evidenced) refresh = async () => {
+            current();
+            const fresh = await oc.snapshot(request.caller.nativeId, commandId, session.cwd);
+            current();
+            const assistant = fresh.messages.findLast(message => message.type === "assistant");
+            if (fresh.boundary || fresh.pending || fresh.outcome || fresh.currentInputId !== commandId || !assistant || assistant.time.completed !== undefined
+              || !assistant.content?.some(part => matchesUserQuestionsPart(request, assistant.id, part))) return denyUserQuestionsIdentity();
+          };
+        }
+        if (!evidenced && attempt < 2) await Bun.sleep(150);
+      }
+      if (!evidenced) run = undefined;
+    } else run = undefined;
+    if (!run && request.caller.source.harness === "oc") {
+      current();
+      const read = async () => {
+        for (let attempt = 0; ; attempt++) {
+          try { return await readUserQuestionsContinuation(oc, request, current); }
+          catch (error) { if (!(error instanceof UserQuestionsError) || error.status !== 409 || attempt >= 2) throw error; await Bun.sleep(150); }
+        }
+      };
+      const evidence = await read();
+      current();
+      const matches = meta.runs.filter(candidate => candidate.sessionId === sessionId && candidate.nativeCommandId === evidence.commandId);
+      if (matches.length !== 1) return denyUserQuestionsIdentity();
+      run = matches[0]!;
+      if (run.cwd !== session.cwd || run.operation === "compact" || run.nativePhase !== "accepted" || (owner ? owner.run !== run : run.status !== "completed" || !evidence.afterIdle)) return denyUserQuestionsIdentity();
+      refresh = async () => { if (JSON.stringify(await read()) !== JSON.stringify(evidence)) return denyUserQuestionsIdentity(); };
+    }
+    if (!run) return denyUserQuestionsIdentity();
+    const boundRun = run, runPin = JSON.stringify(run);
+    await catalog.binding(binding.workspaceId, binding.worktreeId);
+    const assertCurrent = () => {
+      current();
+      if (!meta.runs.includes(boundRun) || JSON.stringify(boundRun) !== runPin) return denyUserQuestionsIdentity();
+      catalog.assertBinding(binding.workspaceId, binding.worktreeId, binding.executionCheckout, binding.bindingRevision);
+    };
+    assertCurrent();
+    return { identity: identity(run.runId), assertCurrent, refresh };
+  });
+  async function nativeUserQuestions(req: Request) {
+    const denied = requireNativeBearer(req, handoffToken) ?? requireStartupReady(startupReady);
+    if (denied) return denied;
+    try { return json(await userQuestionsService.handle(req)); }
+    catch (error) {
+      if (error instanceof UserQuestionsError || error instanceof CodeShareError || error instanceof WorkspaceError) return json({ error: error.message, code: error.code }, error.status);
+      if (error instanceof OpenCodeError) return json({ error: error.message, code: "user-questions-native-evidence" }, error.status);
+      return json({ error: "Questions authorization or storage unavailable", code: "user-questions-unavailable" }, 503);
+    }
+  }
+  function assertUserQuestionsRespondent(form: UserQuestionsRecord, req?: Request) {
+    if (!startupReady || closing || storageFailed || retainOwner || !ownsStorage() || meta.reconciliationRequired)
+      throw new UserQuestionsError(503, "user-questions-unavailable", "Question responses cannot be changed while App ownership is unavailable");
+    if (req && !auth.authenticated(req)) throw new UserQuestionsError(401, "authentication-required", "Authentication required");
+    const session = meta.sessions.find(s => s.sessionId === form.sessionId), admission = admissions.get(form.sessionId);
+    if (!session || session.hidden || session.attachment || session.agentKind === "worker" || branches.pending(form.sessionId) || branches.replaced(form.sessionId)
+      || session.nativeSessionId !== form.native.nativeId || session.authorityId !== form.native.authorityId || session.cwd !== form.cwd
+      || sessionHarness(session) !== (form.native.harness === "cc" ? "claude-code" : "opencode")
+      || nativeSource(session.harness) !== form.native.authorityId
+      || !admission || admission.state !== "ready" || admission.nativeId !== form.native.nativeId || admission.source.authorityId !== form.native.authorityId
+      || admission.binding.workspaceId !== form.workspaceId || admission.binding.worktreeId !== form.worktreeId
+      || admission.binding.executionCheckout !== form.cwd || admission.binding.bindingRevision !== form.bindingRevision)
+      throw new UserQuestionsError(409, "user-questions-read-only", "This form's original conversation is unavailable or read-only");
+    catalog.assertBinding(form.workspaceId, form.worktreeId, form.cwd, form.bindingRevision);
   }
   const continuationParents = new WeakMap<WorkerParent, () => void>();
   const resolveTrustedWorkerInvocation: NativeWorkerCallerResolver = async (request, context) => {
@@ -3085,6 +3206,83 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }, options.pendingInputWakeClock);
   // The outer owner starts this only after publishing both serving lock records.
   const pendingInputConsumer = pendingInputBridge.consumer;
+  const userQuestionsDelivery = new UserQuestionsDelivery({
+    store: userQuestions, coordinator,
+    available: () => startupReady && !closing && !storageFailed && !retainOwner && ownsStorage(),
+    failClosed: error => failClosed(error, "user-questions-delivery"),
+    readiness: form => {
+      try { assertUserQuestionsRespondent(form); }
+      catch (error) {
+        if (error instanceof UserQuestionsError && error.code !== "user-questions-storage") return { ready: false, disposition: "pause", reason: error.message };
+        throw error;
+      }
+      const owner = owners.get(form.sessionId);
+      if (owner?.stopRequested || owner?.cancelling || owner?.stopping) return { ready: false, disposition: "pause", reason: "Conversation was stopped; resume answer delivery explicitly" };
+      if (form.native.harness === "cc" && (!owner || owner.run.runId === form.delivery?.runId && !owner.nativeDispatched)) {
+        const idle = claudeRuns.readLocalIdle(form.sessionId, owner);
+        if (!idle.ready) return { ready: false, disposition: "wait", reason: idle.reason };
+      }
+      return { ready: true };
+    },
+    classifyError: error => {
+      if (error instanceof UserQuestionsDeliveryDeferred) return error.denial;
+      if (error instanceof UserQuestionsError && error.code !== "user-questions-storage") return { ready: false, disposition: "pause", reason: error.message };
+      if (error instanceof UserInputPreparationError || error instanceof WorkstreamAdapterError || error instanceof WorkspaceError || error instanceof OpenCodeError) {
+        if (error instanceof WorkstreamAdapterError && ["STORAGE_ERROR", "CORRUPT_STORE"].includes(error.code)
+          || error instanceof WorkspaceError && error.code === "catalog-storage") return undefined;
+        const code = "code" in error ? error.code : undefined;
+        const wait = typeof code === "string" && ["conversation-busy", "capacity", "native-busy", "dispatch-proof-unavailable", "pending-input-chain-active", "worker-delivery-pending", "worker-exchange-pending", "handoff-pending", "reconciliation-pending"].includes(code);
+        return { ready: false, disposition: wait ? "wait" : "pause", reason: error.message } satisfies UserQuestionsDeliveryDenial;
+      }
+      return undefined;
+    },
+    dispatch: async (form, context) => {
+      const guard = (action: () => void) => {
+        try { action(); }
+        catch (error) {
+          if (error instanceof UserQuestionsDeliverySuperseded) throw new WorkstreamAdapterError(409, "user-questions-superseded", error.message);
+          if (error instanceof UserQuestionsDeliveryDeferred) throw new WorkstreamAdapterError(409, "user-questions-deferred", error.message);
+          if (error instanceof UserQuestionsError && error.code !== "user-questions-storage") throw new WorkstreamAdapterError(error.status, error.code, error.message);
+          throw error;
+        }
+      };
+      guard(context.assertCurrent);
+      const prepared = await prepareUserInput({ sessionId: form.sessionId, prompt: context.prompt }, {
+        ...preparationState(), defaultCwd: options.cwd, conversationId: () => crypto.randomUUID(), sourceAuthorityId: nativeSource,
+        selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
+        ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings),
+      });
+      guard(context.assertCurrent);
+      if (context.signal.aborted) throw new WorkstreamAdapterError(409, "user-questions-deferred", "Answer delivery paused during shutdown");
+      if (!sameDispatchSource(context.source, { harnessId: prepared.binding.harness, sessionId: prepared.binding.conversationId,
+        authorityId: prepared.binding.authorityId, nativeSessionId: prepared.binding.nativeSessionId ?? null, cwd: prepared.binding.cwd }))
+        throw new WorkstreamAdapterError(409, "user-questions-source-changed", "The form's original native conversation changed");
+      const runId = crypto.randomUUID(), nativeCommandId = form.native.harness === "oc" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : undefined;
+      const result = await preparedInput.admit(prepared, context.lease, { context: {
+        origin: context.origin, intent: context.intent, delivery: "idle-only", runId, ...(nativeCommandId ? { nativeCommandId } : {}),
+        validate: () => guard(context.assertCurrent), link: identity => guard(() => context.link(identity)), evidence: context.evidence,
+      } });
+      // Default not-submitted at admission is NOT withholding proof. The original
+      // synchronous hooks will record the real native boundary and outcome later.
+      return result.lifecycle.submissionEvidence();
+    },
+    reconcile: async form => {
+      const delivery = form.delivery!;
+      if (!delivery.runId) return null;
+      const run = meta.runs.find(candidate => candidate.sessionId === form.sessionId && candidate.runId === delivery.runId);
+      if (!run || run.cwd !== form.cwd || (run.nativeCommandId ?? null) !== delivery.nativeCommandId || run.operation === "compact") return null;
+      const accepted = form.native.harness === "oc" ? run.nativePhase === "accepted" && !!delivery.nativeCommandId
+        : journalEvents(run.runId).some(event => event.kind === "stdout" && isClaudeRootRecord(event.data)
+          && (event.data as any)?.session_id === form.native.nativeId && (event.data as any)?.type === "result"
+          && ((event.data as any).user_message_uuid === run.runId
+            || Array.isArray((event.data as any).user_message_uuids) && (event.data as any).user_message_uuids.includes(run.runId)));
+      if (!accepted) return null;
+      return { evidence: { requestId: delivery.id, runId: run.runId, nativeCommandId: delivery.nativeCommandId,
+        source: { harnessId: form.native.harness === "cc" ? "claude-code" : "opencode", sessionId: form.sessionId,
+          authorityId: form.native.authorityId, nativeSessionId: form.native.nativeId, cwd: form.cwd },
+        submission: "submitted", nativeAcceptance: "accepted" } };
+    },
+  });
   async function handle(req: Request, srv: Pick<Bun.Server<undefined>, "requestIP" | "port">, upgrade?: (req: Request, data: TerminalSocketData) => boolean): Promise<Response | undefined> {
     try {
       const url = new URL(req.url); const path = url.pathname;
@@ -3118,6 +3316,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!meta.sessions.some(session => session.sessionId === sessionId)) return json({ error: "Unknown conversation" }, 404);
         return json({ shares: codeShares.list(sessionId) });
       }
+      const userQuestionsMatch = /^\/api\/sessions\/([^/]+)\/user-questions(?:\/([^/]+)\/(answers|submit|dismiss|resume))?$/.exec(path);
+      if (userQuestionsMatch && req.method === "GET" && !userQuestionsMatch[2]) {
+        const sessionId = userQuestionsMatch[1]!;
+        if (!meta.sessions.some(session => session.sessionId === sessionId)) return json({ error: "Unknown conversation" }, 404);
+        return json({ forms: userQuestions.list(sessionId) });
+      }
       if (!startupReady && path.startsWith("/api/") && !["GET", "HEAD"].includes(req.method)) return json({ error: "Startup execution classification is incomplete", code: "startup-classifying" }, 503);
       if (path.startsWith("/api/push/")) {
         const owner = auth.terminalToken(req) ?? "local";
@@ -3134,6 +3338,24 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (queueResponse) return queueResponse;
       const readOnlyTranscriptRefresh = req.method === "POST" && /^\/api\/sessions\/[^/]+\/transcript\/refresh$/.test(path);
       if (!["GET", "HEAD"].includes(req.method) && !readOnlyTranscriptRefresh && mutatingSession && !path.endsWith("/branch") && (branches.replaced(mutatingSession) || branches.pending(mutatingSession) && !path.endsWith("/cancel"))) return json({ error: branches.replaced(mutatingSession) ? "Replaced conversation is read-only; open its replacement" : "The branch is not ready yet. Changes are paused to protect this conversation." }, 409);
+      if (userQuestionsMatch) {
+        if (req.method !== "POST" || !userQuestionsMatch[2] || !userQuestionsMatch[3]) return json({ error: "Method not allowed" }, 405);
+        const [, sessionId, formId, operation] = userQuestionsMatch;
+        const form = userQuestions.get(sessionId!, formId!);
+        assertUserQuestionsRespondent(form, req);
+        const input = await body(req);
+        await catalog.binding(form.workspaceId, form.worktreeId);
+        const assertCurrent = () => assertUserQuestionsRespondent(form, req);
+        assertCurrent();
+        const result = operation === "answers" ? userQuestions.save(sessionId!, formId!, input, assertCurrent)
+          : operation === "submit" ? userQuestions.submit(sessionId!, formId!, input, assertCurrent)
+          : operation === "dismiss" ? userQuestions.dismiss(sessionId!, formId!, input, assertCurrent)
+          : userQuestions.resume(sessionId!, formId!, input, assertCurrent);
+        if (operation === "submit" && workerStore.suppressed(sessionId!)) userQuestions.pause(sessionId!, "Automatic continuation was stopped. Resume explicitly to send these answers.");
+        // Return the original operation receipt on replay, not a newer autosave
+        // or delivery projection. GET reconciliation independently advances it.
+        return json({ form: result });
+      }
       if (path === "/api/agents" || path.startsWith("/api/agents/")) {
         try {
           if (path === "/api/agents" && req.method === "GET") return json(agentProfiles);
@@ -4020,6 +4242,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const owner = pendingInputControls.stop(session.sessionId);
           claudeRuns.cancelFollowup(session.sessionId);
           pendingInputControls.cancellationWrite(() => workerStore.suppress(session.sessionId, true)); // Idle too; never cascade.
+          userQuestions.pause(session.sessionId, "Stopped by the user. Resume explicitly to send the saved answers.");
           const worker = workerStore.getBySession(session.sessionId);
           // Composer Stop interrupts a turn, not an explicit worker assignment.
           // Assignment cancellation remains the workers/cancel operation.
@@ -4083,6 +4306,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const session = meta.sessions.find(s => s.sessionId === visibilityMatch[1]);
         if (!session) return json({ error: "Unknown conversation" }, 404);
         const hidden = visibilityMatch[2] === "hide";
+        if (hidden) userQuestions.pause(session.sessionId, "Conversation hidden. Resume explicitly to send the saved answers.");
         if (hidden && !session.hidden) pendingInputControls.hide(session.sessionId);
         session.hidden = hidden;
         await persist();
@@ -4246,6 +4470,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         ...(encoding ? { "content-encoding": encoding.name } : {}), ...(path === "/push-worker.js" ? { "service-worker-allowed": "/" } : {}),
       } });
     } catch (error) {
+      if (error instanceof UserQuestionsError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof ScienceSubmissionStorageError) { failClosed(); return json({ error: error.message, code: "science-submission-unknown" }, 503); }
       if (error instanceof ScienceSubmissionError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof PendingInputStorageError) { failClosed(); return json({ error: error.message, code: "storage-unavailable" }, 503); }
@@ -4255,6 +4480,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   drainStartupExecution = async () => {
     await coordinator.close();
+    await userQuestionsDelivery.close();
     await workers.drainLaunches();
     await terminals.close();
     await Promise.all([...owners.values()].map(async owner => {
@@ -4268,7 +4494,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   };
   const server = Bun.serve<TerminalSocketData>({ hostname: options.host, port: options.port, maxRequestBodySize: 1024 * 1024, websocket: terminals.websocket, fetch: (req, srv) => handle(req, srv, (request, data) => srv.upgrade(request, { data })) });
   boundListenerStops.push(async () => { await server.stop(true); });
-  const hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
+  const hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/user-questions" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeUserQuestions(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
   boundListenerStops.push(async () => { await hookServer.stop(true); });
   origin = options.publicOrigin ?? `http://${options.host.includes(":") ? `[${options.host}]` : options.host}:${server.port}`;
   atomicAppRecord(options.dataDir, "native-handoff.json", { version: 1, url: `http://127.0.0.1:${hookServer.port}/native/handoffs`, token: handoffToken, pid: process.pid });
@@ -4529,6 +4755,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   for (const op of branches.list()) void reconcileBranch(op).catch(error => { failClosed(error, "branch-reconciliation"); });
   const handoffPoller = createPoller(() => consumeHandoffs(), { intervalMs: 500, shouldRun: () => !closing && !storageFailed, onError: (error) => failClosed(error, "handoff-consumer") });
   const workerOutboxPoller = createPoller(() => consumeWorkerReports(), { intervalMs: 500, shouldRun: () => !closing && !storageFailed, onError: (error) => failClosed(error, "worker-outbox") });
+  const userQuestionsPoller = createPoller(() => userQuestionsDelivery.poll(), { intervalMs: 500, shouldRun: () => !closing && !storageFailed, onError: error => failClosed(error, "user-questions-consumer") });
   const inputRecoveryPoller = createPoller(
     async () => {
       if (!recoveredInputConversations.size) return;
@@ -4538,8 +4765,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
     { intervalMs: 2000, shouldRun: () => !closing && !storageFailed, onError: (error) => failClosed(error, "pending-input-recovery-refresh") },
   );
-  handoffPoller.start(); workerOutboxPoller.start(); inputRecoveryPoller.start();
-  stopStartupConsumers = () => { handoffPoller.stop(); workerOutboxPoller.stop(); inputRecoveryPoller.stop(); };
+  handoffPoller.start(); workerOutboxPoller.start(); userQuestionsPoller.start(); inputRecoveryPoller.start();
+  stopStartupConsumers = () => { handoffPoller.stop(); workerOutboxPoller.stop(); userQuestionsPoller.stop(); inputRecoveryPoller.stop(); };
   const preparedInput: PreparedInputAdmission = {
     reserve: (intent, id) => reserve(intent, id), release: lease => coordinator.releaseAdmission(lease),
     async admit(prepared, lease, inputOptions) {
@@ -4559,6 +4786,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     pendingInputWake!.close();
     pendingInputRecovery!.close();
     const queueDrain = pendingInputBridge!.close();
+    const userQuestionsDrain = userQuestionsDelivery.close();
     const coordinatorDrain = coordinator.close();
     const replyDrain = replyIntegration?.close(); // Abort immediately, before any shutdown awaits.
     const pushDrain = chromePush?.close();
@@ -4571,10 +4799,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const nativeSubagentDrain = nativeSubagentRecorder.drain();
     handoffPoller.stop();
     workerOutboxPoller.stop();
+    userQuestionsPoller.stop();
     inputRecoveryPoller.stop();
     closePromise = (async () => {
     await boundedStartupCleanup(() => repositoryReadDrain);
     await boundedStartupCleanup(() => queueDrain);
+    await boundedStartupCleanup(() => userQuestionsDrain);
     await boundedStartupCleanup(() => Promise.all([...queueServiceTasks]));
     await coordinatorDrain;
     await creationDrain;

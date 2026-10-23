@@ -66,6 +66,68 @@ ownership is not silently removed. Never delete state to clear a busy indicator.
 
 ## Working with projects
 
+### Present questions in chat
+
+App-owned Claude and OpenCode conversations can use `present_questions_to_user`
+without workstream enrollment, including Base conversations in ordinary directories.
+The tool accepts `{ title, pages }`, with one question per page:
+
+```json
+{
+  "title": "Implementation choices",
+  "pages": [
+    {
+      "question": "Should the helpers be copied or shared?",
+      "context": "Copying keeps existing consumers unchanged; sharing reduces duplicate maintenance.",
+      "references": ["src/helpers.ts"],
+      "options": ["Copy the helpers", "Extract shared helpers"],
+      "allow_other": true
+    },
+    { "question": "What other constraints should we consider?" }
+  ]
+}
+```
+
+Omit `options` for a textarea. With options, selection is single-choice unless
+`multiple` is true; custom text requires `allow_other: true`. Empty options are
+invalid. There are no caller-supplied IDs, grading, timers, or workstream actions.
+
+The tool returns after saving and presenting the form, not after it is answered.
+Questions appear as a collapsible section inside the chat composer, using the same
+controls as native questions and approvals; the message input remains usable. Native
+permission requests and handoff approvals still require a response before chat can
+continue. Delivered or dismissed question sets leave the composer automatically;
+open them from the transcript to review their history. Back/Next does not submit.
+Answers autosave, and **Submit answers** saves the final answers
+and queues a response to the same conversation. A busy assistant receives it when
+execution becomes available. All answers are optional. **Dismiss** preserves the
+form's history without sending answers. Only one unanswered form is allowed per
+conversation; published questions cannot be edited.
+
+After submission, a compact delivery view replaces the question editor. Submitted
+answers and technical delivery details are available separately on demand.
+
+Saved forms and answers survive refresh and restart. Pending delivery pauses after
+restart or Stop and requires **Resume delivery**. An uncertain native acceptance
+is never automatically resent; inspect the delivery status instead. Submission
+and delivery are separate from the assistant understanding or acting on answers.
+Conflicting tabs preserve local answers and require explicit reconciliation.
+
+References can be HTTP(S) links or worktree-relative paths. Local links open the
+current file using the original workspace binding; line locators remain visible
+but do not select or verify historical lines. Protected or unsupported paths stay
+text-only. Existing dirty file buffers are preserved.
+
+Attached external conversations and managed worker conversations are not eligible
+to publish or answer forms. Read-only history retains recorded forms in the owning
+chat; branches do not inherit actionable forms. This feature does not update skills
+or agent instructions. Refresh the installed native runtime/configuration through
+the existing runtime-only installer and restart the relevant native services to
+make a newly added tool discoverable; restarting the App alone does not replace
+installed plugin/MCP files.
+
+### Project selection
+
 Open a directory and select its workspace/worktree. That selection chooses new
 conversations' execution checkout; existing conversations retain their recorded
 checkout. Finish external work in a conversation before sending from the App.

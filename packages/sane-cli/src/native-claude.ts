@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path"
 import { DomainError, normalizeNativeSource } from "../../sane-core/src/server.ts"
 import type { NativeCaller } from "./native-caller.ts"
 
-export const claudeNativeTools = ["sane_share_code", "sane_link", "sane_context", "sane_handoff", "sane_handoff_status", "sane_worker_start", "sane_worker_status", "sane_worker_wait", "sane_worker_acknowledge", "sane_worker_cancel", "sane_worker_cancel_all", "sane_worker_complete", "sane_worker_notify", "sane_worker_message_parent", "sane_worker_message"] as const
+export const claudeNativeTools = ["present_questions_to_user", "sane_share_code", "sane_link", "sane_context", "sane_handoff", "sane_handoff_status", "sane_worker_start", "sane_worker_status", "sane_worker_wait", "sane_worker_acknowledge", "sane_worker_cancel", "sane_worker_cancel_all", "sane_worker_complete", "sane_worker_notify", "sane_worker_message_parent", "sane_worker_message"] as const
 type ClaudeTool = typeof claudeNativeTools[number]
 type BindingFailure = "invalid-context" | "missing-token" | "invalid-token" | "binding-not-found" | "unsafe-binding" | "invalid-binding" | "tool-mismatch" | "body-mismatch" | "expired-binding" | "future-binding" | "profile-mismatch" | "binding-read-failed"
 class ClaudeBindingError extends DomainError {}

@@ -1,0 +1,27 @@
+.user-questions-page { min-width:0; border:0; padding:0; margin:8px 0 0; }
+.user-questions-page:focus-visible { outline:2px solid var(--focus-ring); outline-offset:3px; border-radius:6px; }
+.user-questions-page legend { padding:0; width:100%; }
+.user-questions-page legend strong { display:block; font-size:14px; font-weight:500; line-height:1.6; }
+.user-questions-step { display:block; margin-bottom:6px; color:var(--muted-foreground); font-size:10px; }
+.user-questions-context { color:var(--muted-foreground); font-size:12px; line-height:1.7; margin:8px 0 12px; }
+.user-questions-context > :first-child { margin-top:0; }
+.user-questions-context > :last-child { margin-bottom:0; }
+.user-questions-context pre,.request-inline-notice pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+.user-questions-answer-meta { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.user-questions-answer-meta .request-button { min-height:26px; padding:3px 6px; font-size:11px; }
+.user-questions-page .request-field > .request-field { margin:0; }
+.user-questions-references { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none; }
+.user-questions-new { margin:0; padding:0 18px; }
+.user-questions-reference { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 0; margin:6px 0 12px; font-size:12px; }
+.user-questions-reference > span:first-child { flex:1; }
+.user-questions-outcome .composer-request-actions { padding-top:4px; }
+.user-questions-outcome .request-disclosure { margin:6px 0; }
+.user-questions-answer-record { display:flex; flex-direction:column; gap:14px; margin:0; padding-left:20px; }
+.user-questions-answer-record > li > strong { display:block; margin-bottom:4px; font-weight:500; white-space:pre-wrap; }
+.user-questions-answer-text,.user-questions-delivery-detail { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.6; }
+.user-questions-answer-options { margin:0; padding-left:18px; white-space:pre-wrap; }
+.user-questions-answer-options + div { margin-top:6px; }
+@media (max-width:640px) {
+  .user-questions-new { padding-inline:12px; }
+  .user-questions-answer-meta .request-button { min-height:40px; }
+}

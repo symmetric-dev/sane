@@ -60,7 +60,11 @@ const RETIRED_ROLE_SKILL_NAMES = [
   "sane-research-assistant-role",
 ] as const
 
-export const PLUGIN_SRC_FILES: readonly string[] = ["cli-arguments.ts", "native-caller.ts", "native-opencode.ts", "native-opencode-permissions.ts", "native-claude.ts", "native-claude-hook.ts", "native-claude-mcp.ts", "native-configuration.ts", "native-handoff.ts", "native-worker-contract.ts", "native-worker.ts", "native-share-code-contract.ts", "native-share-code.ts"]
+export const PLUGIN_SRC_FILES: readonly string[] = ["cli-arguments.ts", "native-caller.ts", "native-opencode.ts", "native-opencode-permissions.ts", "native-claude.ts", "native-claude-hook.ts", "native-claude-mcp.ts", "native-configuration.ts", "native-handoff.ts", "native-worker-contract.ts", "native-worker.ts", "native-share-code-contract.ts", "native-share-code.ts", "native-user-questions-contract.ts", "native-user-questions.ts"]
+
+/** Browser-safe parser shared by the App and native transports. Keep its full
+ * runtime closure here; it must not import App persistence or service modules. */
+export const PLUGIN_APP_SHARED_FILES: readonly string[] = ["user-questions-contract.ts"]
 
 export const PLUGIN_CORE_SRC_FILES: readonly string[] = ["agent-catalog.ts", "artifact-lock.ts", "bootstrap-registry.ts", "bootstrap-validation.ts", "confined-lifecycle-filesystem.ts", "contracts.ts", "document-catalog.ts", "errors.ts", "execution-report-validation.ts", "handoff.ts", "job-policy.ts", "lifecycle-filesystem.ts", "lifecycle.ts", "native-source.ts", "provision.ts", "repository.ts", "repository-reader.ts", "repository-reader-worker.ts", "schema.ts", "schema-upgrade.ts", "server.ts", "slots.ts", "validation.ts", "workstream-type.ts"]
 
@@ -71,6 +75,7 @@ export const PLUGIN_FILENAMES = [
   "sane/visibility.ts",
   ...PLUGIN_SRC_FILES.map((filename) => `sane/runtime/packages/sane-cli/src/${filename}`),
   ...PLUGIN_CORE_SRC_FILES.map(filename => `sane/runtime/packages/sane-core/src/${filename}`),
+  ...PLUGIN_APP_SHARED_FILES.map(filename => `sane/runtime/packages/sane-app/shared/${filename}`),
 ] as const
 
 /** Prefix used by the plugin source for `sane-cli` imports (rewritten on install). */
@@ -228,6 +233,10 @@ function installationEntries(
     ...PLUGIN_CORE_SRC_FILES.map(filename => ({
       source: join(sourceRoot, "packages", "sane-core", "src", filename),
       destination: join(homeDirectory, ".config", "opencode", "plugins", "sane", "runtime", "packages", "sane-core", "src", filename),
+    })),
+    ...PLUGIN_APP_SHARED_FILES.map(filename => ({
+      source: join(sourceRoot, "packages", "sane-app", "shared", filename),
+      destination: join(homeDirectory, ".config", "opencode", "plugins", "sane", "runtime", "packages", "sane-app", "shared", filename),
     })),
   ]
 }

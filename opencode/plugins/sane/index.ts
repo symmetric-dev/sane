@@ -1,12 +1,14 @@
 import { Plugin } from "@opencode/plugin"
 import { resolve } from "node:path"
-import { OpenCodeWorkerInvocations, qualifyOpenCodeCaller, qualifyOpenCodeAppCaller, assertOpenCodeCodeSharePermissions, type OpenCodeToolCaller } from "../../../packages/sane-cli/src/native-opencode.ts"
+import { OpenCodeWorkerInvocations, qualifyOpenCodeCaller, qualifyOpenCodeAppCaller, assertOpenCodeCodeSharePermissions, assertOpenCodeUserQuestionsPermissions, type OpenCodeToolCaller } from "../../../packages/sane-cli/src/native-opencode.ts"
 import { linkNativeCaller, nativeCallerContext, nativeShellCaller, nativeLinkSchema } from "../../../packages/sane-cli/src/native-caller.ts"
 import { handoffNativeCaller, nativeHandoffSchema, nativeHandoffStatusSchema } from "../../../packages/sane-cli/src/native-handoff.ts"
 import { nativeWorkerDescriptions, nativeWorkerOperations, nativeWorkerSchemas, SANE_MANAGED_ONLY } from "../../../packages/sane-cli/src/native-worker-contract.ts"
 import { workerNativeCaller } from "../../../packages/sane-cli/src/native-worker.ts"
 import { codeShareInputSnippets, isInlineCodeShareSnippet, nativeShareCodeDescription, nativeShareCodeSchema, parseCodeShareInput } from "../../../packages/sane-cli/src/native-share-code-contract.ts"
 import { shareCodeNativeCaller } from "../../../packages/sane-cli/src/native-share-code.ts"
+import { nativeUserQuestionsDescription, nativeUserQuestionsSchema, parsePresentQuestionsInput } from "../../../packages/sane-cli/src/native-user-questions-contract.ts"
+import { presentQuestionsNativeCaller } from "../../../packages/sane-cli/src/native-user-questions.ts"
 import { registerExecutionOperations } from "./execution.ts"
 import { createSaneVisibility } from "./visibility.ts"
 
@@ -33,6 +35,23 @@ export const SanePlugin = Plugin.define({
       return { ...await qualify(tool), invocation }
     }
     await ctx.tool.transform(editor => {
+      // App-only, not managed-only: keep this registered for Base/Free and
+      // Code Mode. App admission and attachment are checked by the endpoint.
+      editor.add({
+        name: "present_questions_to_user",
+        description: nativeUserQuestionsDescription,
+        input: nativeUserQuestionsSchema,
+        execute: async (input, tool) => {
+          // Each inner Code Mode callback needs a distinct invocation UUID.
+          const invocation = workerInvocations.userQuestionsCallback(tool)
+          const args = parsePresentQuestionsInput(input)
+          if (typeof registration !== "string" || !registration.startsWith("/")) throw new Error("NATIVE_CONTEXT_UNAVAILABLE: configure an explicit absolute registrationFile plugin option.")
+          const { caller, client } = await qualifyOpenCodeAppCaller(registration, ctx, tool)
+          const signal = (tool as typeof tool & { signal?: AbortSignal }).signal
+          await assertOpenCodeUserQuestionsPermissions(ctx, { ...tool, signal }, client)
+          return { content: JSON.stringify(await presentQuestionsNativeCaller(caller, args, ctx.options.appConnectionFile as string, invocation, signal)) }
+        },
+      })
       editor.add({
         name: "sane_share_code",
         description: nativeShareCodeDescription,
