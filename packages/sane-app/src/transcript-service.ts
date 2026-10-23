@@ -64,7 +64,7 @@ type Materialized = { message: Message; json: string; envelope: TranscriptMessag
 type Projection = {
   identity: string; fingerprint: string; generation: number; history?: ReconciledHistory;
   revision: string; epoch: string; messages: Materialized[]; byId: Map<string, Materialized>;
-  items: TranscriptMetadataItem[]; metadataRevision: string; usage: TranscriptUsage | null;
+  items: TranscriptMetadataItem[]; metadataRevision: string; usage: TranscriptUsage | null; toolCallCount: number;
 };
 type Cursor = { session: string; identity: string; epoch: string; kind: "older" | "newer" | "meta"; anchor?: string; revision?: string; offset?: number };
 
@@ -224,11 +224,20 @@ export class TranscriptService {
     const reported = contextUsageFor(session.harness!, usageRuns, [...models].map(id => ({ id, name: id, efforts: [], contextWindow: 1 })), history, compactions);
     const usage: TranscriptUsage | null = reported && (session.harness === "opencode" ? { tokens: reported.tokens, model: reported.model, time: reported.time, ...(reported.stale ? { stale: true } : {}) } : reported);
     const items: TranscriptMetadataItem[] = [...stored.map(run => ({ kind: "run" as const, run: this.projectedMetadata(run, session) })), ...compactItems];
-    const p: Projection = { identity: identity(session), fingerprint, generation, history, revision: `${this.processId}:r${++this.serial}`, epoch, messages, byId, usage, items, metadataRevision: hash(JSON.stringify(items)) };
+    // Canonical messages already reconcile native imports and App evidence. Count
+    // call identities, not repeated message UPSERTs, hooks, or result events.
+    const toolCallCount = new Set(merged.flatMap(message => message.parts.flatMap(part => part.type === "tool" ? [part.toolCallId ?? part.id] : []))).size;
+    const p: Projection = { identity: identity(session), fingerprint, generation, history, revision: `${this.processId}:r${++this.serial}`, epoch, messages, byId, usage, toolCallCount, items, metadataRevision: hash(JSON.stringify(items)) };
     this.projections.set(session.sessionId, p); return p;
   }
   private summary(session: Session, p: Projection): TranscriptSummary {
     return { sessionId: session.sessionId, revision: p.revision, epoch: p.epoch, usage: p.usage, ...(p.history && !p.history.observation ? { nativeHistoryImportedAt: p.history.importedAt } : {}) };
+  }
+  /** Small state response independent of the client's paginated history window. */
+  async stateSummary(session: Session) {
+    const p = await this.project(session);
+    const latestRun = p.items.findLast(item => item.kind === "run");
+    return { ...this.summary(session, p), toolCallCount: p.toolCallCount, latestRun: latestRun?.kind === "run" ? latestRun.run : null };
   }
   private limit(query: URLSearchParams, fallback: number) {
     const value = query.get("limit");

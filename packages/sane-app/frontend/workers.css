@@ -2,13 +2,19 @@
 .transcript .worker-card,.worker-transcript .worker-card { padding-block:16px; }
 .worker-card > header { display:flex; align-items:center; gap:8px; }
 .worker-card.is-active { border-color:color-mix(in srgb,var(--primary) 26%,var(--border)); }
-.worker-card-heading { display:flex; flex:1; min-width:0; align-items:baseline; flex-wrap:wrap; gap:4px 10px; }
-.worker-card-heading strong { font-size:13px; font-weight:550; overflow-wrap:anywhere; }
-.worker-card-jobs { display:flex; flex-wrap:wrap; gap:4px 6px; min-width:0; }
-.worker-card-jobs code { padding:2px 5px; border-radius:4px; background:var(--muted); color:var(--muted-foreground); font-size:11px; overflow-wrap:anywhere; }
-.worker-card-subject { min-width:0; font-size:12px; overflow-wrap:anywhere; }
+.worker-card-heading { display:flex; flex:1; min-width:0; align-items:baseline; gap:4px 10px; }
+.worker-card-heading strong { min-width:0; flex:0 1 auto; font-size:13px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.worker-card-jobs { display:flex; flex:0 1 auto; gap:4px 6px; min-width:0; max-width:35%; overflow:hidden; }
+.worker-card-jobs code { flex-shrink:0; padding:2px 5px; border-radius:4px; background:var(--muted); color:var(--muted-foreground); font-size:11px; }
+.worker-card-subject { flex:1 1 0; min-width:0; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.worker-card-times { display:flex; align-items:baseline; flex-shrink:0; gap:10px; margin-left:auto; }
 .worker-card-timing,.worker-card-elapsed { font-size:11px; color:var(--muted-foreground); font-variant-numeric:tabular-nums; }
-.worker-card-timing { margin-left:auto; white-space:nowrap; }
+.worker-card-timing,.worker-card-elapsed { white-space:nowrap; }
+.worker-card-status { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; width:16px; height:20px; color:var(--muted-foreground); }
+.worker-card-status.is-completed { color:var(--success); }
+.worker-card-status.is-error { color:var(--error); }
+.worker-card-status .pulse { animation:pulse 1.6s ease-in-out infinite; }
+.worker-card-metric { color:var(--muted-foreground); font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .worker-glyph { flex-shrink:0; }
 .worker-direction { flex-shrink:0; color:var(--muted-foreground); }
 .worker-status { display:inline-flex; align-items:center; gap:6px; color:var(--muted-foreground); font-size:11px; overflow-wrap:anywhere; }
@@ -106,7 +112,12 @@
   .workers-panel-footer { padding-bottom:max(16px, env(safe-area-inset-bottom)); }
   .workers-panel button { min-height:36px; }
   .worker-card > header { flex-wrap:wrap; }
+  .worker-card-heading { flex-basis:calc(100% - 64px); }
+  .worker-card-controls > .worker-secondary-actions { margin-left:0; justify-content:flex-start; }
   .worker-receipt { flex-wrap:wrap; gap:4px 8px; }
   .worker-details-dialog { max-height:90dvh; }
   .worker-result time { margin-left:0; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .worker-card-status .pulse { animation:none; }
 }

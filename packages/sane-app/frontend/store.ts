@@ -1,6 +1,6 @@
 import { useRef, useSyncExternalStore } from "react";
 import { ApiError, conversationClient } from "./cc-client";
-import { publishWorkers, workersFor, registerWorkerSessions, setWorkerNavigator, workerReference, workerProjectionInFlight } from "./worker-client";
+import { publishWorkers, workersFor, registerWorkerSessions, setWorkerNavigator, workerReference, workerProjectionInFlight, clearWorkerStates } from "./worker-client";
 import { consume, createRun } from "./cc-reducer";
 import { pendingTurnRecorded, transcriptMessages } from "./transcript";
 import { contextUsageFor, type ContextUsageSnapshot } from "./context-usage";
@@ -585,6 +585,7 @@ export class ChatStore {
     this.update({ connected: false, loading: true, availability: { canSend: false }, compactState: null, contextUsage: null, interactions: [], handoffApprovals: [] });
   }
   private clearCachedHistory() {
+    clearWorkerStates();
     this.conversationCache.clear(); this.runMap = new Map();
     this.runGateId = ""; this.runGateMarkers = "";
     this.workerReady = false;

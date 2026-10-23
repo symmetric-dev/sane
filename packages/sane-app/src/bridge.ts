@@ -83,7 +83,7 @@ import { workerTerminationUncertainty } from "./worker-recovery";
 import { hasVerifiedSettledTermination } from "./settled-journal-reconciliation";
 import { exchangeDeliveryEvidence, workerDeliveryEvidence, workerExchangePrompt, workerReportPrompt } from "./worker-outbox";
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
-import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery, type WorkerProtocolOperation, type WorkerProtocolPin, type WorkerRecord } from "./worker-contract";
+import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery, type WorkerProtocolOperation, type WorkerProtocolPin, type WorkerRecord, type WorkerStateSnapshot } from "./worker-contract";
 import { explicitObservationChange, isExplicitWorker } from "./worker-protocol";
 import { managedWorkerCoordination, managedWorkerRoles, managedWorkerWaiting } from "./scout-crew-lifecycle";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
@@ -3479,6 +3479,39 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (handoffList && req.method === "GET") {
         const listed = await handoffs.forSession(decodeURIComponent(handoffList[1]!));
         return json({ handoffs: listed.map(presentation => ({ ...presentation, ...(handoffProblems.has(presentation.handoff.id) ? { problem: handoffProblems.get(presentation.handoff.id) } : {}) })) });
+      }
+      const workerState = /^\/api\/sessions\/([^/]+)\/workers\/([^/]+)\/state$/.exec(path);
+      if (workerState) {
+        if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
+        let parentId: string, workerId: string;
+        try { parentId = decodeURIComponent(workerState[1]!); workerId = decodeURIComponent(workerState[2]!); }
+        catch { return json({ error: "Invalid worker selector" }, 400); }
+        const record = workerStore.get(workerId);
+        if (!meta.sessions.some(s => s.sessionId === parentId) || !record || record.parent.sessionId !== parentId) return json({ error: "Worker not found in this parent session" }, 404);
+        // Observe one worker only. Never launch, resume, compact, or dispatch work.
+        const worker = await workers.refresh(record);
+        const session = meta.sessions.find(s => s.sessionId === worker.sessionId);
+        const snapshot: WorkerStateSnapshot = { worker, latestRun: null, toolCallCount: null, contextUsage: null, revision: null, observedAt: new Date().toISOString(), warnings: [] };
+        if (session) {
+          ensureSessionJournals(session.sessionId);
+          try {
+            const summary = await transcripts.stateSummary(session);
+            snapshot.latestRun = summary.latestRun; snapshot.toolCallCount = summary.toolCallCount;
+            snapshot.contextUsage = summary.usage; snapshot.revision = summary.revision;
+          } catch (error) {
+            if (error instanceof TranscriptError) return json({ error: error.message, code: error.code }, error.status);
+            throw error;
+          }
+          if (session.harness === "opencode" && snapshot.contextUsage) {
+            try {
+              const capacity = (await oc.models(session.cwd)).find(model => model.id === snapshot.contextUsage!.model)?.contextWindow;
+              if (capacity) snapshot.contextUsage = { ...snapshot.contextUsage, capacity, percentage: snapshot.contextUsage.tokens / capacity * 100 };
+            } catch { snapshot.warnings.push("Model window capacity unavailable; context percentage cannot be calculated."); }
+          }
+        }
+        snapshot.worker = workerStore.get(workerId)!;
+        snapshot.observedAt = new Date().toISOString();
+        return json(snapshot);
       }
       const workerList = /^\/api\/sessions\/([^/]+)\/workers$/.exec(path);
       if (workerList && req.method === "GET") {

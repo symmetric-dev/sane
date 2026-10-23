@@ -2,6 +2,7 @@ import type { ConversationRef } from "sane-core/contracts";
 import type { WorkerAgentId } from "sane-core/agent-catalog";
 import type { ResolvedAgentLaunch } from "./agent-profiles-contract";
 import type { Run } from "./history";
+import type { TranscriptRunMetadata, TranscriptUsage } from "./transcript-contract";
 
 export const DEFAULT_MAX_WORKERS_PER_CHECKOUT = 8;
 /** Unfinished explicit assignments, including idle ones. Not an execution slot. */
@@ -105,6 +106,17 @@ export type WorkerRecord = {
   attention?: WorkerAttention[];
 };
 export type WorkerResult = { revision: number; runId: string | null; outcome: NonNullable<WorkerRecord["outcome"]>; notification: NonNullable<WorkerRecord["notification"]> };
+/** Explicit, on-demand UI observation. Derived metrics never enter workers.json.
+ * Counts cover recorded calls in this session (including continuations), not descendants. */
+export type WorkerStateSnapshot = {
+  worker: WorkerRecord;
+  latestRun: TranscriptRunMetadata | null;
+  toolCallCount: number | null;
+  contextUsage: TranscriptUsage | null;
+  revision: string | null;
+  observedAt: string;
+  warnings: string[];
+};
 export const workerResults = (w: WorkerRecord): WorkerResult[] => w.results ?? (w.outcome && w.notification ? [{ revision: 1, runId: w.outcome.log?.runId ?? w.runId, outcome: w.outcome, notification: w.notification }] : []);
 /** run is the immutable dispatch snapshot; current execution stays in ordinary run metadata/logs.
  * delivered means native acceptance evidence, not completed execution or model comprehension. */

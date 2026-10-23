@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { request } from "./cc-client";
-import type { WorkerRecord, WorkerDelivery } from "../src/worker-contract";
+import type { WorkerRecord, WorkerDelivery, WorkerStateSnapshot } from "../src/worker-contract";
 import type { WorkerSessionMetadata } from "./types";
 import { pollWhileVisible } from "./visibility";
 
@@ -8,6 +8,10 @@ export type WorkerProjection = { workers: WorkerRecord[]; deliveries: WorkerDeli
 export type WorkerStop = { ids: string[]; includeDescendants?: boolean } | { all: true };
 const empty: WorkerProjection = { workers: [], deliveries: [], continuationSuppressed: false };
 let projections: Record<string, WorkerProjection> = {};
+type WorkerStateRead = { snapshot?: WorkerStateSnapshot; loading: boolean; error: string };
+const emptyState: WorkerStateRead = { loading: false, error: "" };
+let states: Record<string, WorkerStateRead> = {};
+const stateFlights = new Map<string, AbortController>();
 let viewer: WorkerRecord | null = null;
 let references: Record<string, WorkerSessionMetadata> = {};
 let opening = { sessionId: "", loading: false, error: "" };
@@ -20,8 +24,36 @@ const subscribe = (fn: () => void) => { listeners.add(fn); return () => { listen
 export const workerClient = {
   list: (id: string, signal?: AbortSignal): Promise<WorkerProjection> => request(`/api/sessions/${encodeURIComponent(id)}/workers`, { signal }),
   stop: (id: string, input: WorkerStop): Promise<unknown> => request(`/api/sessions/${encodeURIComponent(id)}/workers/cancel`, { method: "POST", body: JSON.stringify(input) }),
+  state: (worker: WorkerRecord, signal?: AbortSignal): Promise<WorkerStateSnapshot> => request(`/api/sessions/${encodeURIComponent(worker.parent.sessionId)}/workers/${encodeURIComponent(worker.id)}/state`, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : undefined }),
 };
+export function clearWorkerStates() {
+  for (const controller of stateFlights.values()) controller.abort();
+  stateFlights.clear(); states = {}; emit();
+}
+export function useWorkerState(id: string) { return useSyncExternalStore(subscribe, () => states[id] ?? emptyState); }
+/** Explicit clicks only; shared across every instance of the worker's card. */
+export async function refreshWorkerState(worker: WorkerRecord) {
+  if (stateFlights.has(worker.id)) return;
+  const controller = new AbortController(); stateFlights.set(worker.id, controller);
+  states = { ...states, [worker.id]: { ...states[worker.id], loading: true, error: "" } }; emit();
+  const current = () => stateFlights.get(worker.id) === controller && !controller.signal.aborted;
+  try {
+    const snapshot = await workerClient.state(worker, controller.signal);
+    if (!current()) return;
+    if (snapshot.worker.id !== worker.id || snapshot.worker.sessionId !== worker.sessionId || snapshot.worker.parent.sessionId !== worker.parent.sessionId) throw new Error("Worker state identity mismatch.");
+    states = { ...states, [worker.id]: { snapshot, loading: false, error: "" } };
+    projections = Object.fromEntries(Object.entries(projections).map(([id, projection]) => [id, projection.workers.some(w => w.id === worker.id) ? { ...projection, workers: projection.workers.map(w => w.id === worker.id && w.updatedAt <= snapshot.worker.updatedAt ? snapshot.worker : w) } : projection]));
+    emit();
+  } catch (error) {
+    if (current()) { states = { ...states, [worker.id]: { ...states[worker.id], loading: false, error: error instanceof Error ? error.message : "Worker refresh unavailable" } }; emit(); }
+  } finally { if (stateFlights.get(worker.id) === controller) stateFlights.delete(worker.id); }
+}
 export function publishWorkers(id: string, value: WorkerProjection) {
+  // A slower pre-refresh listing must not overwrite the worker just observed.
+  value = { ...value, workers: value.workers.map(worker => {
+    const refreshed = states[worker.id]?.snapshot?.worker;
+    return refreshed && refreshed.sessionId === worker.sessionId && refreshed.updatedAt > worker.updatedAt ? refreshed : worker;
+  }) };
   if (JSON.stringify(projections[id]) === JSON.stringify(value)) return;
   projections = { ...projections, [id]: value }; emit();
 }
