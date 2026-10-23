@@ -15,8 +15,8 @@ export const WORKSPACE_SELECTOR_SHORTCUT = {
   id: "workspace.toggle-selector", label: "Toggle workspace selection",
   scope: { kind: "global" }, owner: "application",
   bindings: [
-    { ...navigationBinding("ArrowDown", true), platform: "mac" },
-    { ...navigationBinding("ArrowDown", false), platform: "windows-linux" },
+    { ...navigationBinding("o", true), platform: "mac" },
+    { ...navigationBinding("o", false), platform: "windows-linux" },
   ],
   description: "Open or close the workspace selection dialog.",
 } as const satisfies ShortcutDefinition;

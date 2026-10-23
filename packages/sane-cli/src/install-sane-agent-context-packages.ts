@@ -104,7 +104,7 @@ export class AgentContextPackageInstallationError extends Error {
 export interface AgentContextPackageInstallationOptions {
   /** Enables isolated tests and an explicitly configured local SANE home. */
   homeDirectory?: string
-  /** Root containing the source `opencode/agents` and `skills` directories. */
+  /** Repository root containing `context/agents`, `context/skills`, and runtime sources. */
   sourceRoot?: string
   /** YAML mapping of agent names (without .md) to model strings or model/variant objects. */
   modelConfigPath?: string
@@ -178,15 +178,15 @@ function installationEntries(
     ...runtimeOnly ? [] : [
     ...AGENT_FILENAMES.map((filename) => ({
       agentName: filename.slice(0, -3),
-      source: join(sourceRoot, "opencode", "agents", filename),
+      source: join(sourceRoot, "context", "agents", filename),
       destination: join(homeDirectory, ".config", "opencode", "agents", filename),
     })),
     ...ROLE_SKILL_NAMES.map((skillName) => ({
-      source: join(sourceRoot, "skills", skillName, "SKILL.md"),
+      source: join(sourceRoot, "context", "skills", skillName, "SKILL.md"),
       destination: join(homeDirectory, ".agents", "skills", skillName, "SKILL.md"),
     })),
     ...ROLE_SKILL_NAMES.map((skillName) => ({
-      source: join(sourceRoot, "skills", skillName, "SKILL.md"),
+      source: join(sourceRoot, "context", "skills", skillName, "SKILL.md"),
       destination: join(homeDirectory, ".claude", "skills", skillName, "SKILL.md"),
     })),
     ...GLOBAL_SUPPORT_SKILL_NAMES.map((skillName) => ({
@@ -258,12 +258,12 @@ async function resourceInstallationEntries(
   }
   for (const skillName of ROLE_SKILL_NAMES) {
     await visit(
-      join(sourceRoot, "skills", skillName, "resources"),
+      join(sourceRoot, "context", "skills", skillName, "resources"),
       join(homeDirectory, ".agents", "skills", skillName, "resources"),
       true,
     )
     await visit(
-      join(sourceRoot, "skills", skillName, "resources"),
+      join(sourceRoot, "context", "skills", skillName, "resources"),
       join(homeDirectory, ".claude", "skills", skillName, "resources"),
       true,
     )

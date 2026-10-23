@@ -9,7 +9,7 @@ export const DEFAULT_MAX_UNFINISHED_EXPLICIT_WORKERS = 24;
 
 /** Supplied by the authenticated integration, never by tool arguments. */
 export type WorkerCaller = { envelope: unknown; runId: string; toolCallId: string; invocation?: import("../../sane-cli/src/native-worker-contract").NativeWorkerInvocation };
-export type WorkerStart = { requestId: string; worker: WorkerAgentId; prompt: string; context?: string; jobs?: string[] };
+export type WorkerStart = { requestId: string; worker: WorkerAgentId; prompt: string; context?: string; jobs?: string[]; subject?: string };
 export type WorkerState = "reserved" | "launching" | "running" | "waiting" | "idle" | "uncertain" | "cancelling" | "completed" | "failed" | "interrupted";
 export type WorkerProtocolOperation = "complete" | "notify" | "message-parent" | "message-child";
 /** Absent protocol is legacy. Do not infer this from role, coordination, or tool allow. */
@@ -98,6 +98,8 @@ export type WorkerRecord = {
   settlement?: WorkerSettlement;
   /** Operator-recovered quota failure. Historical results and native runs remain immutable. */
   usageRecovery?: { runId: string; throughRunId: string; throughRevision: number; at: string };
+  /** Operator-reopened Stop cancellation; historical interruptions stay recorded. */
+  stopRecovery?: { runId: string; throughRunId: string; throughRevision: number; at: string };
   exchanges?: WorkerExchange[];
   operationReceipts?: WorkerOperationReceipt[];
   attention?: WorkerAttention[];

@@ -1,111 +1,22 @@
 import { isAssistantAgentId, isWorkerAgentId, type StoredSaneAgentIdentity, type WorkerAgentId } from "./agent-catalog.ts"
-import { SANE_WORKER_PROCEDURES } from "./sane-worker-procedures.ts"
+import { readWorkerProcedure } from "./sane-worker-procedures.ts"
+import { readFramework, standingFrameworkNames } from "./sane-framework.ts"
 
-/** Bump whenever framework or assignment text changes; sessions keep the version they were created with. */
-export const SANE_CONTEXT_VERSION = 5
-
-export const SANE_CORE_CONTEXT = `# SANE Context
-
-## SANE
-
-SANE means **Sane Agentic Noesis Edifice**. It is a structured, reasonable, and agile way for people and agents to acquire and apply knowledge in service of deliberate change.
-
-A **workstream** groups the documents and state for an undertaking. Its documents describe current requirements, solutions, and outcomes; the CLI and sessions hold progress and collaboration history. Implementation happens in the target repository, not in a separate duplicate tree.
-
-The user directs the work and makes decisions with the assistant.
-
-There are 2 types of agents: **Assistants**, and **Workers**. Assistants work directly with the user while workers can be run by assistants to perform tasks.
-
-You shall never talk about or reference workstream specific language or workflow in the implementation repository contents. Keep the meta-language separate from the implementation repository.
-
-## Context
-
-**Knowledge Gaps** are missing understanding needed to make a product,
-design, or implementation decision—for example, how a feature should
-behave or how a dependency integrates with the solution. They are often
-visible in Design and Engineering documents.
-
-**Operational Gaps** are missing procedures, tooling, or repository
-context needed for agents to carry out assigned work—for example, how a
-worker locates relevant code, prepares the environment, runs verification,
-or updates artifacts. They are often visible in Planning and Execution
-documents.
-
-**Context Artifacts** preserve reusable knowledge and operational guidance
-for future work. Skills and documentation are examples; the term is
-independent of how that context is represented or stored.
-
-## Lifecycle
-
-Workstreams have a Main Track and Support Tracks.
-
-The Main Track follows four phases: Design → Engineering → Planning → Execution.
-
-Support Tracks may run alongside the Main Track to help resolve Knowledge Gaps and Operational Gaps along the way.`
-
-export const SANE_ASSISTANT_CONTEXT = `## State
-
-Follow your role's skills for the assigned work and coordination with other sessions.
-
-View current status with \`sane view\` and use the CLI to record state.
-
-1. **Pickup:** at new session start, read the assigned context and check required
-   inputs. Confirm readiness and wait for the user to proceed, including when
-   the session starts from a handoff.
-2. **Assistance:** work with the user within the agreed scope. This may include
-   handoff or handling updates from other sessions, following your role's skill.
-3. **Delivery:** validate outputs with \`sane validate <phase>\` and present them
-   for user review. Delivery may include handoff when the user requests it.
-   If revisions are requested, return to Assistance and then Delivery.
-
-## State Statuses
-
-- \`pending\` — Not started.
-- \`in_progress\` — Session is in progress.
-- \`delivered\` — Phase work has been delivered.
-
-A worker notification or consultation is not completion. Respond to an authorized ongoing child with \`sane_worker_message\`; retain its worker identity. Dispatch dependent work only after its terminal outcome. Ending your own turn permits asynchronous replies.`
-
-export const SANE_WORKER_ASSIGNMENT_DISCIPLINE = `## Worker Assignment Discipline
-
-### Concepts
-
-- **Prompt engineering:** Constructing a worker assignment that clearly identifies the task, authoritative references, and role-specific inputs.
-- **Meta-language:** Language about framework architecture, agent roles, coordination, or workflow procedures rather than the assigned work.
-- **Context leakage:** Passing parent-specific information—such as deliberation, coordination history, or workflow state—into a worker's context.
-- **Instruction duplication:** Repeating requirements or procedures instead of referencing their authoritative source.
-- **Requirement drift:** Introducing unapproved outcomes, restrictions, verification obligations, or acceptance criteria through a worker assignment.
-
-### Discipline
-
-During worker assignments, make the task clear and avoid unnecessary meta-language, context leakage, and instruction duplication.
-
-Examples of unnecessary additions:
-
-- **Meta-language**
-  - "Planning amended the Spec after Engineering reapproved the solution."
-  - "Execution is coordinating this checkpoint in delegated-cycle mode."
-- **Context leakage**
-  - "The previous worker failed due to timeout."
-  - "We discussed several approaches with the user before choosing this assignment."
-  - "This is our second correction round; the earlier round was an authorization correction."
-- **Instruction duplication**
-  - "Do not run tests from the root, as the Spec says."
-  - "Remember to write and validate the Job Report."
-  - Repeating the Job Spec's implementation steps in the dispatch prompt.
-
-These additions are unnecessary when they do not affect the assigned task. A timeout may matter when correcting a timeout-related problem; a specification amendment may matter when an earlier report describes requirements that have since changed.`
+/** Composition/assignment format version; canonical prose revisions use pinned package hashes. */
+export const SANE_CONTEXT_VERSION = 6
 
 export type SaneFrameworkContext = { version: number; text: string }
 /** Current assistants get core + assistant; Planning and Execution also get assignment discipline.
  * Workers get core; everything else gets none. */
-export function frameworkContext(agent: StoredSaneAgentIdentity | undefined): SaneFrameworkContext | null {
-  if (agent?.kind === "assistant" && isAssistantAgentId(agent.role)) {
-    const text = `${SANE_CORE_CONTEXT}\n\n${SANE_ASSISTANT_CONTEXT}`
-    return { version: SANE_CONTEXT_VERSION, text: agent.role === "planning" || agent.role === "execution" ? `${text}\n\n${SANE_WORKER_ASSIGNMENT_DISCIPLINE}` : text }
-  }
-  if (agent?.kind === "worker" && isWorkerAgentId(agent.role)) return { version: SANE_CONTEXT_VERSION, text: SANE_CORE_CONTEXT }
-  return null
+export function frameworkContext(agent: StoredSaneAgentIdentity | undefined, pinned?: readonly { id: string; text: string }[]): SaneFrameworkContext | null {
+  if (!agent || !(agent.kind === "assistant" ? isAssistantAgentId(agent.role) : isWorkerAgentId(agent.role))) return null
+  const text = standingFrameworkNames(agent).map(name => {
+    if (!pinned) return readFramework(name).text
+    const asset = pinned.find(asset => asset.id === `framework.${name}`)
+    if (!asset?.text.trim()) throw new Error(`Pinned framework context is missing: ${name}`)
+    return asset.text
+  }).join("\n\n")
+  return { version: SANE_CONTEXT_VERSION, text }
 }
 
 export type SaneSessionRoots = { workstreamId: string | null; workstreamRoot: string | null; implementationRoot: string }
@@ -143,7 +54,7 @@ export function assignmentContext(roots: SaneAssignmentRoots, jobs: readonly San
 }
 /** A worker's assignment: its role procedure, then its roots and jobs. The implementer procedure
  * is Job-Spec specific, so a free-mode implementer (no job) receives only its roots. */
-export function workerContext(role: WorkerAgentId, roots: SaneAssignmentRoots, jobs: readonly SaneAssignmentJob[]): string {
+export function workerContext(role: WorkerAgentId, roots: SaneAssignmentRoots, jobs: readonly SaneAssignmentJob[], procedure?: string): string {
   if (role === "implementer" && !jobs.length) return assignmentContext(roots, jobs)
-  return `${SANE_WORKER_PROCEDURES[role]}\n\n${assignmentContext(roots, jobs)}`
+  return `${procedure ?? readWorkerProcedure(role)}\n\n${assignmentContext(roots, jobs)}`
 }

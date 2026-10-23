@@ -25,7 +25,7 @@ export type WorkspaceSelectionModel = {
   isOpen: () => boolean;
   selectWorkspace: (workspaceId: string, preferredWorktreeId?: string) => boolean;
   goWorkspace: (workspaceId: string) => boolean;
-  selectWorktree: (worktreeId: string) => void;
+  selectWorktree: (worktreeId: string, workspaceId?: string) => void;
   selectWorkstream: (workstreamId: string | null) => void;
 };
 
@@ -36,9 +36,9 @@ const contextDefaults = (workspaceId: string | null, worktreeId: string | null, 
 });
 function rebaseContext(context: SidebarContext, workspaceId: string | null, worktreeId: string | null): SidebarContext {
   if (context.workspaceId === workspaceId && context.worktreeId === worktreeId) return context;
-  // Moving between worktrees in the same workspace keeps workspace filters and workstream scope.
+  // Moving between worktrees keeps explicit workspace filters and workstream scope.
   if (context.workspaceId === workspaceId) return { ...context, worktreeId };
-  return { workspaceId, worktreeId, workstreamId: null, filter: defaultFilterFor(workspaceId, worktreeId) };
+  return { workspaceId, worktreeId, workstreamId: null, filter: contextDefaults(workspaceId, worktreeId, null) };
 }
 
 /** Mount once in the shell; pass the same model to desktop and drawer sidebars. */
@@ -47,8 +47,9 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const auth = workspaceEpoch();
   const nav = repository.navigation;
-  const [savedContext, setContext] = useState<SidebarContext>(() => ({ workspaceId: nav.workspaceId, worktreeId: nav.worktreeId, workstreamId: null, filter: defaultFilterFor(nav.workspaceId, nav.worktreeId) }));
+  const [savedContext, setContext] = useState<SidebarContext>(() => ({ workspaceId: nav.workspaceId, worktreeId: nav.worktreeId, workstreamId: null, filter: contextDefaults(nav.workspaceId, nav.worktreeId, null) }));
   const [selectionRestored, setSelectionRestored] = useState(false);
+  const [worktreeSelectionVersion, setWorktreeSelectionVersion] = useState(0);
   const context = rebaseContext(savedContext, nav.workspaceId, nav.worktreeId);
   const { filter } = context;
   // Fence resets by scope: an explicit modal selection updates navigation and
@@ -138,20 +139,15 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     selectionError, setOpen, isOpen,
     selectWorkspace: (workspaceId, preferredWorktreeId) => activateWorkspace(workspaceId, false, preferredWorktreeId),
     goWorkspace: workspaceId => activateWorkspace(workspaceId, true),
-    selectWorktree: worktreeId => {
+    selectWorktree: (worktreeId, workspaceId) => {
       if (auth !== workspaceEpoch() || workspaceSelectionBlocked() || !catalog.snapshot().ready) return;
       const current = catalog.snapshot();
-      const workspace = current.workspaces.find(w => w.workspaceId === current.navigation.workspaceId);
+      const workspace = current.workspaces.find(w => w.workspaceId === (workspaceId ?? current.navigation.workspaceId));
       if (!workspace?.worktrees.some(t => t.worktreeId === worktreeId && t.state === "available")) return;
-      setSelectionError("");
-      setSelectionRestored(true);
-      const rebased = rebaseContext(savedContext, current.navigation.workspaceId, worktreeId);
-      const nextFilter = rebased.filter.worktreeId !== "all" && rebased.filter.worktreeId !== worktreeId
-        ? { ...rebased.filter, worktreeId: "all" }
-        : rebased.filter;
-      saveWorkstreamSelection(current.navigation.workspaceId, rebased.workstreamId, nextFilter);
-      catalog.navigate({ workspaceId: current.navigation.workspaceId, worktreeId, filePath: null, comparison: null });
-      setContext({ ...rebased, worktreeId, filter: nextFilter });
+      // Both the picker and sidebar select an exact checkout and clear workstream scope.
+      selectContext(workspace.workspaceId, worktreeId, null);
+      // Reselecting the current checkout must also collapse the other sidebar groups.
+      setWorktreeSelectionVersion(version => version + 1);
     },
     selectWorkstream: workstreamId => {
       if (auth !== workspaceEpoch() || workspaceSelectionBlocked()) return;
@@ -201,7 +197,7 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   const activeFilterCount = (filter.harness !== "all" ? 1 : 0) + (filter.status !== "all" ? 1 : 0) + (filter.workstreamId !== "all" ? 1 : 0) + (filter.phase !== "all" ? 1 : 0) + (filter.showDeleted ? 1 : 0)
     + (filter.workspaceId === defaults.workspaceId && filter.worktreeId === defaults.worktreeId ? 0 : 1);
   const scoped = deferred.workspaceId !== "all" && deferred.workspaceId !== "unavailable";
-  return { repository, nav, filter, setFilter, defaults, workspaceSelection, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, workerCounts, groups, scoped, activeFilterCount };
+  return { repository, nav, filter, setFilter, defaults, workspaceSelection, worktreeSelectionVersion, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, workerCounts, groups, scoped, activeFilterCount };
 }
 
 export type ConversationSidebarModel = ReturnType<typeof useConversationSidebarModel>;

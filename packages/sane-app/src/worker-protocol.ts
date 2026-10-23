@@ -123,6 +123,8 @@ export type ExplicitObservationInput = {
   ownerSettled: boolean;
   terminationUncertain: boolean;
   cancelRequested: boolean;
+  /** Durable run-scoped Stop evidence, distinct from assignment cancellation. */
+  runStopped?: boolean;
   /** App-owned failure text only. Never used to invent an explicit completion. */
   nativeSummary?: string;
   preparationOutcome?: { status: "failed" | "interrupted"; summary: string };
@@ -145,12 +147,12 @@ export function explicitObservationChange(worker: WorkerRecord, input: ExplicitO
   if (input.run.status === "running") return { state: settlingState(worker, input), ...(continuation ? { continuation } : {}) };
   if (completion) return publishAccepted(worker, completion, input.run, input, continuation);
   if (input.cancelRequested) return appOwned(worker, "interrupted", input.nativeSummary || "Cancelled before explicit completion", input.run, continuation);
-  if (input.run.status === "failed" || input.run.status === "interrupted") return appOwned(worker, input.run.status, input.nativeSummary || input.run.status, input.run, continuation);
+  if (input.run.status === "failed" || input.run.status === "interrupted" && !input.runStopped) return appOwned(worker, input.run.status, input.nativeSummary || input.run.status, input.run, continuation);
   return {
     state: "idle",
     assignment: worker.assignment === "terminal" ? "terminal" : "open",
     error: undefined,
-    ...(continuation ? { continuation: { runId: input.run.runId, state: "completed" } } : {}),
+    ...(continuation ? { continuation } : {}),
   };
 }
 
@@ -172,7 +174,7 @@ function publishAccepted(worker: WorkerRecord, completion: WorkerCompletion, run
     error: undefined,
     ...(continuation ? { continuation: { runId: continuation.runId, state: completion.outcome.status } } : {}),
   };
-  if (!worker.outcome && !workerResults(worker).some(result => result.revision > (worker.usageRecovery?.throughRevision ?? 0))) {
+  if (!worker.outcome && !workerResults(worker).some(result => result.revision > ((worker.usageRecovery ?? worker.stopRecovery)?.throughRevision ?? 0))) {
     change.outcome = {
       status: completion.outcome.status,
       at: completion.at,

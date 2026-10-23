@@ -9,6 +9,7 @@ import type { StoredSaneAgentIdentity } from "sane-core/agent-catalog";
 import type { CanonicalExecutionStore } from "./canonical-execution-store";
 import type { ContextPackageStore } from "./context-package-store";
 import { saneSessionContext } from "./agent-launch";
+import { frameworkContext } from "sane-core/sane-context";
 
 export type CanonicalActivation = { saneExecution: NonNullable<Session["saneExecution"]>; saneContext: NonNullable<Session["saneContext"]> };
 export type ActivationSnapshot = { saneExecution?: Session["saneExecution"]; saneContext?: Session["saneContext"] };
@@ -57,7 +58,8 @@ export async function validateCanonicalActivation(pair: CanonicalActivation, ide
 export async function createCanonicalActivation(identity: StoredSaneAgentIdentity, stores: ActivationStores): Promise<CanonicalActivation> {
   const saneExecution = await stores.execution.create(identity);
   const context = await stores.context.create(identity);
-  const { saneContext } = saneSessionContext(identity);
+  const { bundle } = await stores.context.load(context);
+  const { saneContext } = saneSessionContext(identity, undefined, frameworkContext(identity, bundle.assets));
   if (!saneContext) throw new Error("Canonical activation requires a SANE identity");
   const pair = { saneExecution, saneContext: { ...saneContext, package: context } };
   await validateCanonicalActivation(pair, identity, stores);

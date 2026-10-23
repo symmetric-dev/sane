@@ -57,7 +57,7 @@ export function ConversationSidebar({ state, model, mode, selectedId, onChoose, 
 export function ConversationSidebarList({ state, model, mode, selectedId, onSelect }: {
   state: State; model: ConversationSidebarModel; mode: ConversationSidebarMode; selectedId: string | null; onSelect: (id: string) => void;
 }) {
-  const { repository, nav, filter, setFilter, workspaceSelection, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, workerCounts, groups, scoped, activeFilterCount } = model;
+  const { repository, nav, filter, setFilter, workspaceSelection, worktreeSelectionVersion, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, workerCounts, groups, scoped, activeFilterCount } = model;
   // Dialog visibility is presentation-local: opening the drawer must not create two modal dialogs.
   const [dialogOpen, setDialogOpen] = useState(false);
   const [expandedWorktrees, setExpandedWorktrees] = useState<Record<string, boolean>>({});
@@ -74,8 +74,9 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
   useEffect(() => {
     if (!nav.workspaceId || !nav.worktreeId) return;
     const key = `${nav.workspaceId}:${nav.worktreeId}`;
-    setExpandedWorktrees(prev => prev[key] === false ? { ...prev, [key]: true } : prev);
-  }, [nav.workspaceId, nav.worktreeId]);
+    if (history) setExpandedWorktrees(prev => prev[key] === false ? { ...prev, [key]: true } : prev);
+    else setExpandedWorktrees({ [key]: true });
+  }, [nav.workspaceId, nav.worktreeId, worktreeSelectionVersion, history]);
 
   const buildBuckets = (groupId: string | null, groupConversations: Conversation[]): WorktreeBucket[] => {
     const workspace = groupId ? repository.workspaces.find(w => w.workspaceId === groupId) : undefined;
@@ -132,18 +133,17 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
   const isExpanded = (bucket: WorktreeBucket, isCurrentWorktree: boolean, hasSelected: boolean) => {
     if (hasQuery && bucket.conversations.length > 0) return true;
     if (bucket.key in expandedWorktrees) return expandedWorktrees[bucket.key]!;
-    return isCurrentWorktree || hasSelected || bucket.conversations.length > 0;
+    return isCurrentWorktree || (history && (hasSelected || bucket.conversations.length > 0));
   };
 
   const toggleBucket = (key: string, currentExpanded: boolean) => {
     setExpandedWorktrees(prev => ({ ...prev, [key]: !currentExpanded }));
   };
 
-  const selectBucket = (bucket: WorktreeBucket, isCurrentWorktree: boolean, currentExpanded: boolean) => {
-    if (!history && bucket.available && bucket.worktreeId && !isCurrentWorktree) {
-      setExpandedWorktrees(prev => ({ ...prev, [bucket.key]: true }));
-      if (bucket.workspaceId === nav.workspaceId) workspaceSelection.selectWorktree(bucket.worktreeId);
-      else if (bucket.workspaceId) workspaceSelection.selectWorkspace(bucket.workspaceId, bucket.worktreeId);
+  const selectBucket = (bucket: WorktreeBucket, currentExpanded: boolean) => {
+    if (!history && bucket.available && bucket.workspaceId && bucket.worktreeId) {
+      setExpandedWorktrees({ [bucket.key]: true });
+      workspaceSelection.selectWorktree(bucket.worktreeId, bucket.workspaceId);
       return;
     }
     toggleBucket(bucket.key, currentExpanded);
@@ -151,12 +151,8 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
 
   const newInBucket = (bucket: WorktreeBucket) => {
     if (!bucket.available || !bucket.worktreeId) return;
-    setExpandedWorktrees(prev => ({ ...prev, [bucket.key]: true }));
-    if (bucket.workspaceId === nav.workspaceId && bucket.worktreeId !== nav.worktreeId) {
-      workspaceSelection.selectWorktree(bucket.worktreeId);
-    } else if (bucket.workspaceId && bucket.workspaceId !== nav.workspaceId) {
-      workspaceSelection.selectWorkspace(bucket.workspaceId, bucket.worktreeId);
-    }
+    setExpandedWorktrees({ [bucket.key]: true });
+    if (bucket.workspaceId) workspaceSelection.selectWorktree(bucket.worktreeId, bucket.workspaceId);
     onSelect("");
   };
 
@@ -209,7 +205,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
       const conversation = state.conversations.find(c => c.id === hit.sessionId);
       return <button key={`${hit.sessionId}:${hit.runId ?? "title"}:${index}`} type="button" className="history-hit" disabled={!history && state.sending} onClick={() => onSelect(hit.sessionId)} title={conversation?.title ? `${conversation.title}\n${conversation.cwd}` : conversation?.cwd || hit.sessionId}><span>{formatTitle(conversation?.title, basename(conversation?.cwd))}</span><small className="muted"> {hit.snippet}</small></button>;
     })}</div>}
-    <nav className="history-list" aria-label={history ? "Sessions" : "Conversation history"} aria-busy={membershipPending && !membershipError}>{groups.map(group => {
+    <nav className="history-list conversation-sidebar-list" aria-label={history ? "Sessions" : "Conversation history"} aria-busy={membershipPending && !membershipError}>{groups.map(group => {
       if (filter.workspaceId === "unavailable" && group.id !== null) return null;
       if (scoped && group.id !== filter.workspaceId) return null;
       const groupConversations = visible.filter(c => group.id ? c.workspaceId === group.id : !c.workspaceId || !repository.workspaces.some(w => w.workspaceId === c.workspaceId));
@@ -241,7 +237,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
                 aria-current={isCurrentWorktree ? "true" : undefined}
                 disabled={!history && state.sending}
                 title={bucket.title}
-                onClick={() => selectBucket(bucket, isCurrentWorktree, expanded)}
+                onClick={() => selectBucket(bucket, expanded)}
               >
                 <FiGitBranch size={13} className="worktree-group-icon" aria-hidden="true" />
                 <span className="worktree-group-name">{bucket.label}</span>

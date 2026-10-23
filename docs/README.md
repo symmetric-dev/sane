@@ -5,8 +5,8 @@ Design, Engineering, Planning, and Execution, with Research available throughout
 
 - **[Workflow Playbook](SANE_WORKFLOW.md)** — install SANE, start a workstream,
   work through the phases, and use the everyday commands. Start here.
-- [Role skills](../skills/) — detailed assistant responsibilities and procedures.
-- [Agent definitions](../opencode/agents/sane/) — assistant and worker configurations.
+- [Role skills](../context/skills/) — detailed assistant responsibilities and procedures.
+- [Agent definitions](../context/agents/sane/) — assistant and worker configurations.
 - [Templates](../templates/) — source templates for workstream documents.
 - [SANE App](sane-app/README.md) — current state, operator references and ongoing work.
 - [Framework animation pattern](animation/README.md) — triangle phase mapping,

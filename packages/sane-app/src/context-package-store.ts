@@ -3,15 +3,13 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { isAssistantAgentId, isWorkerAgentId, type StoredSaneAgentIdentity } from "sane-core/agent-catalog";
+import { workerProcedureSource } from "sane-core/sane-worker-procedures";
+import { parseContextMarkdown } from "sane-core/context-markdown";
+import { frameworkNames, frameworkSource } from "sane-core/sane-framework";
 import { contextAsset, contextHash, createContextPackage, validateContextPackage, type ContextAsset, type ContextPackage, type ContextPackageRef } from "./context-package";
 
-function markdown(text: string): { body: string; description: string } {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
-  if (!match) throw new Error("Context Markdown requires frontmatter");
-  const metadata = Bun.YAML.parse(match[1]) as Record<string, unknown>;
-  if (!metadata || typeof metadata !== "object" || typeof metadata.description !== "string") throw new Error("Context Markdown requires a description");
-  return { body: text.slice(match[0].length), description: metadata.description };
-}
+// Existing pinned packages retain their original source paths and hashes.
+const skillSourcePrefix = /^(?:context\/)?skills\//;
 
 async function pinnedText(path: string): Promise<string> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -32,13 +30,20 @@ export class ContextPackageStore {
   }
   async create(identity: StoredSaneAgentIdentity): Promise<ContextPackageRef> {
     if (!identity || (identity.kind === "assistant" ? !isAssistantAgentId(identity.role) : identity.kind !== "worker" || !isWorkerAgentId(identity.role))) throw new Error("An archived role requires its original context package; current roles are not substitutes");
-    const roleSource = `opencode/agents/sane/${identity.kind}/${identity.role}.md`;
-    const role = markdown(await this.source(roleSource));
+    const roleSource = `context/agents/sane/${identity.kind}/${identity.role}.md`;
+    const role = parseContextMarkdown(await this.source(roleSource));
     const assets = [contextAsset(`role.${identity.kind}.${identity.role}`, roleSource, role.body, "role", role.description)];
-    if (identity.kind === "assistant") for (const phase of ["pickup", "assistance", "delivery"]) {
-      const id = `sane-assistant-${identity.role}-${phase}`, source = `skills/${id}/SKILL.md`, parsed = markdown(await this.source(source));
+    for (const name of frameworkNames(identity)) {
+      const source = frameworkSource(name), parsed = parseContextMarkdown(await this.source(source));
+      assets.push(contextAsset(`framework.${name}`, source, parsed.body.trimEnd(), "framework", parsed.description));
+    }
+    if (identity.kind === "worker") {
+      const source = workerProcedureSource(identity.role), parsed = parseContextMarkdown(await this.source(source), false);
+      assets.push(contextAsset(`worker-procedure.${identity.role}`, source, parsed.body, "procedure", parsed.description));
+    } else for (const phase of ["pickup", "assistance", "delivery"]) {
+      const id = `sane-assistant-${identity.role}-${phase}`, source = `context/skills/${id}/SKILL.md`, parsed = parseContextMarkdown(await this.source(source));
       assets.push(contextAsset(id, source, parsed.body, "procedure", parsed.description));
-      const resources = join(this.sourceRoot, "skills", id, "resources");
+      const resources = join(this.sourceRoot, "context", "skills", id, "resources");
       try { await lstat(resources); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
       await this.resources(resources, id, assets);
     }
@@ -58,7 +63,7 @@ export class ContextPackageStore {
       if (entry.isDirectory()) { await this.resources(path, procedure, assets); continue; }
       if (!entry.isFile()) throw new Error("Context resources must be regular files");
       const source = relative(this.sourceRoot, path).split(sep).join("/");
-      const suffix = source.slice(`skills/${procedure}/`.length);
+      const suffix = source.slice(`context/skills/${procedure}/`.length);
       // IDs are logical names; materialized paths preserve authored relative links.
       assets.push(contextAsset(`${procedure}/${suffix.toLowerCase()}`, source, await this.source(source), "resource"));
     }
@@ -72,8 +77,8 @@ export class ContextPackageStore {
     return join(await realpath(this.storeRoot), revision);
   }
   private assetPath(directory: string, asset: ContextAsset) {
-    if (asset.kind === "resource" && (!asset.source.startsWith("skills/") || asset.source.includes("\\") || asset.source.split("/").some(p => !p || p === "." || p === ".."))) throw new Error("Invalid private context resource source");
-    const path = asset.kind === "procedure" ? `${asset.id}/SKILL.md` : asset.kind === "resource" ? asset.source.replace(/^skills\//, "") : `${asset.id}.md`;
+    if (asset.kind === "resource" && (!skillSourcePrefix.test(asset.source) || asset.source.includes("\\") || asset.source.split("/").some(p => !p || p === "." || p === ".."))) throw new Error("Invalid private context resource source");
+    const path = asset.kind === "procedure" ? asset.source.startsWith("context/worker-procedures/") ? `${asset.id}.md` : `${asset.id}/SKILL.md` : asset.kind === "resource" ? asset.source.replace(skillSourcePrefix, "") : `${asset.id}.md`;
     const target = resolve(directory, path);
     if (!target.startsWith(resolve(directory) + sep)) throw new Error("Context asset escapes private package");
     return target;
@@ -125,7 +130,7 @@ export class ContextPackageStore {
       paths.add(key);
     }
     const sources = new Set(bundle.assets.map(a => a.source));
-    for (const asset of bundle.assets.filter(a => a.source.startsWith("skills/"))) {
+    for (const asset of bundle.assets.filter(a => skillSourcePrefix.test(a.source))) {
       // Only explicit authored relative resource references, not workstream templates.
       for (const match of asset.text.matchAll(/(`|\]\()(\.?\/?resources\/[^`\s)]+)(?:`|\))/g)) {
         const file = match[1] === "`" ? match[2] : match[2].split(/[?#]/, 1)[0];

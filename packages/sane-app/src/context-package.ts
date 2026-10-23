@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isAssistantAgentId, isStoredAssistantAgentId, isWorkerAgentId, type StoredSaneAgentIdentity } from "sane-core/agent-catalog";
-import { SANE_CORE_CONTEXT, SANE_ASSISTANT_CONTEXT, SANE_WORKER_ASSIGNMENT_DISCIPLINE } from "sane-core/sane-context";
-import { SANE_WORKER_PROCEDURES } from "sane-core/sane-worker-procedures";
+import { frameworkNames, readFramework } from "sane-core/sane-framework";
+import { readWorkerProcedure, workerProcedureSource } from "sane-core/sane-worker-procedures";
 
 export const contextHash = (text: string) => createHash("sha256").update(text).digest("hex");
 export type ContextAsset = { id: string; source: string; text: string; sha256: string; description: string; kind: "role" | "framework" | "procedure" | "resource" };
@@ -16,18 +16,19 @@ export function contextAsset(id: string, source: string, text: string, kind: Con
   return { id, source, text, kind, description, sha256: contextHash(text) };
 }
 
-/** All bytes are explicit inputs. Rendering never enrolls a session or changes job state. */
+/** Stores supply pinned procedure bytes; direct callers can use the authored default. */
 export function createContextPackage(identity: StoredSaneAgentIdentity, supplied: ContextAsset[]): ContextPackage {
   if (!identity || (identity.kind === "assistant" ? !isAssistantAgentId(identity.role) : identity.kind !== "worker" || !isWorkerAgentId(identity.role))) throw new Error("An archived role requires its original context package; current roles are not substitutes");
-  const assets = [contextAsset("framework.core", "packages/sane-core/src/sane-context.ts#SANE_CORE_CONTEXT", SANE_CORE_CONTEXT, "framework"), ...supplied.map(a => {
+  const assets = supplied.map(a => {
     if (a.sha256 !== contextHash(a.text)) throw new Error(`Modified supplied context asset: ${a.id}`);
     return contextAsset(a.id, a.source, a.text, a.kind, a.description);
-  })];
-  if (identity.kind === "assistant") {
-    assets.push(contextAsset("framework.assistant", "packages/sane-core/src/sane-context.ts#SANE_ASSISTANT_CONTEXT", SANE_ASSISTANT_CONTEXT, "framework"));
-    if (identity.role === "planning" || identity.role === "execution") assets.push(contextAsset("framework.assignment-discipline", "packages/sane-core/src/sane-context.ts#SANE_WORKER_ASSIGNMENT_DISCIPLINE", SANE_WORKER_ASSIGNMENT_DISCIPLINE, "framework"));
-  } else {
-    assets.push(contextAsset(`worker-procedure.${identity.role}`, `packages/sane-core/src/sane-worker-procedures.ts#${identity.role}`, SANE_WORKER_PROCEDURES[identity.role], "procedure"));
+  });
+  for (const name of frameworkNames(identity)) if (!assets.some(a => a.id === `framework.${name}`)) {
+    const fragment = readFramework(name);
+    assets.push(contextAsset(`framework.${name}`, fragment.source, fragment.text, "framework", fragment.description));
+  }
+  if (identity.kind === "worker" && !assets.some(a => a.id === `worker-procedure.${identity.role}`)) {
+    assets.push(contextAsset(`worker-procedure.${identity.role}`, workerProcedureSource(identity.role), readWorkerProcedure(identity.role), "procedure"));
   }
   assets.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const initial = identity.kind === "assistant" ? [`sane-assistant-${identity.role}-pickup`] : [];

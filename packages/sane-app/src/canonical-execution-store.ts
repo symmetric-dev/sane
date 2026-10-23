@@ -22,7 +22,7 @@ export class CanonicalExecutionStore {
     const overrides = this.modelConfig ? await loadAgentModelConfig(this.modelConfig, names.map(name => `${name}.md`)) : undefined;
     const sourceRoot = await realpath(this.sourceRoot);
     const load = async (name: string) => {
-      const path = join(sourceRoot, "opencode/agents", `${name}.md`);
+      const path = join(sourceRoot, "context/agents", `${name}.md`);
       if (await realpath(path) !== path || !(await lstat(path)).isFile()) throw new Error("Execution definitions must be regular authored files");
       return parseCanonicalAgentOperations(await readFile(path, "utf8"), name, overrides?.get(name));
     };

@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FiArrowRight, FiCheck, FiChevronDown, FiFolder, FiGitBranch, FiTrash2 } from "react-icons/fi";
 import type { WorktreeRecord, WorkspaceCreationInput } from "../src/catalog-contract";
-import { catalog } from "./catalog";
+import { catalog, worktreeScope } from "./catalog";
 import { useStore } from "./store";
 import { ShellDialog } from "./shell-dialog";
 import { useRegisterCommand, type CommandContext } from "./application-commands";
@@ -9,6 +9,7 @@ import { navigationKeyShortcuts } from "./navigation-hotkeys";
 import { WORKSPACE_SELECTOR_SHORTCUT, shortcutHint } from "./shortcut-definitions";
 import type { WorkspaceSelectionModel } from "./conversation-sidebar-model";
 import { workstreamCheckout } from "./workstream-checkout";
+import { notificationStore } from "./notifications";
 
 export const worktreeLabel = (worktree: WorktreeRecord) => worktree.branch || (worktree.detached ? "Detached HEAD" : worktree.root.split("/").filter(Boolean).at(-1) || worktree.root);
 const parentDirectory = (path: string) => { const clean = path.replace(/\/+$/, ""); return path ? clean.slice(0, clean.lastIndexOf("/")) || "/" : ""; };
@@ -28,6 +29,36 @@ export const worktreeDisplay = (worktree: WorktreeRecord): string => {
 export function CatalogSelector({ retry, selection, onGo }: { retry: () => void; selection?: WorkspaceSelectionModel; onGo?: () => void }) {
   const state = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const chatCwd = useStore(s => s.config?.cwd ?? "");
+  const conversations = useStore(s => s.conversations);
+  const notifications = useSyncExternalStore(notificationStore.subscribe, notificationStore.snapshot);
+  const unreadByWorktree = useMemo(() => {
+    const counts = new Map<string, number>();
+    const conversationsById = new Map(conversations.map(conversation => [conversation.id, conversation]));
+    for (const item of notifications.items) {
+      // Current associations also cover legacy items without checkout IDs.
+      const { workspaceId, worktreeId } = conversationsById.get(item.conversationId) ?? item;
+      if (!workspaceId || !worktreeId) continue;
+      const key = worktreeScope(workspaceId, worktreeId);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [notifications.items, conversations]);
+  const orderedWorkspaces = useMemo(() => {
+    const activity = new Map<string, Map<string, number>>();
+    for (const conversation of conversations) {
+      if (!conversation.workspaceId || !conversation.worktreeId || conversation.hidden || conversation.replacedBy) continue;
+      const updatedAt = Date.parse(conversation.updatedAt ?? "");
+      if (!Number.isFinite(updatedAt)) continue;
+      let worktrees = activity.get(conversation.workspaceId);
+      if (!worktrees) { worktrees = new Map(); activity.set(conversation.workspaceId, worktrees); }
+      worktrees.set(conversation.worktreeId, Math.max(worktrees.get(conversation.worktreeId) ?? 0, updatedAt));
+    }
+    return state.workspaces.map(workspace => {
+      const updatedAt = (tree: WorktreeRecord) => activity.get(workspace.workspaceId)?.get(tree.worktreeId) ?? 0;
+      const worktrees = [...workspace.worktrees].sort((a, b) => updatedAt(b) - updatedAt(a));
+      return { workspace: { ...workspace, worktrees }, updatedAt: worktrees[0] ? updatedAt(worktrees[0]) : 0 };
+    }).sort((a, b) => b.updatedAt - a.updatedAt).map(({ workspace }) => workspace);
+  }, [state.workspaces, conversations]);
   const [panel, setPanel] = useState<"context" | "directory" | "create" | null>(null);
   const [search, setSearch] = useState(""), [cwd, setCwd] = useState(""), [busy, setBusy] = useState(false), [feedback, setFeedback] = useState("");
   const [aliasDraft, setAliasDraft] = useState(""), [aliasBusy, setAliasBusy] = useState(false);
@@ -35,6 +66,8 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
   const [selectionMode, setSelectionMode] = useState<"worktree" | "workstream">("workstream");
   const [streamSearch, setStreamSearch] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [contextView, setContextView] = useState<"grid" | "details">("grid");
+  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() => new Set());
   const [parent, setParent] = useState(""), [name, setName] = useState(""), [unconfirmed, setUnconfirmed] = useState(false);
   const creationRequest = useRef<WorkspaceCreationInput | null>(null);
   const creationPending = useRef(false);
@@ -48,10 +81,10 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
   const { navigation } = state;
-  const workspace = state.workspaces.find(w => w.workspaceId === navigation.workspaceId);
+  const workspace = orderedWorkspaces.find(w => w.workspaceId === navigation.workspaceId);
   const worktree = workspace?.worktrees.find(w => w.worktreeId === navigation.worktreeId);
   const close = () => { dialogIntent.current++; setPanel(null); };
-  const show = () => { dialogIntent.current++; setSearch(""); setStreamSearch(""); setSelectionMode("workstream"); setDetailsOpen(false); setFeedback(""); setPanel("context"); };
+  const show = () => { dialogIntent.current++; setSearch(""); setStreamSearch(""); setContextView("grid"); setCollapsedWorkspaces(new Set()); setSelectionMode("workstream"); setDetailsOpen(false); setFeedback(""); setPanel("context"); };
   const onOpenChange = selection?.setOpen;
   useEffect(() => {
     if (!panel) return;
@@ -76,7 +109,7 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
       setDetailsOpen(false);
       (mobile ? workspaceChoices.current : workspaceSearch.current)?.focus();
     }
-  }, [panel, mobile]);
+  }, [panel, mobile, contextView]);
   useEffect(() => {
     const query = window.matchMedia("(max-width:700px)");
     const update = () => setMobile(query.matches);
@@ -105,10 +138,17 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
     close();
     onGo?.();
   };
-  const chooseWorktree = (worktreeId: string) => {
-    if (selection) selection.selectWorktree(worktreeId);
-    else catalog.navigate({ worktreeId, filePath: null, comparison: null });
+  const chooseCheckout = (workspaceId: string, tree: WorktreeRecord) => {
+    if (locked || tree.state !== "available") return;
+    if (selection) selection.selectWorktree(tree.worktreeId, workspaceId);
+    else catalog.navigate({ workspaceId, worktreeId: tree.worktreeId, filePath: null, comparison: null });
     setFeedback("");
+    const selected = catalog.snapshot().navigation;
+    if (selected.workspaceId === workspaceId && selected.worktreeId === tree.worktreeId) close();
+  };
+  const chooseWorktree = (worktreeId: string) => {
+    const tree = workspace?.worktrees.find(tree => tree.worktreeId === worktreeId);
+    if (workspace && tree) chooseCheckout(workspace.workspaceId, tree);
   };
   const display = worktree ? worktreeDisplay(worktree) : null;
   const fullRef = worktree ? worktreeLabel(worktree) : null;
@@ -117,7 +157,9 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
   const openerAria = workspace ? (worktree ? `Workspace ${workspace.name}, worktree ${display}: ${fullRef} · ${worktree.root}` : `Workspace ${workspace.name}: Choose worktree`) : "Open workspace";
   const selectedStream = selection?.overview?.workstreams.find(w => w.workstream.id === selection.workstreamId)?.workstream;
   const streamTree = workstreamCheckout(workspace, selectedStream);
-  const workspaces = state.workspaces.filter(w => `${w.name} ${w.worktrees.map(t => t.root).join(" ")}`.toLowerCase().includes(search.toLowerCase()));
+  const query = search.trim().toLowerCase();
+  const matchesWorktree = (tree: WorktreeRecord) => `${worktreeDisplay(tree)} ${worktreeLabel(tree)} ${tree.root}`.toLowerCase().includes(query);
+  const workspaces = orderedWorkspaces.filter(w => w.name.toLowerCase().includes(query) || w.worktrees.some(matchesWorktree));
   const streams = selection?.overview?.workstreams
     .filter(({ workstream: w }) => `${w.title} ${w.id} ${w.defaultCheckout?.path ?? ""}`.toLowerCase().includes(streamSearch.toLowerCase()))
     .sort((a, b) => Date.parse(b.workstream.createdAt) - Date.parse(a.workstream.createdAt) || a.workstream.id.localeCompare(b.workstream.id)) ?? [];
@@ -156,12 +198,17 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
     {feedback && <p className="context-feedback" role="status">{feedback}</p>}
     {selection?.selectionError && <p className="notice error" role="alert">{selection.selectionError}</p>}
     {state.error && <p className="notice error" role="status">{state.error}{!state.ready && <button type="button" onClick={retry}>Retry</button>}</p>}
-    {panel === "context" && workspace?.kind === "repository" && selection?.loading && <p className="muted" role="status">Loading workstreams…</p>}
-    {panel === "context" && workspace?.kind === "repository" && selection?.error && <p className="notice error" role="status">Workstreams could not refresh. {selection.error} Retrying automatically.</p>}
+    {panel === "context" && contextView === "details" && workspace?.kind === "repository" && selection?.loading && <p className="muted" role="status">Loading workstreams…</p>}
+    {panel === "context" && contextView === "details" && workspace?.kind === "repository" && selection?.error && <p className="notice error" role="status">Workstreams could not refresh. {selection.error} Retrying automatically.</p>}
   </>;
+  const searchField = <label className="workspace-search"><span className="sr-only">Search workspaces, worktrees, and paths</span><input ref={workspaceSearch} autoFocus={!mobile} value={search} onChange={event => { setSearch(event.target.value); setCollapsedWorkspaces(new Set()); }} placeholder="Search workspaces and worktrees…" /></label>;
+  const directoryActions = <div className="workspace-directory-actions">
+    <button type="button" className="secondary-directory" disabled={locked} onClick={() => { dialogIntent.current++; if (!creationRequest.current) { setParent(parentDirectory(worktree?.root || chatCwd || "")); setName(""); } setFeedback(""); setPanel("create"); }}>New workspace…</button>
+    <button type="button" className="secondary-directory" disabled={locked} onClick={() => { dialogIntent.current++; setCwd(worktree?.root || chatCwd || ""); setPanel("directory"); }}>Open directory…</button>
+  </div>;
   return <div className="context-switcher" ref={container}>
-    <button type="button" className="workspace-opener" aria-haspopup="dialog" aria-label={openerAria} aria-keyshortcuts={navigationKeyShortcuts("ArrowDown")} title={[openerTitle, `Toggle workspace selection (${shortcutHint(WORKSPACE_SELECTOR_SHORTCUT)})`].filter(Boolean).join(" · ")} onClick={show}><span className="workspace-opener-label"><span className="workspace-opener-title">{openerLabel}</span>{workspace && <span className="workspace-opener-checkout">{display ?? "Choose worktree"}</span>}</span><FiChevronDown size={13} aria-hidden="true" /></button>
-    {panel && <ShellDialog title={panel === "create" ? "New workspace" : panel === "directory" ? "Open directory" : "Workspace"} bare={panel === "context"} className={panel === "context" ? "workspace-context-dialog" : ""} initialFocus={panel === "context" ? () => mobile ? workspaceChoices.current : workspaceSearch.current : undefined} closeDisabled={panel === "create" && busy} close={close}>
+    <button type="button" className="workspace-opener" aria-haspopup="dialog" aria-label={openerAria} aria-keyshortcuts={navigationKeyShortcuts("o")} title={[openerTitle, `Toggle workspace selection (${shortcutHint(WORKSPACE_SELECTOR_SHORTCUT)})`].filter(Boolean).join(" · ")} onClick={show}><span className="workspace-opener-label"><span className="workspace-opener-title">{openerLabel}</span>{workspace && <span className="workspace-opener-checkout">{display ?? "Choose worktree"}</span>}</span><FiChevronDown size={13} aria-hidden="true" /></button>
+    {panel && <ShellDialog title={panel === "create" ? "New workspace" : panel === "directory" ? "Open directory" : "Workspaces"} bare={panel === "context"} className={panel === "context" ? `workspace-context-dialog${contextView === "grid" ? " workspace-grid-dialog" : ""}` : ""} initialFocus={panel === "context" ? () => mobile ? workspaceChoices.current : workspaceSearch.current : undefined} closeDisabled={panel === "create" && busy} close={close}>
       {panel === "create" ? <form className="open-directory" aria-busy={busy} onSubmit={async event => {
         event.preventDefault();
         if (locked || creationPending.current || !parent.trim() || !name.trim()) return;
@@ -194,14 +241,57 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
         if (opened && intent === dialogIntent.current) {
           close();
         }
-      }}><label>Directory path<input autoFocus required value={cwd} placeholder="/absolute/path/to/project" onChange={event => setCwd(event.target.value)} /></label><p className="muted">Open a local repository or folder. Repositories include their main and linked worktrees; other folders open as directory workspaces.</p><div className="dialog-actions"><button type="button" disabled={locked} onClick={() => { dialogIntent.current++; setPanel("context"); }}>Back</button><button type="submit" disabled={locked || !cwd.trim()}>{busy ? "Opening…" : "Open directory"}</button></div></form> : <>
+      }}><label>Directory path<input autoFocus required value={cwd} placeholder="/absolute/path/to/project" onChange={event => setCwd(event.target.value)} /></label><p className="muted">Open a local repository or folder. Repositories include their main and linked worktrees; other folders open as directory workspaces.</p><div className="dialog-actions"><button type="button" disabled={locked} onClick={() => { dialogIntent.current++; setPanel("context"); }}>Back</button><button type="submit" disabled={locked || !cwd.trim()}>{busy ? "Opening…" : "Open directory"}</button></div></form> : contextView === "grid" ? <>
         <div className="workspace-context-heading">
-          <div>{workspace && <><h3>{workspace.name}</h3><p className="muted">{workspace.kind === "repository" ? "Repository workspace" : "Directory workspace"}</p></>}</div>
+          <div><h3>Workspaces</h3></div>
+          <button type="button" className="icon-button" aria-label="Close workspace selection" onClick={close}>×</button>
+        </div>
+        <div className="workspace-grid-toolbar">{searchField}{directoryActions}</div>
+        <nav ref={workspaceChoices} tabIndex={-1} className="workspace-grid-groups" aria-label="Worktrees by workspace" aria-busy={state.loading}>
+          {notices}
+          {workspaces.map(w => {
+            const expanded = !collapsedWorkspaces.has(w.workspaceId);
+            const groupId = `${detailsId}-${w.workspaceId}`;
+            const trees = w.name.toLowerCase().includes(query) ? w.worktrees : w.worktrees.filter(matchesWorktree);
+            return <section className="workspace-grid-group" key={w.workspaceId} aria-label={w.name}>
+              <div className="workspace-grid-group-heading">
+                <button type="button" className="workspace-grid-toggle" aria-expanded={expanded} aria-controls={groupId} onClick={() => setCollapsedWorkspaces(current => {
+                  const next = new Set(current);
+                  if (next.has(w.workspaceId)) next.delete(w.workspaceId); else next.add(w.workspaceId);
+                  return next;
+                })}>
+                  <FiChevronDown size={14} aria-hidden="true" /><FiFolder size={15} aria-hidden="true" /><span>{w.name}</span><small>{w.worktrees.length}</small>
+                </button>
+                <span className="workspace-grid-divider" />
+                <button type="button" className="text-button" disabled={locked} aria-label={`Details for ${w.name}`} onClick={() => { chooseWorkspace(w.workspaceId); setContextView("details"); }}>Details</button>
+                {selection && <button type="button" className="workspace-choice-go" aria-label={`Open ${w.name} in Chat`} title={`Open ${w.name} in Chat`} disabled={locked || !w.worktrees.length} onClick={() => goWorkspace(w.workspaceId)}><FiArrowRight size={18} aria-hidden="true" /></button>}
+              </div>
+              <div id={groupId} className="workspace-worktree-grid" hidden={!expanded}>
+                 {trees.map(tree => {
+                   const selected = w.workspaceId === navigation.workspaceId && tree.worktreeId === navigation.worktreeId;
+                   const unread = unreadByWorktree.get(worktreeScope(w.workspaceId, tree.worktreeId)) ?? 0;
+                   return <button type="button" key={tree.worktreeId} className="workspace-worktree-card" aria-pressed={selected} disabled={locked || tree.state !== "available"} title={`${worktreeLabel(tree)} · ${tree.root}${tree.state !== "available" ? ` · ${tree.reason || "Unavailable"}` : ""}`} onClick={() => chooseCheckout(w.workspaceId, tree)}>
+                     {unread > 0 && <><span className="workspace-worktree-badge" aria-hidden="true">{unread > 99 ? "99+" : unread}</span><span className="sr-only">{unread} unread {unread === 1 ? "conversation" : "conversations"}</span></>}
+                     <span className="context-choice-heading"><FiGitBranch size={14} aria-hidden="true" /><span>{worktreeDisplay(tree)}</span>{selected && <FiCheck size={14} aria-hidden="true" />}</span>
+                    <small>{worktreeShort(tree)}{tree.state !== "available" ? " · Unavailable" : ""}</small>
+                    <small title={tree.root}>{tree.root.split("/").filter(Boolean).at(-1) || tree.root}</small>
+                  </button>;
+                })}
+                {!trees.length && <p className="muted">No worktrees available. Open a directory to rediscover this workspace.</p>}
+              </div>
+            </section>;
+          })}
+          {state.loading && <p className="muted" role="status">Loading workspaces…</p>}
+          {!state.loading && !workspaces.length && <p className="muted" role="status">{query ? "No matching workspaces or worktrees." : "No workspaces yet."}</p>}
+        </nav>
+      </> : <>
+        <div className="workspace-context-heading">
+          <div><button type="button" className="text-button workspace-grid-back" onClick={() => setContextView("grid")}>← All worktrees</button>{workspace && <><h3>{workspace.name}</h3><p className="muted">{workspace.kind === "repository" ? "Repository workspace" : "Directory workspace"}</p></>}</div>
           <button type="button" className="icon-button" aria-label="Close workspace" onClick={close}>×</button>
         </div>
         <div className="workspace-context-panel">
         <aside className="workspace-context-sidebar" aria-label="Workspace selection">
-          <label className="workspace-search"><span className="sr-only">Search workspace names and paths</span><input ref={workspaceSearch} autoFocus={!mobile} value={search} onChange={event => setSearch(event.target.value)} placeholder="Search workspaces…" /></label>
+          {searchField}
           <nav ref={workspaceChoices} tabIndex={-1} className="workspace-choices" aria-label="Existing workspaces" aria-busy={state.loading}>{workspaces.map(w => <div className="workspace-choice-row" key={w.workspaceId}>
             <button type="button" className="workspace-choice-select" aria-current={w.workspaceId === navigation.workspaceId ? "true" : undefined} disabled={locked} onClick={() => chooseWorkspace(w.workspaceId)} title={w.worktrees[0]?.root}>
             <span className="workspace-choice-heading"><FiFolder size={14} aria-hidden="true" /><span>{w.name}</span>{w.workspaceId === navigation.workspaceId && <FiCheck size={14} aria-hidden="true" />}</span>
@@ -209,10 +299,7 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
             </button>
             {selection && <button type="button" className="workspace-choice-go" aria-label={`Open ${w.name} in Chat`} title={`Open ${w.name} in Chat`} disabled={locked || !w.worktrees.length} onClick={() => goWorkspace(w.workspaceId)}><FiArrowRight size={18} aria-hidden="true" /></button>}
           </div>)}{state.loading && <p className="muted" role="status">Loading workspaces…</p>}{!state.loading && !workspaces.length && <p className="muted" role="status">{search ? "No matching workspaces." : "No workspaces yet."}</p>}</nav>
-          <div className="workspace-directory-actions">
-            <button type="button" className="secondary-directory" disabled={locked} onClick={() => { dialogIntent.current++; if (!creationRequest.current) { setParent(parentDirectory(worktree?.root || chatCwd || "")); setName(""); } setFeedback(""); setPanel("create"); }}>New workspace…</button>
-            <button type="button" className="secondary-directory" disabled={locked} onClick={() => { dialogIntent.current++; setCwd(worktree?.root || chatCwd || ""); setPanel("directory"); }}>Open directory…</button>
-          </div>
+          {directoryActions}
         </aside>
         <div className="workspace-context-detail">
           {notices}
@@ -274,7 +361,7 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
                 </div>;
               })}</div>
               {!workspace.worktrees.length && <p className="muted">No worktrees available. Open a directory to rediscover this workspace.</p>}
-              <p className="muted">Direct selection scopes sessions to this worktree.</p>
+              <p className="muted">Direct selection expands this worktree in the sidebar and collapses the others.</p>
             </section>}
             <section className="context-checkout-summary" aria-label="Browsing checkout">
               <h4>Browsing checkout</h4>

@@ -15,5 +15,5 @@ Use the [Workflow Playbook](../SANE_WORKFLOW.md) for setup and daily work.
 
 The other documents in this directory cover older operating models, pilot
 guides, context packages, and bootstrap plans. Current role contracts live
-in [skills/](../../skills/); agent definitions live in
-[opencode/agents/sane/](../../opencode/agents/sane/).
+in [context/skills/](../../context/skills/); agent definitions live in
+[context/agents/sane/](../../context/agents/sane/).

@@ -89,8 +89,9 @@ import { managedWorkerCoordination, managedWorkerRoles, managedWorkerWaiting } f
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
 import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneContextText, saneFrameworkMessageId, saneSessionContext, saneSessionText, sha256, workerAssignment } from "./agent-launch";
 import { ContextPackageStore } from "./context-package-store";
-import { renderContextDelivery, validateContextComposition, type ContextComposition } from "./context-package";
+import { renderContextDelivery, validateContextComposition, validateContextDelivery, type ContextComposition, type ContextDelivery, type ContextPackage } from "./context-package";
 import type { ContextProvider } from "./context-delivery";
+import { systemPromptSnapshot } from "./system-prompt";
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 import { BranchStore, type BranchOperation } from "./branches";
 import { branchContextDynamic } from "./branch-context";
@@ -433,12 +434,49 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
     return result;
   };
-  const explicitProtocolDynamic = (sessionId: string, dynamic: string): string => {
+  const historicalRuntimeText = new Map<string, string>();
+  const runtimeInstruction = (session: Session, bundle: ContextPackage, name: "worker-protocol" | "branch-continuation"): string => {
+    const asset = bundle.assets.find(asset => asset.id === `framework.${name}` && asset.kind === "framework");
+    if (asset) return asset.text;
+    // Pre-file packages have no runtime assets. Preserve their recorded wording,
+    // including inherited branch notices, rather than reading today's source.
+    const key = `${session.sessionId}:${bundle.revision}:${name}`;
+    const cached = historicalRuntimeText.get(key);
+    if (cached) return cached;
+    const visited = new Set<string>(), operations = branches.list();
+    let candidate: Session | undefined = session;
+    while (candidate && !visited.has(candidate.sessionId)) {
+      visited.add(candidate.sessionId);
+      if (candidate.saneContext?.package?.revision !== bundle.revision) break;
+      for (const run of meta.runs.toReversed()) {
+        if (run.sessionId !== candidate.sessionId) continue;
+        for (const event of journalEvents(run.runId).toReversed()) {
+          const data = event.data as { type?: string; stage?: string; delivery?: ContextDelivery } | null;
+          const delivery = data?.delivery;
+          if (event.kind !== "context" || data?.type !== "canonical-context" || data.stage !== "prepared" || !delivery
+            || delivery.packageRevision !== bundle.revision || delivery.binding?.sessionId !== candidate.sessionId
+            || delivery.binding.nativeSessionId !== candidate.nativeSessionId || delivery.binding.authorityId !== candidate.authorityId) continue;
+          validateContextDelivery(delivery);
+          const match = name === "worker-protocol"
+            ? /\nWaiting: [^\n]*\n(?:Message correlation: [^\n]*\n)?([\s\S]+)$/.exec(delivery.dynamic)
+            : /\n\n(This is a branch continuation\.[\s\S]*?)(?=\n\nWorker protocol:|$)/.exec(delivery.dynamic);
+          if (match?.[1]) {
+            historicalRuntimeText.set(key, match[1]);
+            return match[1];
+          }
+        }
+      }
+      const branch = operations.find(operation => operation.destinationId === candidate!.sessionId && operation.canonicalActivation && operation.state === "completed");
+      candidate = branch && meta.sessions.find(source => source.sessionId === branch.sourceId);
+    }
+    throw new Error(`Historical ${name} instructions are unavailable; reconcile the session before resuming`);
+  };
+  const explicitProtocolDynamic = (sessionId: string, dynamic: string, instructions: () => string): string => {
     const worker = workerStore.getBySession(sessionId);
     if (worker?.protocol?.id !== "explicit-v1") return dynamic;
     const waiting = worker.wait?.reason ?? "none";
     const correlation = worker.wait?.correlationId;
-    return `${dynamic}\n\nWorker protocol: explicit-v1.\nPermitted operations: ${worker.protocol.operations.join(", ")}.\nWaiting: ${waiting}.${correlation ? `\nMessage correlation: ${correlation}.` : ""}\nSubmit your final result using \`sane_worker_complete\`. Ending a turn only pauses execution; ordinary final text does not complete the assignment or deliver its result to your parent.\nIncoming messages are attributed updates, not a new assignment.`;
+    return `${dynamic}\n\nWorker protocol: explicit-v1.\nWaiting: ${waiting}.${correlation ? `\nMessage correlation: ${correlation}.` : ""}\n${instructions()}`;
   };
   const canonicalComposition = async (sessionId: string): Promise<ContextComposition | null> => {
     const session = meta.sessions.find(s => s.sessionId === sessionId);
@@ -457,7 +495,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const current = meta.sessions.find(s => s.sessionId === sessionId);
     if (!current || pin !== JSON.stringify([current.harness, current.authorityId, current.nativeSessionId, current.cwd, current.agent, current.agentKind, current.nativeAgentSelected, current.saneContext, current.saneExecution])) throw new Error("Context binding changed during preparation");
     assertAdmission();
-    const dynamic = explicitProtocolDynamic(sessionId, branchContextDynamic(sessionId, saneSessionText(session, context) ?? `# SANE Session\n\nWorkstream: none\nImplementation root: ${context.executionCheckout}`, branches.list(), meta.sessions));
+    const branched = branchContextDynamic(sessionId, saneSessionText(session, context) ?? `# SANE Session\n\nWorkstream: none\nImplementation root: ${context.executionCheckout}`, branches.list(), meta.sessions, () => runtimeInstruction(session, bundle, "branch-continuation"));
+    const dynamic = explicitProtocolDynamic(sessionId, branched, () => runtimeInstruction(session, bundle, "worker-protocol"));
     return { bundle, binding: { sessionId, harness: session.harness!, authorityId: session.authorityId!, nativeSessionId: session.nativeSessionId!, cwd: session.cwd }, paths, dynamic, assignment: session.saneContext.assignment, injectRole: !!session.saneExecution || session.harness === "opencode" && !session.nativeAgentSelected };
   };
   const canonicalContext: ContextProvider = async sessionId => {
@@ -1983,7 +2022,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const old = request.operation === "start" ? workerStore.getByRequest(session.sessionId, request.input.requestId) : undefined;
     // A durable reservation is the original binding, even after parent completion.
     if (old && request.operation === "start") {
-      if (old.parent.native.harness !== e.source.harness || old.parent.native.authorityId !== e.authorityId || old.parent.native.nativeId !== e.nativeId || old.parent.toolCallId !== request.invocation.toolCallId || old.input.worker !== request.input.worker || old.input.prompt !== request.input.prompt || old.input.context !== request.input.context || JSON.stringify(old.input.jobs) !== JSON.stringify(request.input.jobs)) return reject();
+      if (old.parent.native.harness !== e.source.harness || old.parent.native.authorityId !== e.authorityId || old.parent.native.nativeId !== e.nativeId || old.parent.toolCallId !== request.invocation.toolCallId || old.input.worker !== request.input.worker || old.input.prompt !== request.input.prompt || old.input.context !== request.input.context || old.input.subject !== request.input.subject || JSON.stringify(old.input.jobs) !== JSON.stringify(request.input.jobs)) return reject();
       if (JSON.stringify(old.parent.invocation?.opencode) !== JSON.stringify(request.invocation.opencode)) return reject();
       const invocation = old.parent.invocation ?? request.invocation;
       qualifiedWorkerInvocations.set(invocation, qualifiedWorkerInvocations.get(request.invocation)!);
@@ -2262,7 +2301,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const child = { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! };
           const { saneContext } = pinnedContext;
           if (!saneContext) throw new Error("Worker launch has no SANE worker identity");
-          saneContext.assignment = workerAssignment((await router!.forAdmission(a))!.domain, child, w.parent.native, w.input.worker, w.input.jobs ?? [], w.id);
+          let procedure: string | undefined;
+          if (saneContext.package) {
+            const { bundle } = await contextPackages.load(saneContext.package);
+            procedure = bundle.assets.find(asset => asset.id === `worker-procedure.${w.input.worker}` && asset.kind === "procedure")?.text;
+            if (!procedure) throw new Error("Worker context package has no matching procedure");
+          }
+          saneContext.assignment = workerAssignment((await router!.forAdmission(a))!.domain, child, w.parent.native, w.input.worker, w.input.jobs ?? [], w.id, procedure);
           if (harness === "opencode") await deliverSaneFramework(a.nativeId!, w.sessionId, saneContext);
           session.saneContext = saneContext;
         } catch (e) {
@@ -2474,7 +2519,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const cancelRequested = !!w.cancelRequestedAt;
     // An audited operator recovery supersedes this run's assignment closure,
     // not its failed native history. A newer real run resumes normal observation.
-    if (w.usageRecovery && w.usageRecovery.throughRunId === run?.runId && !cancelRequested && !w.completion && !w.outcome && !retainOwner && !storageFailed)
+    const recovery = w.usageRecovery ?? w.stopRecovery;
+    if (recovery && recovery.throughRunId === run?.runId && !cancelRequested && !w.completion && !w.outcome && !retainOwner && !storageFailed)
       return ownerPresent ? {} : { state: "idle", assignment: "open" };
     if (!run) {
       if (ownerPresent) return explicitObservationChange(w, { run: null, ownerPresent, ownerSettled, terminationUncertain: false, cancelRequested });
@@ -2499,6 +2545,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return explicitObservationChange(w, {
       run: { runId: run.runId, status: run.status, endedAt: run.endedAt }, ownerPresent, ownerSettled,
       terminationUncertain: !!workerTerminationUncertainty(records) || retainOwner, cancelRequested,
+      runStopped: records.some(event => event.kind === "status" && (event.data as { workerRunStopped?: boolean } | null)?.workerRunStopped === true),
       nativeSummary: workerOutput(records) ?? String((records.filter(e => e.kind === "status").at(-1)?.data as { reason?: unknown } | undefined)?.reason ?? run.status),
     });
   }
@@ -3941,7 +3988,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           claudeRuns.cancelFollowup(session.sessionId);
           pendingInputControls.cancellationWrite(() => workerStore.suppress(session.sessionId, true)); // Idle too; never cascade.
           const worker = workerStore.getBySession(session.sessionId);
-          if (worker && !worker.outcome) pendingInputControls.cancellationWrite(() => workerStore.update(worker.id, { state: "cancelling", cancelRequestedAt: worker.cancelRequestedAt ?? new Date().toISOString() }));
+          // Composer Stop interrupts a turn, not an explicit worker assignment.
+          // Assignment cancellation remains the workers/cancel operation.
+          if (worker && !worker.outcome && !isExplicitWorker(worker)) pendingInputControls.cancellationWrite(() => workerStore.update(worker.id, { state: "cancelling", cancelRequestedAt: worker.cancelRequestedAt ?? new Date().toISOString() }));
           if (recoveredInputConversations.has(session.sessionId)) {
             const finished = Promise.withResolvers<void>(); attachmentTasks.add(finished.promise);
             try { return json({ ...(await pendingInputRecovery!.stop(session.sessionId)), code: "pending-input-reconciliation-required" }); }
@@ -3954,7 +4003,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           owner.cancelling = true;
           owner.cancel = (async () => {
             owner.stopRequested = true;
-            if (owner.run.status === "running") await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence" });
+            if (owner.run.status === "running") await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence",
+              ...(worker && isExplicitWorker(worker) ? { workerRunStopped: true } : {}) });
             if (owners.get(session.sessionId) !== owner || owner.run.status !== "running") return { interrupted: false };
             if (owner.native) return ocRuns.interruptCurrent(owner);
             const stopped = await terminate(owner);
@@ -4009,6 +4059,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (runsMatch && req.method === "GET") { if (!meta.sessions.some(s => s.sessionId === runsMatch[1])) return json({ error: "Unknown session" }, 404); return json({ runs: meta.runs.filter(r => r.sessionId === runsMatch[1]) }); }
       const eventMatch = /^\/api\/runs\/([^/]+)\/events$/.exec(path);
       if (eventMatch && req.method === "GET") { const run = meta.runs.find(r => r.runId === eventMatch[1]); if (!run) return json({ error: "Unknown run" }, 404); const after = Number(url.searchParams.get("after") ?? 0); if (!Number.isSafeInteger(after) || after < 0) return json({ error: "Invalid cursor" }, 400); const list = journalEvents(run.runId).filter(e => e.seq > after); return json({ events: list, nextCursor: list.at(-1)?.seq ?? after, status: run.status }); }
+      const systemPromptMatch = /^\/api\/runs\/([^/]+)\/system-prompt$/.exec(path);
+      if (systemPromptMatch && req.method === "GET") {
+        const run = meta.runs.find(r => r.runId === systemPromptMatch[1]);
+        if (!run) return json({ error: "Unknown run" }, 404);
+        const expectedStore = url.searchParams.get("storeId");
+        if (expectedStore !== null && expectedStore !== store.manifest.storeId) return json({ error: "System prompt belongs to another App store" }, 409);
+        return json(systemPromptSnapshot(store.manifest.storeId, run, journalEvents(run.runId)));
+      }
       const contextMatch = /^\/api\/runs\/([^/]+)\/context$/.exec(path);
       if (contextMatch && req.method === "GET") {
         const run = meta.runs.find(r => r.runId === contextMatch[1]);

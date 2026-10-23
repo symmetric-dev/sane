@@ -7,11 +7,11 @@ top-level assistant files. These are initial drafts for user review.
 
 | Role | Agent | Skills (each directory contains `SKILL.md`) |
 | --- | --- | --- |
-| Design | `opencode/agents/sane/assistant/design.md` | `skills/sane-assistant-design-{pickup,assistance,delivery}/` |
-| Engineering | `opencode/agents/sane/assistant/engineering.md` | `skills/sane-assistant-engineering-{pickup,assistance,delivery}/` |
-| Planning | `opencode/agents/sane/assistant/planning.md` | `skills/sane-assistant-planning-{pickup,assistance,delivery}/` |
-| Execution | `opencode/agents/sane/assistant/execution.md` | `skills/sane-assistant-execution-{pickup,assistance,delivery}/` |
-| Research | `opencode/agents/sane/assistant/research.md` | `skills/sane-assistant-research-{pickup,assistance,delivery}/` |
+| Design | `context/agents/sane/assistant/design.md` | `context/skills/sane-assistant-design-{pickup,assistance,delivery}/` |
+| Engineering | `context/agents/sane/assistant/engineering.md` | `context/skills/sane-assistant-engineering-{pickup,assistance,delivery}/` |
+| Planning | `context/agents/sane/assistant/planning.md` | `context/skills/sane-assistant-planning-{pickup,assistance,delivery}/` |
+| Execution | `context/agents/sane/assistant/execution.md` | `context/skills/sane-assistant-execution-{pickup,assistance,delivery}/` |
+| Research | `context/agents/sane/assistant/research.md` | `context/skills/sane-assistant-research-{pickup,assistance,delivery}/` |
 
 Agent files retain the existing prose/list style and load only their own
 lifecycle skills. Skills provide local working procedures and concrete tool
@@ -19,8 +19,8 @@ calls. Artifact structure remains in the document templates.
 
 Execution policy drafts for the next review:
 
-- [Fix and Correction Policy](../../skills/sane-assistant-execution-assistance/resources/FIX_AND_CORRECTION_POLICY.md)
-- [Retry Policy](../../skills/sane-assistant-execution-assistance/resources/RETRY_POLICY.md)
+- [Fix and Correction Policy](../../context/skills/sane-assistant-execution-assistance/resources/FIX_AND_CORRECTION_POLICY.md)
+- [Retry Policy](../../context/skills/sane-assistant-execution-assistance/resources/RETRY_POLICY.md)
 
 Retry now covers mechanical worker failures only; its default limit awaits user
 agreement. Implementation assessment and correction routing belong in the Fix
@@ -68,7 +68,7 @@ automatically removed or rewritten by these source changes.
 3. **Execution policies:** checkpoint review/commits and optional Execution-to-
    Grounder Context enrichment are now drafted. Implementer/Reviewer guidance
    and reports capture recommendations and checkpoint evidence. Initial policies
-   now live in `skills/sane-assistant-execution-assistance/resources/` as
+   now live in `context/skills/sane-assistant-execution-assistance/resources/` as
    `FIX_AND_CORRECTION_POLICY.md` and `RETRY_POLICY.md`. Review their routing,
    sequences, and attempt limits. Retry covers mechanical failures; correction
    limits are separate. Execution asks for limits when none were supplied.

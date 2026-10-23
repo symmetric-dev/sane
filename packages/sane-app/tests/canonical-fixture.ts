@@ -22,7 +22,7 @@ export function canonicalFixture(session: Session, kind: "assistant" | "worker" 
 
 /** Actual authored role source, with fully injected execution/runtime boundaries. */
 export function canonicalSourceFixture(session: Session) {
-  const source = "opencode/agents/sane/assistant/design.md";
+  const source = "context/agents/sane/assistant/design.md";
   const markdown = readFileSync(new URL(`../../../${source}`, import.meta.url), "utf8");
   const policy = parseCanonicalAgentOperations(markdown, "sane/assistant/design");
   const role = contextAsset("role.assistant.design", source, policy.spec.body, "role", policy.spec.description);

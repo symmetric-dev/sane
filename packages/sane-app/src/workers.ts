@@ -1,4 +1,4 @@
-import { isWorkerAgentId, workerJobsProblem, type WorkerAgentId } from "sane-core/agent-catalog";
+import { isWorkerAgentId, workerJobsProblem, workerSubjectProblem, type WorkerAgentId } from "sane-core/agent-catalog";
 import type { ConversationRef } from "sane-core/contracts";
 import { resolveWorkerProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { WorkerStore, workerSelection, type WorkerSelection } from "./worker-store";
@@ -88,8 +88,10 @@ export class WorkerService {
     if (!input || !isWorkerAgentId(input.worker) || typeof input.requestId !== "string" || !input.requestId || input.requestId.length > 200 || typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 100000 || input.context !== undefined && (typeof input.context !== "string" || input.context.length > 100000)) error("invalid-worker-input", "Worker role, request ID and bounded prompt/context text required");
     const jobs = workerJobsProblem(input.worker, input.jobs);
     if (jobs) error("invalid-worker-input", jobs);
+    const subject = workerSubjectProblem(input.subject);
+    if (subject) error("invalid-worker-input", subject);
     const parent = await this.executor.parent(caller);
-    const payload: WorkerStart = { requestId: input.requestId, worker: input.worker, prompt: input.prompt, ...(input.context !== undefined ? { context: input.context } : {}), ...(input.jobs !== undefined ? { jobs: [...input.jobs] } : {}) };
+    const payload: WorkerStart = { requestId: input.requestId, worker: input.worker, prompt: input.prompt, ...(input.context !== undefined ? { context: input.context } : {}), ...(input.jobs !== undefined ? { jobs: [...input.jobs] } : {}), ...(input.subject !== undefined ? { subject: input.subject } : {}) };
     const old = this.store.getByRequest(parent.sessionId, input.requestId);
     if (old) {
       if (JSON.stringify(old.input) !== JSON.stringify(payload) || old.parent.runId !== parent.runId || old.parent.toolCallId !== caller.toolCallId || JSON.stringify(old.parent.invocation?.opencode) !== JSON.stringify(caller.invocation?.opencode)) error("worker-request-conflict", "Request ID already bound to another invocation/payload");

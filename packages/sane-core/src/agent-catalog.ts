@@ -62,6 +62,13 @@ export const WORKER_AGENT_CATALOG: Record<WorkerAgentId, { label: string; descri
 export function isWorkerAgentId(value: unknown): value is WorkerAgentId {
   return typeof value === "string" && (WORKER_AGENT_IDS as readonly string[]).includes(value)
 }
+export const MAX_WORKER_SUBJECT_LENGTH = 200
+/** Optional display label; it does not replace the worker's assignment prompt. */
+export function workerSubjectProblem(subject: unknown): string | undefined {
+  if (subject === undefined) return undefined
+  if (typeof subject !== "string" || !subject.trim() || subject.length > MAX_WORKER_SUBJECT_LENGTH) return `subject must be nonblank text (max ${MAX_WORKER_SUBJECT_LENGTH} characters).`
+  return undefined
+}
 /** Jobs a role may be assigned; SANE resolves their paths when it creates the worker. */
 export const WORKER_JOB_ASSIGNMENT: Record<WorkerAgentId, "one" | "some" | "none"> = { implementer: "one", fixer: "some", tester: "some", reviewer: "some", grounder: "none", researcher: "none", scout: "none", "scout-crew": "none", critic: "none" }
 export const MAX_WORKER_JOBS = 64

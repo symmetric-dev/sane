@@ -37,8 +37,9 @@ bun run test
 - `packages/sane-core/` — shared domain operations.
 - `docs/sane-app/` — App documentation and ongoing checkpoint work.
 - `poc/` — historical proof-of-concept implementations.
-- `opencode/` — agents and SANE integration plugin.
-- `skills/` — assistant role contracts.
+- `context/agents/` — assistant and worker role definitions.
+- `context/skills/` — assistant lifecycle procedures and resources.
+- `opencode/` — SANE integration plugin.
 - `templates/` — workstream document templates.
 
 The package is private to prevent accidental package publication.

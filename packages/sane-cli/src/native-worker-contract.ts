@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { MAX_WORKER_JOBS, WORKER_AGENT_IDS, WORKER_JOB_ID_PATTERN, isWorkerAgentId, workerJobsProblem, type WorkerAgentId } from "../../sane-core/src/agent-catalog.ts"
+import { MAX_WORKER_JOBS, MAX_WORKER_SUBJECT_LENGTH, WORKER_AGENT_IDS, WORKER_JOB_ID_PATTERN, isWorkerAgentId, workerJobsProblem, workerSubjectProblem, type WorkerAgentId } from "../../sane-core/src/agent-catalog.ts"
 import { classifyCaller, type CallerEnvelope } from "./cli-arguments.ts"
 
 export const nativeWorkerOperations = ["start", "status", "wait", "acknowledge", "cancel", "cancel_all", "complete", "notify", "message_parent", "message"] as const
@@ -9,7 +9,7 @@ export type NativeWorkerInvocation = { toolCallId: string; messageId?: string; o
 export type NativeWorkerResultRef = { workerId: string; revision: number; notificationId: string }
 export type NativeWorkerAcknowledgement = NativeWorkerResultRef & { state: "pending" | "wait-consumed" | "claimed" | "acceptance-unknown" | "delivered"; acknowledged: boolean }
 export type NativeWorkerInputs = {
-  start: { worker: WorkerAgentId; prompt: string; context?: string; jobs?: string[] }
+  start: { worker: WorkerAgentId; prompt: string; context?: string; jobs?: string[]; subject?: string }
   status: { ids?: string[] }
   wait: { ids: string[]; timeoutSec: number }
   acknowledge: { refs: NativeWorkerResultRef[] }
@@ -30,7 +30,7 @@ const workerTextSchema = { type: "string", minLength: 1, maxLength: 100000, patt
 const idsSchema = { type: "array", minItems: 1, maxItems: 256, items: { type: "string", pattern: uuidPattern } } as const
 const resultRefSchema = { type: "object", properties: { workerId: { type: "string", pattern: uuidPattern }, revision: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, notificationId: { type: "string", minLength: 1, maxLength: 2048, pattern: "^[^\\s\\u0000-\\u001f\\u007f]+$" } }, required: ["workerId", "revision", "notificationId"], additionalProperties: false } as const
 export const nativeWorkerSchemas = {
-  start: { type: "object", properties: { worker: { type: "string", enum: WORKER_AGENT_IDS }, prompt: { type: "string", minLength: 1, maxLength: 100000, pattern: "\\S" }, context: { type: "string", maxLength: 100000 }, jobs: { type: "array", minItems: 1, maxItems: MAX_WORKER_JOBS, items: { type: "string", pattern: WORKER_JOB_ID_PATTERN } } }, required: ["worker", "prompt"], additionalProperties: false },
+  start: { type: "object", properties: { worker: { type: "string", enum: WORKER_AGENT_IDS }, prompt: { type: "string", minLength: 1, maxLength: 100000, pattern: "\\S" }, context: { type: "string", maxLength: 100000 }, jobs: { type: "array", minItems: 1, maxItems: MAX_WORKER_JOBS, items: { type: "string", pattern: WORKER_JOB_ID_PATTERN } }, subject: { type: "string", minLength: 1, maxLength: MAX_WORKER_SUBJECT_LENGTH, pattern: "\\S", description: "Optional request subject displayed beside the worker name and job IDs." } }, required: ["worker", "prompt"], additionalProperties: false },
   status: { type: "object", properties: { ids: idsSchema }, required: [], additionalProperties: false },
   wait: { type: "object", properties: { ids: idsSchema, timeoutSec: { type: "number", minimum: 0, maximum: 10, default: 0 } }, required: ["ids"], additionalProperties: false },
   acknowledge: { type: "object", properties: { refs: { type: "array", minItems: 1, maxItems: 256, items: resultRefSchema } }, required: ["refs"], additionalProperties: false },
@@ -44,7 +44,7 @@ export const nativeWorkerSchemas = {
 /** Shared scope prefix for every SANE native tool description. Guidance only; enforcement stays server-side. */
 export const SANE_MANAGED_ONLY = "SANE-managed sessions only. Not a general subagent, delegation or parent-messaging facility; ordinary sessions use native tools."
 const workerDescriptionBodies: Record<NativeWorkerOperation, string> = {
-  start: "Launch an App-managed worker in the background. Continue useful work, then end your turn; terminal outcomes report back automatically. Waiting is optional. context is explicit supplemental text, not inherited conversation history. jobs assigns registered job IDs and SANE supplies their paths: implementer accepts exactly one, required when called from Execution; fixer, tester and reviewer accept one or more; other roles reject jobs. Workers continue independently when the parent stops.",
+  start: "Launch an App-managed worker in the background (with optional request subject). subject is a short display label, not a replacement for prompt. Continue useful work, then end your turn; terminal outcomes report back automatically. Waiting is optional. context is explicit supplemental text, not inherited conversation history. jobs assigns registered job IDs and SANE supplies their paths: implementer accepts exactly one, required when called from Execution; fixer, tester and reviewer accept one or more; other roles reject jobs. Workers continue independently when the parent stops.",
   status: "Inspect background workers in this caller's worker tree; omit ids to list them. Background outcomes report back automatically; polling is unnecessary.",
   wait: "Optionally join selected background workers for 0–10 seconds (default 0). A timeout or cancelled wait leaves workers running independently; normally end your turn and await automatic report-back. For an explicit-protocol worker, wait only joins the current turn. It does not wait for assignment completion. End your turn so a consultation or completion can be delivered. Do not call wait again to hold the session open.",
   acknowledge: "Optional: only after receiving and handling results via wait/status, consume your own pending notifications before ending your turn. Copy workerId from worker.id and exact revision/notificationId from latestResult or resultHistory. Only the immediate parent may acknowledge. Receipts report arbitration: claimed, acceptance-unknown or delivered notifications are not consumed. Background report-back remains the default; wait/status never automatically acknowledge.",
@@ -76,6 +76,8 @@ export function nativeWorkerInput<O extends NativeWorkerOperation>(operation: O,
     if (!isWorkerAgentId(value.worker) || typeof value.prompt !== "string" || !value.prompt.trim() || value.prompt.length > 100000 || (value.context !== undefined && (typeof value.context !== "string" || value.context.length > 100000))) invalid("Expected a worker role, nonblank prompt (max 100000 characters), and optional context (max 100000 characters).")
     const jobs = workerJobsProblem(value.worker as WorkerAgentId, value.jobs)
     if (jobs) invalid(jobs)
+    const subject = workerSubjectProblem(value.subject)
+    if (subject) invalid(subject)
   } else if (operation === "acknowledge") {
     if (!Array.isArray(value.refs) || !value.refs.length || value.refs.length > 256) invalid("refs must contain 1–256 exact worker result references.")
     for (const input of value.refs as unknown[]) {
@@ -161,7 +163,7 @@ export function matchesOpenCodeWorkerPart(operation: NativeWorkerOperation, invo
 /** Compact agent-facing metadata, complete result text. No launch config, input,
  * parent envelope or private notification record. */
 export type NativeWorkerSummary = {
-  id: string; sessionId: string; runId: string | null; worker?: WorkerAgentId
+  id: string; sessionId: string; runId: string | null; worker?: WorkerAgentId; subject?: string
   state: string; createdAt?: string; updatedAt?: string; cancelRequestedAt?: string
   error?: string; outcome?: { status: string; at: string; summary: string; log: { sessionId: string; runId: string } | null }
   continuation?: { runId: string; state: string; error?: string }
@@ -182,6 +184,8 @@ export function projectNativeWorkerReply(input: unknown): NativeWorkerReply {
       if (typeof src[key] === "string") out[key] = (src[key] as string).slice(0, key === "error" ? 4000 : 2048)
     }
     if (src.runId === null) out.runId = null
+    const subject = src.subject ?? (src.input as Record<string, unknown> | undefined)?.subject
+    if (typeof subject === "string" && !workerSubjectProblem(subject)) out.subject = subject
     for (const [key, fields] of [["continuation", ["runId", "state", "error"]], ["continuationCancellation", ["requestedAt", "error"]]] as const) {
       if (src[key] && typeof src[key] === "object") {
         const source = src[key] as Record<string, unknown>, target: Record<string, string> = {}

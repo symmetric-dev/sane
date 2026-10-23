@@ -6,6 +6,7 @@
 .worker-card-heading strong { font-size:13px; font-weight:550; overflow-wrap:anywhere; }
 .worker-card-jobs { display:flex; flex-wrap:wrap; gap:4px 6px; min-width:0; }
 .worker-card-jobs code { padding:2px 5px; border-radius:4px; background:var(--muted); color:var(--muted-foreground); font-size:11px; overflow-wrap:anywhere; }
+.worker-card-subject { min-width:0; font-size:12px; overflow-wrap:anywhere; }
 .worker-card-timing,.worker-card-elapsed { font-size:11px; color:var(--muted-foreground); font-variant-numeric:tabular-nums; }
 .worker-card-timing { margin-left:auto; white-space:nowrap; }
 .worker-glyph { flex-shrink:0; }

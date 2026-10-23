@@ -7,6 +7,8 @@
     "./contracts": "./src/contracts.ts",
     "./agent-catalog": "./src/agent-catalog.ts",
     "./sane-context": "./src/sane-context.ts",
+    "./sane-framework": "./src/sane-framework.ts",
+    "./context-markdown": "./src/context-markdown.ts",
     "./sane-worker-procedures": "./src/sane-worker-procedures.ts",
     "./server": "./src/server.ts"
   }

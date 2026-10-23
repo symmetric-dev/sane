@@ -179,6 +179,6 @@ Handoff text output is a one-line delivery receipt; the full message is still
 delivered and is available in the existing `--json` result.
 
 Use `sane --help` for the command list. Detailed assistant procedures live
-in [role skills](../skills/); document starters come from
+in [role skills](../context/skills/); document starters come from
 [templates](../templates/). Older designs and guides are in the
 [archive](_legacy/README.md).

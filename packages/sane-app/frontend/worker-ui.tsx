@@ -12,9 +12,9 @@ import { harnessName, type Conversation, type Run } from "./types";
 import { useStore } from "./store";
 import { goToSend } from "./send-navigation";
 
-function Stop({ parent, input, children, disabled = false, className = "worker-action", label, icon = <FiSquare size={13} aria-hidden="true" /> }: { parent: string; input: WorkerStop; children: string; disabled?: boolean; className?: string; label?: string; icon?: ReactNode }) {
+function CancelWorker({ parent, input, children, disabled = false, className = "worker-action", label, icon = <FiSquare size={13} aria-hidden="true" /> }: { parent: string; input: WorkerStop; children: string; disabled?: boolean; className?: string; label?: string; icon?: ReactNode }) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
-  return <><button type="button" className={className} disabled={busy || disabled} aria-label={`${label ?? children}${busy ? ", requesting stop" : ""}`} aria-busy={busy} onClick={async () => { setBusy(true); setNotice(""); try { await workerClient.stop(parent, input); setNotice("Stop requested; inspect current status for confirmation."); } catch (e) { setNotice(e instanceof Error ? e.message : "Stop failed"); } finally { setBusy(false); } }}>{icon}{busy ? "Requesting…" : children}</button>{notice && <p role="status" className="notice">{notice}</p>}</>;
+  return <><button type="button" className={className} disabled={busy || disabled} aria-label={`${label ?? children}${busy ? ", requesting cancellation" : ""}`} aria-busy={busy} onClick={async () => { setBusy(true); setNotice(""); try { await workerClient.stop(parent, input); setNotice("Worker cancellation requested; inspect current status for confirmation."); } catch (e) { setNotice(e instanceof Error ? e.message : "Cancellation failed"); } finally { setBusy(false); } }}>{icon}{busy ? "Requesting…" : children}</button>{notice && <p role="status" className="notice">{notice}</p>}</>;
 }
 function workerExecution(w: WorkerRecord, runs: Run[], conversation?: Conversation) {
   const latest = runs.filter(r => r.conversationId === w.sessionId).at(-1);
@@ -98,13 +98,13 @@ export function WorkerCard({ worker: w, workers = [], runs = [], open = openWork
   const stoppable = workerStoppable(w, execution.active, execution.executionState);
   const legacyWaiting = !protocol && execution.executionState === "waiting";
   return <section className={`worker-card${movingStatus ? " is-active" : ""}`} data-send-kind={sendAnchor ? "worker" : undefined} data-send-id={sendAnchor ? w.id : undefined} tabIndex={sendAnchor ? -1 : undefined} aria-label={sendAnchor ? "Worker send" : undefined}>
-    <header><WorkerIcon profile={profile} /><div className="worker-card-heading"><strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong>{!!w.input.jobs?.length && <span className="worker-card-jobs"><span className="sr-only">{w.input.jobs.length === 1 ? "Job: " : "Jobs: "}</span>{w.input.jobs.map(job => <code key={job}>{job}</code>)}</span>}{timestamp && <time className="worker-card-timing" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}</div></header>
+    <header><WorkerIcon profile={profile} /><div className="worker-card-heading"><strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong>{!!w.input.jobs?.length && <span className="worker-card-jobs"><span className="sr-only">{w.input.jobs.length === 1 ? "Job: " : "Jobs: "}</span>{w.input.jobs.map(job => <code key={job}>{job}</code>)}</span>}{w.input.subject && <span className="worker-card-subject muted">{w.input.subject}</span>}{timestamp && <time className="worker-card-timing" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}</div></header>
     <div className="worker-card-controls">
       <div className="worker-actions">
         <button type="button" className="worker-action" aria-label="Open worker" disabled={sending} onClick={() => open(w)}><FiArrowUpRight size={13} aria-hidden="true" />Open</button>
-        <Stop parent={w.parent.sessionId} input={{ ids: [w.id] }} label="Stop worker" disabled={!stoppable}>Stop</Stop>
+        <CancelWorker parent={w.parent.sessionId} input={{ ids: [w.id] }} label="Cancel worker assignment" disabled={!stoppable}>Cancel</CancelWorker>
         {duration && <span className="worker-card-elapsed" aria-label={`Elapsed: ${duration}`}>{duration}</span>}
-        {workers.some(child => child.parent.sessionId === w.sessionId) && <Stop parent={w.parent.sessionId} input={{ ids: [w.id], includeDescendants: true }} label="Stop worker tree" icon={<FiGitBranch size={13} aria-hidden="true" />}>Stop Tree</Stop>}
+        {workers.some(child => child.parent.sessionId === w.sessionId) && <CancelWorker parent={w.parent.sessionId} input={{ ids: [w.id], includeDescendants: true }} label="Cancel worker tree" icon={<FiGitBranch size={13} aria-hidden="true" />}>Cancel Tree</CancelWorker>}
       </div>
       <div className="worker-actions worker-secondary-actions">
         <span className={`worker-status${statusClass}`} role="status">{protocol ? status : `${execution.continuation ? "Continuation · " : ""}${status}`}</span>
@@ -214,7 +214,7 @@ export function WorkersButton({ sessionId, active = true }: { sessionId: string;
         {!workers.length && <div className="workers-empty"><FiUsers size={26} aria-hidden="true" /><h3>No workers yet</h3><p>Delegated tasks will appear here with their progress and results.</p></div>}
         {newestWorkers.map(w => <WorkerCard key={w.id} worker={w} workers={workers} runs={runs} open={open} />)}
       </div>
-      {!!workers.length && <footer className="workers-panel-footer"><Stop parent={sessionId} input={{ all: true }}>Stop all workers</Stop><span className="muted">Includes nested workers</span></footer>}
+      {!!workers.length && <footer className="workers-panel-footer"><CancelWorker parent={sessionId} input={{ all: true }}>Cancel all workers</CancelWorker><span className="muted">Includes nested workers</span></footer>}
     </div></dialog>, document.body)}
   </>;
 }
@@ -222,7 +222,7 @@ export function WorkerSection({ sessionId, runId, open = openWorker, collapsible
   const projection = useWorkers(sessionId);
   const children = projection.workers.filter(w => w.parent.sessionId === sessionId && (!runId || w.parent.runId === runId));
   if (!children.length && !projection.error && !projection.continuationSuppressed) return null;
-  const content = <>{projection.error && <p className="notice error">Worker status unavailable: {projection.error}</p>}{projection.continuationSuppressed && <p className="notice">Automatic report-back continuation is suppressed after an explicit stop. Outcomes remain available; user resumption re-enables delivery.</p>}{!runId && children.length > 0 && <Stop parent={sessionId} input={{ all: true }}>Stop all workers in this conversation tree</Stop>}{children.map(w => <WorkerCard key={w.id} worker={w} workers={projection.workers} open={open} />)}{projection.deliveries.filter(d => d.error).map(d => <p key={d.id} className="notice error">Report-back {d.state}: {d.error}</p>)}</>;
+  const content = <>{projection.error && <p className="notice error">Worker status unavailable: {projection.error}</p>}{projection.continuationSuppressed && <p className="notice">Automatic report-back continuation is suppressed after an explicit stop. Outcomes remain available; user resumption re-enables delivery.</p>}{!runId && children.length > 0 && <CancelWorker parent={sessionId} input={{ all: true }}>Cancel all workers in this conversation tree</CancelWorker>}{children.map(w => <WorkerCard key={w.id} worker={w} workers={projection.workers} open={open} />)}{projection.deliveries.filter(d => d.error).map(d => <p key={d.id} className="notice error">Report-back {d.state}: {d.error}</p>)}</>;
   const label = <>Workers · {children.length}{projection.error || projection.deliveries.some(d => d.error) ? " · Attention needed" : projection.continuationSuppressed ? " · Report-back paused" : ""}</>;
   return collapsible ? <details className="worker-section"><summary>{label}</summary>{content}</details> : <section className="worker-section"><h3>{label}</h3>{content}</section>;
 }

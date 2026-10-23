@@ -21,13 +21,12 @@ export function agentLaunchSnapshot(launch: ResolvedAgentLaunch): CanonicalAgent
 }
 
 /** Only SANE session creation records context; allowlisted identities only. */
-export function saneSessionContext(identity: StoredSaneAgentIdentity | undefined, assignment?: string): Pick<Session, "saneContext"> {
-  const framework = frameworkContext(identity);
+export function saneSessionContext(identity: StoredSaneAgentIdentity | undefined, assignment?: string, framework = frameworkContext(identity)): Pick<Session, "saneContext"> {
   return framework ? { saneContext: { version: framework.version, framework: framework.text, ...(assignment !== undefined ? { assignment } : {}) } } : {};
 }
 /** Resolve a new worker's procedure, roots and assigned jobs from its enrolled identity. An
  * implementer starts its planned job (a free-mode implementer has none); other roles never change job state. Throws when unusable. */
-export function workerAssignment(domain: RepositoryDomain, child: ConversationRef, parent: ConversationRef, role: WorkerAgentId, jobIds: readonly string[], correlationId: string): string {
+export function workerAssignment(domain: RepositoryDomain, child: ConversationRef, parent: ConversationRef, role: WorkerAgentId, jobIds: readonly string[], correlationId: string, procedure?: string): string {
   const context = domain.resolveContext(child);
   const roots = { workstreamRoot: context.artifactsRoot, implementationRoot: context.executionCheckout };
   const workstream = context.workstream;
@@ -39,7 +38,7 @@ export function workerAssignment(domain: RepositoryDomain, child: ConversationRe
     return { jobId, status: job.job.status, specPath: job.job.specPath, reportPath: job.job.reportPath, reportTemplatePath: job.reportTemplate };
   });
   if (role === "implementer") for (const job of jobs) if (job.status === "planned") domain.updateJob(workstream!.id, job.jobId, "running", { actor: { kind: "native", repositoryId: domain.repositoryId, ref: parent }, correlationId });
-  return workerContext(role, roots, jobs.map(({ status: _, ...job }) => job));
+  return workerContext(role, roots, jobs.map(({ status: _, ...job }) => job), procedure);
 }
 /** The text delivered once into history when the native session is created. */
 export function saneContextText(context: SaneSessionContext): string {

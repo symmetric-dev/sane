@@ -286,7 +286,7 @@ serve native subagents:
 > assignment. Native subagents return their result normally.
 
 Preserve each role's existing outcome/report format. Update all nine files under
-`opencode/agents/sane/worker/` and the applicable procedures in
+`context/agents/sane/worker/` and the applicable procedures in
 `packages/sane-core/src/sane-worker-procedures.ts`.
 
 ### Implementer and Scout Crew
@@ -314,12 +314,12 @@ Add shared coordination guidance in `SANE_ASSISTANT_CONTEXT` in
 
 Review these procedure sources for assumptions about workers returning:
 
-- `skills/sane-assistant-execution-assistance/SKILL.md`
-- `skills/sane-assistant-planning-assistance/SKILL.md`
-- `skills/sane-assistant-engineering-assistance/SKILL.md`
-- `skills/sane-assistant-engineering-delivery/SKILL.md`
-- `skills/sane-assistant-design-assistance/SKILL.md`
-- `skills/sane-assistant-research-assistance/SKILL.md`
+- `context/skills/sane-assistant-execution-assistance/SKILL.md`
+- `context/skills/sane-assistant-planning-assistance/SKILL.md`
+- `context/skills/sane-assistant-engineering-assistance/SKILL.md`
+- `context/skills/sane-assistant-engineering-delivery/SKILL.md`
+- `context/skills/sane-assistant-design-assistance/SKILL.md`
+- `context/skills/sane-assistant-research-assistance/SKILL.md`
 
 Assistant-to-assistant handoff rules are separate and should not be rewritten as
 worker completion rules.

@@ -1,7 +1,18 @@
+.conversation-sidebar-list {
+  /* Size panels against the available scrollport, not their content height. */
+  container-type:size;
+}
+
+.conversation-sidebar-list>.history-group {
+  flex-shrink:0;
+}
+
 .worktree-group {
   display:flex;
   flex-direction:column;
   gap:2px;
+  max-height:50cqh;
+  min-height:0;
 }
 
 .worktree-group+.worktree-group {
@@ -11,6 +22,7 @@
 .worktree-group-header {
   display:flex;
   align-items:center;
+  flex-shrink:0;
   gap:2px;
   min-width:0;
   border-radius:8px;
@@ -141,8 +153,23 @@
   display:flex;
   flex-direction:column;
   gap:4px;
+  min-height:0;
+  overflow:auto;
   padding-left:12px;
   margin-top:2px;
+}
+
+.worktree-group-items>.conversation-sidebar-row {
+  flex-shrink:0;
+}
+
+/* Preserve the selected row's flush connection to the main Chat panel. */
+.view-chat>.sidebar .worktree-group-items {
+  scrollbar-width:none;
+}
+
+.view-chat>.sidebar .worktree-group-items::-webkit-scrollbar {
+  display:none;
 }
 
 .worktree-group-empty {

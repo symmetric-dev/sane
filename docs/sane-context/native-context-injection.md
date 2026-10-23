@@ -22,13 +22,13 @@ The harness still executes models and tools. Runtime plugins, hooks, and MCP int
 
 | Purpose | Location |
 | --- | --- |
-| Authored role instructions and execution settings | `opencode/agents/sane/{assistant,worker}/*.md` |
-| Authored assistant procedures and resources | `skills/sane-assistant-<role>-<phase>/` |
+| Authored role instructions and execution settings | `context/agents/sane/{assistant,worker}/*.md` |
+| Authored assistant procedures and resources | `context/skills/sane-assistant-<role>-<phase>/` |
 | Framework source | `packages/sane-core/src/sane-context.ts` |
 | Immutable session procedure copies | `<App dataDir>/context-packages/<revision>/` |
 | Workstream documents/state | Target repository's `.sane/` |
 
-The authored source has **not** been reorganized into `context/skills/`. The existing filenames are source inputs, not a requirement to install those files into a harness.
+Authored agents and skills live together under `context/`. These files are source inputs, not a requirement to install them into a harness. Existing pinned packages retain their original source paths and hashes; the loader supports both the old and new skill-source layouts.
 
 In the development installation, the source checkout is `/Users/beto/sane` and the configured App data directory is `packages/sane-app/.data-fresh`. Those are installation-specific paths, not required names.
 
@@ -69,7 +69,7 @@ Claude execution-policy translation is bounded rather than full OpenCode parity.
 
 Canonical delivery is the default for normal App startup. `--context-delivery startup` remains an explicit compatibility mode. Existing sessions retain their recorded delivery configuration.
 
-To change a procedure, edit its authored source under `skills/`. The App packages updated content for new SANE activations; no manual copy into the package store is needed. Existing sessions retain their pinned revisions. Restarting or compacting does not refresh their authored context.
+To change a procedure, edit its authored source under `context/skills/`. The App packages updated content for new SANE activations; no manual copy into the package store is needed. Existing sessions retain their pinned revisions. Restarting or compacting does not refresh their authored context.
 
 Branching supports migration:
 
