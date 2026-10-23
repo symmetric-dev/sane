@@ -8,6 +8,7 @@ import type { Session } from "./history";
  * GET /api/workspaces/:workspaceId -> WorkspaceRecord
  * GET /api/workspaces/:workspaceId/worktrees/:worktreeId -> WorktreeResolution
  * PUT /api/workspaces/:workspaceId/worktrees/:worktreeId/alias {alias: string | null} -> WorkspaceRecord (per-worktree display name, trimmed 1-80 chars, no controls; empty/null clears; duplicates allowed)
+ * DELETE /api/workspaces/:workspaceId/worktrees/:worktreeId {force?: boolean} -> {workspace: WorkspaceRecord, fallbackWorktreeId: string} (removes linked git worktree or prunes if directory already deleted)
  * Same base + /list /file /git /diff /search /paths use workspace-contract shapes and paths
  * relative to the FULL worktree root. GET accepts workspaceId=<revision> or
  * bindingRevision=<revision>; PUT /file and POST /search /paths accept either token field.

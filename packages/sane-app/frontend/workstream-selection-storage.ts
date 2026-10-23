@@ -1,7 +1,7 @@
 import { defaultFilterFor, type ConversationFilterState } from "./conversation-filter";
 
 const STORAGE_KEY = "sane.workspace.workstreamSelection";
-type StoredSelection = { version: 2; workspaceId: string | null; workstreamId: string | null; filter: ConversationFilterState };
+type StoredSelection = { version: 3; workspaceId: string | null; workstreamId: string | null; filter: ConversationFilterState };
 const scope = (value: unknown): value is string | null => value === null || (typeof value === "string" && !!value.trim());
 function isFilter(value: unknown): value is ConversationFilterState {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -26,12 +26,15 @@ export function readWorkstreamSelection(): StoredSelection | null {
     const saved: unknown = JSON.parse(raw);
     if (saved && typeof saved === "object" && !Array.isArray(saved) && "version" in saved
       && "workspaceId" in saved && scope(saved.workspaceId) && "workstreamId" in saved && scope(saved.workstreamId)) {
+      if (saved.version === 3 && "filter" in saved && isFilter(saved.filter)) {
+        return { version: 3, workspaceId: saved.workspaceId, workstreamId: saved.workstreamId, filter: saved.filter };
+      }
       if (saved.version === 2 && "filter" in saved && isFilter(saved.filter)) {
-        return { version: 2, workspaceId: saved.workspaceId, workstreamId: saved.workstreamId, filter: saved.filter };
+        return { version: 3, workspaceId: saved.workspaceId, workstreamId: saved.workstreamId, filter: { ...saved.filter, worktreeId: "all" } };
       }
       // Preserve selections made before full filter persistence was added.
       if (saved.version === 1 && saved.workspaceId && saved.workstreamId) {
-        return { version: 2, workspaceId: saved.workspaceId, workstreamId: saved.workstreamId,
+        return { version: 3, workspaceId: saved.workspaceId, workstreamId: saved.workstreamId,
           filter: { ...defaultFilterFor(saved.workspaceId, null), workstreamId: `workstream:${saved.workstreamId}` } };
       }
     }
@@ -43,7 +46,7 @@ export function readWorkstreamSelection(): StoredSelection | null {
 export function saveWorkstreamSelection(workspaceId: string | null, workstreamId: string | null, filter: ConversationFilterState) {
   try {
     if (typeof window === "undefined") return;
-    const value = JSON.stringify({ version: 2, workspaceId, workstreamId, filter } satisfies StoredSelection);
+    const value = JSON.stringify({ version: 3, workspaceId, workstreamId, filter } satisfies StoredSelection);
     if (window.sessionStorage.getItem(STORAGE_KEY) !== value) window.sessionStorage.setItem(STORAGE_KEY, value);
   } catch { /* Browser storage is optional; in-memory selection still works. */ }
 }

@@ -121,6 +121,22 @@ class CatalogStore {
       return true;
     } catch (error) { this.update({ error: workspaceFailure(error) }); return false; }
   };
+  removeWorktree = async (workspaceId: string, worktreeId: string, force = false): Promise<{ ok: true; fallbackWorktreeId: string } | { ok: false; code?: string; error: string }> => {
+    try {
+      const result = await request<{ workspace: WorkspaceRecord; fallbackWorktreeId: string }>(
+        `/api/workspaces/${encodeURIComponent(workspaceId)}/worktrees/${encodeURIComponent(worktreeId)}`,
+        { method: "DELETE", body: JSON.stringify({ force }) },
+      );
+      this.update({ workspaces: this.state.workspaces.map(w => w.workspaceId === workspaceId ? result.workspace : w), error: "" });
+      if (this.state.navigation.workspaceId === workspaceId && this.state.navigation.worktreeId === worktreeId) {
+        this.navigate({ workspaceId, worktreeId: result.fallbackWorktreeId, filePath: null, comparison: null });
+      }
+      return { ok: true, fallbackWorktreeId: result.fallbackWorktreeId };
+    } catch (error) {
+      const code = error instanceof WorkspaceError ? error.code : undefined;
+      return { ok: false, code, error: workspaceFailure(error) };
+    }
+  };
 }
 export const catalog = new CatalogStore();
 export const worktreeScope = (workspaceId: string, worktreeId: string) => JSON.stringify([workspaceId, worktreeId]);

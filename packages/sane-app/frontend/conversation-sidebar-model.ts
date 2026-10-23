@@ -36,8 +36,8 @@ const contextDefaults = (workspaceId: string | null, worktreeId: string | null, 
 });
 function rebaseContext(context: SidebarContext, workspaceId: string | null, worktreeId: string | null): SidebarContext {
   if (context.workspaceId === workspaceId && context.worktreeId === worktreeId) return context;
-  // Opening a member session on another checkout must not lose workstream scope.
-  if (context.workspaceId === workspaceId && context.workstreamId) return { ...context, worktreeId };
+  // Moving between worktrees in the same workspace keeps workspace filters and workstream scope.
+  if (context.workspaceId === workspaceId) return { ...context, worktreeId };
   return { workspaceId, worktreeId, workstreamId: null, filter: defaultFilterFor(workspaceId, worktreeId) };
 }
 
@@ -139,10 +139,19 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     selectWorkspace: (workspaceId, preferredWorktreeId) => activateWorkspace(workspaceId, false, preferredWorktreeId),
     goWorkspace: workspaceId => activateWorkspace(workspaceId, true),
     selectWorktree: worktreeId => {
-      if (auth !== workspaceEpoch() || workspaceSelectionBlocked()) return;
+      if (auth !== workspaceEpoch() || workspaceSelectionBlocked() || !catalog.snapshot().ready) return;
       const current = catalog.snapshot();
       const workspace = current.workspaces.find(w => w.workspaceId === current.navigation.workspaceId);
-      if (workspace?.worktrees.some(t => t.worktreeId === worktreeId && t.state === "available")) selectContext(current.navigation.workspaceId, worktreeId, null);
+      if (!workspace?.worktrees.some(t => t.worktreeId === worktreeId && t.state === "available")) return;
+      setSelectionError("");
+      setSelectionRestored(true);
+      const rebased = rebaseContext(savedContext, current.navigation.workspaceId, worktreeId);
+      const nextFilter = rebased.filter.worktreeId !== "all" && rebased.filter.worktreeId !== worktreeId
+        ? { ...rebased.filter, worktreeId: "all" }
+        : rebased.filter;
+      saveWorkstreamSelection(current.navigation.workspaceId, rebased.workstreamId, nextFilter);
+      catalog.navigate({ workspaceId: current.navigation.workspaceId, worktreeId, filePath: null, comparison: null });
+      setContext({ ...rebased, worktreeId, filter: nextFilter });
     },
     selectWorkstream: workstreamId => {
       if (auth !== workspaceEpoch() || workspaceSelectionBlocked()) return;

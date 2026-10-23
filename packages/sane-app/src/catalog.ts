@@ -67,7 +67,7 @@ export class CatalogService {
         for (const t of w.worktrees) { if (!uuid(t.worktreeId) || ids.has(t.worktreeId) || !uuid(t.bindingRevision) || !validPath(t.root) || !validIdentity(t.identity) || !["available", "invalid"].includes(t.state) || (t.alias !== undefined && !validAlias(t.alias)) || (w.kind === "repository" ? !validPath(t.gitDir) || !validIdentity(t.gitIdentity) : t.gitDir !== null || t.gitIdentity !== null)) throw new Error("Invalid worktree catalog"); ids.add(t.worktreeId); }
       }
       for (const [id, a] of Object.entries(c.associations) as [string, any][]) {
-        if (!uuid(id) || !a || (a.association === "resolved" ? !c.workspaces.some((w: Repo) => w.workspaceId === a.workspaceId && w.worktrees.some(t => t.worktreeId === a.worktreeId)) : a.association !== "unresolved" || a.workspaceId !== null || a.worktreeId !== null || typeof a.associationReason !== "string")) throw new Error("Invalid conversation association");
+        if (!uuid(id) || !a || (a.association === "resolved" ? !uuid(a.worktreeId) || !c.workspaces.some((w: Repo) => w.workspaceId === a.workspaceId) : a.association !== "unresolved" || a.workspaceId !== null || a.worktreeId !== null || typeof a.associationReason !== "string")) throw new Error("Invalid conversation association");
       }
       this.catalog = c;
     } catch { throw new Error("Missing or invalid fresh catalog; explicit setup is required (no migration)"); }
@@ -144,6 +144,55 @@ export class CatalogService {
       else t.alias = next;
       await this.save("catalog.json", this.catalog);
       return this.publicWorkspace(w);
+    });
+  }
+  async removeWorktree(workspaceId: string, worktreeId: string, options?: { force?: boolean; beforeRemove?: () => Promise<void> | void }) {
+    return this.queue(async () => {
+      const w = this.find(workspaceId);
+      const t = w.worktrees.find(item => item.worktreeId === worktreeId) ?? error(404, "unknown-worktree", "Unknown worktree");
+      if (w.kind !== "repository" || !w.commonDir) error(409, "worktree-primary", "Only linked Git worktrees can be removed");
+      if (t.gitDir === w.commonDir) error(409, "worktree-primary", "The main repository worktree cannot be removed");
+      if (w.worktrees.length <= 1) error(409, "worktree-primary", "A workspace must keep at least one worktree");
+      await options?.beforeRemove?.();
+      const commonIdentity = await identity(w.commonDir).catch(() => null);
+      if (!commonIdentity || !same(commonIdentity, w.identity)) error(409, "binding-invalid", "Repository binding changed; refresh workspace first");
+      let rootStat: Awaited<ReturnType<typeof lstat>> | null = null;
+      try { rootStat = await lstat(t.root); } catch (e: any) {
+        if (!["ENOENT", "ENOTDIR"].includes(e?.code)) error(403, "directory-unavailable", "Could not inspect worktree directory");
+      }
+      const rootMatches = !!rootStat && rootStat.isDirectory() && !rootStat.isSymbolicLink() && same({ dev: rootStat.dev, ino: rootStat.ino }, t.identity);
+      if (rootMatches) {
+        const args = ["worktree", "remove", ...(options?.force ? ["--force", "--force"] : []), "--", t.root];
+        const res = await this.git.git(w.commonDir, args);
+        if (res.code !== 0) {
+          const stderr = res.stderr.trim();
+          if (/not a working tree/i.test(stderr)) {
+            await this.git.git(w.commonDir, ["worktree", "prune"]);
+          } else if (!options?.force && /modified or untracked|untracked files|contains modified|locked/i.test(stderr)) {
+            error(409, "worktree-dirty", "Worktree has uncommitted changes or untracked files. Commit or stash them, or choose Force remove to discard them.");
+          } else {
+            error(409, options?.force ? "worktree-remove-failed" : "worktree-dirty", stderr ? `Git could not remove this worktree: ${stderr.split("\n")[0]}` : "Git could not remove this worktree.");
+          }
+        }
+      } else {
+        // Directory was already manually deleted (or replaced): prune stale Git worktree administrative metadata.
+        await this.git.git(w.commonDir, ["worktree", "prune"]);
+      }
+      w.worktrees = w.worktrees.filter(item => item.worktreeId !== worktreeId);
+      const fallback = w.worktrees.find(item => item.state === "available") ?? w.worktrees[0]!;
+      if (this.navigation.workspaceId === workspaceId && this.navigation.worktreeId === worktreeId) {
+        const bookmark: NavigationBookmark = {
+          ...this.navigation,
+          revision: this.navigation.revision + 1,
+          worktreeId: fallback.worktreeId,
+          filePath: null,
+          comparison: null,
+        };
+        await this.save("navigation.json", { version: 1, bookmark });
+        this.navigation = bookmark;
+      }
+      await this.save("catalog.json", this.catalog);
+      return { workspace: this.publicWorkspace(w), fallbackWorktreeId: fallback.worktreeId };
     });
   }
   private find(id: string) { return this.catalog.workspaces.find(w => w.workspaceId === id) ?? error(404, "unknown-workspace", "Unknown workspace"); }
@@ -274,8 +323,8 @@ export class CatalogService {
       const s = this.sessions().find(s => s.sessionId === n.conversationId), a = this.association(n.conversationId);
       if (!s) error(409, "navigation-association", "Conversation no longer exists");
       // History can remain selected with an unresolved execution association.
-      // Resolved associations reference their own worktree, independently of browsing.
-      if (a.association === "resolved" && !this.catalog.workspaces.some(w => w.workspaceId === a.workspaceId && w.worktrees.some(t => t.worktreeId === a.worktreeId))) error(409, "navigation-association", "Conversation association is unavailable");
+      // Resolved associations reference their own workspace, independently of browsing.
+      if (a.association === "resolved" && !this.catalog.workspaces.some(w => w.workspaceId === a.workspaceId)) error(409, "navigation-association", "Conversation association is unavailable");
     }
   }
   putNavigation(input: NavigationWrite) {

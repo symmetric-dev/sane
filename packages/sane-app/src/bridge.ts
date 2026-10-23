@@ -2125,8 +2125,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const packageRef = pinned.saneContext?.package;
     const executionRevision = pinned.saneExecution?.revision;
     if (!canonicalContextEnabled || !packageRef || !executionRevision) return {};
-    const { bundle } = await contextPackages.load(packageRef);
-    if (!bundle.assets.some(asset => asset.text.includes("submit your final result with sane_worker_complete"))) return {};
+    await contextPackages.load(packageRef);
     const childHarness = worker.launch.harness === "opencode" ? "oc" : "cc";
     const tools = await proveInstalledExplicitWorkerRuntime(claudeRoot, childHarness);
     if (!tools) return { reject: "Explicit completion instructions are selected, but the worker's installed runtime is not proven. This launch was not submitted." };
@@ -2471,8 +2470,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const run = candidates.at(-1);
     const owner = owners.get(w.sessionId);
     const ownerPresent = !!owner || admitting.has(w.sessionId);
-    const ownerSettled = !owner || owner.settled !== false;
+    const ownerSettled = !admitting.has(w.sessionId) && (!owner || owner.settled !== false);
     const cancelRequested = !!w.cancelRequestedAt;
+    // An audited operator recovery supersedes this run's assignment closure,
+    // not its failed native history. A newer real run resumes normal observation.
+    if (w.usageRecovery && w.usageRecovery.throughRunId === run?.runId && !cancelRequested && !w.completion && !w.outcome && !retainOwner && !storageFailed)
+      return ownerPresent ? {} : { state: "idle", assignment: "open" };
     if (!run) {
       if (ownerPresent) return explicitObservationChange(w, { run: null, ownerPresent, ownerSettled, terminationUncertain: false, cancelRequested });
       const uncertain = (reason: string) => explicitObservationChange(w, { run: null, ownerPresent: false, ownerSettled: true, terminationUncertain: true, cancelRequested, nativeSummary: reason });
@@ -3330,6 +3333,21 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (!worktreeId && req.method === "GET") return json(await catalog.get(workspaceId));
           const key = `${workspaceId}/${worktreeId}`, revision = url.searchParams.get("workspaceId") ?? url.searchParams.get("bindingRevision"), filePath = url.searchParams.get("path") ?? "";
           if (!operation && worktreeId && req.method === "GET") { const resolved = await worktrees.resolve(key); return json({ ...resolved, catalogWorkspaceId: workspaceId, worktreeId, bindingRevision: resolved.workspaceId }); }
+          if (!operation && worktreeId && req.method === "DELETE") {
+            const input = await body(req).catch(() => ({}));
+            const result = await catalog.removeWorktree(workspaceId, worktreeId, {
+              force: input?.force === true,
+              beforeRemove: async () => {
+                const admittingSession = meta.sessions.find(s => {
+                  const a = catalog.association(s.sessionId);
+                  return a.association === "resolved" && a.workspaceId === workspaceId && a.worktreeId === worktreeId && admitting.has(s.sessionId);
+                });
+                if (admittingSession) throw new WorkspaceError(409, "worktree-busy", "Wait for the in-flight message submission in this worktree to finish before removing it");
+                await terminals.disposeWorktree(workspaceId, worktreeId);
+              },
+            });
+            return json(result);
+          }
           if (operation === "list" && req.method === "GET") return json(await worktrees.list(key, revision, filePath));
           if (operation === "file" && req.method === "GET") return json(await worktrees.file(key, revision, filePath));
           if (operation === "file" && req.method === "PUT") { const input = await body(req); return json(await worktrees.write(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId })); }

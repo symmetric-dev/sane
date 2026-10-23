@@ -455,6 +455,15 @@ export class TerminalService {
     // Let an in-flight write callback finish before disposing parser internals.
     void r.tail.finally(() => r.screen.dispose());
   }
+  async disposeWorktree(workspaceId: string, worktreeId: string): Promise<void> {
+    const key = this.key(workspaceId, worktreeId);
+    if (this.transitions.has(key)) fail(409, "terminal-busy", "A terminal lifecycle operation is pending in this worktree");
+    const r = this.resources.get(key);
+    if (!r) return;
+    await this.stop(r, "closed", "Worktree removed");
+    this.dispose(r);
+    this.resources.delete(key);
+  }
   async close() {
     this.closing = true;
     const all = [...this.resources.values()];

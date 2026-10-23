@@ -96,6 +96,8 @@ export type WorkerRecord = {
   wait?: WorkerWait;
   completion?: WorkerCompletion;
   settlement?: WorkerSettlement;
+  /** Operator-recovered quota failure. Historical results and native runs remain immutable. */
+  usageRecovery?: { runId: string; throughRunId: string; throughRevision: number; at: string };
   exchanges?: WorkerExchange[];
   operationReceipts?: WorkerOperationReceipt[];
   attention?: WorkerAttention[];

@@ -1,3 +1,156 @@
+.worktree-group {
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+}
+
+.worktree-group+.worktree-group {
+  margin-top:6px;
+}
+
+.worktree-group-header {
+  display:flex;
+  align-items:center;
+  gap:2px;
+  min-width:0;
+  border-radius:8px;
+}
+
+.worktree-group-header.is-active {
+  background:var(--accent);
+}
+
+.history-list .worktree-group-toggle,
+.history-list .worktree-group-select,
+.history-list .worktree-group-new,
+.history-list .worktree-group-remove {
+  border:1px solid transparent;
+  transform:none;
+}
+
+.history-list .worktree-group-toggle {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  flex-shrink:0;
+  width:24px;
+  height:28px;
+  padding:0;
+  border-radius:6px;
+  color:var(--muted-foreground);
+}
+
+.history-list .worktree-group-toggle:hover:not(:disabled),
+.history-list .worktree-group-new:hover:not(:disabled) {
+  background:var(--history-hover);
+  color:var(--foreground);
+}
+
+.history-list .worktree-group-remove:hover:not(:disabled) {
+  background:var(--history-hover);
+  color:var(--error);
+}
+
+.history-list .worktree-group-select {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex:1;
+  min-width:0;
+  width:auto;
+  min-height:28px;
+  padding:4px 8px 4px 4px;
+  border-radius:6px;
+  font-size:12px;
+  font-weight:500;
+  color:var(--foreground);
+}
+
+.history-list .worktree-group-select.is-active {
+  font-weight:600;
+  color:var(--primary);
+}
+
+.worktree-group-icon {
+  flex-shrink:0;
+  color:var(--muted-foreground);
+}
+
+.worktree-group-select.is-active .worktree-group-icon {
+  color:var(--primary);
+}
+
+.worktree-group-name {
+  flex:1;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.worktree-group-count {
+  flex-shrink:0;
+  font-size:11px;
+  font-weight:500;
+  font-variant-numeric:tabular-nums;
+  color:var(--muted-foreground);
+  padding:1px 6px;
+  border-radius:999px;
+  background:var(--background);
+}
+
+.history-list .worktree-group-new,
+.history-list .worktree-group-remove {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  flex-shrink:0;
+  width:24px;
+  height:28px;
+  padding:0;
+  border-radius:6px;
+  color:var(--muted-foreground);
+}
+
+.worktree-group-unavailable {
+  flex-shrink:0;
+  font-size:10px;
+  font-weight:500;
+  color:var(--error);
+  padding:1px 5px;
+  border:1px solid currentColor;
+  border-radius:999px;
+}
+
+.worktree-remove-dialog p {
+  margin:0 0 10px;
+  font-size:12px;
+  line-height:1.5;
+}
+
+.worktree-remove-dialog .dialog-actions {
+  margin-top:16px;
+}
+
+.worktree-remove-dialog .worktree-remove-confirm {
+  background:var(--error);
+  color:#fff;
+}
+
+.worktree-group-items {
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  padding-left:12px;
+  margin-top:2px;
+}
+
+.worktree-group-empty {
+  margin:2px 0 4px;
+  padding:6px 10px;
+  font-size:11px;
+}
+
 .history-list .conversation-sidebar-row>button:first-child {
   padding-block:9px;
 }
@@ -90,6 +243,8 @@
    shell.css widens the scrollport by --chat-panel-overlap for the Safari seam
    workaround; compensate here to preserve unselected row/content alignment.
    History and mobile drawers stay contained. */
+.view-chat>.sidebar .worktree-group-header,
+.view-chat>.sidebar .worktree-group-empty,
 .view-chat>.sidebar .conversation-sidebar-row {
   margin-right:calc(12px + var(--chat-panel-overlap));
 }

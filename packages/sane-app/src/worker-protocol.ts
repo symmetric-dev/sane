@@ -172,7 +172,7 @@ function publishAccepted(worker: WorkerRecord, completion: WorkerCompletion, run
     error: undefined,
     ...(continuation ? { continuation: { runId: continuation.runId, state: completion.outcome.status } } : {}),
   };
-  if (!worker.outcome && !workerResults(worker).length) {
+  if (!worker.outcome && !workerResults(worker).some(result => result.revision > (worker.usageRecovery?.throughRevision ?? 0))) {
     change.outcome = {
       status: completion.outcome.status,
       at: completion.at,

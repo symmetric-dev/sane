@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { FiArrowRight, FiCheck, FiChevronDown, FiFolder, FiGitBranch } from "react-icons/fi";
+import { FiArrowRight, FiCheck, FiChevronDown, FiFolder, FiGitBranch, FiTrash2 } from "react-icons/fi";
 import type { WorktreeRecord, WorkspaceCreationInput } from "../src/catalog-contract";
 import { catalog } from "./catalog";
 import { useStore } from "./store";
@@ -31,6 +31,7 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
   const [panel, setPanel] = useState<"context" | "directory" | "create" | null>(null);
   const [search, setSearch] = useState(""), [cwd, setCwd] = useState(""), [busy, setBusy] = useState(false), [feedback, setFeedback] = useState("");
   const [aliasDraft, setAliasDraft] = useState(""), [aliasBusy, setAliasBusy] = useState(false);
+  const [removingTreeId, setRemovingTreeId] = useState<string | null>(null), [removeForceId, setRemoveForceId] = useState<string | null>(null);
   const [selectionMode, setSelectionMode] = useState<"worktree" | "workstream">("workstream");
   const [streamSearch, setStreamSearch] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -82,10 +83,10 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
     query.addEventListener("change", update);
     return () => query.removeEventListener("change", update);
   }, []);
-  useEffect(() => { setFeedback(""); }, [navigation.workspaceId, navigation.worktreeId]);
+  useEffect(() => { setFeedback(""); setRemovingTreeId(null); setRemoveForceId(null); }, [navigation.workspaceId, navigation.worktreeId]);
   useEffect(() => { if (panel === "create") parentInput.current?.focus(); }, [panel]);
   const mode = workspace?.kind === "repository" && selection ? selectionMode : "worktree";
-  const locked = busy || aliasBusy || !!selection?.blocked;
+  const locked = busy || aliasBusy || !!removingTreeId || !!selection?.blocked;
   const currentIntent = (intent: number, workspaceId: string, worktreeId?: string) => {
     const nav = catalog.snapshot().navigation;
     return intent === dialogIntent.current && nav.workspaceId === workspaceId && (!worktreeId || nav.worktreeId === worktreeId);
@@ -240,10 +241,38 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
                 <button type="button" className="text-button" disabled={locked} onClick={() => selection?.selectWorkstream(null)}>Clear workstream selection</button>
               </div>}
             </section> : <section className="context-selection-section" aria-label="Worktree selection">
-              <div className="context-selection-list">{workspace.worktrees.map(tree => <button type="button" key={tree.worktreeId} className={tree.worktreeId === navigation.worktreeId ? "selected" : ""} aria-pressed={tree.worktreeId === navigation.worktreeId} disabled={locked || tree.state !== "available"} onClick={() => chooseWorktree(tree.worktreeId)}>
-                <span className="context-choice-heading"><FiGitBranch size={14} aria-hidden="true" /><span>{worktreeDisplay(tree)}</span>{tree.worktreeId === navigation.worktreeId && <FiCheck size={14} aria-hidden="true" />}</span>
-                <small title={worktreeLabel(tree)}>{worktreeShort(tree)}{tree.state !== "available" ? " · Unavailable" : ""}</small><small title={tree.root}>{tree.root}</small>
-              </button>)}</div>
+              <div className="context-selection-list">{workspace.worktrees.map(tree => {
+                const removable = workspace.kind === "repository" && workspace.worktrees.length > 1 && tree.gitDir !== workspace.commonDir;
+                const needsForce = removeForceId === tree.worktreeId;
+                return <div className="context-worktree-row" key={tree.worktreeId}>
+                  <button type="button" className={tree.worktreeId === navigation.worktreeId ? "selected" : ""} aria-pressed={tree.worktreeId === navigation.worktreeId} disabled={locked || tree.state !== "available"} onClick={() => chooseWorktree(tree.worktreeId)}>
+                    <span className="context-choice-heading"><FiGitBranch size={14} aria-hidden="true" /><span>{worktreeDisplay(tree)}</span>{tree.worktreeId === navigation.worktreeId && <FiCheck size={14} aria-hidden="true" />}</span>
+                    <small title={worktreeLabel(tree)}>{worktreeShort(tree)}{tree.state !== "available" ? " · Unavailable" : ""}</small><small title={tree.root}>{tree.root}</small>
+                  </button>
+                  {removable && <button
+                    type="button"
+                    className={`context-worktree-remove${needsForce ? " is-force" : ""}`}
+                    disabled={locked}
+                    aria-label={needsForce ? `Force remove worktree ${worktreeDisplay(tree)}` : `Remove worktree ${worktreeDisplay(tree)}`}
+                    title={needsForce ? `Force remove ${worktreeDisplay(tree)} (discard uncommitted files)` : `Remove worktree ${worktreeDisplay(tree)}`}
+                    onClick={async () => {
+                      const intent = dialogIntent.current;
+                      setRemovingTreeId(tree.worktreeId);
+                      setFeedback("");
+                      const res = await catalog.removeWorktree(workspace.workspaceId, tree.worktreeId, needsForce);
+                      setRemovingTreeId(null);
+                      if (!currentIntent(intent, workspace.workspaceId)) return;
+                      if (res.ok) {
+                        setRemoveForceId(null);
+                        setFeedback(`Removed worktree ${worktreeDisplay(tree)}.`);
+                      } else {
+                        setFeedback(res.error);
+                        if (res.code === "worktree-dirty") setRemoveForceId(tree.worktreeId);
+                      }
+                    }}
+                  >{removingTreeId === tree.worktreeId ? "…" : needsForce ? "Force remove" : <FiTrash2 size={14} aria-hidden="true" />}</button>}
+                </div>;
+              })}</div>
               {!workspace.worktrees.length && <p className="muted">No worktrees available. Open a directory to rediscover this workspace.</p>}
               <p className="muted">Direct selection scopes sessions to this worktree.</p>
             </section>}

@@ -23,11 +23,11 @@ export type FilterConversationsOptions = {
 
 export const defaultFilterFor = (
   workspaceId: string | null,
-  worktreeId: string | null,
+  _worktreeId?: string | null,
 ): ConversationFilterState => ({
   query: "",
   workspaceId: workspaceId ?? "all",
-  worktreeId: worktreeId ?? "all",
+  worktreeId: "all",
   harness: "all",
   status: "all",
   workstreamId: "all",
