@@ -111,6 +111,12 @@
   background:var(--background);
 }
 
+.worktree-group-shortcut {
+  flex-shrink:0;
+  font-size:10px;
+  color:var(--muted-foreground);
+}
+
 .history-list .worktree-group-new,
 .history-list .worktree-group-remove {
   display:inline-flex;

@@ -109,9 +109,17 @@ export const FILE_SHORTCUTS = {
   },
 } as const satisfies Record<string, ShortcutDefinition>;
 
+export const CHAT_WORKTREE_SHORTCUTS = Array.from({ length: 9 }, (_, index) => ({
+  id: `chat.worktree-${index + 1}`, label: `Open worktree ${index + 1}`,
+  scope: { kind: "view", view: "chat", region: "view" }, owner: "application",
+  binding: { key: String(index + 1), mod: true },
+  description: "Expand the worktree in sidebar order and open its most recently updated conversation.",
+} satisfies ShortcutDefinition));
+
 export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   ...GLOBAL_SHORTCUTS,
   ...Object.values(FILE_SHORTCUTS),
+  ...CHAT_WORKTREE_SHORTCUTS,
 ];
 
 /** Use for Settings columns, toolbar hints, and command registration alike. */

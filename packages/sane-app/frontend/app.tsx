@@ -15,6 +15,7 @@ import { WorkstreamArtifact } from "./workstream-artifact";
 import { HistoryDetail } from "./history-view";
 import { ConfigMenu, ConfigView } from "./config-view";
 import { ConversationSidebar, useConversationSidebarModel } from "./conversation-sidebar";
+import { ChatWorktreeShortcuts } from "./chat-worktree-shortcuts";
 import { ConversationHeading } from "./conversation-heading";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { Facts, LoadedTranscriptDiagnostics, NativeHistoryDetails, NativeUsage, RunDetails, Thread, Usage } from "./thread";
@@ -196,6 +197,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     <PushNavigation state={state} inbox={inbox} hydrationReady={hydrationReady} openNotification={openNotification} />
     <ViewNavigationCommands onNavigate={navigate} />
     <SidebarToggleCommand onToggle={toggleSidebar} />
+    {view === "chat" && <ChatWorktreeShortcuts model={sidebarModel} onChoose={id => { nativeSubagents.back(); choose(id); }} />}
     <ChatFlowLayoutProvider scope={view === "chat" && !nativeSubagents.active ? { sessionId: state.selected, nativeSessionId: nativeParent?.nativeSessionId, harness: nativeParent?.harness, workspaceId, worktreeId } : null}>
     <WorkspaceShell view={view} sidebar={sidebar} navigation={navigation}
       onOpenNotification={openNotification}

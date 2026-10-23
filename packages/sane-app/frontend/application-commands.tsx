@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 
 export type CommandContext = "application" | "editor" | "input" | "terminal" | "modal";
-export type CommandScope = { kind: "global" } | { kind: "view"; view: "files"; region: "view" | "sidebar" | "main-panel" };
+export type CommandScope = { kind: "global" } | { kind: "view"; view: "files" | "chat"; region: "view" | "sidebar" | "main-panel" };
 export type CommandBinding = {
   key: string; mod?: boolean; ctrl?: boolean; meta?: boolean; shift?: boolean; alt?: boolean;
   platform?: "mac" | "windows-linux";

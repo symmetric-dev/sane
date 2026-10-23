@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { GLOBAL_SHORTCUTS, SHORTCUT_DEFINITIONS, shortcutHint, type ShortcutDefinition } from "./shortcut-definitions";
+import { CHAT_WORKTREE_SHORTCUTS, GLOBAL_SHORTCUTS, SHORTCUT_DEFINITIONS, shortcutHint, type ShortcutDefinition } from "./shortcut-definitions";
 import "./hotkeys-settings.css";
 
 const SHORTCUT_TABS = [
   { id: "global", label: "Global" },
+  { id: "chat", label: "Chat View" },
   { id: "files", label: "Files View" },
 ] as const;
 
@@ -42,6 +43,14 @@ export function HotkeysSettings() {
         <ShortcutTable definitions={GLOBAL_SHORTCUTS} labelledBy="hotkeys-navigation" />
         <p className="muted">Navigation shortcuts work in chat inputs, file editors, and the terminal. Flows uses Cmd/Ctrl + P in the chat composer. Shortcuts pause while a dialog is open, except workspace selection can be toggled closed with its shortcut. They never submit a message. Opening the Terminal flow starts a shell if the selected worktree has none.</p>
         <p className="muted">With the Flows launcher focused: S opens Status, R opens Review Documents, T opens Terminal, G opens Git, and P opens Python. Escape dismisses the innermost control, then returns from a nested flow screen, then exits to chat. In Terminal, i enters Interact mode; Escape releases control, and another Escape exits to chat. Git operates directly on the selected browsing worktree, without sending an agent message.</p>
+      </section>
+    </div>
+    <div role="tabpanel" id="hotkeys-panel-chat" aria-labelledby="hotkeys-tab-chat" hidden={tab !== "chat"} tabIndex={0}>
+      <section className="interaction" aria-labelledby="hotkeys-chat-worktrees">
+        <h3 id="hotkeys-chat-worktrees">Worktrees</h3>
+        <ShortcutTable definitions={CHAT_WORKTREE_SHORTCUTS} labelledBy="hotkeys-chat-worktrees" />
+        <p className="muted">Cmd/Ctrl + 1–9 selects and expands worktrees in their displayed sidebar order, collapsing the others. It opens the most recently updated conversation, excluding hidden, replaced, and worker sessions, or an unsent draft if none exists.</p>
+        <p className="muted">These shortcuts work while typing in Chat. Missing worktrees keep their numbered positions but cannot be opened. Shortcuts pause while a dialog is open, a message is submitting, or the conversation list is loading.</p>
       </section>
     </div>
     <div role="tabpanel" id="hotkeys-panel-files" aria-labelledby="hotkeys-tab-files" hidden={tab !== "files"} tabIndex={0}>
