@@ -35,12 +35,20 @@ export const SanePlugin = Plugin.define({
       return { ...await qualify(tool), invocation }
     }
     await ctx.tool.transform(editor => {
+      editor.namespace({ name: "sane", description: "SANE App interactions and workstream coordination" })
+      // A shared namespace gets one Code Mode catalog group. Short names keep
+      // existing sane_* effective IDs; questions retain their permission action.
+      const addSaneTool: typeof editor.add = tool => editor.add({
+        ...tool,
+        options: { ...tool.options, namespace: "sane", codemode: true, pinned: false },
+      })
       // App-only, not managed-only: keep this registered for Base/Free and
       // Code Mode. App admission and attachment are checked by the endpoint.
-      editor.add({
+      addSaneTool({
         name: "present_questions_to_user",
         description: nativeUserQuestionsDescription,
         input: nativeUserQuestionsSchema,
+        options: { permission: "present_questions_to_user" },
         execute: async (input, tool) => {
           // Each inner Code Mode callback needs a distinct invocation UUID.
           const invocation = workerInvocations.userQuestionsCallback(tool)
@@ -52,8 +60,8 @@ export const SanePlugin = Plugin.define({
           return { content: JSON.stringify(await presentQuestionsNativeCaller(caller, args, ctx.options.appConnectionFile as string, invocation, signal)) }
         },
       })
-      editor.add({
-        name: "sane_share_code",
+      addSaneTool({
+        name: "share_code",
         description: nativeShareCodeDescription,
         input: nativeShareCodeSchema,
         execute: async (input, tool) => {
@@ -73,14 +81,14 @@ export const SanePlugin = Plugin.define({
           return { content: JSON.stringify(await shareCodeNativeCaller(caller, args, ctx.options.appConnectionFile as string, invocation, signal)) }
         },
       })
-      for (const operation of nativeWorkerOperations) editor.add({
-        name: `sane_worker_${operation}`,
+      for (const operation of nativeWorkerOperations) addSaneTool({
+        name: `worker_${operation}`,
         description: nativeWorkerDescriptions[operation],
         input: nativeWorkerSchemas[operation],
         execute: async (input, tool) => ({ content: JSON.stringify(await workerNativeCaller(await qualifyWorker(tool, operation), operation, input, ctx.options.appConnectionFile as string)) }),
       })
-      for (const status of [false, true]) editor.add({
-        name: status ? "sane_handoff_status" : "sane_handoff",
+      for (const status of [false, true]) addSaneTool({
+        name: status ? "handoff_status" : "handoff",
         description: status ? `${SANE_MANAGED_ONLY} Read durable handoff status by the sender's requestId.` : `${SANE_MANAGED_ONLY} Use only when the user explicitly asks for a SANE handoff or kickoff. Durably queue an asynchronous handoff through the running App. Reuse requestId for admission recovery. Returns without waiting for recipient execution or reply. Exact target selects a linked recipient; createNew uses the destination assistant's configured harness and requires explicit checkout or validated default. Kickoff (the only way to bring a session under SANE): a sender without a workstream passes kickoff with to: design and createNew to enroll, create the workstream and start Design without joining it; kickoff defaults checkout to the caller's validated execution checkout.`,
         input: status ? nativeHandoffStatusSchema : nativeHandoffSchema,
         execute: async (input, tool) => {
@@ -90,14 +98,14 @@ export const SanePlugin = Plugin.define({
           return { content: JSON.stringify(result) }
         },
       })
-      editor.add({
-        name: "sane_link",
+      addSaneTool({
+        name: "link",
         description: `${SANE_MANAGED_ONLY} Change workstream membership or phase for an already SANE-managed conversation; never enrolls. slot assigns a phase; explicit workstream selects membership; reassign permits replacement.`,
         input: nativeLinkSchema,
         execute: async (input, tool) => ({ content: JSON.stringify(linkNativeCaller(await qualify(tool), input)) }),
       })
-      editor.add({
-        name: "sane_context",
+      addSaneTool({
+        name: "context",
         description: `${SANE_MANAGED_ONLY} Read this managed conversation's compact context: workstream, phase, harness and execution checkout.`,
         input: { type: "object", properties: {}, additionalProperties: false },
         execute: async (_input, tool) => ({ content: JSON.stringify(nativeCallerContext(await qualify(tool))) }),

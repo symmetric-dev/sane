@@ -78,7 +78,7 @@ import { AdmissionService } from "./admission";
 import { HandoffService, handoffRecipientTitle, nextSlotSessionIndex, projectHandoffEnqueue, projectHandoffStatus, slotSessionIndex } from "./handoff";
 import { DomainError, canonicalSlot, equivalentSlots, normalizeNativeSource, revalidateCheckout, discoverRepository, inspectRepositoryStore } from "sane-core/server";
 import type { Handoff } from "sane-core/contracts";
-import { WorkerStore } from "./worker-store";
+import { WorkerStorageError, WorkerStore } from "./worker-store";
 import { WorkerService, type WorkerParent } from "./workers";
 import type { ExplicitWorkerOperations } from "./native-workers";
 import { createNativeWorkerHandler, NativeWorkerRequestError, type NativeWorkerCallerResolver } from "./native-workers";
@@ -88,7 +88,7 @@ import { workerTerminationUncertainty } from "./worker-recovery";
 import { hasVerifiedSettledTermination } from "./settled-journal-reconciliation";
 import { exchangeDeliveryEvidence, workerDeliveryEvidence, workerExchangePrompt, workerReportPrompt } from "./worker-outbox";
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
-import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery, type WorkerProtocolOperation, type WorkerProtocolPin, type WorkerRecord, type WorkerStateSnapshot } from "./worker-contract";
+import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, WORKER_STATE_BATCH_LIMIT, workerResults, type WorkerDelivery, type WorkerProtocolOperation, type WorkerProtocolPin, type WorkerRecord, type WorkerStateBatch, type WorkerStateSnapshot } from "./worker-contract";
 import { explicitObservationChange, isExplicitWorker } from "./worker-protocol";
 import { managedWorkerCoordination, managedWorkerRoles, managedWorkerWaiting } from "./scout-crew-lifecycle";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
@@ -3283,6 +3283,40 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         submission: "submitted", nativeAcceptance: "accepted" } };
     },
   });
+  /** Observe only the selected worker. Never launch, resume, compact, or dispatch. */
+  async function observeWorkerState(record: WorkerRecord, modelLookups = new Map<string, ReturnType<typeof oc.models>>()): Promise<WorkerStateSnapshot> {
+    let worker: WorkerRecord;
+    try { worker = await workers.refresh(record); }
+    catch (error) {
+      // Classify by the authoritative write boundary, not native/network errno codes.
+      if (error instanceof WorkerStorageError) throw new PendingInputStorageError(error.message, error);
+      throw error;
+    }
+    const session = meta.sessions.find(s => s.sessionId === worker.sessionId);
+    const snapshot: WorkerStateSnapshot = { worker, latestRun: null, toolCallCount: null, directWorkerCount: 0, contextUsage: null, revision: null, observedAt: new Date().toISOString(), warnings: [] };
+    if (session) {
+      ensureSessionJournals(session.sessionId);
+      // Transcript/storage errors must not become apparently successful partial snapshots.
+      const summary = await transcripts.stateSummary(session);
+      snapshot.latestRun = summary.latestRun; snapshot.toolCallCount = summary.toolCallCount;
+      snapshot.contextUsage = summary.usage; snapshot.revision = summary.revision;
+      if (session.harness === "opencode" && snapshot.contextUsage) {
+        try {
+          let models = modelLookups.get(session.cwd);
+          if (!models) { models = oc.models(session.cwd); modelLookups.set(session.cwd, models); }
+          const capacity = (await models).find(model => model.id === snapshot.contextUsage!.model)?.contextWindow;
+          if (capacity) snapshot.contextUsage = { ...snapshot.contextUsage, capacity, percentage: snapshot.contextUsage.tokens / capacity * 100 };
+        } catch (error) {
+          if (error instanceof PendingInputStorageError || error instanceof TranscriptError) throw error;
+          snapshot.warnings.push("Model window capacity unavailable; context percentage cannot be calculated.");
+        }
+      }
+    }
+    snapshot.worker = workerStore.get(record.id)!;
+    snapshot.directWorkerCount = workerStore.directWorkerCount(snapshot.worker.sessionId);
+    snapshot.observedAt = new Date().toISOString();
+    return snapshot;
+  }
   async function handle(req: Request, srv: Pick<Bun.Server<undefined>, "requestIP" | "port">, upgrade?: (req: Request, data: TerminalSocketData) => boolean): Promise<Response | undefined> {
     try {
       const url = new URL(req.url); const path = url.pathname;
@@ -3337,7 +3371,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const queueResponse = await pendingInputRoute(req, path, pendingInputs!);
       if (queueResponse) return queueResponse;
       const readOnlyTranscriptRefresh = req.method === "POST" && /^\/api\/sessions\/[^/]+\/transcript\/refresh$/.test(path);
-      if (!["GET", "HEAD"].includes(req.method) && !readOnlyTranscriptRefresh && mutatingSession && !path.endsWith("/branch") && (branches.replaced(mutatingSession) || branches.pending(mutatingSession) && !path.endsWith("/cancel"))) return json({ error: branches.replaced(mutatingSession) ? "Replaced conversation is read-only; open its replacement" : "The branch is not ready yet. Changes are paused to protect this conversation." }, 409);
+      const readOnlyWorkerStateRefresh = req.method === "POST" && /^\/api\/sessions\/[^/]+\/workers\/state$/.test(path);
+      if (!["GET", "HEAD"].includes(req.method) && !readOnlyTranscriptRefresh && !readOnlyWorkerStateRefresh && mutatingSession && !path.endsWith("/branch") && (branches.replaced(mutatingSession) || branches.pending(mutatingSession) && !path.endsWith("/cancel"))) return json({ error: branches.replaced(mutatingSession) ? "Replaced conversation is read-only; open its replacement" : "The branch is not ready yet. Changes are paused to protect this conversation." }, 409);
       if (userQuestionsMatch) {
         if (req.method !== "POST" || !userQuestionsMatch[2] || !userQuestionsMatch[3]) return json({ error: "Method not allowed" }, 405);
         const [, sessionId, formId, operation] = userQuestionsMatch;
@@ -3702,6 +3737,43 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const listed = await handoffs.forSession(decodeURIComponent(handoffList[1]!));
         return json({ handoffs: listed.map(presentation => ({ ...presentation, ...(handoffProblems.has(presentation.handoff.id) ? { problem: handoffProblems.get(presentation.handoff.id) } : {}) })) });
       }
+      const workerStateBatch = /^\/api\/sessions\/([^/]+)\/workers\/state$/.exec(path);
+      if (workerStateBatch) {
+        if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+        let parentId: string;
+        try { parentId = decodeURIComponent(workerStateBatch[1]!); }
+        catch { return json({ error: "Invalid parent selector" }, 400); }
+        if (!meta.sessions.some(s => s.sessionId === parentId)) return json({ error: "Unknown parent session" }, 404);
+        const input = await body(req);
+        if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== 1 || !Object.hasOwn(input, "ids")
+          || !Array.isArray(input.ids) || input.ids.length > WORKER_STATE_BATCH_LIMIT
+          || input.ids.some((id: unknown) => typeof id !== "string" || !id.trim() || id.length > 1024 || /[\x00-\x1f\x7f]/.test(id))) {
+          return json({ error: `Expected {ids} with at most ${WORKER_STATE_BATCH_LIMIT} nonempty worker IDs of at most 1024 characters`, code: "worker-state-input" }, 400);
+        }
+        const ids = [...new Set<string>(input.ids)];
+        if (!ids.length) return json({ results: [] } satisfies WorkerStateBatch);
+        // Membership lookup is metadata-only; never observe unrequested tree members.
+        const descendants = new Set(workerStore.descendantIds(parentId));
+        const modelLookups = new Map<string, ReturnType<typeof oc.models>>();
+        const results: WorkerStateBatch["results"] = new Array(ids.length);
+        let next = 0, storageError: PendingInputStorageError | undefined;
+        await Promise.all(Array.from({ length: Math.min(4, ids.length) }, async () => {
+          while (!storageError && next < ids.length) {
+            const index = next++, id = ids[index]!;
+            const record = descendants.has(id) ? workerStore.get(id) : undefined;
+            if (!record) { results[index] = { id, error: "Worker not found in this parent session", code: "worker-not-found" }; continue; }
+            try { results[index] = { id, snapshot: await observeWorkerState(record, modelLookups) }; }
+            catch (error) {
+              // A storage authority failure still fails the entire request closed.
+              // Stop scheduling and drain in-flight observations before propagating it.
+              if (error instanceof PendingInputStorageError) { storageError = error; return; }
+              results[index] = { id, error: error instanceof Error ? error.message : "Worker state unavailable", code: error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "worker-state-unavailable" };
+            }
+          }
+        }));
+        if (storageError) throw storageError;
+        return json({ results } satisfies WorkerStateBatch);
+      }
       const workerState = /^\/api\/sessions\/([^/]+)\/workers\/([^/]+)\/state$/.exec(path);
       if (workerState) {
         if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
@@ -3710,30 +3782,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         catch { return json({ error: "Invalid worker selector" }, 400); }
         const record = workerStore.get(workerId);
         if (!meta.sessions.some(s => s.sessionId === parentId) || !record || record.parent.sessionId !== parentId) return json({ error: "Worker not found in this parent session" }, 404);
-        // Observe one worker only. Never launch, resume, compact, or dispatch work.
-        const worker = await workers.refresh(record);
-        const session = meta.sessions.find(s => s.sessionId === worker.sessionId);
-        const snapshot: WorkerStateSnapshot = { worker, latestRun: null, toolCallCount: null, contextUsage: null, revision: null, observedAt: new Date().toISOString(), warnings: [] };
-        if (session) {
-          ensureSessionJournals(session.sessionId);
-          try {
-            const summary = await transcripts.stateSummary(session);
-            snapshot.latestRun = summary.latestRun; snapshot.toolCallCount = summary.toolCallCount;
-            snapshot.contextUsage = summary.usage; snapshot.revision = summary.revision;
-          } catch (error) {
-            if (error instanceof TranscriptError) return json({ error: error.message, code: error.code }, error.status);
-            throw error;
-          }
-          if (session.harness === "opencode" && snapshot.contextUsage) {
-            try {
-              const capacity = (await oc.models(session.cwd)).find(model => model.id === snapshot.contextUsage!.model)?.contextWindow;
-              if (capacity) snapshot.contextUsage = { ...snapshot.contextUsage, capacity, percentage: snapshot.contextUsage.tokens / capacity * 100 };
-            } catch { snapshot.warnings.push("Model window capacity unavailable; context percentage cannot be calculated."); }
-          }
+        try { return json(await observeWorkerState(record)); }
+        catch (error) {
+          if (error instanceof TranscriptError) return json({ error: error.message, code: error.code }, error.status);
+          throw error;
         }
-        snapshot.worker = workerStore.get(workerId)!;
-        snapshot.observedAt = new Date().toISOString();
-        return json(snapshot);
       }
       const workerList = /^\/api\/sessions\/([^/]+)\/workers$/.exec(path);
       if (workerList && req.method === "GET") {

@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { request } from "./cc-client";
-import type { WorkerRecord, WorkerDelivery, WorkerStateSnapshot } from "../src/worker-contract";
+import { WORKER_STATE_BATCH_LIMIT, type WorkerRecord, type WorkerDelivery, type WorkerStateSnapshot, type WorkerStateBatch } from "../src/worker-contract";
 import type { WorkerSessionMetadata } from "./types";
 import { pollWhileVisible } from "./visibility";
 
@@ -8,10 +8,15 @@ export type WorkerProjection = { workers: WorkerRecord[]; deliveries: WorkerDeli
 export type WorkerStop = { ids: string[]; includeDescendants?: boolean } | { all: true };
 const empty: WorkerProjection = { workers: [], deliveries: [], continuationSuppressed: false };
 let projections: Record<string, WorkerProjection> = {};
-type WorkerStateRead = { snapshot?: WorkerStateSnapshot; loading: boolean; error: string };
+type WorkerStateRead = { snapshot?: WorkerStateSnapshot; loading: boolean; error: string; identity?: string };
 const emptyState: WorkerStateRead = { loading: false, error: "" };
 let states: Record<string, WorkerStateRead> = {};
-const stateFlights = new Map<string, AbortController>();
+type StateFlight = { identity: string; done: Promise<void> };
+const stateFlights = new Map<string, StateFlight>();
+const stateControllers = new Set<AbortController>();
+let stateGeneration = 0;
+export const workerStateIdentity = (worker: WorkerRecord) => JSON.stringify([worker.id, worker.sessionId, worker.parent.sessionId]);
+const sameWorker = (left: WorkerRecord, right: WorkerRecord) => workerStateIdentity(left) === workerStateIdentity(right);
 let viewer: WorkerRecord | null = null;
 let references: Record<string, WorkerSessionMetadata> = {};
 let opening = { sessionId: "", loading: false, error: "" };
@@ -25,34 +30,79 @@ export const workerClient = {
   list: (id: string, signal?: AbortSignal): Promise<WorkerProjection> => request(`/api/sessions/${encodeURIComponent(id)}/workers`, { signal }),
   stop: (id: string, input: WorkerStop): Promise<unknown> => request(`/api/sessions/${encodeURIComponent(id)}/workers/cancel`, { method: "POST", body: JSON.stringify(input) }),
   state: (worker: WorkerRecord, signal?: AbortSignal): Promise<WorkerStateSnapshot> => request(`/api/sessions/${encodeURIComponent(worker.parent.sessionId)}/workers/${encodeURIComponent(worker.id)}/state`, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : undefined }),
+  states: (id: string, ids: string[], signal?: AbortSignal): Promise<WorkerStateBatch> => request(`/api/sessions/${encodeURIComponent(id)}/workers/state`, { method: "POST", body: JSON.stringify({ ids }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : undefined }),
 };
 export function clearWorkerStates() {
-  for (const controller of stateFlights.values()) controller.abort();
-  stateFlights.clear(); states = {}; emit();
+  ++stateGeneration;
+  for (const controller of stateControllers) controller.abort();
+  stateControllers.clear(); stateFlights.clear(); states = {}; emit();
 }
-export function useWorkerState(id: string) { return useSyncExternalStore(subscribe, () => states[id] ?? emptyState); }
-/** Explicit clicks only; shared across every instance of the worker's card. */
-export async function refreshWorkerState(worker: WorkerRecord) {
-  if (stateFlights.has(worker.id)) return;
-  const controller = new AbortController(); stateFlights.set(worker.id, controller);
-  states = { ...states, [worker.id]: { ...states[worker.id], loading: true, error: "" } }; emit();
-  const current = () => stateFlights.get(worker.id) === controller && !controller.signal.aborted;
+const stateFor = (worker: WorkerRecord) => states[worker.id]?.identity === workerStateIdentity(worker) ? states[worker.id]! : emptyState;
+export function useWorkerState(worker: WorkerRecord) { return useSyncExternalStore(subscribe, () => stateFor(worker)); }
+export function useWorkerStatesLoading(workers: readonly WorkerRecord[]) { return useSyncExternalStore(subscribe, () => workers.some(worker => stateFor(worker).loading)); }
+export function useWorkerStateGeneration() { return useSyncExternalStore(subscribe, () => stateGeneration); }
+/** Explicit targets only. Overlapping groups and singleton callers share each worker's flight. */
+export async function refreshWorkerStates(sessionId: string, workers: readonly WorkerRecord[]) {
+  if (!sessionId) return;
+  const pending: WorkerRecord[] = [], waiting = new Set<Promise<void>>();
+  for (const worker of new Map(workers.map(worker => [worker.id, worker])).values()) {
+    const flight = stateFlights.get(worker.id);
+    if (flight?.identity === workerStateIdentity(worker)) waiting.add(flight.done);
+    else pending.push(worker);
+  }
+  for (let index = 0; index < pending.length; index += WORKER_STATE_BATCH_LIMIT) {
+    waiting.add(refreshWorkerStateChunk(sessionId, pending.slice(index, index + WORKER_STATE_BATCH_LIMIT)));
+  }
+  await Promise.all(waiting);
+}
+/** Non-chat surfaces may explicitly refresh a singleton, never its session tree. */
+export function refreshWorkerState(worker: WorkerRecord) { return refreshWorkerStates(worker.parent.sessionId, [worker]); }
+async function refreshWorkerStateChunk(sessionId: string, workers: WorkerRecord[]) {
+  const controller = new AbortController(), generation = stateGeneration;
+  let finish!: () => void;
+  const done = new Promise<void>(resolve => { finish = resolve; });
+  const flights = new Map(workers.map(worker => [worker.id, { identity: workerStateIdentity(worker), done }]));
+  stateControllers.add(controller);
+  states = { ...states };
+  for (const worker of workers) {
+    stateFlights.set(worker.id, flights.get(worker.id)!);
+    states[worker.id] = { ...stateFor(worker), identity: workerStateIdentity(worker), loading: true, error: "" };
+  }
+  emit();
+  const current = (worker: WorkerRecord) => generation === stateGeneration && !controller.signal.aborted && stateFlights.get(worker.id) === flights.get(worker.id);
+  const fail = (worker: WorkerRecord, error: string) => {
+    if (current(worker)) states = { ...states, [worker.id]: { ...states[worker.id], loading: false, error } };
+  };
   try {
-    const snapshot = await workerClient.state(worker, controller.signal);
-    if (!current()) return;
-    if (snapshot.worker.id !== worker.id || snapshot.worker.sessionId !== worker.sessionId || snapshot.worker.parent.sessionId !== worker.parent.sessionId) throw new Error("Worker state identity mismatch.");
-    states = { ...states, [worker.id]: { snapshot, loading: false, error: "" } };
-    projections = Object.fromEntries(Object.entries(projections).map(([id, projection]) => [id, projection.workers.some(w => w.id === worker.id) ? { ...projection, workers: projection.workers.map(w => w.id === worker.id && w.updatedAt <= snapshot.worker.updatedAt ? snapshot.worker : w) } : projection]));
-    emit();
+    const batch = await workerClient.states(sessionId, workers.map(worker => worker.id), controller.signal);
+    if (!Array.isArray(batch?.results)) throw new Error("Invalid worker state response.");
+    for (const worker of workers) {
+      if (!current(worker)) continue;
+      const matches = batch.results.filter(result => result?.id === worker.id);
+      const result = matches.length === 1 ? matches[0] : undefined;
+      if (!result) { fail(worker, "Worker state missing or duplicated in refresh response."); continue; }
+      if ("error" in result) { fail(worker, result.error || "Worker refresh unavailable"); continue; }
+      const snapshot = result.snapshot;
+      if (!snapshot?.worker?.parent || !sameWorker(snapshot.worker, worker)) { fail(worker, "Worker state identity mismatch."); continue; }
+      states = { ...states, [worker.id]: { snapshot, identity: workerStateIdentity(worker), loading: false, error: "" } };
+      projections = Object.fromEntries(Object.entries(projections).map(([id, projection]) => [id, projection.workers.some(w => sameWorker(w, worker)) ? { ...projection, workers: projection.workers.map(w => sameWorker(w, worker) && w.updatedAt <= snapshot.worker.updatedAt ? snapshot.worker : w) } : projection]));
+    }
   } catch (error) {
-    if (current()) { states = { ...states, [worker.id]: { ...states[worker.id], loading: false, error: error instanceof Error ? error.message : "Worker refresh unavailable" } }; emit(); }
-  } finally { if (stateFlights.get(worker.id) === controller) stateFlights.delete(worker.id); }
+    for (const worker of workers) fail(worker, error instanceof Error ? error.message : "Worker refresh unavailable");
+  } finally {
+    for (const worker of workers) if (stateFlights.get(worker.id) === flights.get(worker.id)) stateFlights.delete(worker.id);
+    stateControllers.delete(controller); finish();
+    if (generation === stateGeneration) emit();
+  }
 }
 export function publishWorkers(id: string, value: WorkerProjection) {
-  // A slower pre-refresh listing must not overwrite the worker just observed.
+  // Neither a slower pre-refresh listing nor an older poll may regress a record.
+  const previous = new Map(projections[id]?.workers.map(worker => [worker.id, worker]));
   value = { ...value, workers: value.workers.map(worker => {
-    const refreshed = states[worker.id]?.snapshot?.worker;
-    return refreshed && refreshed.sessionId === worker.sessionId && refreshed.updatedAt > worker.updatedAt ? refreshed : worker;
+    for (const observed of [previous.get(worker.id), states[worker.id]?.snapshot?.worker]) {
+      if (observed && sameWorker(observed, worker) && observed.updatedAt > worker.updatedAt) worker = observed;
+    }
+    return worker;
   }) };
   if (JSON.stringify(projections[id]) === JSON.stringify(value)) return;
   projections = { ...projections, [id]: value }; emit();

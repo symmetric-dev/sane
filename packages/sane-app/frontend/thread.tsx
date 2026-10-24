@@ -2,6 +2,8 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyn
 import type { WorkerDelivery, WorkerExchange, WorkerRecord } from "../src/worker-contract";
 import { useWorkers, useWorkerPolling, openWorker, workerReference } from "./worker-client";
 import { WorkerCard, WorkerExchangeMessage, WorkerOutcomeReport, WorkerSection } from "./worker-ui";
+import { LoadedWorkerRefreshProvider } from "./worker-refresh";
+import { loadedTranscriptWorkers } from "./worker-transcript";
 import { receivedWorkerExchange, workerExchanges, workerReportDelivery } from "./worker-presentation";
 import type { Harness, PendingTurn, ToolPart } from "./types";
 import { AssistantRuntimeProvider, MessagePrimitive, ThreadPrimitive, useAuiState, useExternalStoreRuntime } from "@assistant-ui/react";
@@ -254,6 +256,8 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
   const messages = useMemo(() => claudeReplyPresentation(withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), harness), [state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands, harness]);
   const codeShares = useCodeShares(state.selected, { enabled: isActive && state.connected, refreshKey: messages, running });
+  const loadedWorkers = useMemo(() => loadedTranscriptWorkers({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, exchanges, handoffs: handoffs.handoffs, nativeRuns: state.runs, nativeHarness: harness, codeShares: codeShares.shares }), [state.selected, messages, workers, projection.deliveries, exchanges, handoffs.handoffs, state.runs, harness, codeShares.shares]);
+  const workerRefreshScope = JSON.stringify([state.config?.storeId, state.selected, harness, conversation?.nativeSessionId, conversation?.authorityId, conversation?.cwd]);
   const questionsReadOnlyReason = !isActive ? "Open this conversation in Chat to answer questions."
     : !state.connected || !(state.interactive ?? state.connected) ? "Questions are read-only while disconnected."
     : conversation?.replacedBy ? "This conversation has been replaced. Questions are read-only."
@@ -319,7 +323,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     disabled: !isActive || state.actionBusy || state.sending || (chainLocked ? state.phase !== "ready" || state.config?.authenticated !== true : !state.connected),
     cancel: () => void store.cancel() });
   const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} questions={userQuestions} questionsReadOnlyReason={questionsReadOnlyReason} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={review} science={science} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
-   return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, exchanges, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, codeShares, userQuestions, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow && !hasRequests ? " is-document-review" : ""}`}>
+   return <LoadedWorkerRefreshProvider sessionId={state.selected} scope={workerRefreshScope} enabled={isActive && state.connected} workers={loadedWorkers}><TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, exchanges, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, codeShares, userQuestions, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow && !hasRequests ? " is-document-review" : ""}`}>
     <SessionSearch root={searchRoot} active={isActive && !(!hasRequests && review.flow?.path)} state={state} />
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
@@ -335,7 +339,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
       </div>
     </ChatScroll>
     <ActivityInspector inspection={inspection} renderBody={renderActivityInspectorBody} />
-  </ThreadPrimitive.Root></AssistantRuntimeProvider></TranscriptContext.Provider>;
+  </ThreadPrimitive.Root></AssistantRuntimeProvider></TranscriptContext.Provider></LoadedWorkerRefreshProvider>;
 }
 
 export function Facts({ values }: { values: [string, ReactNode][] }) { return <dl className="facts">{values.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value ?? "Unavailable"}</dd></div>)}</dl>; }

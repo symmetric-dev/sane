@@ -7,6 +7,8 @@ import type { TranscriptRunMetadata, TranscriptUsage } from "./transcript-contra
 export const DEFAULT_MAX_WORKERS_PER_CHECKOUT = 8;
 /** Unfinished explicit assignments, including idle ones. Not an execution slot. */
 export const DEFAULT_MAX_UNFINISHED_EXPLICIT_WORKERS = 24;
+/** Maximum number of explicitly selected workers in one state refresh. */
+export const WORKER_STATE_BATCH_LIMIT = 256;
 
 /** Supplied by the authenticated integration, never by tool arguments. */
 export type WorkerCaller = { envelope: unknown; runId: string; toolCallId: string; invocation?: import("../../sane-cli/src/native-worker-contract").NativeWorkerInvocation };
@@ -107,15 +109,20 @@ export type WorkerRecord = {
 };
 export type WorkerResult = { revision: number; runId: string | null; outcome: NonNullable<WorkerRecord["outcome"]>; notification: NonNullable<WorkerRecord["notification"]> };
 /** Explicit, on-demand UI observation. Derived metrics never enter workers.json.
- * Counts cover recorded calls in this session (including continuations), not descendants. */
+ * Tool calls cover this session (including continuations), not descendants. */
 export type WorkerStateSnapshot = {
   worker: WorkerRecord;
   latestRun: TranscriptRunMetadata | null;
   toolCallCount: number | null;
+  /** Direct SANE workers created under this worker's session, including completed workers. */
+  directWorkerCount: number;
   contextUsage: TranscriptUsage | null;
   revision: string | null;
   observedAt: string;
   warnings: string[];
+};
+export type WorkerStateBatch = {
+  results: ({ id: string; snapshot: WorkerStateSnapshot } | { id: string; error: string; code?: string })[];
 };
 export const workerResults = (w: WorkerRecord): WorkerResult[] => w.results ?? (w.outcome && w.notification ? [{ revision: 1, runId: w.outcome.log?.runId ?? w.runId, outcome: w.outcome, notification: w.notification }] : []);
 /** run is the immutable dispatch snapshot; current execution stays in ordinary run metadata/logs.

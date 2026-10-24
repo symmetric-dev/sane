@@ -7,7 +7,10 @@
 .worker-card-jobs { display:flex; flex:0 1 auto; gap:4px 6px; min-width:0; max-width:35%; overflow:hidden; }
 .worker-card-jobs code { flex-shrink:0; padding:2px 5px; border-radius:4px; background:var(--muted); color:var(--muted-foreground); font-size:11px; }
 .worker-card-subject { flex:1 1 0; min-width:0; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.worker-card-times { display:flex; align-items:baseline; flex-shrink:0; gap:10px; margin-left:auto; }
+.worker-card-times { display:flex; align-items:baseline; flex-shrink:0; gap:8px; }
+.worker-card-metric-group { display:inline-flex; align-items:center; flex-shrink:0; gap:8px; white-space:nowrap; }
+.worker-card-separator { color:var(--muted-foreground); font-size:11px; }
+.worker-card-detail-actions { flex-shrink:0; }
 .worker-card-timing,.worker-card-elapsed { font-size:11px; color:var(--muted-foreground); font-variant-numeric:tabular-nums; }
 .worker-card-timing,.worker-card-elapsed { white-space:nowrap; }
 .worker-card-status { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; width:16px; height:20px; color:var(--muted-foreground); }
@@ -24,6 +27,7 @@
 .worker-status.is-active::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; flex-shrink:0; }
 .worker-card-controls { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; margin-top:8px; }
 .worker-card-controls > .worker-actions { min-width:0; max-width:100%; }
+.worker-card-metrics { justify-content:flex-start; }
 .worker-secondary-actions { margin-left:auto; justify-content:flex-end; }
 .worker-waiting { margin:10px 0 0; font-size:11px; }
 .worker-exchanges { margin:8px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px; }
@@ -111,9 +115,6 @@
   .workers-panel::backdrop { background:var(--backdrop-panel-mobile); }
   .workers-panel-footer { padding-bottom:max(16px, env(safe-area-inset-bottom)); }
   .workers-panel button { min-height:36px; }
-  .worker-card > header { flex-wrap:wrap; }
-  .worker-card-heading { flex-basis:calc(100% - 64px); }
-  .worker-card-controls > .worker-secondary-actions { margin-left:0; justify-content:flex-start; }
   .worker-receipt { flex-wrap:wrap; gap:4px 8px; }
   .worker-details-dialog { max-height:90dvh; }
   .worker-result time { margin-left:0; }

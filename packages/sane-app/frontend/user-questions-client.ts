@@ -23,13 +23,16 @@ export type UserQuestionsDraft = {
   error: string;
 };
 const needsRecovery = (draft: UserQuestionsDraft) => draft.dirty || draft.conflict || !!draft.operation || !!draft.error;
+const healthySubmitted = (draft: UserQuestionsDraft) => draft.form.status === "submitted"
+  && (draft.form.delivery?.state === "pending" || draft.form.delivery?.state === "claimed" || draft.form.delivery?.state === "accepted");
 const actionable = (draft: UserQuestionsDraft) => needsRecovery(draft) || draft.form.status === "presented"
-  || draft.form.status === "submitted" && draft.form.delivery?.state !== "accepted";
-// Include local recovery in settlement: an already-delivered record must remain
-// visible until its retained edits or original operation have been reconciled.
+  || draft.form.status === "submitted" && !healthySubmitted(draft);
+// Acknowledged submissions settle the composer without waiting for delivery.
+// Local recovery and paused, unknown or missing delivery remain actionable.
+// Keep one submitted marker so reopened history survives healthy delivery changes.
 const settledState = (draft: UserQuestionsDraft) => needsRecovery(draft) ? null
   : draft.form.status === "dismissed" ? "dismissed"
-  : draft.form.status === "submitted" && draft.form.delivery?.state === "accepted" ? "accepted" : null;
+  : healthySubmitted(draft) ? "submitted" : null;
 type Projection = { forms: readonly UserQuestionsDraft[]; loading: boolean; error: string };
 export type UserQuestionsScope = { storeId: string; sessionId: string; harness: Harness; nativeSessionId: string; authorityId: string };
 export const userQuestionsScopeKey = (scope: UserQuestionsScope) => JSON.stringify([scope.storeId, scope.sessionId, scope.harness, scope.nativeSessionId, scope.authorityId]);
@@ -305,8 +308,8 @@ export function useUserQuestions(scope: UserQuestionsScope | null, { enabled, ed
   }, [session]);
   const preferred = state.forms.find(draft => draft.form.status === "presented") ?? state.forms.filter(actionable).at(-1);
   const viewed = view?.scopeKey === scopeKey ? state.forms.find(draft => draft.form.id === view.id) : undefined;
-  // A selection made before completion cannot pin the completed panel. Opening
-  // history afterward records its settled state and is intentionally allowed.
+  // A selection made before submission acknowledgement cannot pin its healthy
+  // submitted panel. Explicitly reopened history survives pending/claimed/accepted.
   const activeView = viewed && view?.settled === settledState(viewed) ? view : null;
   useEffect(() => {
     if (view?.scopeKey === scopeKey && !activeView) setView(current => current === view ? null : current);
@@ -328,8 +331,9 @@ export function useUserQuestions(scope: UserQuestionsScope | null, { enabled, ed
     },
     close: () => {
       const draft = session?.snapshot().forms.find(item => item.form.id === activeView?.id);
-      // Closing history is view-only. Never conceal unresolved delivery or local
-      // recovery, even if it appeared after the close button was rendered.
+      // Closing healthy submitted history is view-only, even before delivery.
+      // Never conceal paused/unknown/missing delivery or local recovery that
+      // appeared after the close button was rendered.
       if (canClose && draft && settledState(draft) !== null) setView(current => current === activeView ? null : current);
     },
     edit: (id: string, index: number, answer: UserQuestionAnswer) => session?.edit(id, index, answer),

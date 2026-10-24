@@ -706,7 +706,8 @@ export async function proveInstalledExplicitWorkerRuntime(profileRoot: string, h
         readInstalled(join(pluginRoot, "index.ts")), readInstalled(join(runtimeSrc, "native-opencode.ts")),
         readInstalled(join(home, ".config", "opencode", "opencode.json")),
       ])
-      if (!plugin.includes("nativeWorkerOperations") || !plugin.includes("sane_worker_${operation}") || !plugin.includes("qualifyWorker(tool, operation)") || !plugin.includes("runtime/packages/sane-cli/src/native-worker-contract")) return
+      // Namespace + short registration name still exposes sane_worker_* IDs.
+      if (!plugin.includes("nativeWorkerOperations") || !plugin.includes('namespace: "sane"') || !plugin.includes('name: `worker_${operation}`') || !plugin.includes("qualifyWorker(tool, operation)") || !plugin.includes("runtime/packages/sane-cli/src/native-worker-contract")) return
       if (!/opencode:\s*\{[^}]*\boperation\b/.test(opencode)) return
       const parsed = JSON.parse(config) as unknown
       if (!isPlainObject(parsed) || !Array.isArray(parsed.plugins)) return

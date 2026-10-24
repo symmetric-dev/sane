@@ -3,7 +3,8 @@
 .user-questions-page legend { padding:0; width:100%; }
 .user-questions-page legend strong { display:block; font-size:14px; font-weight:500; line-height:1.6; }
 .user-questions-step { display:block; margin-bottom:6px; color:var(--muted-foreground); font-size:10px; }
-.user-questions-context { color:var(--muted-foreground); font-size:12px; line-height:1.7; margin:8px 0 12px; }
+.prose.user-questions-context { color:var(--muted-foreground); font-size:12px; line-height:1.7; margin:8px 0 12px; }
+.prose.user-questions-context :is(h1,h2,h3,h4,h5,h6) { font-size:inherit; line-height:inherit; }
 .user-questions-context > :first-child { margin-top:0; }
 .user-questions-context > :last-child { margin-bottom:0; }
 .user-questions-context pre,.request-inline-notice pre { white-space:pre-wrap; overflow-wrap:anywhere; }

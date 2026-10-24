@@ -71,6 +71,11 @@ function validWorkerProtocol(worker: WorkerRecord) {
   return true;
 }
 
+/** Persistence may have reached rename before failing; do not treat this as a worker observation failure. */
+export class WorkerStorageError extends Error {
+  constructor(cause: unknown) { super("Worker record persistence failed", { cause }); }
+}
+
 /** Synchronous publication makes reservations and consumption atomic within the App owner. */
 export class WorkerStore {
   private records: WorkerRecords;
@@ -208,6 +213,8 @@ export class WorkerStore {
     for (const worker of this.records.workers) if (matches(workerSelection(worker))) count++;
     return count;
   }
+  /** All direct SANE children, regardless of lifecycle; excludes grandchildren and native subagents. */
+  directWorkerCount(sessionId: string): number { return this.childrenByParent.get(sessionId)?.length ?? 0; }
   descendantIds(rootSessionId: string) { return this.descendantRecords(rootSessionId).map(worker => worker.id); }
   listDescendants(rootSessionId: string, ids?: readonly string[]) {
     const selected = ids === undefined ? undefined : new Set(ids);
@@ -300,7 +307,12 @@ export class WorkerStore {
     const ids = new Set(delivery.workerIds);
     return structuredClone(this.records.workers.filter(w => ids.has(w.id)));
   }
-  private commit(next: WorkerRecords) { this.normalize(next); this.validate(next); atomicAppRecord(this.dataDir, "workers.json", next); this.records = next; this.generation++; this.indexWorkers(); this.indexDeliveries(); this.indexExchanges(); }
+  private commit(next: WorkerRecords) {
+    this.normalize(next); this.validate(next);
+    try { atomicAppRecord(this.dataDir, "workers.json", next); }
+    catch (error) { throw new WorkerStorageError(error); }
+    this.records = next; this.generation++; this.indexWorkers(); this.indexDeliveries(); this.indexExchanges();
+  }
   insert(w: WorkerRecord) { this.commit({ ...this.records, workers: [...this.records.workers, structuredClone(w)] }); }
   update(id: string, change: Partial<WorkerRecord>) {
     const next = structuredClone(this.records), w = next.workers.find(w => w.id === id);

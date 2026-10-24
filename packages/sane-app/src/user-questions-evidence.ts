@@ -8,7 +8,7 @@ import { openCodeTurnContext, type NativeMessage, type OpenCodeAdapter } from ".
 export const denyUserQuestionsIdentity = (): never => { throw new UserQuestionsError(409, "user-questions-identity", "Presenting questions requires the exact evidenced invocation in an App-owned turn"); };
 export function matchesUserQuestionsTool(request: NativeUserQuestionsRequest, name: unknown, input: unknown): boolean {
   if (request.invocation.wrapper === "execute") return request.caller.source.harness === "oc" && name === "execute";
-  if (name !== "present_questions_to_user" && !(request.caller.source.harness === "cc" && name === "mcp__sane__present_questions_to_user")) return false;
+  if (name !== "present_questions_to_user" && !(request.caller.source.harness === "oc" && name === "sane_present_questions_to_user") && !(request.caller.source.harness === "cc" && name === "mcp__sane__present_questions_to_user")) return false;
   try { return canonicalJSON(parsePresentQuestionsInput(input)) === canonicalJSON(request.input); } catch { return false; }
 }
 export function matchesUserQuestionsPart(request: NativeUserQuestionsRequest, messageId: string, part: { type?: string; id?: string; name?: string; state?: { status?: string; input?: unknown } }): boolean {
