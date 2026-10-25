@@ -177,7 +177,7 @@ export class WorkerStore {
       if (!uuid(w.id) || !uuid(w.sessionId) || ids.has(w.id) || sessions.has(w.sessionId) || requests.has(key) || !uuid(w.parent?.sessionId) || !uuid(w.parent?.runId) || !w.parent.toolCallId || !w.parent.native?.nativeId || !w.parent.native.authorityId || !["cc", "oc"].includes(w.parent.native.harness) || !isWorkerAgentId(w.input?.worker) || typeof w.input.prompt !== "string" || !w.input.requestId || w.input.jobs !== undefined && workerJobsProblem(w.input.worker, w.input.jobs) !== undefined || !w.checkout?.startsWith("/") || !w.launch?.agent || !["claude-code", "opencode"].includes(w.launch.harness) || !["reserved", "launching", "running", "waiting", "idle", "uncertain", "cancelling", "completed", "failed", "interrupted"].includes(w.state) || !Number.isFinite(Date.parse(w.createdAt)) || !Number.isFinite(Date.parse(w.updatedAt)) || w.runId !== null && !uuid(w.runId)) fail();
       if (workerSubjectProblem(w.input.subject)) fail();
       if (w.outcome && (!["completed", "failed", "interrupted"].includes(w.outcome.status) || !w.notification?.id)) fail();
-      if (w.coordination !== undefined && !(w.coordination === "scouts" && w.input.worker === "scout-crew" || w.coordination === "workers" && w.input.worker === "implementer")) fail();
+      if (w.coordination !== undefined && !(w.coordination === "scouts" && w.input.worker === "scout-crew" || w.coordination === "workers" && (w.input.worker === "implementer" || w.input.worker === "verification-crew"))) fail();
       if (!validWorkerProtocol(w)) fail();
       const runs = new Set<string | null>(), notifications = new Set<string>();
       for (const [index, result] of (w.results ?? []).entries()) {

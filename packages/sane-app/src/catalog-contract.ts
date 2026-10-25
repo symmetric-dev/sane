@@ -34,5 +34,5 @@ export type WorkspaceCreationInput = { requestId: string; parent: string; name: 
 // token. The URL selects stable catalog IDs; bindingRevision is passed as the
 // workspaceId query/body field for list/file/git/diff/search/paths, as in the legacy API.
 export type WorktreeResolution = Workspace & { catalogWorkspaceId: string; worktreeId: string; bindingRevision: string };
-export type NavigationBookmark = { revision: number; workspaceId: string | null; worktreeId: string | null; conversationId: string | null; view: "chat" | "code" | "git" | "terminal" | "workstreams" | "history" | "config"; filePath: string | null; comparison: GitComparison | null };
+export type NavigationBookmark = { revision: number; workspaceId: string | null; worktreeId: string | null; conversationId: string | null; view: "chat" | "code" | "git" | "terminal" | "browser" | "workstreams" | "history" | "config"; filePath: string | null; comparison: GitComparison | null };
 export type NavigationWrite = Omit<NavigationBookmark, "revision"> & { expectedRevision: number };

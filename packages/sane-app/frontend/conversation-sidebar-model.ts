@@ -13,6 +13,7 @@ import { readWorkstreamSelection, saveWorkstreamSelection } from "./workstream-s
 import { readWorkstreamMembership, saveWorkstreamMembership } from "./workstream-membership-storage";
 import { workspaceEpoch } from "./workspace-store";
 import { refreshWorkspaceActivation, resolveWorkspaceActivation, workspaceSelectionBlocked } from "./workspace-activation";
+import { conversationSidebarBinding, conversationSidebarBucketDirectory, type WorktreeBucket } from "./conversation-sidebar-buckets";
 
 export type ConversationSidebarMode = "chat" | "history";
 
@@ -44,7 +45,7 @@ function rebaseContext(context: SidebarContext, workspaceId: string | null, work
 }
 
 /** Mount once in the shell; pass the same model to desktop and drawer sidebars. */
-export function useConversationSidebarModel(state: State, mode: ConversationSidebarMode) {
+export function useConversationSidebarModel(state: State, mode: ConversationSidebarMode, selectedId: string | null = state.selected) {
   const workerDiscovery = useWorkerDiscovery();
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const auth = workspaceEpoch();
@@ -52,6 +53,16 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   const [savedContext, setContext] = useState<SidebarContext>(() => ({ workspaceId: nav.workspaceId, worktreeId: nav.worktreeId, workstreamId: null, filter: contextDefaults(nav.workspaceId, nav.worktreeId, null) }));
   const [selectionRestored, setSelectionRestored] = useState(false);
   const [worktreeSelectionVersion, setWorktreeSelectionVersion] = useState(0);
+  const [expansion, setExpansion] = useState<{ auth: typeof auth; values: Record<string, boolean> }>({ auth, values: {} });
+  const expandedWorktrees = expansion.auth === auth ? expansion.values : {};
+  const setWorktreeExpanded = useCallback((key: string, expanded: boolean) => {
+    setExpansion(previous => ({ auth, values: { ...(previous.auth === auth ? previous.values : {}), [key]: expanded } }));
+  }, [auth]);
+  const currentWorktreeKey = nav.workspaceId && nav.worktreeId ? `${nav.workspaceId}:${nav.worktreeId}` : null;
+  const isWorktreeExpanded = useCallback((key: string) => expandedWorktrees[key] ?? key === currentWorktreeKey, [expandedWorktrees, currentWorktreeKey]);
+  useEffect(() => {
+    if (currentWorktreeKey) setWorktreeExpanded(currentWorktreeKey, true);
+  }, [currentWorktreeKey, worktreeSelectionVersion, setWorktreeExpanded]);
   const context = rebaseContext(savedContext, nav.workspaceId, nav.worktreeId);
   const { filter } = context;
   // Fence resets by scope: an explicit modal selection updates navigation and
@@ -81,7 +92,7 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   const [selectionError, setSelectionError] = useState("");
   const setOpen = useCallback((open: boolean) => { selectorOpenRef.current = open; setSelectorOpen(open); if (open) setSelectionError(""); }, []);
   const isOpen = useCallback(() => selectorOpenRef.current, []);
-  const sidebarActive = nav.view === "chat" || nav.view === "history" || nav.view === "terminal";
+  const sidebarActive = nav.view === "chat" || nav.view === "history" || nav.view === "terminal" || nav.view === "browser";
   const workspace = repository.workspaces.find(w => w.workspaceId === nav.workspaceId);
   const overviewState = useWorkstreamOverviewState(nav.workspaceId, workspace?.kind === "repository" && (sidebarActive || selectorOpen || !!context.workstreamId));
   const { overview } = overviewState;
@@ -149,7 +160,9 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
       if (!workspace?.worktrees.some(t => t.worktreeId === worktreeId && t.state === "available")) return;
       // Both the picker and sidebar select an exact checkout and clear workstream scope.
       selectContext(workspace.workspaceId, worktreeId, null);
-      // Reselecting the current checkout must also collapse the other sidebar groups.
+      // Explicit checkout selection (including Cmd+1…9) focuses one panel.
+      // Collapsing siblings keeps their cached pages/cursors intact.
+      setExpansion({ auth, values: { [`${workspace.workspaceId}:${worktreeId}`]: true } });
       setWorktreeSelectionVersion(version => version + 1);
     },
     selectWorkstream: workstreamId => {
@@ -166,6 +179,8 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   };
   const deferredQuery = useDeferredValue(filter.query);
   const deferred = useMemo(() => ({ ...filter, query: deferredQuery }), [filter, deferredQuery]);
+  const searching = !!deferred.query.trim();
+  const grouped = !searching && typeof store.setConversationGroups === "function";
   const query = useMemo<SessionCatalogQuery>(() => ({
     mode,
     workspaceId: deferred.workspaceId === "all" || deferred.workspaceId === null ? undefined : deferred.workspaceId,
@@ -176,18 +191,31 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     phase: deferred.phase,
     showDeleted: !!deferred.showDeleted,
     query: deferred.query,
-    limit: 50,
-  }), [mode, deferred]);
+    limit: grouped ? 5 : 50,
+  }), [mode, deferred, grouped]);
   const queryKey = conversationQueryKey(query);
+  const directory = state.conversationGroupDirectory;
+  const directoryCurrent = directory?.queryKey === queryKey;
+  const directoryReady = !!directoryCurrent && !directory?.loading && !directory?.error;
+  const bucketDirectory = useMemo(() => conversationSidebarBucketDirectory(repository.workspaces, nav.workspaceId, deferred,
+    directoryCurrent ? directory?.groups ?? [] : [], directoryReady), [repository.workspaces, nav.workspaceId, deferred, directoryCurrent, directory?.groups, directoryReady]);
+  const groupQuery = useCallback((bucket: Pick<WorktreeBucket, "workspaceId" | "worktreeId">): SessionCatalogQuery => ({ ...query,
+    workspaceId: bucket.workspaceId ?? "unavailable", worktreeId: bucket.worktreeId ?? "unavailable", limit: 5 }), [query]);
+  const groupPage = useCallback((bucket: Pick<WorktreeBucket, "workspaceId" | "worktreeId">) => state.conversationGroups?.[conversationQueryKey(groupQuery(bucket))], [state.conversationGroups, groupQuery]);
+  // Key the effect by value: directory loading and page publications must not
+  // repeatedly reschedule the same expanded heads.
+  const expandedQueriesKey = JSON.stringify(bucketDirectory.flatMap(group => group.buckets.filter(bucket => isWorktreeExpanded(bucket.key)).map(groupQuery)));
+  const expandedQueries = useMemo<SessionCatalogQuery[]>(() => JSON.parse(expandedQueriesKey), [expandedQueriesKey]);
   useEffect(() => {
     if (!repository.ready || state.phase !== "ready" || auth !== workspaceEpoch() || !sidebarActive) return;
-    store.setConversationQuery?.(query);
-  }, [query, auth, repository.ready, state.phase, sidebarActive]);
+    if (grouped) store.setConversationGroups(query, expandedQueries);
+    else store.setConversationQuery?.(query);
+  }, [query, grouped, expandedQueries, auth, repository.ready, state.phase, sidebarActive]);
   // The known-cache union also contains selected, worker, notification and search
   // targets. Only matching page IDs are sidebar rows on paginated clients.
   const paginated = !!state.conversationPage && Array.isArray(state.conversationPageIds);
   const pageCurrent = state.conversationPage?.queryKey === queryKey;
-  const page = paginated ? {
+  const page = paginated && !grouped ? {
     ...state.conversationPage!,
     loading: !pageCurrent || state.conversationPage!.loading,
     loadingMore: pageCurrent && state.conversationPage!.loadingMore,
@@ -203,9 +231,17 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   }, [auth, repository.ready, nav.workspaceId, overview, overviewState.error, workstreamMap]);
   const membershipLoading = overviewState.loading && !overview && !cachedMembership;
   const hitMembershipPending = (deferred.workstreamId !== "all" || deferred.phase !== "all") && !overview && !cachedMembership;
-  const membershipPending = !paginated && hitMembershipPending;
+  const membershipPending = !grouped && !paginated && hitMembershipPending;
   const membershipError = membershipPending ? overviewState.error : "";
   const visible = useMemo<Conversation[]>(() => {
+    if (grouped) {
+      const known = new Map(state.conversations.map(conversation => [conversation.id, conversation]));
+      const ids = new Set(bucketDirectory.flatMap(group => group.buckets.flatMap(bucket => (groupPage(bucket)?.ids ?? []).filter(id => {
+        const conversation = known.get(id);
+        return conversation && conversationSidebarBinding(conversation, repository.workspaces).key === bucket.key;
+      }))));
+      return [...ids].flatMap(id => known.has(id) ? [known.get(id)!] : []);
+    }
     if (paginated) {
       if (!pageCurrent) return [];
       const known = new Map(state.conversations.map(conversation => [conversation.id, conversation]));
@@ -216,18 +252,48 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
       });
     }
     return membershipPending ? [] : filterConversations(
-      [...state.conversations].reverse().filter(c => mode === "history" || (!c.worker && !knownWorker(c.id))),
+      [...state.conversations].reverse().filter(c => mode === "history" || (c.agentKind !== "worker" && !c.worker && !knownWorker(c.id))),
       deferred,
       { workstreamMap, includeReplaced: mode === "history" },
     );
-  }, [state.conversations, state.conversationPageIds, paginated, pageCurrent, deferred, workstreamMap, workerDiscovery, mode, membershipPending]);
+  }, [grouped, bucketDirectory, groupPage, repository.workspaces, state.conversations, state.conversationPageIds, paginated, pageCurrent, deferred, workstreamMap, workerDiscovery, mode, membershipPending]);
+  // Only explicit selected rows may be added outside exact page IDs. This is a
+  // local eligibility check, not another listing or a reason to drain cursors.
+  const filterEligible = useMemo(() => {
+    if (hitMembershipPending) return [];
+    const inScope = state.conversations.filter(conversation => {
+      const { workspaceId, worktreeId } = conversationSidebarBinding(conversation, repository.workspaces);
+      if (deferred.workspaceId === "unavailable") {
+        if (workspaceId !== null) return false;
+      } else if (deferred.workspaceId && deferred.workspaceId !== "all" && deferred.workspaceId !== workspaceId) return false;
+      if (deferred.worktreeId === "unavailable") {
+        if (worktreeId !== null) return false;
+      } else if (deferred.worktreeId && deferred.worktreeId !== "all" && deferred.worktreeId !== worktreeId) return false;
+      return mode === "history" || (conversation.agentKind !== "worker" && !conversation.worker && !knownWorker(conversation.id));
+    });
+    return filterConversations(inScope, { ...deferred, query: "", workspaceId: "all", worktreeId: "all" }, { workstreamMap, includeReplaced: mode === "history" });
+  }, [hitMembershipPending, state.conversations, repository.workspaces, mode, deferred, workstreamMap, workerDiscovery]);
+  // Membership snapshots cover the browsing workspace only. Off-page rows from
+  // another workspace cannot be classified as "unknown" just because that
+  // workspace's memberships have not been loaded. Server page rows stay valid.
+  const membershipFilterActive = deferred.workstreamId !== "all" || !!deferred.phase && deferred.phase !== "all";
+  const pinEligible = filterEligible.filter(conversation => !membershipFilterActive
+    || conversationSidebarBinding(conversation, repository.workspaces).workspaceId === nav.workspaceId);
+  const pinCandidates = grouped ? pinEligible : [];
+  // Keep this identity across flat search so clearing it does not reopen a
+  // panel the user explicitly collapsed before searching.
+  const selectedPin = pinEligible.find(conversation => conversation.id === selectedId);
+  const selectedBucketKey = selectedPin ? conversationSidebarBinding(selectedPin, repository.workspaces).key : null;
+  useEffect(() => {
+    if (selectedBucketKey) setWorktreeExpanded(selectedBucketKey, true);
+  }, [selectedId, selectedBucketKey, setWorktreeExpanded]);
   const messageSearch = useMessageHitsState(deferred.query, deferred.workspaceId, deferred.worktreeId, queryKey);
   const messageHits = messageSearch.hits;
   const hits = useMemo(() => {
     if (hitMembershipPending) return [];
-    const eligible = new Set(filterConversations(state.conversations.filter(c => mode === "history" || (!c.worker && !knownWorker(c.id))), { ...deferred, query: "" }, { workstreamMap, includeReplaced: mode === "history" }).map(c => c.id));
+    const eligible = new Set(filterEligible.map(conversation => conversation.id));
     return messageHits.filter(hit => eligible.has(hit.sessionId));
-  }, [messageHits, mode, state.conversations, deferred, workstreamMap, workerDiscovery, hitMembershipPending]);
+  }, [messageHits, filterEligible, hitMembershipPending]);
   const messageHitsLoading = messageSearch.loading || (!!messageHits.length && hitMembershipPending && !overviewState.error);
   const messageHitsError = messageSearch.error || (messageHits.length > 0 && hitMembershipPending ? overviewState.error : "");
   const workerCounts = useMemo(() => {
@@ -243,7 +309,9 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   const activeFilterCount = (filter.harness !== "all" ? 1 : 0) + (filter.status !== "all" ? 1 : 0) + (filter.workstreamId !== "all" ? 1 : 0) + (filter.phase !== "all" ? 1 : 0) + (filter.showDeleted ? 1 : 0)
     + (filter.workspaceId === defaults.workspaceId && filter.worktreeId === defaults.worktreeId ? 0 : 1);
   const scoped = deferred.workspaceId !== "all" && deferred.workspaceId !== "unavailable";
-  return { repository, nav, filter, setFilter, defaults, workspaceSelection, worktreeSelectionVersion, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, messageHitsLoading, messageHitsError, page, workerCounts, groups, scoped, activeFilterCount };
+  return { repository, nav, filter, setFilter, defaults, workspaceSelection, worktreeSelectionVersion, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, messageHitsLoading, messageHitsError, page, workerCounts, groups, scoped, activeFilterCount,
+    grouped, searching, bucketDirectory, groupQuery, groupPage, pinCandidates, isWorktreeExpanded, setWorktreeExpanded,
+    directoryLoading: grouped && (!directoryCurrent || !!directory?.loading), directoryError: grouped && directoryCurrent ? directory?.error ?? "" : "", directoryReady };
 }
 
 export type ConversationSidebarModel = ReturnType<typeof useConversationSidebarModel>;

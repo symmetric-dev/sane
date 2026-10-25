@@ -2,7 +2,7 @@ import { ccAgentName, parseSaneAgent, type SaneAgentSpec } from "../../sane-cli/
 import { injectAgentModel, type AgentModelOverride } from "../../sane-cli/src/agent-model-config";
 import { WORKER_AGENT_IDS } from "sane-core/agent-catalog";
 import { createHash } from "node:crypto";
-import { managedWorkerRoles } from "./scout-crew-lifecycle";
+import { managedWorkerRoles } from "./managed-worker-lifecycle";
 import type { WorkerProtocolPin } from "./worker-contract";
 
 export type OperationPermission = { action: string; resource: string; effect: "allow" | "ask" | "deny" };
@@ -47,12 +47,13 @@ export function operationModel(value: string, effort?: string): OperationModel {
  * The supported subset is deliberately explicit: new execution fields must not silently disappear.
  * OC migration reference: https://opencode.ai/v2/docs/migrate-v1#agents-and-modes */
 export function parseCanonicalAgentOperations(content: string, name: string, override?: AgentModelOverride): CanonicalAgentOperations {
-  if (!/^sane\/(assistant|worker)\/[a-z][a-z-]*$/.test(name)) throw new Error("Invalid canonical agent name");
+  if (!/^sane\/(assistant|worker|utility)\/[a-z][a-z-]*$/.test(name)) throw new Error("Invalid canonical agent name");
   const rendered = injectAgentModel(content, override), spec = parseSaneAgent(rendered, name);
   const match = /^\uFEFF?---\r?\n([\s\S]*?)^---[ \t]*(?:\r?\n|$)/m.exec(rendered)!;
   const metadata = Bun.YAML.parse(match[1]!) as Record<string, unknown>;
-  const supported = new Set(["description", "mode", "temperature", "permission", "permissions", "model", "variant"]);
+  const supported = new Set(["description", "mode", "hidden", "temperature", "permission", "permissions", "model", "variant"]);
   for (const key of Object.keys(metadata)) if (!supported.has(key)) throw new Error(`Unsupported canonical execution field: ${key}`);
+  if (metadata.hidden !== undefined && typeof metadata.hidden !== "boolean") throw new Error("Invalid canonical visibility");
   if (metadata.temperature !== undefined && (typeof metadata.temperature !== "number" || !Number.isFinite(metadata.temperature))) throw new Error("Invalid canonical temperature");
   if (metadata.variant !== undefined && typeof metadata.variant !== "string") throw new Error("Invalid canonical variant");
   if (metadata.model !== undefined && typeof metadata.model !== "string") throw new Error("Invalid canonical model");
@@ -76,6 +77,7 @@ export function parseCanonicalAgentOperations(content: string, name: string, ove
 
 const matches = (pattern: string, value: string) => new RegExp(`^${pattern.split("*").map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`).test(value);
 export function requiredNativeChildren(policy: CanonicalAgentOperations): string[] {
+  if (policy.spec.kind === "utility") return [];
   return WORKER_AGENT_IDS.map(role => `sane/worker/${role}`).filter(id => {
     // Broad permission to use ordinary subagents is not a declaration that every
     // SANE worker must be installed. Provision only explicitly authored delegates.
@@ -118,9 +120,10 @@ function explicitSelfTools(protocol: WorkerProtocolPin | undefined): string[] {
 }
 /** Launching parents only. Not inferred from sane_worker_start or managedWorkerRoles. */
 function grantsWorkerMessage(policy: CanonicalAgentOperations): boolean {
-  return policy.spec.name.startsWith("sane/assistant/") || policy.spec.name === "sane/worker/implementer" || policy.spec.name === "sane/worker/scout-crew"
+  return policy.spec.name.startsWith("sane/assistant/") || policy.spec.name === "sane/worker/implementer" || policy.spec.name === "sane/worker/scout-crew" || policy.spec.name === "sane/worker/verification-crew"
 }
 function executionToolPermissions(policy: CanonicalAgentOperations, protocol: WorkerProtocolPin | undefined): OperationPermission[] {
+  if (policy.spec.kind === "utility") return [];
   return [...explicitSelfTools(protocol), ...(grantsWorkerMessage(policy) ? ["sane_worker_message"] : [])].map(action => ({ action, resource: "*", effect: "allow" as const }))
 }
 
@@ -287,6 +290,8 @@ export function claudeExecutionConfiguration(input: {
   }
   permissions.allow.push(...executionToolPermissions(policy, input.protocol).map(rule => `mcp__sane__${rule.action}`));
   const args = ["--agents", JSON.stringify(agents), "--agent", agent];
+  // Do not rely on the legacy CC permission translator for bounded utilities.
+  if (policy.spec.name === "sane/utility/session-namer") args.push("--tools", "");
   if (input.model) args.push("--model", input.model);
   if (input.effort) args.push("--effort", input.effort);
   const policyTranslation: ClaudePolicyTranslation = { schema: 1, scope: "native-child-definitions", parentPermissions: "legacy-headless-settings", children: childEvidence, diagnostics };

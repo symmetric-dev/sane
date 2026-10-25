@@ -4,6 +4,7 @@ import { FIXED_EFFORT_VALUES } from "../shared/conversation/harness-capabilities
 import type { CompactRequest, CompactionMetadata, Harness } from "./oc-contract";
 import { isStoredAssistantAgentId, isWorkerAgentId, type AssistantAgentId, type StoredAssistantAgentId, type WorkerAgentId } from "sane-core/agent-catalog";
 import type { ContextPackageRef } from "./context-package";
+import { SESSION_TITLE_SOURCES, type SessionTitleSource, type SessionTitleGeneration } from "../shared/conversation/session-title";
 
 /** Historical identity is immutable, including archived Knowledge conversations.
  * Missing kind is a legacy assistant; workers always persist their kind. */
@@ -19,7 +20,7 @@ export function validAgentSnapshot(value: AgentSnapshot): boolean {
 }
 
 export type Status = "running" | "completed" | "failed" | "interrupted";
-export type Session = AgentSnapshot & { sessionId: string; harness?: Harness; nativeSessionId?: string; authorityId?: string; cwd: string; lastStatus: Status | "unknown"; lastRunId: string | null; title?: string; hidden?: boolean; model?: string; effort?: string; profileId?: string; attachment?: { state: "pending" | "ready"; source: string; error?: string }; saneContext?: SaneSessionContext };
+export type Session = AgentSnapshot & { sessionId: string; harness?: Harness; nativeSessionId?: string; authorityId?: string; cwd: string; lastStatus: Status | "unknown"; lastRunId: string | null; title?: string; titleSource?: SessionTitleSource; titleRevision?: number; titleAutoEligible?: boolean; titleGeneration?: SessionTitleGeneration; hidden?: boolean; model?: string; effort?: string; profileId?: string; attachment?: { state: "pending" | "ready"; source: string; error?: string }; saneContext?: SaneSessionContext };
 /** Legacy sessions deliver framework into startup history. A package reference
  * opts this conversation into pinned standing context without rewriting old runs. */
 export type SaneSessionContext = { version: number; framework: string; assignment?: string; package?: ContextPackageRef };
@@ -78,6 +79,16 @@ export function validateMetadata(value: unknown): Metadata {
     if (s.harness === "opencode" ? typeof s.nativeSessionId !== "string" || !/^ses[a-zA-Z0-9_-]+$/.test(s.nativeSessionId) : !uuid(s.nativeSessionId)) return fail();
     if (typeof s.authorityId !== "string" || !new RegExp(`^sane-native-v1:${s.harness === "opencode" ? "oc" : "cc"}:[a-f0-9]{64}$`).test(s.authorityId)) return fail();
     if (s.title !== undefined && (typeof s.title !== "string" || !s.title.trim() || s.title.includes("\n") || s.title.length > 200)) return fail();
+    if (s.titleSource !== undefined && !(SESSION_TITLE_SOURCES as readonly unknown[]).includes(s.titleSource)) return fail();
+    if (s.titleRevision !== undefined && (!Number.isSafeInteger(s.titleRevision) || s.titleRevision < 0)) return fail();
+    if (s.titleAutoEligible !== undefined && typeof s.titleAutoEligible !== "boolean") return fail();
+    if (s.titleGeneration !== undefined) {
+      const g = s.titleGeneration;
+      if (!object(g) || Object.keys(g).some(k => !["state", "attemptId", "requestedAt", "expectedRevision", "automatic", "error"].includes(k))
+        || !["pending", "completed", "failed", "discarded"].includes(g.state) || !uuid(g.attemptId) || !timestamp(g.requestedAt)
+        || !Number.isSafeInteger(g.expectedRevision) || g.expectedRevision < 0 || typeof g.automatic !== "boolean"
+        || g.error !== undefined && !["generation-failed", "interrupted", "no-output"].includes(g.error)) return fail();
+    }
     if (s.hidden !== undefined && typeof s.hidden !== "boolean") return fail();
     // Conversation-level model defaults. Absent on pre-migration records;
     // never persisted as empty (empty means native default at submit time).

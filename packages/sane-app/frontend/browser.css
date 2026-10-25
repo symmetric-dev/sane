@@ -13,6 +13,26 @@
 .browser-new-tab,.browser-layout-toggle { display:flex; align-items:center; gap:8px; padding:10px 8px; text-align:left; font-size:12px; }
 .browser-new-tab:hover:not(:disabled),.browser-layout-toggle:hover:not(:disabled) { background:var(--accent); }
 .browser-layout-toggle { border-top:1px solid var(--border); border-radius:0; }
+.browser-tab-strip { container-type:inline-size; display:flex; align-items:center; flex-shrink:0; gap:8px; width:100%; min-width:0; padding:6px 12px; border-bottom:1px solid var(--border); background:var(--background); }
+.browser-tab-strip .browser-tab-list { flex:1; flex-direction:row; align-items:center; min-width:0; padding:2px; overflow-x:auto; overflow-y:hidden; overscroll-behavior-x:contain; scrollbar-width:thin; }
+.browser-tab-strip .browser-tab-row { flex:0 0 180px; min-width:0; border:1px solid var(--border); background:var(--background); color:var(--muted-foreground); }
+.browser-tab-strip .browser-tab-row:hover { background:var(--accent); }
+.browser-tab-strip .browser-tab-row.selected { border-color:var(--primary); background:var(--accent); color:var(--foreground); }
+.browser-tab-strip .browser-tab-row>[role="tab"] { min-height:36px; padding:7px 8px; font-size:12px; }
+.browser-tab-strip .browser-tab-row .icon-button { display:flex; align-items:center; justify-content:center; min-width:32px; min-height:32px; margin-right:2px; border-radius:6px; color:var(--muted-foreground); }
+.browser-tab-strip .browser-tab-row .icon-button:hover { background:var(--muted); color:var(--foreground); }
+.browser-tab-actions { display:flex; flex-shrink:0; align-items:center; gap:4px; }
+.browser-tab-strip .browser-new-tab,.browser-tab-strip .browser-layout-toggle { justify-content:center; min-width:36px; min-height:36px; gap:6px; padding:6px 8px; border:0; border-radius:6px; white-space:nowrap; color:var(--muted-foreground); }
+.browser-tab-actions svg { flex-shrink:0; }
+.browser-tab-count { flex-shrink:0; padding:0 4px; white-space:nowrap; font-size:11px; color:var(--muted-foreground); font-variant-numeric:tabular-nums; }
+.browser-tab-strip button:focus-visible,.browser-sidebar .browser-tab-row button:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
+/* Container queries also cover a narrow paired pane on a wide desktop. */
+@container (max-width:560px) {
+  .browser-tab-action-label { display:none; }
+  .browser-tab-strip .browser-tab-row { flex-basis:152px; }
+  .browser-tab-strip .browser-new-tab,.browser-tab-strip .browser-layout-toggle { min-width:40px; min-height:40px; }
+  .browser-tab-strip .browser-tab-row .icon-button { min-width:40px; min-height:40px; }
+}
 .browser-view { flex:1; display:flex; flex-direction:column; min-height:0; min-width:0; overflow:hidden; }
 .browser-view[hidden],.browser-frame[hidden] { display:none; }
 .browser-address { position:relative; display:flex; flex:1; min-width:0; align-items:center; gap:6px; }
@@ -32,10 +52,10 @@
 .browser-empty { display:flex; flex:1; min-height:0; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:24px; text-align:center; overflow:auto; }
 .browser-empty h2 { font-size:18px; margin:0; }
 .browser-empty p { max-width:480px; margin:0; color:var(--muted-foreground); }
-.browser-footer { align-items:center; justify-content:space-between; gap:12px; }
-.browser-help-button { display:flex; align-items:center; gap:6px; padding:8px 0; text-align:left; font-size:11px; color:var(--muted-foreground); }
-.browser-help-button svg { flex-shrink:0; }
-.browser-help-button:hover { color:var(--foreground); }
+.browser-footer { align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 12px; }
+.browser-help-button,.browser-pair-icon-button { display:flex; align-items:center; justify-content:center; flex-shrink:0; min-width:36px; min-height:36px; padding:8px; border-radius:7px; color:var(--muted-foreground); }
+.browser-help-button svg,.browser-pair-icon-button svg { flex-shrink:0; }
+.browser-help-button:hover,.browser-pair-icon-button:hover { background:var(--accent); color:var(--foreground); }
 .browser-limitations { padding-left:20px; color:var(--muted-foreground); }
 .browser-limitations li+li { margin-top:12px; }
 .browser-notice { flex-shrink:0; margin:0; padding:6px 16px; font-size:12px; color:var(--warning); }

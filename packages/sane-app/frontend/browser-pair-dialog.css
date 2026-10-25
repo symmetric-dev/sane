@@ -1,0 +1,13 @@
+.browser-pair-dialog { width: min(520px, calc(100vw - 32px)); }
+.browser-pair-dialog form { display: flex; flex-direction: column; gap: 12px; }
+.browser-pair-dialog p { margin: 0; }
+.browser-pair-dialog-name { font-weight: 600; overflow-wrap: anywhere; }
+.browser-pair-dialog textarea { width: 100%; min-height: 108px; resize: vertical; }
+.browser-pair-dialog-ack { display: flex; align-items: flex-start; gap: 8px; }
+.browser-pair-dialog-ack input { flex: none; margin-top: 3px; }
+.browser-pair-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.browser-pair-dialog-tab { overflow-wrap: anywhere; }
+.browser-pair-dialog-mode { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.browser-pair-dialog-mode label { display: flex; align-items: flex-start; gap: 8px; }
+.browser-pair-dialog-mode input { flex: none; margin-top: 3px; }
+.browser-pair-dialog-mode small { display: block; margin-top: 3px; color: var(--muted-foreground); }

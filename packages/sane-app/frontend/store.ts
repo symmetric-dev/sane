@@ -17,6 +17,8 @@ import type { CompactRequest, CompactState, CompactionRecord } from "../src/oc-c
 import { compactCommand, compactionsFor } from "./compaction";
 import { ConversationCache, cloneRunForConsume, conversationKey } from "./conversation-cache";
 import { ConversationListing, conversationQueryKey } from "./conversation-listing";
+import { ConversationGroupListing, type ConversationGroupPage, type ConversationGroupDirectory } from "./conversation-group-listing";
+export type { ConversationGroupPage, ConversationGroupDirectory } from "./conversation-group-listing";
 import type { SessionCatalogQuery } from "./types";
 import { canonicalCount, equalValue, mergePage, pageMessages, pagedUsage, refreshPages, sameRunMetadata, TranscriptCoverageError, type PagedTranscript, type PageRequest } from "./transcript-pages";
 import type { TranscriptMetadataItem, TranscriptMetadataPage, TranscriptPage } from "../src/transcript-contract";
@@ -35,6 +37,9 @@ import type { ScienceSubmissionView } from "../shared/conversation/types";
 import { jitteredDelay } from "./visibility";
 import { subscribeWake, wakePolls } from "./poll-wake";
 import { invalidateCoalescedRequests } from "./request-coalescing";
+import { MAX_SESSION_TITLE_LENGTH, normalizeSessionTitle } from "../shared/conversation/session-title";
+
+export type SessionNameIntent = { conversationId: string; mode: "rename" | "regenerate"; title: string; expectedRevision: number; scope: string; restoreFocus?: () => HTMLElement | null };
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
@@ -46,6 +51,8 @@ export type UnconfirmedSubmission = { conversationId: string; sourceKey: string;
 export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "queued"; conversationId: string; requestId: string } | { status: "blocked" | "rejected" | "unknown" };
 export type PendingCompact = { payload: CompactRequest; phase: "sending" | "unconfirmed" | "accepted" | "rejected"; runId?: string };
 export type State = {
+  sessionNameDialog?: SessionNameIntent;
+  sessionTitleRequests?: Record<string, boolean>;
   /** Separate durable run-ID map, independent of transcript page versions. */
   scienceSubmissions?: Record<string, ScienceSubmissionView[]>;
   sciencePending?: Record<string, SciencePendingSend | null>;
@@ -57,6 +64,8 @@ export type State = {
   /** Matching loaded sidebar pages only; conversations is the known-summary union. */
   conversationPageIds?: string[];
   conversationPage?: { hasMore: boolean; loading: boolean; loadingMore: boolean; error: string; queryKey: string };
+  conversationGroups?: Record<string, ConversationGroupPage>;
+  conversationGroupDirectory?: ConversationGroupDirectory;
   globalAvailability?: Availability;
   selected: string; runs: Run[]; messages: Message[]; drafts: Record<string, Draft>;
   connected: boolean; interactive?: boolean; loading: boolean; sending: boolean; availability: Availability;
@@ -94,6 +103,89 @@ export function completionVerificationTarget(state: State): CompletionVerificati
 }
 const fallbackProfiles: AgentProfiles = { version: 1, defaultId: BASE_PROFILE_IDS["claude-code"], profiles: builtinProfiles("") };
 export class ChatStore {
+  private sessionTitleMutations = new Map<string, { scope: string; expectedRevision: number; optimisticTitle?: string }>();
+  sessionNameScope = (id: string) => JSON.stringify([this.authEpoch, this.state.config?.storeId, this.pendingInputSource(id)]);
+  openSessionNameDialog = (conversationId: string, mode: SessionNameIntent["mode"], restoreFocus?: () => HTMLElement | null) => {
+    const conversation = this.state.conversations.find(c => c.id === conversationId);
+    if (this.state.phase !== "ready" || !conversation || conversation.replacedBy || this.state.sessionTitleRequests?.[conversationId]) return;
+    this.update({ sessionNameDialog: { conversationId, mode, title: conversation.title ?? "", expectedRevision: conversation.titleRevision ?? 0,
+      scope: this.sessionNameScope(conversationId), restoreFocus } });
+  };
+  closeSessionNameDialog = () => {
+    if (!this.state.sessionNameDialog || this.state.sessionTitleRequests?.[this.state.sessionNameDialog.conversationId]) return;
+    this.update({ sessionNameDialog: undefined });
+  };
+  private invalidateSessionNameRequests() {
+    // ConversationListing invalidation alone cannot retire the HTTP coalescer's
+    // cached responses or pre-mutation in-flight GETs. Limit this to catalog
+    // endpoints used by naming, leaving transcript/run and other reads alone.
+    invalidateCoalescedRequests(url => /^\/api\/sessions(?:\/(?:summaries|groups))?(?:\?|$)/.test(url));
+  }
+  refreshSessionName = async (intent: SessionNameIntent): Promise<Conversation> => {
+    if (this.state.phase !== "ready" || intent.scope !== this.sessionNameScope(intent.conversationId)) throw new Error("This conversation or sign-in changed. Close the dialog and try again.");
+    this.invalidateSessionNameRequests();
+    this.conversationListing.invalidate();
+    const rows = await this.ensureConversations([intent.conversationId]);
+    const row = rows.find(c => c.id === intent.conversationId);
+    if (!row || this.sessionNameScope(row.id) !== intent.scope) throw new Error("This conversation is no longer available. Close the dialog and try again.");
+    return row;
+  };
+  /** Metadata-only actions never acquire actionBusy or interrupt a native run. */
+  changeSessionName = async (intent: SessionNameIntent, title?: string): Promise<void> => {
+    const id = intent.conversationId, previous = this.state.conversations.find(c => c.id === id), auth = this.authEpoch;
+    if (this.state.phase !== "ready" || !previous || previous.replacedBy || intent.scope !== this.sessionNameScope(id)) throw new Error("This conversation or sign-in changed. Close the dialog and try again.");
+    if (this.sessionTitleMutations.has(id)) throw new Error("A name change is already in progress for this conversation.");
+    if ((previous.titleRevision ?? 0) !== intent.expectedRevision) throw new ApiError("The name changed elsewhere. Review the latest name before trying again.", 409);
+    const manual = intent.mode === "rename", normalized = normalizeSessionTitle(title);
+    if (manual && !normalized) throw new Error(`Enter a name between 1 and ${MAX_SESSION_TITLE_LENGTH} characters on one line, without control characters.`);
+    if (manual ? !this.client.renameConversation : !this.client.regenerateConversationName) throw new Error("Naming is unavailable on this bridge. Update the bridge and try again.");
+    const mutation = { scope: intent.scope, expectedRevision: intent.expectedRevision, ...(manual ? { optimisticTitle: normalized! } : {}) };
+    const current = () => this.state.phase === "ready" && this.sessionNameScope(id) === intent.scope && this.sessionTitleMutations.get(id) === mutation;
+    this.sessionTitleMutations.set(id, mutation);
+    this.update({ sessionTitleRequests: { ...this.state.sessionTitleRequests, [id]: true },
+      ...(manual ? { conversations: this.state.conversations.map(c => c.id === id ? { ...c, title: normalized! } : c) } : {}) });
+    try {
+      const result = await this.listingMutation(async () => {
+        this.invalidateSessionNameRequests();
+        try {
+          return await (manual
+            ? this.client.renameConversation!(id, { title: normalized!, expectedRevision: intent.expectedRevision })
+            : this.client.regenerateConversationName!(id, { expectedRevision: intent.expectedRevision }));
+        } finally {
+          // Retire reads started during the mutation BEFORE listingMutation's
+          // finally refreshes groups or the naming recovery reads summaries.
+          this.invalidateSessionNameRequests();
+        }
+      });
+      if (!current()) throw new Error("The conversation or sign-in changed while updating its name. Check the original conversation before retrying.");
+      this.sessionTitleMutations.delete(id);
+      this.update({ conversations: this.state.conversations.map(c => c.id === id && (c.titleRevision ?? 0) <= result.titleRevision ? { ...c, ...result } : c) });
+    } catch (error) {
+      if (current()) {
+        this.sessionTitleMutations.delete(id);
+        // Roll back only our title field, never a newer revision or unrelated
+        // status/visibility/identity updates received while awaiting the request.
+        if (manual) this.update({ conversations: this.state.conversations.map(c => c.id === id && c.title === normalized && (c.titleRevision ?? 0) === intent.expectedRevision
+          ? { ...c, title: previous.title } : c) });
+        this.expired(error);
+      }
+      throw error;
+    } finally {
+      if (this.sessionTitleMutations.get(id) === mutation) this.sessionTitleMutations.delete(id);
+      if (auth === this.authEpoch && !this.sessionTitleMutations.has(id)) {
+        const requests = { ...this.state.sessionTitleRequests }; delete requests[id];
+        this.update({ sessionTitleRequests: requests });
+      }
+      if (this.sessionNameScope(id) === intent.scope) {
+        // Refresh both sidebar membership and targeted History previews without
+        // reconnecting, canceling, or resending anything in the running chat.
+        if (this.state.phase === "ready") {
+          void this.refreshConversationHead();
+          void this.ensureConversations([id]).catch(() => {});
+        }
+      }
+    }
+  };
   private completionVerificationBusy = new Set<string>();
   prepareCompletionVerification = (target: CompletionVerificationTarget): (() => Promise<void>) | undefined => {
     if (!this.client.verifyCompletion || this.state.actionBusy || JSON.stringify(completionVerificationTarget(this.state)) !== JSON.stringify(target)) return;
@@ -556,6 +648,7 @@ export class ChatStore {
   private runMap = new Map<string, Run>();
   private conversationCache = new ConversationCache();
   private conversationListing: ConversationListing;
+  private groupListing: ConversationGroupListing;
   private conversationQuery: SessionCatalogQuery = { mode: "chat", limit: 50 };
   private catalogController = new AbortController();
   private summaryRequests = new Set<AbortController>();
@@ -571,11 +664,26 @@ export class ChatStore {
 
   setConversationQuery = (query: SessionCatalogQuery): void => {
     const next = { ...query, limit: query.limit ?? 50, cursor: undefined };
-    if (conversationQueryKey(next) === conversationQueryKey(this.conversationQuery) && this.state.conversationPage) return;
+    const grouped = this.groupListing.enabled;
+    this.groupListing.disable();
+    if (!grouped && conversationQueryKey(next) === conversationQueryKey(this.conversationQuery) && this.state.conversationPage) return;
     this.conversationQuery = next;
+    this.update({ conversationGroups: undefined, conversationGroupDirectory: undefined });
     this.resetConversationPages();
     if (this.state.phase === "ready") void this.refreshConversationHead();
   };
+  setConversationGroups = (baseQuery: SessionCatalogQuery, expandedQueries: SessionCatalogQuery[]): void => {
+    if (!this.groupListing.enabled) {
+      this.catalogController.abort(); this.catalogController = new AbortController();
+      this.catalogHead = undefined; this.catalogCursor = null; this.catalogSnapshotPinned = false;
+      this.catalogMoreSerial++; this.catalogMoreError = "";
+    }
+    this.conversationQuery = { ...baseQuery, limit: 5, cursor: undefined };
+    this.groupListing.configure(this.conversationQuery, expandedQueries);
+  };
+  loadMoreConversationGroup = (query: SessionCatalogQuery): Promise<void> => this.groupListing.more(query);
+  retryConversationGroup = (query: SessionCatalogQuery): void => this.groupListing.retry(query);
+  retryConversationGroups = (): void => this.groupListing.retryDirectory();
   private resetConversationPages() {
     this.catalogController.abort(); this.catalogController = new AbortController();
     this.catalogHead = undefined; this.catalogCursor = null;
@@ -590,6 +698,7 @@ export class ChatStore {
    * prepend new matches, but never splice a new snapshot into that traversal.
    * Expiry (409) explicitly resets sidebar IDs to a fresh head, not the cache. */
   private refreshConversationHead(): Promise<void> {
+    if (this.groupListing.enabled) return Promise.resolve();
     if (this.catalogHead) return this.catalogHead;
     const owner = this.catalogController, auth = this.authEpoch, query = this.conversationQuery, readSerial = ++this.catalogSummarySerial;
     // Sidebar acquisition belongs to its query/auth owner, not to whichever
@@ -635,6 +744,7 @@ export class ChatStore {
     return task;
   }
   loadMoreConversations = async (): Promise<void> => {
+    if (this.groupListing.enabled) return;
     if (this.state.phase !== "ready" || !this.catalogCursor || this.state.conversationPage?.loadingMore || this.state.conversationPage?.loading) return;
     const owner = this.catalogController, auth = this.authEpoch, serial = ++this.catalogMoreSerial;
     const cursor = this.catalogCursor, query = { ...this.conversationQuery, cursor }, readSerial = ++this.catalogSummarySerial;
@@ -665,6 +775,7 @@ export class ChatStore {
     } finally { if (current()) this.conversationPagePatch({ loadingMore: false }); }
   };
   retryConversations = (): void => {
+    if (this.groupListing.enabled) { this.retryConversationGroups(); return; }
     this.conversationListing.invalidate();
     // A retry targets the failed continuation when one exists; it never drains.
     if (this.catalogMoreError && this.catalogCursor) void this.loadMoreConversations();
@@ -685,8 +796,10 @@ export class ChatStore {
       if (previous && !sameIdentity) this.invalidateConversationCache(row.id);
       next.set(row.id, !row.title && sameIdentity && previous.title ? { ...row, title: previous.title } : row);
     }
-    this.update({ conversations: [...next.values()], globalAvailability: availability,
+    this.update({ conversations: [...next.values()], conversationsReady: true, globalAvailability: availability,
       ...(missing.length && this.state.conversationPageIds ? { conversationPageIds: this.state.conversationPageIds.filter(id => !missing.includes(id)) } : {}) });
+    this.groupListing.reconcileRows(rows);
+    if (missing.length) this.groupListing.forget(missing);
     if (missing.length) { notificationStore.forget(missing); forgetWorkerSessions(missing); }
     registerWorkerSessions(rows, true); this.observeNotifications(rows, true);
     const selected = next.get(this.state.selected);
@@ -753,7 +866,7 @@ export class ChatStore {
     const auth = this.authEpoch;
     this.conversationListing.invalidate();
     try { return await run(); }
-    finally { if (auth === this.authEpoch) this.conversationListing.invalidate(); }
+    finally { if (auth === this.authEpoch) { this.conversationListing.invalidate(); this.groupListing.refresh(); } }
   }
   private transcriptKey = "";
   private cacheable = false;
@@ -808,12 +921,18 @@ export class ChatStore {
     this.update({ connected: false, loading: true, availability: { canSend: false }, compactState: null, contextUsage: null, interactions: [], handoffApprovals: [] });
   }
   private clearCachedHistory() {
+    this.sessionTitleMutations.clear();
+    // Authentication starts a new browsing scope, even if the previous owner
+    // signed out from flat search. Capable clients boot directory-only again.
+    this.conversationQuery = { mode: "chat", limit: this.client.conversationGroups ? 5 : 50 };
+    this.groupListing.clear();
     this.resetConversationPages();
     for (const controller of this.summaryRequests) controller.abort();
     this.summaryRequests.clear();
     this.catalogSummaryVersions.clear(); this.catalogMissing.clear();
     this.activeSubmission = undefined;
-    this.update({ conversations: [], conversationsReady: false, globalAvailability: { canSend: false }, unconfirmedSubmissions: {} });
+    this.update({ conversations: [], conversationsReady: false, globalAvailability: { canSend: false }, unconfirmedSubmissions: {}, sessionNameDialog: undefined, sessionTitleRequests: {},
+      ...(!this.groupListing.enabled ? { conversationGroups: undefined, conversationGroupDirectory: undefined } : {}) });
     clearWorkerStates();
     this.conversationCache.clear(); this.runMap = new Map();
     this.runGateId = ""; this.runGateMarkers = "";
@@ -928,9 +1047,31 @@ export class ChatStore {
   state: State = { phase: "connecting", conversations: [], conversationsReady: false, selected: "", runs: [], messages: [], drafts: {}, connected: false, loading: true, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", authError: "", models: [], modelsLoading: false, modelsError: "", modelsLoaded: false, modelsCwd: "", interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false };
   constructor(private client: ConversationClient) {
     this.conversationListing = new ConversationListing((signal, query) => client.conversations(signal, query), 1000,
-      () => performance.now(), client.conversationSummaries ? (ids, signal) => client.conversationSummaries!(ids, signal) : undefined);
+      () => performance.now(), client.conversationSummaries ? (ids, signal) => client.conversationSummaries!(ids, signal) : undefined,
+      client.conversationGroups ? (query, signal) => client.conversationGroups!(query, signal) : undefined);
+    this.groupListing = new ConversationGroupListing({
+      listing: this.conversationListing, nativeDirectory: !!client.conversationGroups,
+      ready: () => this.state.phase === "ready", hidden: () => typeof document !== "undefined" && document.hidden,
+      delay: () => this.pollDelay(this.state.connected), serial: () => ++this.catalogSummarySerial,
+      expired: error => this.expired(error), missing: id => this.catalogMissing.has(id),
+      rows: () => this.state.conversations,
+      merge: (rows, availability, serial, head) => this.mergeConversationSummaries(rows, availability, [], serial, head),
+      available: availability => this.update({ globalAvailability: availability, conversationsReady: true,
+        ...(!this.state.selected ? { availability, connected: true, interactive: true, loading: false, connectionError: "" } : {}) }),
+      publish: (groups, directory, ids) => {
+        const marker = { hasMore: false, loading: directory.loading, loadingMore: false, error: directory.error, queryKey: directory.queryKey };
+        this.update({
+          conversationGroups: equalValue(this.state.conversationGroups, groups) ? this.state.conversationGroups : groups,
+          conversationGroupDirectory: equalValue(this.state.conversationGroupDirectory, directory) ? this.state.conversationGroupDirectory : directory,
+          conversationPageIds: equalValue(this.state.conversationPageIds, ids) ? this.state.conversationPageIds : ids,
+          // Partial-mode compatibility marker only, never a global page request.
+          conversationPage: equalValue(this.state.conversationPage, marker) ? this.state.conversationPage : marker,
+        });
+      },
+    });
     this.state = { ...this.state, transcriptPaged: this.paged }; onWorkspaceAuthExpired(() => this.loginRequired());
-    if (client.conversationSummaries) this.resetConversationPages();
+    if (client.conversationGroups) this.setConversationGroups({ mode: "chat", limit: 5 }, []);
+    else if (client.conversationSummaries) this.resetConversationPages();
     if (typeof window !== "undefined") window.addEventListener("storage", event => {
       if (event.key === this.pendingInputKey()) { this.loadPendingInputLedger(); if (this.pendingInputVisible) void this.refreshPendingInputs(); }
     });
@@ -939,6 +1080,19 @@ export class ChatStore {
   snapshot = () => this.state;
   shellSnapshot = () => this.shellRevision;
   private update(patch: Partial<State>, publishShell = true) {
+    if (patch.conversations) {
+      const previousRows = new Map(this.state.conversations.map(c => [c.id, c]));
+      patch.conversations = patch.conversations.map(row => {
+        const previous = previousRows.get(row.id);
+        if (!previous || conversationKey(previous) !== conversationKey(row)) return row;
+        // Frozen catalog pages and transcript polls can predate the title request.
+        // Preserve newer title metadata, while still accepting all other fields.
+        if ((row.titleRevision ?? 0) < (previous.titleRevision ?? 0)) return { ...row, title: previous.title, titleSource: previous.titleSource, titleRevision: previous.titleRevision };
+        const mutation = this.sessionTitleMutations.get(row.id);
+        return mutation?.optimisticTitle !== undefined && mutation.scope === this.sessionNameScope(row.id) && (row.titleRevision ?? 0) === mutation.expectedRevision
+          ? { ...row, title: mutation.optimisticTitle } : row;
+      });
+    }
     if (patch.connected === false && patch.interactive === undefined) patch.interactive = false;
     for (const key of ["scienceSubmissions", "sciencePending", "scienceRecoveries"] as const) {
       if (Object.hasOwn(patch, key) && equalValue(this.state[key] ?? {}, patch[key] ?? {})) patch[key] = this.state[key] as never;
@@ -1062,7 +1216,7 @@ export class ChatStore {
   profile = (id: string | undefined): AgentProfile | undefined => id ? this.profileSet().profiles.find(p => p.id === id) : undefined;
   defaultProfile = (): AgentProfile => { const set = this.profileSet(); return this.profile(set.defaultId) ?? this.profile(BASE_PROFILE_IDS["claude-code"]) ?? fallbackProfiles.profiles[0]!; };
   /** New-conversation profile: the draft pick when still visible, else the default. */
-  draftProfile = (): AgentProfile => { const picked = this.profile(this.draft("").profileId); return picked && !picked.hidden && picked.kind !== "worker" ? picked : this.defaultProfile(); };
+  draftProfile = (): AgentProfile => { const picked = this.profile(this.draft("").profileId); return picked && !picked.hidden && (picked.kind === "base" || picked.kind === "assistant") ? picked : this.defaultProfile(); };
   conversationProfileId = (id: string): string => {
     const snapshot = this.conversationSnapshot(id);
     const harness = snapshot.harness ?? "claude-code";
@@ -1396,6 +1550,7 @@ export class ChatStore {
       await this.listingMutation(() => action.call(this.client, id));
       if (!current()) return;
       this.update({ conversations: this.state.conversations.map(c => c.id === id ? { ...c, hidden } : c), actionNotice: hidden ? "Conversation hidden from the sidebar. Nothing was deleted." : "Conversation restored to the sidebar." });
+      this.groupListing.reconcileRows(this.state.conversations);
       this.reconnect();
     } catch (error) {
       if (!current() || this.expired(error)) return;
@@ -1578,8 +1733,9 @@ export class ChatStore {
     // consumers or replay mutations; their auth/generation fences still apply.
     invalidateCoalescedRequests();
     this.stopNotificationPolling();
-    if (typeof document !== "undefined" && document.hidden) { if (!this.state.sending) this.stop(); return; }
+    if (typeof document !== "undefined" && document.hidden) { this.groupListing.pause(); if (!this.state.sending) this.stop(); return; }
     if (this.state.phase === "login") return;
+    this.groupListing.refresh();
     if (this.state.sending) { void this.pollNotifications(); return; }
     this.pendingInputFresh = ""; this.pendingInputPolling();
     void this.pollNotifications(); this.sciencePolling(true);
@@ -1597,6 +1753,7 @@ export class ChatStore {
       if (config.authRequired && !config.authenticated) { this.loginRequired(); return; }
       this.pendingInputSuspended = false;
       this.update({ config, phase: "ready", authError: "", connectionError: "", ...(config.agentProfiles ? { profiles: config.agentProfiles } : {}) });
+      this.groupListing.refresh();
       this.loadPendingInputLedger(); if (this.pendingInputVisible && !document.hidden) void this.refreshPendingInputs();
       this.configureNotifications(config);
       if (!config.agentProfiles) void this.refreshProfiles();
@@ -1967,13 +2124,21 @@ export class ChatStore {
       this.sciencePolling();
       // Sidebar head acquisition has its own scope/auth fences. With targeted
       // support it runs alongside the selected read, not in front of it.
-      const head = this.refreshConversationHead();
+      const head = this.groupListing.enabled ? Promise.resolve() : this.refreshConversationHead();
       if (selected && this.client.conversationSummaries) await this.ensureConversations([selected], controller.signal);
+      else if (selected && this.groupListing.enabled) await this.ensureConversations([selected], controller.signal);
       else await head;
       listingRevision = this.conversationListing.revision;
       const listing = { conversations: this.state.conversations, availability: this.state.globalAvailability ?? this.state.availability };
       if (!current()) return;
       controller.signal.throwIfAborted();
+      if (this.groupListing.enabled && !selected) {
+        const available = this.state.globalAvailability;
+        // Blank chats skip transcript hydration, which normally restores this
+        // flag after choose()/disconnect explicitly set interactive to false.
+        this.update({ conversationsReady: true, connected: !!available, interactive: !!available, loading: false, availability: available ?? { canSend: false }, connectionError: "" });
+        return;
+      }
       if (!this.notificationScope && !(this.state.config?.conversationUpdates === true && this.client.conversationUpdates)) this.observeNotifications(listing.conversations, !!this.state.conversationPage);
       if (!current()) return;
       registerWorkerSessions(listing.conversations, !!this.state.conversationPage);

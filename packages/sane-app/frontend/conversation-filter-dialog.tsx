@@ -86,7 +86,9 @@ export function ConversationFilterDialog({ value, onChange, workspaces, navigati
     <div className="filter-dialog" aria-label="Conversation filters">
       <label>Search<input value={draftQuery} onChange={e => setDraftQuery(e.target.value)} placeholder="Fuzzy title, path, harness, ID…" maxLength={200} /></label>
       <FilterDropdown label="Workspace" value={value.workspaceId ?? "all"} onChange={next => {
-        set({ workspaceId: next, worktreeId: next === "all" || next === "unavailable" ? "all" : value.worktreeId });
+        const destination = workspaces.find(workspace => workspace.workspaceId === next);
+        const worktreeId = destination?.worktrees.some(tree => tree.worktreeId === value.worktreeId) ? value.worktreeId : "all";
+        set({ workspaceId: next, worktreeId });
       }} options={[
         { value: "all", label: "All recorded history" },
         ...workspaces.map(w => ({ value: w.workspaceId, label: w.name })),

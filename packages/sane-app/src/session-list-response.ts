@@ -117,6 +117,9 @@ export function sessionListResponse(input: SessionListResponseInput, followups: 
       directWorkerCount: indexes.workerCounts.get(session.sessionId) ?? 0,
       profileId: session.profileId ?? legacyProfileId(session.harness ?? "claude-code", session.agent),
       title: sessionDisplayTitle(session, sessionRuns, events),
+      titleSource: session.titleSource ?? (session.title ? "legacy" : "fallback"),
+      titleRevision: session.titleRevision ?? 0,
+      ...(session.titleGeneration ? { titleGeneration: { ...session.titleGeneration } } : {}),
       // Raw list consumers need admissions for workstream enrollment/recovery;
       // the opt-in chat summary discards these and needs no admission payload.
       ...(input.presentation === "summary" ? {} : { admission }),

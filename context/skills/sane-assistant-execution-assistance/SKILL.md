@@ -1,6 +1,6 @@
 ---
 name: sane-assistant-execution-assistance
-description: Use after Execution Pickup confirmation to coordinate jobs, reviews, fixes, and Execution Plan feedback.
+description: Use after Execution Pickup confirmation to coordinate jobs, checkpoint verification crews, fixes, and Execution Plan feedback.
 ---
 
 # SANE Execution Assistant — Assistance
@@ -17,23 +17,23 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
 
 ## Review and Fixes
 
-1. For a bounded production fix, start a Fixer with `sane_worker_start` (with subject) (`worker: "fixer"`, `jobs` set to the affected job ids) with the findings, edit boundary, and non-test checks. Route test changes to the Tester at the checkpoint.
+1. For a bounded production fix, start a Fixer with `sane_worker_start` (with subject) (`worker: "fixer"`, `jobs` set to the affected job ids) with the findings, edit boundary, and non-test checks. Route test changes through Verification Crew at the checkpoint.
 2. Have the assigned worker reconcile the Job Reports for its current, non-completed assignments to their implementation outcomes and validate them. Changes following a completed job belong to the subsequent job's report; do not rewrite predecessor reports merely to match later implementation. Keep material evidence and accepted limitations in the existing sections; replace resolved findings rather than appending another attempt narrative.
-3. After a checkpoint fix, have the Tester verify affected behavior and update the Test Report; ask the Reviewer to reassess the findings and checkpoint scope.
+3. After a checkpoint fix, start Verification Crew again with the prior Verification Report and fix evidence. Have it reassess affected behavior and checkpoint integration, reuse still-valid evidence, and reconcile the Test Report and consolidated assessment.
 
 ## Checkpoint Review and Commit
 
-1. Once the checkpoint's jobs return, use `sane_worker_start` (with subject) for a Tester (`worker: "tester"`), then a read-only Reviewer (`worker: "reviewer"`), each with `jobs` set to the checkpoint's job ids, to assess the combined implementation and test evidence.
+1. Once the checkpoint's jobs return, use `sane_worker_start` (with subject) for one Verification Crew (`worker: "verification-crew"`, `jobs` set to the checkpoint's job ids) to assess the combined implementation. Encourage hierarchical decomposition with bounded Scouts where useful and parallel Reviewers and Testers across behaviors, contracts, areas, or suites, not automatically one per job. Independent review, read-only static analysis, and testing run concurrently; neither gates the other. Supply authorization and check/attempt limits, and let the crew manage safe file ownership, shared test resources, and targeted follow-up. Collect its consolidated Verification Report and aggregate Test Report.
 2. For blocking findings, follow Review and Fixes. Resolve the checkpoint before starting its successor.
-3. When the review is Complete or Complete with non-blocking observations, commit the reviewed implementation unless the user specifies otherwise. Commit authorization is the default. Inspect the diff and stage the checkpoint's changes, preserving unrelated user work. Write commit messages in the repository's style and describe the implementation change in repository terms. Do not include workstream language, SANE job IDs, checkpoint labels, agent roles, or workstream-document references in commit messages; keep that coordination context in the session with the user. Pushing requires separate user instruction. If there are no changes to commit, communicate that outcome in the session.
-4. Communicate the checkpoint's review disposition, accepted limitations, and commit reference in the session with the user. Have the assigned worker reconcile its Job Report when review findings change the implementation outcome or evidence. Keep progress in job status; write the Final Report only when the user requests it.
-5. After each accepted checkpoint, send Planning the Job Reports, Test Report, and reviewer findings for a look-ahead at upcoming assignments, even when no gap is known. Commit accepted work first, then follow Planning Review and Corrections before advancing.
+3. When the consolidated verification assessment is Complete or Complete with non-blocking observations, accept the checkpoint within the agreed coordination scope and commit the reviewed implementation unless the user specifies otherwise. Verification Crew supplies evidence; acceptance remains your decision under the user's instructions. Commit authorization is the default. Inspect the diff and stage the checkpoint's changes, preserving unrelated user work. Write commit messages in the repository's style and describe the implementation change in repository terms. Do not include workstream language, SANE job IDs, checkpoint labels, agent roles, or workstream-document references in commit messages; keep that coordination context in the session with the user. Pushing requires separate user instruction. If there are no changes to commit, communicate that outcome in the session.
+4. Communicate the checkpoint's verification disposition, accepted limitations, and commit reference in the session with the user. Have the assigned worker reconcile its Job Report when verification findings change the implementation outcome or evidence. Keep progress in job status; the crew's inline Verification Report is not the user-requested Final Report.
+5. After each accepted checkpoint, send Planning the Job Reports, Test Report, and consolidated Verification Report for a look-ahead at upcoming assignments, even when no gap is known. Commit accepted work first, then follow Planning Review and Corrections before advancing.
 
 ## Planning Review and Corrections
 
 **Never edit or request edits to completed Job Specs. Never recommend retrospective spec corrections merely to make earlier specifications match delivered implementation.** Job Reports supersede earlier specifications as evidence of the implemented outcome. Route findings to Planning for amendments to non-completed assignments or new jobs.
 
-1. After each accepted checkpoint, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "planning"`, `message: "<Job Reports, Test Report, reviewer findings, and upcoming jobs for reassessment>"`). Reference the evidence rather than restating it.
+1. After each accepted checkpoint, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "planning"`, `message: "<Job Reports, Test Report, consolidated Verification Report, and upcoming jobs for reassessment>"`). Reference the evidence rather than restating it; include the inline verification assessment and findings when Planning cannot access them by reference.
 2. End your turn while Planning reviews the evidence. On its reply, read amended documents and confirm the next assignment before starting the next checkpoint.
 
 ## Requesting Support
@@ -63,6 +63,5 @@ Use `sane_worker_acknowledge` for terminal result receipts handled through statu
 Workers started with `sane_worker_start` (with subject) receive the session roots, workstream identity, and the Job Spec, Job Report, and template paths of the jobs passed in `jobs`; do not restate them.
 
 - **Implementer:** Pass the job id via `jobs` and set `prompt` to "Implement Job <id>." Keep Verification Specs out of its context.
-- **Tester:** Pass the checkpoint's job ids via `jobs`. Supply the checkpoint Verification Spec, implementation changes, test edit boundary, and `execution/test-reports/<checkpoint-id>.md` with its template.
-- **Reviewer:** Pass the checkpoint's job ids via `jobs`. Supply the change boundary including uncommitted work, Verification Spec, Test Report, relevant earlier integration context, and check limits. For re-review, add the findings and fix evidence.
+- **Verification Crew:** Pass the checkpoint's job ids via `jobs`. Supply the Verification Spec, relevant design constraints, change boundary including uncommitted work, earlier integration context, test edit boundary and authorization, check/attempt limits, available evidence, and `execution/test-reports/<checkpoint-id>.md` with its template. Request the consolidated Verification Report inline; the crew alone owns the aggregate Test Report. For re-verification, add prior findings and fix evidence. The crew delegates bounded Scouts, Reviewers, and Testers; do not separately launch a sequential Tester/Reviewer pair for the checkpoint.
 - **Fixer:** Pass the affected job ids via `jobs`; their Job Reports are its report assignment. Supply the findings, required outcome, allowed edits, non-test checks, and stop conditions.

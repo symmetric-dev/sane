@@ -1,5 +1,5 @@
 import { Service } from "@opencode/client/service";
-import { OpenCode, type OpenCodeClient } from "@opencode/client";
+import { OpenCode, type GenerateTextInput, type OpenCodeClient } from "@opencode/client";
 import type { CompactionLifecycle, CompactionMetadata, FormField, HarnessModel, Interaction, InteractionReply, MessagePart, MessageSnapshot, NativeCommandBoundary } from "./oc-contract";
 import { nativeMessageId, validModel, validVariant } from "./history";
 import { settleCommandInterval, type CommandSettlement } from "./opencode-command-settlement";
@@ -16,6 +16,10 @@ export type OpenCodeReplyTransport = {
   session: OpenCodeClient["session"]["get"];
 };
 export type ModelRef = { id: string; providerID: string; variant?: string };
+/** Stateless utilities only: no session operations, endpoint details, or auth. */
+export type OpenCodeUtilityTransport = {
+  generate(input: GenerateTextInput, options: { signal: AbortSignal; maxResponseBytes: number }): Promise<{ text: string }>;
+};
 export type NativeAgent = { id: string; model?: ModelRef };
 export type OpenCodeLaunch = { agent?: string; model?: ModelRef };
 type NativeSession = { id: string; parentID?: string; location?: { directory?: string }; agent?: string; permissions?: unknown; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; revert?: unknown; metadata?: Record<string, unknown>; time: { created: number; updated: number; idle?: number } };
@@ -158,6 +162,84 @@ export class OpenCodeAdapter {
   private invalidate(connection: Connection) {
     // An old in-flight request must not invalidate a newly discovered generation.
     if (this.managed === connection) { this.managed = undefined; this.expires = 0; }
+  }
+  /** V2 stateless generation uses base configuration/provider credentials, but
+   * not the session runner, instruction discovery, tools, or session storage.
+   * Keep the authenticated connection private and pinned for this utility; never
+   * retry a generation or start another service on transport failure.
+   * Location-scoped model.default cannot resolve the base-config default used
+   * here; omit model to let the stateless endpoint select its own native default.
+   * https://opencode.ai/v2/openapi.json: experimental.generate.text
+   */
+  async utilityTransport(options: { signal: AbortSignal }): Promise<OpenCodeUtilityTransport> {
+    const cancelled = () => new OpenCodeError("OpenCode utility cancelled or timed out");
+    if (options.signal.aborted) throw cancelled();
+    const connection = await this.endpoint();
+    if (options.signal.aborted) throw cancelled();
+    const request = async (data: GenerateTextInput, signal: AbortSignal, maxBytes: number): Promise<unknown> => {
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 1024 * 1024) throw new OpenCodeError("Invalid OpenCode utility response budget", 400);
+      const controller = new AbortController();
+      const deadline = setTimeout(() => controller.abort(), 60_000);
+      const combined = AbortSignal.any([options.signal, signal, controller.signal]);
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      let complete = false;
+      try {
+        if (combined.aborted) throw cancelled();
+        const response = await fetch(connection.base + "/api/experimental/generate", {
+          method: "POST", headers: connection.headers,
+          body: JSON.stringify(data), signal: combined, redirect: "error",
+        });
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403 || response.status >= 500) this.invalidate(connection);
+          controller.abort(); // Do not read or expose an untrusted error body.
+          throw new OpenCodeError(`OpenCode utility API rejected the request (HTTP ${response.status})`, response.status);
+        }
+        if (!response.body) throw new OpenCodeError("OpenCode utility returned an empty response");
+        reader = response.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let bytes = 0;
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) { complete = true; break; }
+          bytes += chunk.value.byteLength;
+          if (bytes > maxBytes) {
+            // Abort the HTTP task as well as dropping its buffered output.
+            controller.abort();
+            throw new OpenCodeError("OpenCode utility response exceeded its byte budget");
+          }
+          chunks.push(chunk.value);
+        }
+        if (combined.aborted) throw cancelled();
+        const body = Buffer.concat(chunks, bytes);
+        try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); }
+        catch { throw new OpenCodeError("OpenCode utility returned invalid JSON"); }
+      } catch (error) {
+        // Locally-triggered budget cancellation keeps its specific safe error.
+        if (options.signal.aborted || signal.aborted) throw cancelled();
+        if (error instanceof OpenCodeError) throw error;
+        if (combined.aborted) throw cancelled();
+        this.invalidate(connection);
+        throw new OpenCodeUnavailableError("OpenCode utility transport unavailable");
+      } finally {
+        clearTimeout(deadline);
+        if (!complete) {
+          controller.abort();
+          try { await reader?.cancel(); } catch { /* Aborted transport already owns cancellation. */ }
+        }
+        reader?.releaseLock();
+      }
+    };
+    const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+    return {
+      generate: async (input, call) => {
+        // This API has no system/tool/session options. Forward only its documented
+        // fields even if an untyped caller supplies additional properties.
+        if (typeof input.prompt !== "string" || Buffer.byteLength(input.prompt, "utf8") > 512 * 1024) throw new OpenCodeError("Invalid OpenCode utility prompt budget", 400);
+        const result = await request({ prompt: input.prompt, ...(input.model ? { model: { id: input.model.id, providerID: input.model.providerID, ...(input.model.variant === undefined ? {} : { variant: input.model.variant }) } } : {}) }, call.signal, call.maxResponseBytes);
+        if (!object(result) || !object(result.data) || typeof result.data.text !== "string") throw new OpenCodeError("OpenCode utility generation response is malformed");
+        return { text: result.data.text };
+      },
+    };
   }
   async replyTransport(): Promise<OpenCodeReplyTransport> {
     const connection = await this.endpoint();

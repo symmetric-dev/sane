@@ -35,6 +35,13 @@ export const FLOWS_SHORTCUT = {
   description: "Open or close Flows from the chat composer.",
 } as const satisfies ShortcutDefinition;
 
+export const NEW_CONVERSATION_SHORTCUT = {
+  id: "chat.new-conversation", label: "New session",
+  scope: { kind: "global" }, owner: "application",
+  binding: { key: "n", mod: true },
+  description: "Open a new unsent conversation in the selected worktree.",
+} as const satisfies ShortcutDefinition;
+
 export const GLOBAL_SHORTCUTS: readonly ShortcutDefinition[] = [...NAVIGATION_HOTKEYS.map<ShortcutDefinition>(item => ({
   id: `navigation.${item.id}`,
   label: item.label,
@@ -44,7 +51,7 @@ export const GLOBAL_SHORTCUTS: readonly ShortcutDefinition[] = [...NAVIGATION_HO
     { ...navigationBinding(item.key, true), platform: "mac" },
     { ...navigationBinding(item.key, false), platform: "windows-linux" },
   ],
-})), WORKSPACE_SELECTOR_SHORTCUT, SIDEBAR_TOGGLE_SHORTCUT, FLOWS_SHORTCUT];
+})), WORKSPACE_SELECTOR_SHORTCUT, SIDEBAR_TOGGLE_SHORTCUT, FLOWS_SHORTCUT, NEW_CONVERSATION_SHORTCUT];
 
 export const FILE_SHORTCUTS = {
   quickOpen: {

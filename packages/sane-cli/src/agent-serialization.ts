@@ -1,6 +1,6 @@
 import { ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_LABELS, type AssistantAgentId } from "../../sane-core/src/agent-catalog.ts"
 
-export type SaneAgentKind = "assistant" | "worker"
+export type SaneAgentKind = "assistant" | "worker" | "utility"
 
 /** CC permission profile derived from the OC permission block. */
 export interface CcPermissions {
@@ -44,11 +44,22 @@ export function parseSaneAgent(content: string, agentName: string): SaneAgentSpe
     throw new Error(`Agent ${agentName} ${(error as Error).message.charAt(0).toLowerCase()}${(error as Error).message.slice(1)}`)
   }
   const { metadata, body } = parsed
-  const kind: SaneAgentKind = agentName.startsWith("sane/assistant/") ? "assistant" : "worker"
+  const category = /^sane\/(assistant|worker|utility)\/[a-z][a-z-]*$/.exec(agentName)?.[1]
+  if (!category) throw new Error(`Invalid SANE agent name: ${agentName}`)
+  const kind = category as SaneAgentKind
+  // The session namer is title-only. Never pass its deny-all policy through
+  // the legacy assistant/worker translation, which drops wildcard denies.
+  const titleOnly = agentName === "sane/utility/session-namer"
+  if (titleOnly && (metadata.mode !== "primary" || metadata.hidden !== true || metadata.permission !== undefined
+    || !Array.isArray(metadata.permissions) || metadata.permissions.length !== 1
+    || !isMapping(metadata.permissions[0]) || metadata.permissions[0].action !== "*"
+    || metadata.permissions[0].resource !== "*" || metadata.permissions[0].effect !== "deny")) {
+    throw new Error(`Utility ${agentName} requires hidden primary mode and a V2 deny-all permissions policy`)
+  }
   const shortId = kind === "assistant" ? agentName.slice("sane/assistant/".length) : agentName
   const description = typeof metadata.description === "string" ? metadata.description : ""
   const temperature = typeof metadata.temperature === "number" ? metadata.temperature : undefined
-  return { name: agentName, kind, shortId, description, ...(temperature === undefined ? {} : { temperature }), body, ccPermissions: deriveCcPermissions(metadata, agentName) }
+  return { name: agentName, kind, shortId, description, ...(temperature === undefined ? {} : { temperature }), body, ccPermissions: titleOnly ? { allow: [], ask: [], deny: ["*"] } : deriveCcPermissions(metadata, agentName) }
 }
 
 /**
@@ -162,13 +173,13 @@ export function ccAgentName(agentName: string): string {
 
 /**
  * CC serialization (global `~/.claude/agents/`). Per product decision CC agents
- * keep all permissions: no `tools` restriction is emitted, so every tool stays
- * available. Only name + description + body are serialized.
+ * assistants/workers keep their existing tool policy. The session namer explicitly
+ * exposes no tools; the App utility runner must independently disable tools.
  */
 export function serializeCcAgent(spec: SaneAgentSpec): string {
   const name = ccAgentName(spec.name)
   const description = spec.description || spec.shortId
-  const header = `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n---\n`
+  const header = `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n${spec.name === "sane/utility/session-namer" ? "tools: []\n" : ""}---\n`
   const body = spec.body.startsWith("\n") ? spec.body.slice(1) : spec.body
   return `${header}\n${body}`
 }

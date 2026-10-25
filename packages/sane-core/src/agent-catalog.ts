@@ -24,7 +24,7 @@ export const ASSISTANT_AGENT_LABELS: Record<AssistantAgentId, string> = {
 export const ASSISTANT_AGENT_DESCRIPTIONS: Record<AssistantAgentId, string> = {
   design: "Helps the user develop the typed root doc and SDD for one single-scope workstream.",
   engineering: "Helps the user turn the approved SDD into comprehensive solution specs.",
-  execution: "Coordinates authorized SANE job execution, read-only reviews, and bounded fixes.",
+  execution: "Coordinates authorized SANE job execution, checkpoint verification crews, and bounded fixes.",
   curation: "Works with the user to review repository and SANE session evidence, preserve useful knowledge, and address operational gaps.",
   experimentation: "Works with the user to test hypotheses, develop proofs of concept, and create prototypes.",
   planning: "Helps the user confirm a compact Execution Plan, then drafts Job Specs and delegates bounded repository grounding before final package approval.",
@@ -45,7 +45,7 @@ export function validAgent(value: unknown): value is AssistantAgentId {
   return isAssistantAgentId(value)
 }
 
-export const WORKER_AGENT_IDS = ["implementer", "fixer", "tester", "grounder", "researcher", "reviewer", "scout", "scout-crew", "critic"] as const
+export const WORKER_AGENT_IDS = ["implementer", "fixer", "tester", "grounder", "researcher", "reviewer", "scout", "scout-crew", "critic", "verification-crew"] as const
 export type WorkerAgentId = (typeof WORKER_AGENT_IDS)[number]
 /** Descriptive metadata only; access is never an admission or permissions policy. */
 export const WORKER_AGENT_CATALOG: Record<WorkerAgentId, { label: string; description: string; access: "code" | "artifacts" | "read" }> = {
@@ -58,6 +58,7 @@ export const WORKER_AGENT_CATALOG: Record<WorkerAgentId, { label: string; descri
   scout: { label: "Scout", description: "Inspects a bounded repository scope and returns findings or blockers inline to its parent without changing files.", access: "read" },
   "scout-crew": { label: "Scout Crew", description: "Coordinates parallel scouts to map a bounded repository question breadth-first and synthesize their findings.", access: "read" },
   critic: { label: "Critic", description: "Performs a read-only adversarial review of assigned documents and their relationships, returning evidence-backed improvements inline.", access: "read" },
+  "verification-crew": { label: "Verification Crew", description: "Coordinates scouts, parallel reviewers, and focused testers to synthesize checkpoint verification evidence and findings.", access: "artifacts" },
 }
 export function isWorkerAgentId(value: unknown): value is WorkerAgentId {
   return typeof value === "string" && (WORKER_AGENT_IDS as readonly string[]).includes(value)
@@ -70,7 +71,7 @@ export function workerSubjectProblem(subject: unknown): string | undefined {
   return undefined
 }
 /** Jobs a role may be assigned; SANE resolves their paths when it creates the worker. */
-export const WORKER_JOB_ASSIGNMENT: Record<WorkerAgentId, "one" | "some" | "none"> = { implementer: "one", fixer: "some", tester: "some", reviewer: "some", grounder: "none", researcher: "none", scout: "none", "scout-crew": "none", critic: "none" }
+export const WORKER_JOB_ASSIGNMENT: Record<WorkerAgentId, "one" | "some" | "none"> = { implementer: "one", fixer: "some", tester: "some", reviewer: "some", grounder: "none", researcher: "none", scout: "none", "scout-crew": "none", critic: "none", "verification-crew": "some" }
 export const MAX_WORKER_JOBS = 64
 export const WORKER_JOB_ID_PATTERN = "^[a-z0-9][a-z0-9_-]{0,95}$"
 const workerJobId = new RegExp(WORKER_JOB_ID_PATTERN)
@@ -83,8 +84,17 @@ export function workerJobsProblem(worker: WorkerAgentId, jobs: unknown): string 
   if (!Array.isArray(jobs) || !jobs.length || jobs.length > (rule === "one" ? 1 : MAX_WORKER_JOBS) || !jobs.every(job => typeof job === "string" && workerJobId.test(job)) || new Set(jobs).size !== jobs.length) return rule === "one" ? `${worker} requires jobs with exactly one safe lowercase job ID.` : `jobs must list 1–${MAX_WORKER_JOBS} unique safe lowercase job IDs.`
   return undefined
 }
-export type SaneAgentIdentity = { kind: "assistant"; role: AssistantAgentId } | { kind: "worker"; role: WorkerAgentId }
-export type StoredSaneAgentIdentity = { kind: "assistant"; role: StoredAssistantAgentId } | { kind: "worker"; role: WorkerAgentId }
+/** App-invoked bounded operations, never conversation assistants or workers. */
+export const UTILITY_AGENT_IDS = ["session-namer"] as const
+export type UtilityAgentId = (typeof UTILITY_AGENT_IDS)[number]
+export const UTILITY_AGENT_CATALOG: Record<UtilityAgentId, { label: string; description: string }> = {
+  "session-namer": { label: "Session Namer", description: "Generates a concise conversation title from a supplied transcript without tools or interaction." },
+}
+export function isUtilityAgentId(value: unknown): value is UtilityAgentId {
+  return typeof value === "string" && (UTILITY_AGENT_IDS as readonly string[]).includes(value)
+}
+export type SaneAgentIdentity = { kind: "assistant"; role: AssistantAgentId } | { kind: "worker"; role: WorkerAgentId } | { kind: "utility"; role: UtilityAgentId }
+export type StoredSaneAgentIdentity = { kind: "assistant"; role: StoredAssistantAgentId } | { kind: "worker"; role: WorkerAgentId } | { kind: "utility"; role: UtilityAgentId }
 /** Do not canonicalize archival selections: native instructions are identity-specific. */
 export function nativeAgentId(identity: StoredSaneAgentIdentity, harness: "claude-code" | "opencode"): string {
   return harness === "opencode" ? `sane/${identity.kind}/${identity.role}` : `sane-${identity.kind}-${identity.role}`

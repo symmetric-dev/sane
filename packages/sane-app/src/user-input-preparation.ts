@@ -192,7 +192,8 @@ export async function prepareUserInput(value: unknown, deps: UserInputPreparatio
   if (harness === "opencode" && input.model !== undefined) deps.validateOpenCodeModel(input.model as string, input.effort as string | undefined);
   let model = upgrade ? upgrade.model || undefined : input.model as string | undefined ?? session?.model;
   let effort = upgrade ? upgrade.effort || undefined : input.effort as string | undefined ?? session?.effort;
-  const agent = upgrade ? upgrade.role ?? undefined : input.agent as AssistantAgentId | undefined ?? session?.agent;
+  if (upgrade && (upgrade.kind !== "assistant" || !isAssistantAgentId(upgrade.role))) throw new UserInputPreparationError("Only assistant profiles can upgrade conversations", 400);
+  const agent = upgrade && isAssistantAgentId(upgrade.role) ? upgrade.role : input.agent as AssistantAgentId | undefined ?? session?.agent;
   const canonical = (!session || !session.agent) && isAssistantAgentId(agent) ? await deps.prepareCanonicalExecution?.(agent) : undefined;
   if (canonical && harness === "opencode" && !model) { model = canonical.model; effort ??= canonical.effort; }
   if (harness === "opencode" && input.model === undefined && model !== undefined) deps.validateOpenCodeModel(model, effort);
@@ -201,6 +202,7 @@ export async function prepareUserInput(value: unknown, deps: UserInputPreparatio
   try { await deps.ensureDirectory(cwd); } catch { throw new UserInputPreparationError("cwd must be an existing directory", 400); }
   if (session && session.cwd !== cwd) throw new UserInputPreparationError("Session cwd cannot change", 400);
   const nativeLaunch = harness === "opencode" && !session ? copy(await deps.resolveOpenCodeLaunch(cwd, { model, effort, ...(isAssistantAgentId(agent) ? { agent: canonical ? "build" : nativeAgentId({ kind: "assistant", role: agent }, harness) } : {}) })) : undefined;
+  if (nativeLaunch?.agent?.startsWith("sane/utility/") || nativeLaunch?.agent?.startsWith("sane-utility-")) throw new UserInputPreparationError("Utilities cannot be selected for conversation input", 400);
   if (nativeLaunch?.model) {
     model = input.model = `${nativeLaunch.model.providerID}/${nativeLaunch.model.id}`;
     effort = input.effort = nativeLaunch.model.variant;

@@ -14,7 +14,7 @@ export type DemoFixture = Readonly<{
   sourceRoot: string;
   data: string;
   activation: CanonicalActivation;
-  agent: StoredSaneAgentIdentity;
+  agent: Extract<StoredSaneAgentIdentity, { kind: "assistant" }>;
   context: ContextPackageStore;
   execution: CanonicalExecutionStore;
 }>;
@@ -48,7 +48,7 @@ export async function createDemoFixture(root: string): Promise<DemoFixture> {
   execFileSync("/usr/bin/git", ["-C", checkout, "config", "core.hooksPath", hooks], { cwd: root, env, stdio: "pipe" });
   await writeFile(join(checkout, "README.md"), "# Disposable context-engine fixture\n\nNo App registration, native sessions, models, or real workstream records.\n", { flag: "wx", mode: 0o600 });
 
-  const agent: StoredSaneAgentIdentity = { kind: "assistant", role: "engineering" };
+  const agent: DemoFixture["agent"] = { kind: "assistant", role: "engineering" };
   const context = new ContextPackageStore(sourceRoot, join(data, "context-packages"));
   const execution = new CanonicalExecutionStore(sourceRoot, join(data, "execution"));
   const [packageRef, saneExecution] = await Promise.all([context.create(agent), execution.create(agent)]);

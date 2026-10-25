@@ -8,6 +8,8 @@ import { body, json, loopback } from "./bridge-http";
 import { withApiCompression } from "./api-compression";
 import { requireNativeBearer, requireStartupReady } from "./bridge-native-auth";
 import { CodeShareStore, CodeShareError } from "./code-share-store";
+import { BrowserPairStore, BrowserPairError } from "./browser-pair-store";
+import { isBrowserPairTarget, isBrowserPairWrite, sameBrowserPairSession } from "../shared/browser-pair-contract";
 import { CodeShareService } from "./code-share-service";
 import { denyCodeShareIdentity, matchesCodeShareTool, matchesCodeSharePart, readCodeShareContinuation } from "./code-share-evidence";
 import type { NativeCodeShareRequest } from "../shared/code-share-contract";
@@ -22,6 +24,9 @@ import { toNativeHarness, toSessionHarness } from "./harness-names";
 import { createPoller } from "./poller";
 import { createPresentationSnapshot } from "./presentation-snapshot";
 import { SessionRetirements, SessionRetirementError } from "./session-retirement";
+import { SessionNamingService, SessionNamingError, regenerationNamingTranscript } from "./session-naming";
+import { MAX_SESSION_TITLE_LENGTH, normalizeSessionTitle } from "../shared/conversation/session-title";
+import { runSessionNamingUtility } from "./utility-execution";
 import { ClaudeRunService, hookEvents } from "./claude-run-service";
 import { projectClaudeFollowups } from "./claude-followup-projection";
 import { resolveAppConfig } from "./app-config";
@@ -47,7 +52,7 @@ import type { RunOwner as Owner } from "./run-owner";
 import { ConversationCoordinator, type ConversationAdmissionLease, type ConversationOperationIntent, type ConversationReadinessOptions } from "./conversation-coordinator";
 import { sessionListProjection, SessionListReadinessScope, type SessionListProjection } from "./session-list-projection";
 import { sessionDisplayTitle, sessionListResponse, type SessionListRow } from "./session-list-response";
-import { SessionCatalog, SessionCatalogError, sessionCatalogQuery, sessionSummaryIds, type SessionCatalogMembership } from "./session-catalog";
+import { SessionCatalog, SessionCatalogError, sessionCatalogGroupsQuery, sessionCatalogQuery, sessionSummaryIds, type SessionCatalogMembership } from "./session-catalog";
 import { workerObservationEvidence } from "./worker-observation-evidence";
 import { HarnessDispatchRegistry, HarnessDispatchError, DispatchProofUnavailableError, createClaudeDispatchAdapter, createOpenCodeDispatchAdapter, sameDispatchSource, type DispatchLifecycleHooks } from "./harness-dispatch";
 import type { DispatchOrigin, DispatchSource, DispatchIdentity, DispatchEvidenceHooks } from "../shared/conversation/dispatch-contract";
@@ -94,8 +99,8 @@ import { exchangeDeliveryEvidence, workerDeliveryEvidence, workerExchangePrompt,
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, WORKER_STATE_BATCH_LIMIT, workerResults, type WorkerDelivery, type WorkerProtocolOperation, type WorkerProtocolPin, type WorkerRecord, type WorkerStateBatch, type WorkerStateSnapshot } from "./worker-contract";
 import { explicitObservationChange, isExplicitWorker } from "./worker-protocol";
-import { managedWorkerCoordination, managedWorkerRoles, managedWorkerWaiting } from "./scout-crew-lifecycle";
-import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
+import { managedWorkerCoordination, managedWorkerRoles, managedWorkerWaiting } from "./managed-worker-lifecycle";
+import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, WORKER_AGENT_CATALOG, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
 import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneContextText, saneFrameworkMessageId, saneSessionContext, saneSessionText, sha256, workerAssignment } from "./agent-launch";
 import { ContextPackageStore } from "./context-package-store";
 import { renderContextDelivery, validateContextComposition, validateContextDelivery, type ContextComposition, type ContextDelivery, type ContextPackage } from "./context-package";
@@ -108,6 +113,7 @@ import { CanonicalExecutionStore, type CanonicalExecutionRef, type CanonicalExec
 import { isWorkerAgentId } from "sane-core/agent-catalog";
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
 import { NativeSubagentError, NativeSubagentService } from "./native-subagent-service";
+import { SessionRunPreviewError, SessionRunPreviewService } from "./session-run-preview";
 import { OpenCodeSubagentRecorder } from "./opencode-subagent-recorder";
 import { capabilitiesFor, getHarnessDescriptor, isHarness } from "../shared/conversation/harness-capabilities";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
@@ -274,6 +280,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let pendingInputBridge: PendingInputBridge | undefined;
   let pendingInputRecovery: PendingInputRecovery | undefined;
   let pendingInputWake: PendingInputWake | undefined;
+  let sessionNaming: SessionNamingService | undefined;
   const queueServiceTasks = new Set<Promise<void>>();
   const queueAdmissionTasks = new Set<Promise<void>>();
   let classifyingPendingInputs = false;
@@ -328,7 +335,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await boundedStartupCleanup(() => queueDrain);
     await Promise.all([
       () => chromePush?.close(), () => workspaceCreations?.close(), () => gitOperations?.close(), () => science?.close(),
-      () => replyIntegration?.close(), () => updateService?.close(), () => searches.close(),
+      () => replyIntegration?.close(), () => updateService?.close(), () => searches.close(), () => sessionNaming?.close(),
     ].map(cleanup => boundedStartupCleanup(cleanup)));
     await boundedStartupCleanup(() => router?.close());
     await boundedStartupCleanup(() => Promise.all([...queueServiceTasks, ...queueAdmissionTasks]));
@@ -358,6 +365,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     try { retirements.assertActive(session); }
     catch (error) { if (error instanceof SessionRetirementError) throw new WorkstreamAdapterError(error.status, error.code, error.message); throw error; }
   }
+  const sessionRunPreviews = new SessionRunPreviewService(store.manifest.storeId, () => meta.sessions, () => meta.runs, assertCatalogActive);
   // Qualified reply evidence captures durable metadata on its own coalesced
   // queue. Disabled production reads the live catalog only for default coverage.
   const replyJournalThrough = new Map<string, number>();
@@ -442,10 +450,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const canonicalExecution = async (sessionId: string): Promise<CanonicalExecutionSnapshot | null> => {
     const session = meta.sessions.find(s => s.sessionId === sessionId);
     if (!session?.saneExecution) return null;
-    const pin = JSON.stringify(session);
+    // Titles are independently editable while execution is being prepared.
+    const executionPin = (value: Session) => JSON.stringify({ ...value, title: undefined, titleSource: undefined, titleRevision: undefined, titleAutoEligible: undefined, titleGeneration: undefined });
+    const pin = executionPin(session);
     const assertBinding = () => {
       const current = meta.sessions.find(s => s.sessionId === sessionId), a = admissions.get(sessionId);
-      if (!current || JSON.stringify(current) !== pin || !a || a.state !== "ready" || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || a.binding.executionCheckout !== session.cwd || a.source.descriptor.harness !== (session.harness === "opencode" ? "oc" : "cc")) throw new Error("Canonical execution requires an exact ready admission");
+      if (!current || executionPin(current) !== pin || !a || a.state !== "ready" || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || a.binding.executionCheckout !== session.cwd || a.source.descriptor.harness !== (session.harness === "opencode" ? "oc" : "cc")) throw new Error("Canonical execution requires an exact ready admission");
     };
     assertBinding();
     if (!session.saneContext) throw new Error("Canonical execution requires paired context");
@@ -980,7 +990,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!meta.sessions.some(s => s.sessionId === sessionId)) {
           if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId, cwd, nativeAgent);
           if (harness === "opencode" && sane.saneContext) await deliverSaneFramework(a.nativeId, sessionId, sane.saneContext);
-          meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, title: predictedTitle,
+          meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, title: predictedTitle, titleSource: "handoff", titleRevision: 0, titleAutoEligible: false,
             ...(config ? { profileId: config.profileId, ...(harness === "claude-code" ? { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}) } : {}) } : {}),
             ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: !sane.saneExecution || harness !== "opencode", ...sane } : {}),
             ...(launch?.model ? { model: `${launch.model.providerID}/${launch.model.id}`, ...(launch.model.variant ? { effort: launch.model.variant } : {}) } : {}),
@@ -996,9 +1006,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       let titled = false;
       // Bound assignment index replaces only the prediction from this attempt.
       // A retry fills a missing title and never renames one already stored.
-      if (session && handoff.recipient.ref && (!session.title || created && session.title === predictedTitle)) {
+      if (session && handoff.recipient.ref && session.titleSource !== "manual" && (!session.title || created && session.titleSource === "handoff" && session.title === predictedTitle)) {
+        const revision = session.titleRevision ?? 0;
         const title = await handoffContextTitle(handoff, workspaceId);
-        if (session.title !== title) { session.title = title; titled = true; }
+        if ((session.titleRevision ?? 0) === revision && session.title !== title) { session.title = title; session.titleSource = "handoff"; session.titleRevision = revision + 1; titled = true; }
       }
       if (created && session && !session.profileId && isStoredAssistantAgentId(session.agent)) {
         session.profileId = legacyProfileId(session.harness ?? "claude-code", session.agent);
@@ -1178,7 +1189,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     let captured: { session: Session; run: Run; event: Event } | undefined;
     try { if (session && updateEligible(session, run)) captured = structuredClone({ session, run, event }); }
     catch { /* Optional evidence indexing cannot interfere with journal ownership. */ }
-    return enqueue(async () => {
+    const committed = enqueue(async () => {
       await appendFile(join(options.dataDir, `${run.runId}.jsonl`), JSON.stringify(event) + "\n", { mode: 0o600 });
       replyJournalThrough.set(run.runId, event.seq);
       // Derived storage/projection must never escape into execution failClosed.
@@ -1189,18 +1200,42 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (captured) { try { chromePush?.journalCommitted(captured.session, captured.run, captured.event); } catch { /* optional device delivery */ } }
       if (session && kind === "message" && !retirementPaused(session.sessionId)) nativeSubagentRecorder.refresh(session, run);
     });
+    if (kind === "status" && (data as { status?: string } | null)?.status === "completed" && run.operation !== "compact") {
+      // Generation runs on a later turn, never inside emit/finalization's queue.
+      void committed.then(() => { setTimeout(() => sessionNaming?.completed(run.sessionId, run, events.get(run.runId) ?? []), 0); }).catch(() => {});
+    }
+    return committed;
   }
-  // Stored title wins. Startup fills a role label once when none was captured.
-  // A later user prompt still names an untitled conversation.
-  const titleFromPrompt = (prompt: unknown): string | undefined => {
-    if (typeof prompt !== "string") return undefined;
-    const line = prompt.split("\n")[0]!.trim().slice(0, 200);
-    return line ? line : undefined;
-  };
+  // Backfill provenance, not names or automatic eligibility.
   const displayTitle = (session: Session) => session.title ?? sessionDisplayTitle(session, meta.runs, events);
   let backfilledTitles = false;
-  for (const session of meta.sessions) if (!session.title) { session.title = genericSessionTitle(session); backfilledTitles = true; }
+  for (const session of meta.sessions) {
+    if (!session.title) { session.title = genericSessionTitle(session); backfilledTitles = true; }
+    if (!session.titleSource) { session.titleSource = session.title === genericSessionTitle(session) ? "fallback" : "legacy"; backfilledTitles = true; }
+    if (session.titleRevision === undefined) { session.titleRevision = 0; backfilledTitles = true; }
+    if (session.titleGeneration?.state === "pending") { session.titleGeneration.state = "failed"; session.titleGeneration.error = "interrupted"; backfilledTitles = true; }
+  }
   if (backfilledTitles) await persist();
+  let titleMutations = Promise.resolve();
+  sessionNaming = new SessionNamingService({
+    session: id => { const session = meta.sessions.find(s => s.sessionId === id); return session && !retirements.isRetired(session) && !retirements.isPaused(id) && !branches.replaced(id) && !branches.pending(id) ? session : undefined; },
+    healthy: startupStorageHealthy,
+    commit: <T>(action: () => T): Promise<T> => {
+      const task = titleMutations.then(async () => {
+        assertDomainMutationOpen();
+        const result = queueDomainCommitted(action);
+        await persist();
+        return result;
+      });
+      titleMutations = task.then(() => {}, () => {});
+      return task;
+    },
+    generate: (transcript, signal) => {
+      const profile = agentProfiles.profiles.find(profile => profile.id === "utility:session-namer");
+      if (!profile || profile.kind !== "utility" || profile.role !== "session-namer") throw new SessionNamingError(503, "title-profile-unavailable", "Session naming utility profile is unavailable");
+      return runSessionNamingUtility({ sourceRoot: resolve(root, "../.."), dataDir: options.dataDir, claudeBin: options.claudeBin, claudeRoot, oc, profile: structuredClone(profile), transcript, signal, agentModelConfig: options.agentModelConfig });
+    },
+  });
   const followupSessions = new Set(meta.runs.filter(run => run.queuedFollowupId).map(run => run.sessionId));
   materializeDeferred = runId => {
     if (!deferredJournals.has(runId)) return [];
@@ -1404,7 +1439,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!destination) {
       // Preserve actual forked history. A reserved activation supersedes its
       // historical startup role; it does not rewrite the source or the transcript.
-      destination = { ...source, sessionId: op.destinationId, nativeSessionId: op.nativeId, lastStatus: "unknown", lastRunId: null, title: `${(displayTitle(source) ?? "Conversation").slice(0, 185)} · Branch` };
+      destination = { ...source, sessionId: op.destinationId, nativeSessionId: op.nativeId, lastStatus: "unknown", lastRunId: null, title: `${(displayTitle(source) ?? "Conversation").replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, " ").trim().slice(0, MAX_SESSION_TITLE_LENGTH - 9)} · Branch`, titleSource: "branch", titleRevision: 0, titleAutoEligible: false, titleGeneration: undefined };
       if (activation) Object.assign(destination, activation, { nativeAgentSelected: false });
       delete destination.attachment; delete destination.hidden;
       meta.sessions.push(destination);
@@ -1909,6 +1944,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
       if (harness === "opencode" && sane.saneContext) await deliverSaneFramework(a.nativeId!, conversationId, sane.saneContext);
       session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
+        title: genericSessionTitle({ agent: input.agent, agentKind: input.agent ? "assistant" : undefined }), titleSource: "fallback", titleRevision: 0, titleAutoEligible: true,
         ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}),
         ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: !sane.saneExecution || harness !== "opencode", ...sane } : {}),
         ...(prepared.selectedProfile ? { profileId: prepared.selectedProfile.id } : {}) };
@@ -1946,6 +1982,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       configured.agent = input.agent; if (configured.profileId !== undefined) configured.profileId = legacyProfileId(harness, input.agent);
     }
     if (prepared.stagedUpgrade) {
+      if (!isAssistantAgentId(prepared.stagedUpgrade.role)) throw new UserInputPreparationError("Conversation upgrade requires an assistant profile", 409);
       configured.profileId = prepared.stagedUpgrade.id; configured.agent = prepared.stagedUpgrade.role ?? undefined;
       if (prepared.stagedUpgrade.model) configured.model = prepared.stagedUpgrade.model; else delete configured.model;
       if (prepared.stagedUpgrade.effort) configured.effort = prepared.stagedUpgrade.effort; else delete configured.effort;
@@ -1958,7 +1995,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       configured.model = prepared.configuration.model;
       configured.effort = prepared.configuration.effort;
     }
-    if (!configured.title) configured.title = titleFromPrompt(prepared.prompt) ?? undefined;
+    if (!configured.title) { configured.title = genericSessionTitle(configured); configured.titleSource = "fallback"; }
     const run: Run = { runId, sessionId: conversationId, cwd, status: "running", createdAt: new Date().toISOString(),
       ...(nativeDelivery ? { nativeDelivery } : {}), ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}),
       ...(agent !== undefined ? { agent, agentKind: configured.agentKind, nativeAgentSelected: configured.nativeAgentSelected } : {}),
@@ -1976,7 +2013,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       link: context?.link && (() => context.link!(identity)), evidence: context?.evidence, delivery,
       ...(nativeHandoff ? { nativeQueuedHandoff: identity } : {}), publish,
       configure: () => {
-        Object.assign(session!, configured);
+        // A prepared dispatch owns execution configuration, not title metadata.
+        // Never restore its earlier revision over a concurrent edit/generation.
+        const executionConfiguration = { ...configured };
+        for (const key of ["title", "titleSource", "titleRevision", "titleAutoEligible", "titleGeneration"] as const) delete executionConfiguration[key];
+        Object.assign(session!, executionConfiguration);
         if (!("model" in configured)) delete session!.model;
         if (!("effort" in configured)) delete session!.effort;
         workerStore.suppress(conversationId, false);
@@ -2007,6 +2048,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   };
   const qualifiedWorkerInvocations = new WeakMap<NativeWorkerInvocation, { admission: Admission; session: Session; starting: boolean; continuation?: WorkerContinuationAuthorization }>();
   const codeShares = new CodeShareStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "code-share-storage"));
+  const browserPairs = new BrowserPairStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "browser-pair-storage"));
   function codeShareSession(request: Pick<NativeCodeShareRequest, "caller">) {
     let source;
     try { source = normalizeNativeSource(request.caller.source); } catch { return denyCodeShareIdentity(); }
@@ -2413,7 +2455,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (worker.parent.native.harness !== childHarness && !await proveInstalledExplicitWorkerRuntime(claudeRoot, worker.parent.native.harness)) return { reject: "Explicit completion instructions are selected, but the parent's installed messaging runtime is not proven. This launch was not submitted." };
     if (!await parentCanMessage(worker)) return { reject: "Explicit completion instructions are selected, but the launching parent's messaging permission is not proven. This launch was not submitted." };
     const operations: WorkerProtocolOperation[] = ["complete"];
-    if (worker.input.worker === "implementer" || worker.input.worker === "scout-crew") operations.push("notify", "message-parent");
+    if (worker.input.worker === "implementer" || worker.input.worker === "scout-crew" || worker.input.worker === "verification-crew") operations.push("notify", "message-parent");
     return { pin: { id: "explicit-v1", operations, executionRevision, contextRevision: packageRef.revision, runtimeCapabilities: [...tools] } };
   };
   const nativeTurnActive = (worker: { sessionId: string }) => owners.has(worker.sessionId) || workerStore.hasActiveDelivery(worker.sessionId) || workerStore.hasActiveExchange(worker.sessionId);
@@ -2533,7 +2575,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         let a = await admissions.begin({ sessionId: w.sessionId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd: w.checkout, nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: parentAdmission.binding.workspaceId, worktreeId: parentAdmission.binding.worktreeId, parent: w.parent.native });
         if (harness === "opencode") a = await admissions.createNative(w.sessionId, async () => (await oc.createResolved(w.checkout, nativeLaunch!)).id);
         const launch = { ...w.launch, ...(nativeLaunch?.model ? { model: `${nativeLaunch.model.providerID}/${nativeLaunch.model.id}`, effort: nativeLaunch.model.variant } : {}) };
-        const session: Session = { sessionId: w.sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd: w.checkout, lastStatus: "unknown", lastRunId: null, ...agentLaunchSnapshot(launch), ...pinnedContext, ...(pinnedContext.saneExecution ? { nativeAgentSelected: harness !== "opencode" } : {}), title: genericSessionTitle({ agent: w.input.worker, agentKind: "worker" }) };
+        const session: Session = { sessionId: w.sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd: w.checkout, lastStatus: "unknown", lastRunId: null, ...agentLaunchSnapshot(launch), ...pinnedContext, ...(pinnedContext.saneExecution ? { nativeAgentSelected: harness !== "opencode" } : {}), title: genericSessionTitle({ agent: w.input.worker, agentKind: "worker" }), titleSource: "fallback", titleRevision: 0, titleAutoEligible: false };
         workerStore.update(w.id, { launch, child: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! } });
         meta.sessions.push(session); await persist();
         await catalog.associate(w.sessionId, w.checkout, a.binding.workspaceId, a.binding.worktreeId);
@@ -2641,7 +2683,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (run.status !== "running") {
         if (owners.get(w.sessionId)?.settled === false) return {}; // Finish log/metadata publication before recording an outcome.
         if (w.coordination && !w.outcome && run.status === "completed") {
-          if (w.cancelRequestedAt) return { state: "interrupted", error: undefined, outcome: { status: "interrupted", at: w.cancelRequestedAt, summary: `${w.coordination === "scouts" ? "Scout Crew" : "Implementer"} cancelled while awaiting findings`, log: { sessionId: w.sessionId, runId: run.runId } } };
+          if (w.cancelRequestedAt) return { state: "interrupted", error: undefined, outcome: { status: "interrupted", at: w.cancelRequestedAt, summary: `${WORKER_AGENT_CATALOG[w.input.worker].label} cancelled while awaiting findings`, log: { sessionId: w.sessionId, runId: run.runId } } };
           if (managedWorkerWaiting(workerStore.listMatching(child => child.parent.sessionId === w.sessionId))) return { state: "waiting", ...(continuation ? { continuation } : {}) };
         }
         // The log is authoritative; transport the full final response, not a UI preview.
@@ -3487,6 +3529,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return auth.logout(req);
       }
       if (path.startsWith("/api/") && !auth.authenticated(req)) return json({ error: "Authentication required" }, 401);
+      // This read-only endpoint must reject writes before startup/branch mutation guards.
+      if (req.method !== "GET" && /^\/api\/sessions\/[^/]+\/runs\/preview$/.test(path)) return json({ error: "Method not allowed" }, 405, { allow: "GET" });
       const codeShareMatch = /^\/api\/sessions\/([^/]+)\/code-shares$/.exec(path);
       if (codeShareMatch && req.method === "GET") {
         const sessionId = codeShareMatch[1]!;
@@ -3500,6 +3544,37 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return json({ forms: userQuestions.list(sessionId) });
       }
       if (!startupReady && path.startsWith("/api/") && !["GET", "HEAD"].includes(req.method)) return json({ error: "Startup execution classification is incomplete", code: "startup-classifying" }, 503);
+      if (path === "/api/browser-pairs") {
+        if (req.method === "GET") {
+          if ([...url.searchParams.keys()].some(key => !["storeId", "workspaceId", "tabId"].includes(key))
+            || ["storeId", "workspaceId", "tabId"].some(key => url.searchParams.getAll(key).length !== 1)) return json({ error: "Provide storeId, workspaceId and tabId only" }, 400);
+          if (url.searchParams.get("storeId") !== store.manifest.storeId) throw new BrowserPairError(409, "browser-pair-store", "The App store changed; reconnect before pairing");
+          const target = { workspaceId: url.searchParams.get("workspaceId"), tabId: url.searchParams.get("tabId") };
+          if (!isBrowserPairTarget(target)) throw new BrowserPairError(400, "browser-pair-input", "Invalid browser tab identity");
+          if (!catalog.workspaceName(target.workspaceId)) throw new BrowserPairError(404, "browser-pair-workspace", "Unknown browser workspace");
+          return json(browserPairs.read(target));
+        }
+        if (req.method !== "PUT") return json({ error: "Method not allowed" }, 405, { allow: "GET, PUT" });
+        if (url.searchParams.size) throw new BrowserPairError(400, "browser-pair-input", "Pairing writes do not accept query parameters");
+        const input = await body(req);
+        if (!isBrowserPairWrite(input)) throw new BrowserPairError(400, "browser-pair-input", "Provide an exact browser tab, conversation identity, operation and expected revision");
+        // Metadata only: no native refresh, prompt preparation or dispatch. The
+        // browser owns its tab IDs; the server never fetches a tab's URL.
+        const assertCurrent = () => {
+          assertDomainMutationOpen();
+          if (req.signal.aborted || !auth.authenticated(req)) throw new BrowserPairError(409, "browser-pair-interrupted", "Pairing request is no longer current");
+          if (!catalog.workspaceName(input.workspaceId)) throw new BrowserPairError(404, "browser-pair-workspace", "Unknown browser workspace");
+          // Removing a stale link must remain possible after retirement/replacement.
+          if (input.operation === "remove") return;
+          const session = meta.sessions.find(session => session.sessionId === input.session.sessionId);
+          if (!session || !sameBrowserPairSession(input.session, { sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId ?? "", nativeSessionId: session.nativeSessionId ?? "" })) throw new BrowserPairError(409, "browser-pair-identity", "Conversation identity changed; reconnect before pairing");
+          assertCatalogActive(session);
+          if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || session.attachment?.state === "pending"
+            || branches.replaced(session.sessionId) || branches.pending(session.sessionId) || catalog.association(session.sessionId).association !== "resolved"
+            || session.authorityId !== nativeSource(session.harness)) throw new BrowserPairError(409, "browser-pair-unavailable", "This conversation is unavailable for browser pairing");
+        };
+        return json(browserPairs.write(input, assertCurrent));
+      }
       if (path === "/api/session-retirements") {
         if (!loopback(srv.requestIP(req)?.address ?? "")) return json({ error: "Retirement operations require the local authenticated listener", code: "retirement-local-only" }, 403);
         if (url.searchParams.size) return json({ error: "Retirement endpoint does not accept query parameters" }, 400);
@@ -3955,18 +4030,33 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!meta.sessions.some(s => s.sessionId === workerList[1])) return json({ error: "Unknown parent session" }, 404);
         return json({ workers: await Promise.all(workers.tree(workerList[1]!).filter(w => url.searchParams.get("includeRetired") === "1" || !retiredId(w.sessionId)).map(w => workers.refresh(w))), deliveries: workerStore.deliveriesForParent(workerList[1]!), continuationSuppressed: workerStore.suppressed(workerList[1]!) });
       }
-      if ((path === "/api/sessions" || path === "/api/sessions/summaries") && req.method === "GET") {
+      if ((path === "/api/sessions" || path === "/api/sessions/summaries" || path === "/api/sessions/groups") && req.method === "GET") {
+        const directory = path === "/api/sessions/groups";
         const targeted = path === "/api/sessions/summaries";
-        const query = !targeted && (url.searchParams.has("limit") || url.searchParams.has("cursor")) ? sessionCatalogQuery(url.searchParams) : undefined;
+        const query = directory ? sessionCatalogGroupsQuery(url.searchParams)
+          : !targeted && (url.searchParams.has("limit") || url.searchParams.has("cursor")) ? sessionCatalogQuery(url.searchParams) : undefined;
         const requestedIds = targeted ? sessionSummaryIds(url.searchParams) : undefined;
         const summary = targeted || url.searchParams.get("summary") === "1";
+        // Metadata-only enumeration: missing filesystem state does not erase a
+        // recorded tree's identity. Never rewrite the source association DTO.
+        const registered = query && (directory || query.workspaceId === "unavailable" || query.worktreeId === "unavailable")
+          ? (await catalog.registeredWorkspaces()).workspaces : undefined;
+        const registeredTrees = registered ? new Map(registered.map(workspace => [workspace.workspaceId,
+          new Set(workspace.worktrees.map(tree => tree.worktreeId))])) : undefined;
+        const groupAssociation = (id: string) => {
+          const association = catalog.association(id), trees = registeredTrees?.get(association.workspaceId ?? "");
+          if (!trees) return { workspaceId: null, worktreeId: null };
+          return { workspaceId: association.workspaceId, worktreeId: trees.has(association.worktreeId!) ? association.worktreeId : null };
+        };
         // Domain reads are needed only when creating a filtered snapshot. Resolve
         // read-only adapters first; capture membership and all local policy below
         // synchronously, against current sessions/identities after the awaits.
         const membershipAdapters = new Map<string, import("./workstreams").WorkstreamAdapter>();
         if (query && sessionCatalog.needsMembership(query)) {
-          const workspaceIds = new Set(activeSessions().map(session => catalog.association(session.sessionId).workspaceId)
-            .filter((id): id is string => !!id && (query.workspaceId === "all" || query.workspaceId === id)));
+          const workspaceIds = new Set(activeSessions().filter(session => query.workspaceId !== "unavailable" || !groupAssociation(session.sessionId).workspaceId)
+            .map(session => catalog.association(session.sessionId).workspaceId)
+            .filter((id): id is string => !!id && (!registeredTrees || registeredTrees.has(id))
+              && (query.workspaceId === "all" || query.workspaceId === "unavailable" || query.workspaceId === id)));
           for (const workspaceId of workspaceIds) {
             try { membershipAdapters.set(workspaceId, await router!.forPolling(workspaceId)); }
             catch (error) {
@@ -3980,7 +4070,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const availableWorktrees = new Set<string>();
         if (query?.availableOnly) {
           const workspaces = query.workspaceId !== "all" && query.workspaceId !== "unavailable"
-            ? [await catalog.registered(query.workspaceId)] : (await catalog.registeredWorkspaces()).workspaces;
+            ? [await catalog.registered(query.workspaceId)] : registered ?? (await catalog.registeredWorkspaces()).workspaces;
           for (const workspace of workspaces) for (const tree of workspace.worktrees) if (tree.state === "available") {
             availableWorktrees.add(JSON.stringify([workspace.workspaceId, tree.worktreeId]));
           }
@@ -4032,11 +4122,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (query.mode === "chat" && (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || replaced)) return false;
             return query.showDeleted || !session.hidden || query.mode === "history" && replaced;
           };
-          const selection = sessionCatalog.select(query, { sessions: active, runs: meta.runs, events, membership,
-            association: id => catalog.association(id), visible,
-            status: session => session.harness === "opencode" && native.value?.[session.nativeSessionId!]
+          const filterInput = { sessions: active, runs: meta.runs, events, membership,
+            association: (id: string) => catalog.association(id), groupAssociation, visible,
+            status: (session: Session) => session.harness === "opencode" && native.value?.[session.nativeSessionId!]
               ? "running" : session.lastStatus,
-          });
+          };
+          if (directory) return json({ groups: sessionCatalog.groups(query, filterInput),
+            availability: availability(undefined, true, false, false, undefined, read),
+          } satisfies import("../shared/conversation/session-catalog").SessionCatalogGroupsResponse);
+          const selection = sessionCatalog.select(query, filterInput);
           selected = selection.sessions; page = selection.page;
         }
         // Page selection precedes per-row policy, followup and DTO projection.
@@ -4209,7 +4303,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           }
           const catalogSelection = await catalog.register(cwd);
           if (!admissions.get(sessionId)) await admissions.begin({ sessionId, operation: "attach", harness: harness === "opencode" ? "oc" : "cc", nativeId: nativeSessionId, cwd, workspaceId: catalogSelection.workspaceId, worktreeId: catalogSelection.worktreeId });
-          const candidate: Session = session ?? { sessionId, nativeSessionId, authorityId: nativeSource(harness), harness, cwd, lastStatus: "unknown", lastRunId: null, attachment: { state: "pending", source: nativeSource(harness) } };
+          const candidate: Session = session ?? { sessionId, nativeSessionId, authorityId: nativeSource(harness), harness, cwd, lastStatus: "unknown", lastRunId: null, title: "Conversation", titleSource: "fallback", titleRevision: 0, titleAutoEligible: false, attachment: { state: "pending", source: nativeSource(harness) } };
           const native = await readNativeHistory(harness, nativeSessionId, cwd);
           if (!native.messages.length) throw new OpenCodeError("Native transcript is empty; nothing attached", 409);
           if (native.activity === "active") throw new OpenCodeError("Native conversation is active or has pending input; finish it in OpenCode before attaching", 409);
@@ -4231,6 +4325,34 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (session?.attachment) { session.attachment = { ...session.attachment, state: "pending", error: error instanceof Error ? error.message : "Attachment failed" }; if (!storageFailed) await persist().catch(() => {}); }
           return json({ error: error instanceof Error ? error.message : "Attachment unavailable", ...(session ? { sessionId, attachment: "pending", recovery: "Retry Attach with the same identity and cwd after resolving the error. No prompt was sent." } : {}) }, error instanceof OpenCodeError || error instanceof WorkstreamAdapterError || error instanceof WorkspaceError ? error.status : error instanceof DomainError && error.code !== "STORAGE_ERROR" ? 409 : 503);
         } finally { attaching.delete(key); coordinator.releaseAdmission(lease); attachmentDone.resolve(); attachmentTasks.delete(attachmentDone.promise); }
+      }
+      const titleRoute = /^\/api\/sessions\/([^/]+)\/title(\/regenerate)?$/.exec(path);
+      if (titleRoute) {
+        const regenerate = !!titleRoute[2];
+        if (req.method !== (regenerate ? "POST" : "PUT")) return json({ error: "Method not allowed" }, 405, { allow: regenerate ? "POST" : "PUT" });
+        const session = meta.sessions.find(s => s.sessionId === titleRoute[1]);
+        if (!session) return json({ error: "Unknown conversation" }, 404);
+        const input = await body(req);
+        if (!input || typeof input !== "object" || Array.isArray(input)
+          || Object.keys(input).some(key => !(regenerate ? ["expectedRevision"] : ["title", "expectedRevision"]).includes(key))
+          || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0
+          || !regenerate && !normalizeSessionTitle(input.title)) return json({ error: "Provide expectedRevision and a valid 1–120 character title (or expectedRevision only for regeneration)", code: "invalid-title" }, 400);
+        try {
+          assertDomainMutationOpen();
+          assertCatalogActive(session);
+          if ((session.titleRevision ?? 0) !== input.expectedRevision) throw new SessionNamingError(409, "title-conflict", "Title changed; refresh before retrying");
+          if (!regenerate) return json(await sessionNaming!.edit(session.sessionId, input.title, input.expectedRevision));
+          sessionNaming!.assertManualCapacity(session.sessionId, input.expectedRevision);
+          // Preparation is read-only and bounded; no generation or native rename
+          // occurs under the metadata/domain mutation queue.
+          ensureSessionJournals(session.sessionId);
+          const transcript = await regenerationNamingTranscript(query => transcripts.page(session, query), req.signal);
+          if (!transcript) return json({ error: "Complete an assistant response before generating a title", code: "title-no-output" }, 409);
+          return json(await sessionNaming!.request(session.sessionId, input.expectedRevision, transcript));
+        } catch (error) {
+          if (error instanceof SessionNamingError || error instanceof TranscriptError) return json({ error: error.message, code: error.code }, error.status);
+          throw error;
+        }
       }
       const compactRoute = /^\/api\/sessions\/([^/]+)\/compact$/.exec(path);
       if (compactRoute) {
@@ -4602,6 +4724,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         await persist();
         return json({ ok: true, sessionId: session.sessionId, hidden: session.hidden });
       }
+      const runPreviewMatch = /^\/api\/sessions\/([^/]+)\/runs\/preview$/.exec(path);
+      if (runPreviewMatch) {
+        if (req.method !== "GET") return json({ error: "Method not allowed" }, 405, { allow: "GET" });
+        try {
+          const owner = auth.terminalToken(req);
+          const preview = await sessionRunPreviews.page(runPreviewMatch[1]!, url.searchParams, owner, req.signal);
+          if (!auth.authenticated(req) || auth.terminalToken(req) !== owner) return json({ error: "Authentication revoked" }, 401);
+          return json(preview);
+        } catch (error) {
+          if (error instanceof SessionRunPreviewError) return json({ error: error.message, code: error.code }, error.status);
+          throw error;
+        }
+      }
       const runsMatch = /^\/api\/sessions\/([^/]+)\/runs$/.exec(path);
       if (runsMatch && req.method === "GET") { if (!meta.sessions.some(s => s.sessionId === runsMatch[1])) return json({ error: "Unknown session" }, 404); return json({ runs: meta.runs.filter(r => r.sessionId === runsMatch[1]) }); }
       const eventMatch = /^\/api\/runs\/([^/]+)\/events$/.exec(path);
@@ -4760,6 +4895,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         ...(encoding ? { "content-encoding": encoding.name } : {}), ...(path === "/push-worker.js" ? { "service-worker-allowed": "/" } : {}),
       } });
     } catch (error) {
+      if (error instanceof BrowserPairError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof SessionRetirementError || error instanceof SessionCatalogError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof UserQuestionsError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof ScienceSubmissionStorageError) { failClosed(); return json({ error: error.message, code: "science-submission-unknown" }, 503); }
@@ -5089,6 +5225,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const queueDrain = pendingInputBridge!.close();
     const userQuestionsDrain = userQuestionsDelivery.close();
     const coordinatorDrain = coordinator.close();
+    const namingDrain = sessionNaming?.close();
     const replyDrain = replyIntegration?.close(); // Abort immediately, before any shutdown awaits.
     const pushDrain = chromePush?.close();
     const searchDrain = searches.close();
@@ -5103,6 +5240,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     userQuestionsPoller.stop();
     inputRecoveryPoller.stop();
     closePromise = (async () => {
+    await boundedStartupCleanup(() => namingDrain);
+    await boundedStartupCleanup(() => titleMutations);
     await boundedStartupCleanup(() => repositoryReadDrain);
     await boundedStartupCleanup(() => queueDrain);
     await boundedStartupCleanup(() => userQuestionsDrain);
