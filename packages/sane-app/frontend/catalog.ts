@@ -4,8 +4,7 @@ import { coalescedFetch } from "./request-coalescing";
 import { workspaceEpoch, workspaceFailure } from "./workspace-store";
 
 const empty = (): NavigationBookmark => ({ revision: 0, workspaceId: null, worktreeId: null, conversationId: null, view: "chat", filePath: null, comparison: null });
-/** Browser is client-only until the backend gains a preview navigation contract. */
-export type CatalogNavigation = Omit<NavigationBookmark, "view"> & { view: NavigationBookmark["view"] | "browser" };
+export type CatalogNavigation = NavigationBookmark;
 type CatalogState = { workspaces: WorkspaceRecord[]; navigation: CatalogNavigation; ready: boolean; loading: boolean; error: string };
 type Hydration = { epoch: number; auth: number; intent: number; restore: (bookmark: NavigationBookmark) => void; current: () => boolean; complete: () => void; cleanup: () => void };
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -27,7 +26,6 @@ class CatalogStore {
   private intent = 0;
   private registration = 0;
   private revision = 0;
-  private persistedView: NavigationBookmark["view"] = "chat";
   private pending: NavigationBookmark | null = null;
   private busy = false;
   private timer?: ReturnType<typeof setTimeout>;
@@ -102,7 +100,6 @@ class CatalogStore {
       const [catalog, navigation] = await Promise.all([request<CatalogResponse>("/api/workspaces", { signal: controller.signal }), request<NavigationBookmark>("/api/navigation", { signal: controller.signal })]);
       if (!current()) return;
       this.revision = navigation.revision;
-      this.persistedView = navigation.view;
       this.hydrationFailures = 0;
       // Publish readiness with the restored bookmark, never with a stale browsing
       // pair that could erase client-side context while hydration is in progress.
@@ -129,11 +126,7 @@ class CatalogStore {
     this.intent++;
     const navigation = { ...this.state.navigation, ...patch };
     this.update({ navigation });
-    // Never send the frontend-only leaf to the existing backend validator.
-    // Workspace/file/conversation changes still persist while Browser is open.
-    if (navigation.view !== "browser") this.persistedView = navigation.view;
-    if (patch.view === "browser" && Object.keys(patch).length === 1) return;
-    this.pending = { ...navigation, view: this.persistedView };
+    this.pending = navigation;
     if (this.state.ready) this.schedule();
   };
   private schedule() { clearTimeout(this.timer); this.timer = setTimeout(() => void this.flush(), 300); }

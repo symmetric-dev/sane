@@ -169,8 +169,10 @@
 .browser-pair>.main>.chat-surface dialog,.browser-pair>.main>.chat-surface dialog::backdrop { pointer-events:auto; }
 .browser-pair-toolbar { display:flex; flex-wrap:wrap; align-items:center; flex-shrink:0; gap:4px 16px; padding:6px 12px; border-bottom:1px solid var(--border); background:var(--background); }
 .browser-pair-sidebar>.browser-pair-toolbar { align-items:stretch; flex-direction:column; }
-.browser-pair-sidebar .browser-pair-heading { flex:0 0 auto; }
-.browser-pair-heading { display:flex; flex:1 1 220px; flex-direction:column; gap:3px; min-width:0; font-size:11px; color:var(--muted-foreground); }
+.browser-pair-sidebar .browser-pair-title-row { flex:0 0 auto; }
+.browser-pair-title-row { display:flex; flex:1 1 220px; align-items:center; gap:8px; min-width:0; }
+.browser-pair-title-row>.browser-pair-icon-button { min-width:24px; min-height:24px; padding:4px; }
+.browser-pair-heading { display:flex; flex:1; flex-direction:column; gap:3px; min-width:0; font-size:11px; color:var(--muted-foreground); }
 .browser-pair-heading>strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:var(--foreground); }
 .browser-pair-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
 .browser-pair-actions>.browser-pair-icon-button { min-height:28px; padding-block:4px; }
