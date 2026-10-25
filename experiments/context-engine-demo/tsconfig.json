@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "sane-core/*": ["../../packages/sane-core/src/*"]
+    }
+  }
+}

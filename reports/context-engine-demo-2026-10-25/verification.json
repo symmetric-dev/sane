@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "simulation": true,
+  "replayProcess": "fresh-child",
+  "command": [
+    "/Users/beto/.bun/bin/bun",
+    "--tsconfig-override",
+    "/Users/beto/.local/share/opencode/worktree/74e3be/user-context-experiment/experiments/context-engine-demo/tsconfig.json",
+    "/Users/beto/.local/share/opencode/worktree/74e3be/user-context-experiment/experiments/context-engine-demo/cli.ts",
+    "replay",
+    "--manifest",
+    "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/run.json",
+    "--json"
+  ],
+  "exitCode": 0,
+  "fixtureBeforeReplay": {
+    "sha256": "a4e97d38eb736186447c3dc67785d8772b063d7eb8e4c4b104f36412884d471e",
+    "fileCount": 40
+  },
+  "fixtureAfterReplay": {
+    "sha256": "a4e97d38eb736186447c3dc67785d8772b063d7eb8e4c4b104f36412884d471e",
+    "fileCount": 40
+  },
+  "readOnlyReplay": true,
+  "passed": true
+}

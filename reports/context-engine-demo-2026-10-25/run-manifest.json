@@ -1,0 +1,848 @@
+{
+  "schema": 1,
+  "type": "mock-context-demo-run",
+  "simulation": true,
+  "root": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified",
+  "checkout": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout",
+  "scenarios": [
+    {
+      "id": "activation",
+      "title": "Activation bootstrap / simulated harness acceptance",
+      "journalDirectory": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/activation",
+      "identity": {
+        "source": {
+          "harnessId": "mock-context-demo",
+          "sessionId": "c664b96d-bc48-4cc0-9135-876a15c89469",
+          "authorityId": "fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e",
+          "nativeSessionId": "fixture-native-51a3201e-7be3-4ba7-afcf-ed475e0d5daa",
+          "cwd": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout"
+        },
+        "runId": "08c8854e-01ad-47fc-9e90-901f23fcb37e",
+        "nativeCommandId": "fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829"
+      },
+      "messageId": "fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829",
+      "expectedFact": "accepted",
+      "expectedMockSends": 1,
+      "mockSends": 1,
+      "contextLoads": 11,
+      "executionLoads": 4,
+      "pairingChecks": 4,
+      "trace": [
+        "load:context",
+        "prepare:start",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "prepare:complete",
+        "readiness:mocked",
+        "gate:sync-source-ownership-cancel",
+        "owner:installed-once",
+        "adapter:pending-captured",
+        "adapter:controlled-await",
+        "revalidate:after-await",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "adapter:read-actual-pending",
+        "original:beforeNative",
+        "gate:sync-source-ownership-cancel",
+        "original:intent-durable",
+        "persist:before-native:attempted",
+        "mock:effect",
+        "adapter:read-actual-pending",
+        "original:outcome:submitted",
+        "persist:outcome:submitted",
+        "mock:simulated-acceptance",
+        "owner:settled",
+        "owner:released",
+        "settlement:mocked",
+        "lifecycle:admission-admitted",
+        "lifecycle:settlement-mocked-ready"
+      ],
+      "checks": [
+        {
+          "name": "restart-fact",
+          "passed": true,
+          "detail": "accepted; expected accepted; Exact per-message native acceptance, not model consumption"
+        },
+        {
+          "name": "mock-send-count",
+          "passed": true,
+          "detail": "1; expected 1; simulated effects only"
+        },
+        {
+          "name": "authored-body-preserved",
+          "passed": true,
+          "detail": "UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved"
+        },
+        {
+          "name": "one-owner-installation",
+          "passed": true,
+          "detail": "Real registry.start installs exactly one fixture RunOwner"
+        },
+        {
+          "name": "measured-load-calls",
+          "passed": true,
+          "detail": "Actual instrumented methods: context=11; execution=4; pairing=4"
+        },
+        {
+          "name": "durable-before-effect",
+          "passed": true,
+          "detail": "Original owner intent → synchronous composition persistence → single mock effect"
+        },
+        {
+          "name": "bootstrap-required-segments",
+          "passed": true,
+          "detail": "Authored engineering role once, required framework, pinned index, Pickup and explicit synthetic Session"
+        }
+      ]
+    },
+    {
+      "id": "ordinary",
+      "title": "Ordinary continuation / exact authored bytes",
+      "journalDirectory": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/ordinary",
+      "identity": {
+        "source": {
+          "harnessId": "mock-context-demo",
+          "sessionId": "c664b96d-bc48-4cc0-9135-876a15c89469",
+          "authorityId": "fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e",
+          "nativeSessionId": "fixture-native-51a3201e-7be3-4ba7-afcf-ed475e0d5daa",
+          "cwd": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout"
+        },
+        "runId": "70940a49-4ff2-435b-a212-8d97b8a66a3a",
+        "nativeCommandId": "fixture-message-e3ba708e-f56f-4719-a548-ddd51e8b08ad"
+      },
+      "messageId": "fixture-message-e3ba708e-f56f-4719-a548-ddd51e8b08ad",
+      "expectedFact": "accepted",
+      "expectedMockSends": 1,
+      "mockSends": 1,
+      "contextLoads": 0,
+      "executionLoads": 2,
+      "pairingChecks": 4,
+      "trace": [
+        "prepare:start",
+        "pairing:read-same-owner-journal",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "pairing:read-same-owner-journal",
+        "gate:sync-source-ownership-cancel",
+        "prepare:complete",
+        "readiness:mocked",
+        "gate:sync-source-ownership-cancel",
+        "owner:installed-once",
+        "adapter:pending-captured",
+        "adapter:controlled-await",
+        "revalidate:after-await",
+        "pairing:read-same-owner-journal",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "pairing:read-same-owner-journal",
+        "gate:sync-source-ownership-cancel",
+        "adapter:read-actual-pending",
+        "original:beforeNative",
+        "gate:sync-source-ownership-cancel",
+        "original:intent-durable",
+        "persist:before-native:attempted",
+        "mock:effect",
+        "adapter:read-actual-pending",
+        "original:outcome:submitted",
+        "persist:outcome:submitted",
+        "mock:simulated-acceptance",
+        "owner:settled",
+        "owner:released",
+        "settlement:mocked",
+        "lifecycle:admission-admitted",
+        "lifecycle:settlement-mocked-ready"
+      ],
+      "checks": [
+        {
+          "name": "restart-fact",
+          "passed": true,
+          "detail": "accepted; expected accepted; Exact per-message native acceptance, not model consumption"
+        },
+        {
+          "name": "mock-send-count",
+          "passed": true,
+          "detail": "1; expected 1; simulated effects only"
+        },
+        {
+          "name": "authored-body-preserved",
+          "passed": true,
+          "detail": "UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved"
+        },
+        {
+          "name": "one-owner-installation",
+          "passed": true,
+          "detail": "Real registry.start installs exactly one fixture RunOwner"
+        },
+        {
+          "name": "measured-load-calls",
+          "passed": true,
+          "detail": "Actual instrumented methods: context=0; execution=2; pairing=4"
+        },
+        {
+          "name": "durable-before-effect",
+          "passed": true,
+          "detail": "Original owner intent → synchronous composition persistence → single mock effect"
+        },
+        {
+          "name": "exact-body-only",
+          "passed": true,
+          "detail": "No context prefix, role, framework, index, Pickup or Session selected"
+        },
+        {
+          "name": "real-execution-and-durable-pairing",
+          "passed": true,
+          "detail": "Execution-only real validator plus accepted exact owner-journal source/role/context/execution pairing; zero context loads including callbacks"
+        }
+      ]
+    },
+    {
+      "id": "update",
+      "title": "Explicit fixture Session root A → B update",
+      "journalDirectory": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/update",
+      "identity": {
+        "source": {
+          "harnessId": "mock-context-demo",
+          "sessionId": "c664b96d-bc48-4cc0-9135-876a15c89469",
+          "authorityId": "fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e",
+          "nativeSessionId": "fixture-native-51a3201e-7be3-4ba7-afcf-ed475e0d5daa",
+          "cwd": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout"
+        },
+        "runId": "4418721c-9918-4bd7-856c-21a2f0bc2867",
+        "nativeCommandId": "fixture-message-25ef46d3-b765-4335-8133-d44d06cc9874"
+      },
+      "messageId": "fixture-message-25ef46d3-b765-4335-8133-d44d06cc9874",
+      "expectedFact": "accepted",
+      "expectedMockSends": 1,
+      "mockSends": 1,
+      "contextLoads": 4,
+      "executionLoads": 4,
+      "pairingChecks": 8,
+      "trace": [
+        "prepare:start",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "pairing:read-same-owner-journal",
+        "gate:sync-source-ownership-cancel",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "pairing:read-same-owner-journal",
+        "gate:sync-source-ownership-cancel",
+        "prepare:complete",
+        "readiness:mocked",
+        "gate:sync-source-ownership-cancel",
+        "owner:installed-once",
+        "adapter:pending-captured",
+        "adapter:controlled-await",
+        "revalidate:after-await",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "pairing:read-same-owner-journal",
+        "gate:sync-source-ownership-cancel",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "pairing:read-same-owner-journal",
+        "gate:sync-source-ownership-cancel",
+        "adapter:read-actual-pending",
+        "original:beforeNative",
+        "gate:sync-source-ownership-cancel",
+        "original:intent-durable",
+        "persist:before-native:attempted",
+        "mock:effect",
+        "adapter:read-actual-pending",
+        "original:outcome:submitted",
+        "persist:outcome:submitted",
+        "mock:simulated-acceptance",
+        "owner:settled",
+        "owner:released",
+        "settlement:mocked",
+        "lifecycle:admission-admitted",
+        "lifecycle:settlement-mocked-ready"
+      ],
+      "checks": [
+        {
+          "name": "restart-fact",
+          "passed": true,
+          "detail": "accepted; expected accepted; Exact per-message native acceptance, not model consumption"
+        },
+        {
+          "name": "mock-send-count",
+          "passed": true,
+          "detail": "1; expected 1; simulated effects only"
+        },
+        {
+          "name": "authored-body-preserved",
+          "passed": true,
+          "detail": "UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved"
+        },
+        {
+          "name": "one-owner-installation",
+          "passed": true,
+          "detail": "Real registry.start installs exactly one fixture RunOwner"
+        },
+        {
+          "name": "measured-load-calls",
+          "passed": true,
+          "detail": "Actual instrumented methods: context=4; execution=4; pairing=8"
+        },
+        {
+          "name": "durable-before-effect",
+          "passed": true,
+          "detail": "Original owner intent → synchronous composition persistence → single mock effect"
+        },
+        {
+          "name": "only-selected-session",
+          "passed": true,
+          "detail": "Only fixture Session root B; no role/framework/index/Pickup resend"
+        }
+      ]
+    },
+    {
+      "id": "stale-source",
+      "title": "Source drift across a controlled await / preparation rejection",
+      "journalDirectory": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/stale-source",
+      "identity": {
+        "source": {
+          "harnessId": "mock-context-demo",
+          "sessionId": "eea33de4-0f56-4e03-91f2-93e20193e643",
+          "authorityId": "fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e",
+          "nativeSessionId": "fixture-native-774e7fc7-1a3e-4737-8c43-4eece191b439",
+          "cwd": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout"
+        },
+        "runId": "54afa272-483d-4c64-84a1-7029994d1ee0",
+        "nativeCommandId": "fixture-message-5b423021-b7b9-4fa0-82b4-affffc6cff09"
+      },
+      "messageId": "fixture-message-5b423021-b7b9-4fa0-82b4-affffc6cff09",
+      "expectedFact": "no-evidence",
+      "expectedMockSends": 0,
+      "mockSends": 0,
+      "contextLoads": 6,
+      "executionLoads": 2,
+      "pairingChecks": 2,
+      "trace": [
+        "load:context",
+        "prepare:start",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "prepare:complete",
+        "readiness:mocked",
+        "gate:sync-source-ownership-cancel",
+        "owner:installed-once",
+        "adapter:pending-captured",
+        "adapter:controlled-await",
+        "source:drifted",
+        "revalidate:after-await",
+        "preparation:rejection-durable",
+        "original:outcome:unknown",
+        "owner:settled",
+        "owner:released",
+        "lifecycle:admission-unconfirmed",
+        "lifecycle:settlement-denied"
+      ],
+      "checks": [
+        {
+          "name": "restart-fact",
+          "passed": true,
+          "detail": "no-evidence; expected no-evidence; No exact per-message submission or boundary evidence; this is not a fresh-session claim"
+        },
+        {
+          "name": "mock-send-count",
+          "passed": true,
+          "detail": "0; expected 0; simulated effects only"
+        },
+        {
+          "name": "authored-body-preserved",
+          "passed": true,
+          "detail": "UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved"
+        },
+        {
+          "name": "one-owner-installation",
+          "passed": true,
+          "detail": "Real registry.start installs exactly one fixture RunOwner"
+        },
+        {
+          "name": "measured-load-calls",
+          "passed": true,
+          "detail": "Actual instrumented methods: context=6; execution=2; pairing=2"
+        },
+        {
+          "name": "uncertified-preparation-rejection",
+          "passed": true,
+          "detail": "Controlled await changed live source; rejection journaled, no local-refusal or freshness claim"
+        }
+      ],
+      "error": "Error: Fixture source changed during controlled await"
+    },
+    {
+      "id": "owner-refusal",
+      "title": "Original synchronous owner pause / certified withholding",
+      "journalDirectory": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/owner-refusal",
+      "identity": {
+        "source": {
+          "harnessId": "mock-context-demo",
+          "sessionId": "0e5cf77a-4482-4bf2-ba6f-63a8356d23fa",
+          "authorityId": "fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e",
+          "nativeSessionId": "fixture-native-263ac6d8-5405-4998-ab75-9a4d31b10d1f",
+          "cwd": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout"
+        },
+        "runId": "8dc7dd58-37ca-4583-8534-b2297ab02671",
+        "nativeCommandId": "fixture-message-2e5d32e1-813a-4781-857c-5ba42affd2d9"
+      },
+      "messageId": "fixture-message-2e5d32e1-813a-4781-857c-5ba42affd2d9",
+      "expectedFact": "withheld",
+      "expectedMockSends": 0,
+      "mockSends": 0,
+      "contextLoads": 11,
+      "executionLoads": 4,
+      "pairingChecks": 4,
+      "trace": [
+        "load:context",
+        "prepare:start",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "prepare:complete",
+        "readiness:mocked",
+        "gate:sync-source-ownership-cancel",
+        "owner:installed-once",
+        "adapter:pending-captured",
+        "adapter:controlled-await",
+        "revalidate:after-await",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "adapter:read-actual-pending",
+        "original:beforeNative",
+        "gate:sync-source-ownership-cancel",
+        "original:pause-durable",
+        "original:certified-refusal:Error: Fixture owner paused before native intent; cause: Error: Fixture owner paused before native intent",
+        "adapter:read-actual-pending",
+        "original:outcome:not-submitted",
+        "persist:outcome:not-submitted",
+        "owner:settled",
+        "owner:released",
+        "lifecycle:admission-unconfirmed",
+        "lifecycle:settlement-denied"
+      ],
+      "checks": [
+        {
+          "name": "restart-fact",
+          "passed": true,
+          "detail": "withheld; expected withheld; Explicit correlated non-submission; no activation established"
+        },
+        {
+          "name": "mock-send-count",
+          "passed": true,
+          "detail": "0; expected 0; simulated effects only"
+        },
+        {
+          "name": "authored-body-preserved",
+          "passed": true,
+          "detail": "UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved"
+        },
+        {
+          "name": "one-owner-installation",
+          "passed": true,
+          "detail": "Real registry.start installs exactly one fixture RunOwner"
+        },
+        {
+          "name": "measured-load-calls",
+          "passed": true,
+          "detail": "Actual instrumented methods: context=11; execution=4; pairing=4"
+        },
+        {
+          "name": "genuine-owner-refusal-nonfatal",
+          "passed": true,
+          "detail": "Original synchronous pause certifies refusal; registry finish durably records withholding, without termination"
+        }
+      ],
+      "error": "Error: Fixture owner paused before native intent; cause: Error: Fixture owner paused before native intent"
+    },
+    {
+      "id": "persistence-failure",
+      "title": "Uncertified refusal-class persistence fault / fail closed",
+      "journalDirectory": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/persistence-failure",
+      "identity": {
+        "source": {
+          "harnessId": "mock-context-demo",
+          "sessionId": "c624d057-5da7-4736-a86c-49b0aa1935d8",
+          "authorityId": "fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e",
+          "nativeSessionId": "fixture-native-e5439bf8-f3e1-4916-adcc-fce01f275b68",
+          "cwd": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout"
+        },
+        "runId": "74e37eb5-3a8f-482b-b678-1f312e09b61e",
+        "nativeCommandId": "fixture-message-7c6ff948-0cee-4a75-8e8b-6d6586ae0933"
+      },
+      "messageId": "fixture-message-7c6ff948-0cee-4a75-8e8b-6d6586ae0933",
+      "expectedFact": "unknown",
+      "expectedMockSends": 0,
+      "mockSends": 0,
+      "contextLoads": 11,
+      "executionLoads": 4,
+      "pairingChecks": 4,
+      "trace": [
+        "load:context",
+        "prepare:start",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "prepare:complete",
+        "readiness:mocked",
+        "gate:sync-source-ownership-cancel",
+        "owner:installed-once",
+        "adapter:pending-captured",
+        "adapter:controlled-await",
+        "revalidate:after-await",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "adapter:read-actual-pending",
+        "original:beforeNative",
+        "gate:sync-source-ownership-cancel",
+        "original:intent-durable",
+        "persist:injected-refusal-class-fault",
+        "failClosed:Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal",
+        "failClosed:Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal",
+        "failClosed:Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal",
+        "lifecycle:terminate-mocked",
+        "adapter:read-actual-pending",
+        "original:outcome:not-submitted",
+        "persist:outcome:not-submitted",
+        "owner:settled",
+        "owner:retained-failClosed",
+        "lifecycle:admission-unconfirmed",
+        "lifecycle:settlement-denied"
+      ],
+      "checks": [
+        {
+          "name": "restart-fact",
+          "passed": true,
+          "detail": "unknown; expected unknown; Evidence coverage is not complete; missing history cannot establish freshness or admission"
+        },
+        {
+          "name": "mock-send-count",
+          "passed": true,
+          "detail": "0; expected 0; simulated effects only"
+        },
+        {
+          "name": "authored-body-preserved",
+          "passed": true,
+          "detail": "UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved"
+        },
+        {
+          "name": "one-owner-installation",
+          "passed": true,
+          "detail": "Real registry.start installs exactly one fixture RunOwner"
+        },
+        {
+          "name": "measured-load-calls",
+          "passed": true,
+          "detail": "Actual instrumented methods: context=11; execution=4; pairing=4"
+        },
+        {
+          "name": "uncertified-refusal-fails-closed",
+          "passed": true,
+          "detail": "Refusal-class decorator persistence fault is wrapped, sticky partial, terminated and owner retained; never certified as local pause"
+        }
+      ],
+      "error": "Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal"
+    },
+    {
+      "id": "attempt-unresolved",
+      "title": "One simulated effect / deliberately unknown outcome (not a process kill)",
+      "journalDirectory": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/attempt-unresolved",
+      "identity": {
+        "source": {
+          "harnessId": "mock-context-demo",
+          "sessionId": "e5965fa2-2efe-4899-8d5e-f915095ecb68",
+          "authorityId": "fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e",
+          "nativeSessionId": "fixture-native-80281c82-f2cd-4bec-bbd6-ce530b8dc467",
+          "cwd": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout"
+        },
+        "runId": "ff8a9604-ae6b-4198-9d63-af3c1510ec8e",
+        "nativeCommandId": "fixture-message-1effc0f0-24c5-40c2-8beb-f01da86d8046"
+      },
+      "messageId": "fixture-message-1effc0f0-24c5-40c2-8beb-f01da86d8046",
+      "expectedFact": "attempt-unresolved",
+      "expectedMockSends": 1,
+      "mockSends": 1,
+      "contextLoads": 11,
+      "executionLoads": 4,
+      "pairingChecks": 4,
+      "trace": [
+        "load:context",
+        "prepare:start",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "prepare:complete",
+        "readiness:mocked",
+        "gate:sync-source-ownership-cancel",
+        "owner:installed-once",
+        "adapter:pending-captured",
+        "adapter:controlled-await",
+        "revalidate:after-await",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "pairing:real-full-validator",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:execution",
+        "load:context",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "gate:sync-source-ownership-cancel",
+        "load:context",
+        "adapter:read-actual-pending",
+        "original:beforeNative",
+        "gate:sync-source-ownership-cancel",
+        "original:intent-durable",
+        "persist:before-native:attempted",
+        "mock:effect",
+        "adapter:read-actual-pending",
+        "original:outcome:unknown",
+        "persist:outcome:unknown",
+        "mock:outcome-unknown-not-process-kill",
+        "owner:settled",
+        "owner:released",
+        "lifecycle:admission-admitted",
+        "lifecycle:settlement-denied"
+      ],
+      "checks": [
+        {
+          "name": "restart-fact",
+          "passed": true,
+          "detail": "attempt-unresolved; expected attempt-unresolved; Possible native execution with no confirmed submission; never automatically resend"
+        },
+        {
+          "name": "mock-send-count",
+          "passed": true,
+          "detail": "1; expected 1; simulated effects only"
+        },
+        {
+          "name": "authored-body-preserved",
+          "passed": true,
+          "detail": "UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved"
+        },
+        {
+          "name": "one-owner-installation",
+          "passed": true,
+          "detail": "Real registry.start installs exactly one fixture RunOwner"
+        },
+        {
+          "name": "measured-load-calls",
+          "passed": true,
+          "detail": "Actual instrumented methods: context=11; execution=4; pairing=4"
+        },
+        {
+          "name": "durable-before-effect",
+          "passed": true,
+          "detail": "Original owner intent → synchronous composition persistence → single mock effect"
+        },
+        {
+          "name": "honest-unresolved-effect",
+          "passed": true,
+          "detail": "Explicit unknown outcome after one simulated effect; no process was killed, no exact acceptance and no retry"
+        }
+      ]
+    }
+  ],
+  "replayVariants": [
+    {
+      "id": "torn",
+      "directory": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/replay-variants/torn",
+      "identity": {
+        "source": {
+          "harnessId": "mock-context-demo",
+          "sessionId": "c664b96d-bc48-4cc0-9135-876a15c89469",
+          "authorityId": "fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e",
+          "nativeSessionId": "fixture-native-51a3201e-7be3-4ba7-afcf-ed475e0d5daa",
+          "cwd": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout"
+        },
+        "runId": "08c8854e-01ad-47fc-9e90-901f23fcb37e",
+        "nativeCommandId": "fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829"
+      },
+      "messageId": "fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829",
+      "expectedFact": "unknown"
+    },
+    {
+      "id": "missing",
+      "directory": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/replay-variants/missing",
+      "identity": {
+        "source": {
+          "harnessId": "mock-context-demo",
+          "sessionId": "c664b96d-bc48-4cc0-9135-876a15c89469",
+          "authorityId": "fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e",
+          "nativeSessionId": "fixture-native-51a3201e-7be3-4ba7-afcf-ed475e0d5daa",
+          "cwd": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout"
+        },
+        "runId": "08c8854e-01ad-47fc-9e90-901f23fcb37e",
+        "nativeCommandId": "fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829"
+      },
+      "messageId": "fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829",
+      "expectedFact": "unknown"
+    }
+  ]
+}

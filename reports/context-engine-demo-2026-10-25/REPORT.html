@@ -1,0 +1,1758 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>MOCK ONLY — engine-path demonstration</title><style>
+body{font:16px/1.5 system-ui,sans-serif;margin:0 auto;padding:2rem;max-width:1440px;color:#172033;background:#f7f8fb}h1,h2,h3{line-height:1.2}header,section{background:white;border:1px solid #d5dce6;border-radius:8px;padding:1.5rem;margin-bottom:1.5rem}header{border-top:8px solid #936119}.boundary{font-weight:600;color:#74460b}.messages{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}.messages article{min-width:0}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:1rem;background:#eef1f6;border-radius:4px;font-size:.85rem}code{overflow-wrap:anywhere;font-size:.85rem}.table{overflow:auto}table{border-collapse:collapse;width:100%;font-size:.85rem}th,td{padding:.6rem;border:1px solid #d5dce6;text-align:left;vertical-align:top}th{background:#edf1f7}details{margin:1rem 0}summary{cursor:pointer;font-weight:600}.pass{color:#12613a}.fail{color:#a32121}li{margin:.4rem 0}@media(max-width:850px){.messages{grid-template-columns:1fr}body{padding:1rem}}
+</style></head><body><header><h1>MOCK ONLY — engine-path demonstration</h1><p class="boundary">PASS — simulated harness acceptance, not native/model proof.</p><p>Not App end-to-end and not model consumption. All accepted labels mean simulated harness acceptance only. No synthetic recipient response establishes memory or retention.</p><p>Counters, trace and original scenario assertions are recorded instrumentation, not independently recovered native effects. Replay independently decodes exact recorded bytes and projects protected journal coverage/facts; a manifest expectation is not execution proof.</p><p>Fixture root: <code>/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified</code></p></header>
+<section><h2>Acceptance and recorded counters</h2><div class="table"><table><thead><tr><th>Scenario</th><th>Replay checks</th><th>Recovered fact</th><th>Coverage</th><th>Mock sends / expected</th><th>Context loads</th><th>Execution loads</th><th>Pairing checks</th></tr></thead><tbody><tr><td>activation</td><td>PASS</td><td>accepted (simulated only)</td><td>complete</td><td>1 / 1</td><td>11</td><td>4</td><td>4</td></tr><tr><td>ordinary</td><td>PASS</td><td>accepted (simulated only)</td><td>complete</td><td>1 / 1</td><td>0</td><td>2</td><td>4</td></tr><tr><td>update</td><td>PASS</td><td>accepted (simulated only)</td><td>complete</td><td>1 / 1</td><td>4</td><td>4</td><td>8</td></tr><tr><td>stale-source</td><td>PASS</td><td>no-evidence</td><td>complete</td><td>0 / 0</td><td>6</td><td>2</td><td>2</td></tr><tr><td>owner-refusal</td><td>PASS</td><td>withheld</td><td>complete</td><td>0 / 0</td><td>11</td><td>4</td><td>4</td></tr><tr><td>persistence-failure</td><td>PASS</td><td>unknown</td><td>partial</td><td>0 / 0</td><td>11</td><td>4</td><td>4</td></tr><tr><td>attempt-unresolved</td><td>PASS</td><td>attempt-unresolved</td><td>complete</td><td>1 / 1</td><td>11</td><td>4</td><td>4</td></tr></tbody></table></div><h2>Scope and limitations</h2><p>Real composition/evidence engine, pinned stores, dispatch lifecycle and experiment journal; scripted transport/recipient and binding/settlement are simulated. The journal is not a production writer. This is not power-loss or native-crash proof. Replay is read-only: no native App/harness calls, transport, repair, retry or resend.</p></section>
+<section><h2>activation — Activation bootstrap / simulated harness acceptance</h2><p><strong>PASS</strong> · Recovered fact: <strong>accepted (simulated only)</strong> · Expected: accepted (simulated only)</p>
+    <p>Coverage: <strong>complete</strong> · Source: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/activation/events.jsonl</p><p>Coverage reason: No additional coverage reason.</p><p>Projection: Exact per-message native acceptance, not model consumption</p>
+    <details><summary>Exact original query</summary><pre>{
+  &quot;identity&quot;: {
+    &quot;source&quot;: {
+      &quot;harnessId&quot;: &quot;mock-context-demo&quot;,
+      &quot;sessionId&quot;: &quot;c664b96d-bc48-4cc0-9135-876a15c89469&quot;,
+      &quot;authorityId&quot;: &quot;fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e&quot;,
+      &quot;nativeSessionId&quot;: &quot;fixture-native-51a3201e-7be3-4ba7-afcf-ed475e0d5daa&quot;,
+      &quot;cwd&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout&quot;
+    },
+    &quot;runId&quot;: &quot;08c8854e-01ad-47fc-9e90-901f23fcb37e&quot;,
+    &quot;nativeCommandId&quot;: &quot;fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829&quot;
+  },
+  &quot;messageId&quot;: &quot;fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829&quot;
+}</pre></details><div class="messages"><article><h3>Authored body</h3><pre>﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre><p>Structured UTF-8 range: 9049 + 143 bytes</p><p>SHA-256: <code>ba283d6d1837bcd64aaf70ca8e52e174311931a7c8391fdc3db06e39cc51ac5d</code></p></article>
+      <article><h3>Exact recorded outgoing transport</h3><details open><summary>9192 UTF-8 bytes</summary><pre>[SANE CONTEXT MESSAGE v1]
+SANE activation: these selected procedures and session details are composed on the user&#39;s behalf. The user directs the work and may change these conventions.
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;role.assistant.engineering&quot;,&quot;category&quot;:&quot;role&quot;,&quot;source&quot;:&quot;context/agents/sane/assistant/engineering.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Selected main role activation&quot;,&quot;bytes&quot;:1577}]
+
+You are a SANE Engineering Assistant Agent.
+
+SANE is a structured, reasonable way for people and agents to acquire and apply knowledge in service of deliberate change.
+
+You write and update one document per solution area in `design/solutions/&lt;name&gt;.md`.
+Start from the approved `design/SDD.md` and follow the supplied solution template.
+Work with the user to make technical implementation decisions.
+
+Perform the following setup steps:
+
+1. Use the workstream, workstream root, and implementation root from your SANE Session context. If no workstream is listed, use `sane_link` with your phase slot and the agreed `workstream` to establish membership.
+2. Run commands in the implementation root and resolve workstream documents from the workstream root.
+3. Read `sane-assistant-engineering-pickup`, complete its steps, and report readiness. Wait for user confirmation before proceeding, including when the initial message is a handoff.
+
+Once done, perform your role steps:
+
+1. When the user confirms, read `sane-assistant-engineering-assistance` and follow it for the work and discussion with the user.
+2. For later handoffs, follow Assistance. Give each outgoing `sane_handoff` a distinct `requestId`; recover delivery with `sane_handoff_status` using that ID. Finish independent work and end your turn; replies arrive as separate handoffs.
+3. When ready for delivery, read `sane-assistant-engineering-delivery` and follow its steps.
+4. If further changes are requested, return to Assistance.
+
+If you get blocked in any of those steps stop and report to the user immediately.
+
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;framework.core&quot;,&quot;category&quot;:&quot;framework&quot;,&quot;source&quot;:&quot;context/framework/core.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Required standing framework&quot;,&quot;bytes&quot;:1946}]
+# SANE Context
+
+## SANE
+
+SANE means **Sane Agentic Noesis Edifice**. It is a structured, reasonable, and agile way for people and agents to acquire and apply knowledge in service of deliberate change.
+
+A **workstream** groups the documents and state for an undertaking. Its documents describe current requirements, solutions, and outcomes; the CLI and sessions hold progress and collaboration history. Implementation happens in the target repository, not in a separate duplicate tree.
+
+The user directs the work and makes decisions with the assistant.
+
+There are 2 types of agents: **Assistants**, and **Workers**. Assistants work directly with the user while workers can be run by assistants to perform tasks.
+
+You shall never talk about or reference workstream specific language or workflow in the implementation repository contents. Keep the meta-language separate from the implementation repository.
+
+## Context
+
+**Knowledge Gaps** are missing understanding needed to make a product,
+design, or implementation decision—for example, how a feature should
+behave or how a dependency integrates with the solution. They are often
+visible in Design and Engineering documents.
+
+**Operational Gaps** are missing procedures, tooling, or repository
+context needed for agents to carry out assigned work—for example, how a
+worker locates relevant code, prepares the environment, runs verification,
+or updates artifacts. They are often visible in Planning and Execution
+documents.
+
+**Context Artifacts** preserve reusable knowledge and operational guidance
+for future work. Skills and documentation are examples; the term is
+independent of how that context is represented or stored.
+
+## Lifecycle
+
+Workstreams have a Main Track and Support Tracks.
+
+The Main Track follows four phases: Design → Engineering → Planning → Execution.
+
+Support Tracks may run alongside the Main Track to help resolve Knowledge Gaps and Operational Gaps along the way.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;framework.assistant&quot;,&quot;category&quot;:&quot;framework&quot;,&quot;source&quot;:&quot;context/framework/assistant.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Required standing framework&quot;,&quot;bytes&quot;:1156}]
+## State
+
+Follow your role&#39;s skills for the assigned work and coordination with other sessions.
+
+View current status with `sane view` and use the CLI to record state.
+
+1. **Pickup:** at new session start, read the assigned context and check required
+   inputs. Confirm readiness and wait for the user to proceed, including when
+   the session starts from a handoff.
+2. **Assistance:** work with the user within the agreed scope. This may include
+   handoff or handling updates from other sessions, following your role&#39;s skill.
+3. **Delivery:** validate outputs with `sane validate &lt;phase&gt;` and present them
+   for user review. Delivery may include handoff when the user requests it.
+   If revisions are requested, return to Assistance and then Delivery.
+
+## State Statuses
+
+- `pending` — Not started.
+- `in_progress` — Session is in progress.
+- `delivered` — Phase work has been delivered.
+
+A worker notification or consultation is not completion. Respond to an authorized ongoing child with `sane_worker_message`; retain its worker identity. Dispatch dependent work only after its terminal outcome. Ending your own turn permits asynchronous replies.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;procedure-index&quot;,&quot;category&quot;:&quot;procedure-index&quot;,&quot;source&quot;:&quot;Pinned procedure index&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Selective loading from pinned files&quot;,&quot;bytes&quot;:1511}]
+# SANE private procedures
+
+Resolve the SANE lifecycle procedure names in your role instructions using this index and the ordinary file-reading tool, rather than native Skill discovery. Other repository skills retain their normal loading mechanism.
+
+Load only the procedure needed for the current lifecycle step. Assistant activation includes the initial Pickup procedure; this index alone does not select or repeat Pickup on update or resume.
+
+- sane-assistant-engineering-assistance: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-assistance/SKILL.md — Use after Engineering Pickup confirmation for solution work and mid-session requests.
+
+- sane-assistant-engineering-delivery: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-delivery/SKILL.md — Use when preparing Engineering solution specs for review and delivery.
+
+- sane-assistant-engineering-pickup: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md — Use when starting a new SANE Engineering Assistant session.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;sane-assistant-engineering-pickup&quot;,&quot;category&quot;:&quot;procedure&quot;,&quot;source&quot;:&quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Initial lifecycle procedure&quot;,&quot;bytes&quot;:687}]
+
+# SANE Engineering Assistant — Pickup
+
+## Workstream Setup
+
+1. Run `sane provide engineering` to supply missing starters.
+2. Run `sane view` and link this session with `sane_link` (`slot: &quot;engineering&quot;`).
+
+## Required Inputs
+
+Read `design/SDD.md`, `&lt;workstream&gt;/resources/SOLUTION_SPEC_TEMPLATE.md`, and any existing solution specs relevant to the assignment. Ask the user about missing or unclear inputs.
+
+## Initial Handoff Context
+
+If the initial message is a handoff, retain the request, referenced documents, and qualified sender identity from `From:`.
+
+## Readiness and User Confirmation
+
+Summarize the current state and solution areas to work on. Wait for the user to proceed.
+
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;session&quot;,&quot;category&quot;:&quot;session&quot;,&quot;source&quot;:&quot;fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session&quot;,&quot;revision&quot;:&quot;fixture-root-A&quot;,&quot;reason&quot;:&quot;Explicit synthetic activation state&quot;,&quot;bytes&quot;:225}]
+# Session
+Synthetic experiment-owned session only.
+root: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout/roots/A
+No App project or workstream records exist.
+[/SANE CONTEXT SEGMENT]
+[SANE AUTHORED BODY {&quot;bytes&quot;:143}]
+﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre></details><p>SHA-256: <code>9001549bc5f1f15455d3f3f8053cff208d78fe0dc022eb59d85c95b4e0124ef8</code></p></article></div>
+      <p>Placement: <code>{&quot;kind&quot;:&quot;bootstrap&quot;}</code> · Origin: activation · Package revision: <code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></p><p>Ordered selection SHA-256: <code>20f39fb8ff323c9b63b30a584fc8a5ccbca417729cfc09972b9e17a3669a028f</code></p>
+      <h3>Selected segments</h3><div class="table"><table><thead><tr><th>ID / category</th><th>Source / revision</th><th>Reason</th><th>UTF-8 range</th><th>SHA-256</th></tr></thead><tbody><tr><td>role.assistant.engineering / role</td><td>context/agents/sane/assistant/engineering.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Selected main role activation</td><td>449 + 1577 bytes</td><td><code>84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0</code></td></tr><tr><td>framework.core / framework</td><td>context/framework/core.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Required standing framework</td><td>2288 + 1946 bytes</td><td><code>0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421</code></td></tr><tr><td>framework.assistant / framework</td><td>context/framework/assistant.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Required standing framework</td><td>4506 + 1156 bytes</td><td><code>6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43</code></td></tr><tr><td>procedure-index / procedure-index</td><td>Pinned procedure index<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Selective loading from pinned files</td><td>5936 + 1511 bytes</td><td><code>807295e5870d16017717efc8ee1d7463d5a3fb30d337d27bfb5acf057a03d436</code></td></tr><tr><td>sane-assistant-engineering-pickup / procedure</td><td>context/skills/sane-assistant-engineering-pickup/SKILL.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Initial lifecycle procedure</td><td>7759 + 687 bytes</td><td><code>0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59</code></td></tr><tr><td>session / session</td><td>fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session<br><code>fixture-root-A</code></td><td>Explicit synthetic activation state</td><td>8764 + 225 bytes</td><td><code>10518629436f44987a49253ddd2746dd1ff23a3c0a7f7f655d1907e746c5a609</code></td></tr></tbody></table></div><details><summary>Structured segment provenance</summary><pre>[
+  {
+    &quot;id&quot;: &quot;role.assistant.engineering&quot;,
+    &quot;category&quot;: &quot;role&quot;,
+    &quot;sha256&quot;: &quot;84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0&quot;,
+    &quot;reason&quot;: &quot;Selected main role activation&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;role.assistant.engineering&quot;,
+        &quot;source&quot;: &quot;context/agents/sane/assistant/engineering.md&quot;,
+        &quot;sha256&quot;: &quot;84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/role.assistant.engineering.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 449,
+      &quot;length&quot;: 1577
+    }
+  },
+  {
+    &quot;id&quot;: &quot;framework.core&quot;,
+    &quot;category&quot;: &quot;framework&quot;,
+    &quot;sha256&quot;: &quot;0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421&quot;,
+    &quot;reason&quot;: &quot;Required standing framework&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;framework.core&quot;,
+        &quot;source&quot;: &quot;context/framework/core.md&quot;,
+        &quot;sha256&quot;: &quot;0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/framework.core.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 2288,
+      &quot;length&quot;: 1946
+    }
+  },
+  {
+    &quot;id&quot;: &quot;framework.assistant&quot;,
+    &quot;category&quot;: &quot;framework&quot;,
+    &quot;sha256&quot;: &quot;6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43&quot;,
+    &quot;reason&quot;: &quot;Required standing framework&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;framework.assistant&quot;,
+        &quot;source&quot;: &quot;context/framework/assistant.md&quot;,
+        &quot;sha256&quot;: &quot;6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/framework.assistant.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 4506,
+      &quot;length&quot;: 1156
+    }
+  },
+  {
+    &quot;id&quot;: &quot;procedure-index&quot;,
+    &quot;category&quot;: &quot;procedure-index&quot;,
+    &quot;sha256&quot;: &quot;807295e5870d16017717efc8ee1d7463d5a3fb30d337d27bfb5acf057a03d436&quot;,
+    &quot;reason&quot;: &quot;Selective loading from pinned files&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;procedure-index&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;assets&quot;: [
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-assistance&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-assistance/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;a122256ecab01a9ecb487d3352ac69bea736668bb4112e35dfb392dbd7b5dbb6&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-assistance/SKILL.md&quot;
+        },
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-delivery&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-delivery/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;689edd20ee8d920f45a15d9849d2d3f3145a0ceede1d88f9be084895e50addac&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-delivery/SKILL.md&quot;
+        },
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md&quot;
+        }
+      ]
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 5936,
+      &quot;length&quot;: 1511
+    }
+  },
+  {
+    &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+    &quot;category&quot;: &quot;procedure&quot;,
+    &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+    &quot;reason&quot;: &quot;Initial lifecycle procedure&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+        &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,
+        &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 7759,
+      &quot;length&quot;: 687
+    }
+  },
+  {
+    &quot;id&quot;: &quot;session&quot;,
+    &quot;category&quot;: &quot;session&quot;,
+    &quot;sha256&quot;: &quot;10518629436f44987a49253ddd2746dd1ff23a3c0a7f7f655d1907e746c5a609&quot;,
+    &quot;reason&quot;: &quot;Explicit synthetic activation state&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;fragment&quot;,
+      &quot;source&quot;: &quot;fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session&quot;,
+      &quot;revision&quot;: &quot;fixture-root-A&quot;
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 8764,
+      &quot;length&quot;: 225
+    }
+  }
+]</pre></details><details><summary>Recorded instrumentation trace</summary><pre>load:context
+prepare:start
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+prepare:complete
+readiness:mocked
+gate:sync-source-ownership-cancel
+owner:installed-once
+adapter:pending-captured
+adapter:controlled-await
+revalidate:after-await
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+adapter:read-actual-pending
+original:beforeNative
+gate:sync-source-ownership-cancel
+original:intent-durable
+persist:before-native:attempted
+mock:effect
+adapter:read-actual-pending
+original:outcome:submitted
+persist:outcome:submitted
+mock:simulated-acceptance
+owner:settled
+owner:released
+settlement:mocked
+lifecycle:admission-admitted
+lifecycle:settlement-mocked-ready</pre></details><h3>Independent replay checks</h3><ul><li><strong class="pass">PASS</strong> recovered expected fact: Recovered accepted; manifest expectation accepted is not execution proof. Accepted means simulated harness acceptance only.</li><li><strong class="pass">PASS</strong> protected owner association: Exact original query dispatch/message/run/session/checkout association; no owner substitution.</li><li><strong class="pass">PASS</strong> recorded scenario assertions: Recorded scenario assertions, not independently recovered native effects.</li><li><strong class="pass">PASS</strong> recorded expected mock effects: Recorded instrumentation: 1 sends; expected 1.</li><li><strong class="pass">PASS</strong> durable mock effect instrumentation: Recorded effect counters match exact message-correlated mock hook records; these are simulated effects, not native proof.</li><li><strong class="pass">PASS</strong> durable attempt precedes mock effect: The same owner journal orders the fsynced attempt before each scripted mock effect.</li><li><strong class="pass">PASS</strong> successful scenario simulated acceptance: Successful mock scenario must independently recover exact correlated simulated acceptance; a changed manifest expectation cannot replace this fact.</li><li><strong class="pass">PASS</strong> exact recorded bytes and ranges: Production submission decoder validated UTF-8 ranges, framing, hashes and exact transport; this alone is not source trust.</li><li><strong class="pass">PASS</strong> independent protected role and pins: Verified owner-selected context/execution revisions and pinned role/asset bytes; not selected from the message.</li><li><strong class="pass">PASS</strong> independent bootstrap selection: Main role once, required standing frameworks, pinned index, correct role Pickup and Session in independent owner-role order.</li><li><strong class="pass">PASS</strong> recorded activation effect count: Recorded mock instrumentation must show exactly one send.</li><li><strong class="pass">PASS</strong> scenario coverage boundary: complete: Exact per-message native acceptance, not model consumption</li></ul>
+    <details><summary>Original recorded scenario checks (instrumentation)</summary><ul><li><strong class="pass">PASS</strong> restart-fact: accepted; expected accepted; Exact per-message native acceptance, not model consumption</li><li><strong class="pass">PASS</strong> mock-send-count: 1; expected 1; simulated effects only</li><li><strong class="pass">PASS</strong> authored-body-preserved: UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved</li><li><strong class="pass">PASS</strong> one-owner-installation: Real registry.start installs exactly one fixture RunOwner</li><li><strong class="pass">PASS</strong> measured-load-calls: Actual instrumented methods: context=11; execution=4; pairing=4</li><li><strong class="pass">PASS</strong> durable-before-effect: Original owner intent → synchronous composition persistence → single mock effect</li><li><strong class="pass">PASS</strong> bootstrap-required-segments: Authored engineering role once, required framework, pinned index, Pickup and explicit synthetic Session</li></ul></details><details><summary>Projection provenance</summary><pre>[
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/activation/events.jsonl&quot;,
+    &quot;sequence&quot;: 6,
+    &quot;kind&quot;: &quot;submission&quot;
+  },
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/activation/events.jsonl&quot;,
+    &quot;sequence&quot;: 7,
+    &quot;kind&quot;: &quot;dispatch&quot;
+  },
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/activation/events.jsonl&quot;,
+    &quot;sequence&quot;: 10,
+    &quot;kind&quot;: &quot;dispatch&quot;
+  }
+]</pre></details></section>
+<section><h2>ordinary — Ordinary continuation / exact authored bytes</h2><p><strong>PASS</strong> · Recovered fact: <strong>accepted (simulated only)</strong> · Expected: accepted (simulated only)</p>
+    <p>Coverage: <strong>complete</strong> · Source: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/ordinary/events.jsonl</p><p>Coverage reason: No additional coverage reason.</p><p>Projection: Exact per-message native acceptance, not model consumption</p>
+    <details><summary>Exact original query</summary><pre>{
+  &quot;identity&quot;: {
+    &quot;source&quot;: {
+      &quot;harnessId&quot;: &quot;mock-context-demo&quot;,
+      &quot;sessionId&quot;: &quot;c664b96d-bc48-4cc0-9135-876a15c89469&quot;,
+      &quot;authorityId&quot;: &quot;fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e&quot;,
+      &quot;nativeSessionId&quot;: &quot;fixture-native-51a3201e-7be3-4ba7-afcf-ed475e0d5daa&quot;,
+      &quot;cwd&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout&quot;
+    },
+    &quot;runId&quot;: &quot;70940a49-4ff2-435b-a212-8d97b8a66a3a&quot;,
+    &quot;nativeCommandId&quot;: &quot;fixture-message-e3ba708e-f56f-4719-a548-ddd51e8b08ad&quot;
+  },
+  &quot;messageId&quot;: &quot;fixture-message-e3ba708e-f56f-4719-a548-ddd51e8b08ad&quot;
+}</pre></details><div class="messages"><article><h3>Authored body</h3><pre>﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre><p>Structured UTF-8 range: 0 + 143 bytes</p><p>SHA-256: <code>ba283d6d1837bcd64aaf70ca8e52e174311931a7c8391fdc3db06e39cc51ac5d</code></p></article>
+      <article><h3>Exact recorded outgoing transport</h3><details open><summary>143 UTF-8 bytes</summary><pre>﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre></details><p>SHA-256: <code>ba283d6d1837bcd64aaf70ca8e52e174311931a7c8391fdc3db06e39cc51ac5d</code></p></article></div>
+      <p>Placement: <code>{&quot;kind&quot;:&quot;body-only&quot;}</code> · Origin: user · Package revision: <code>none</code></p><p>Ordered selection SHA-256: <code>4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945</code></p>
+      <h3>Selected segments</h3><div class="table"><table><thead><tr><th>ID / category</th><th>Source / revision</th><th>Reason</th><th>UTF-8 range</th><th>SHA-256</th></tr></thead><tbody><tr><td colspan="5">No context segments; body-only.</td></tr></tbody></table></div><details><summary>Structured segment provenance</summary><pre>[]</pre></details><details><summary>Recorded instrumentation trace</summary><pre>prepare:start
+pairing:read-same-owner-journal
+gate:sync-source-ownership-cancel
+load:execution
+pairing:read-same-owner-journal
+gate:sync-source-ownership-cancel
+prepare:complete
+readiness:mocked
+gate:sync-source-ownership-cancel
+owner:installed-once
+adapter:pending-captured
+adapter:controlled-await
+revalidate:after-await
+pairing:read-same-owner-journal
+gate:sync-source-ownership-cancel
+load:execution
+pairing:read-same-owner-journal
+gate:sync-source-ownership-cancel
+adapter:read-actual-pending
+original:beforeNative
+gate:sync-source-ownership-cancel
+original:intent-durable
+persist:before-native:attempted
+mock:effect
+adapter:read-actual-pending
+original:outcome:submitted
+persist:outcome:submitted
+mock:simulated-acceptance
+owner:settled
+owner:released
+settlement:mocked
+lifecycle:admission-admitted
+lifecycle:settlement-mocked-ready</pre></details><h3>Independent replay checks</h3><ul><li><strong class="pass">PASS</strong> recovered expected fact: Recovered accepted; manifest expectation accepted is not execution proof. Accepted means simulated harness acceptance only.</li><li><strong class="pass">PASS</strong> protected owner association: Exact original query dispatch/message/run/session/checkout association; no owner substitution.</li><li><strong class="pass">PASS</strong> recorded scenario assertions: Recorded scenario assertions, not independently recovered native effects.</li><li><strong class="pass">PASS</strong> recorded expected mock effects: Recorded instrumentation: 1 sends; expected 1.</li><li><strong class="pass">PASS</strong> durable mock effect instrumentation: Recorded effect counters match exact message-correlated mock hook records; these are simulated effects, not native proof.</li><li><strong class="pass">PASS</strong> durable attempt precedes mock effect: The same owner journal orders the fsynced attempt before each scripted mock effect.</li><li><strong class="pass">PASS</strong> successful scenario simulated acceptance: Successful mock scenario must independently recover exact correlated simulated acceptance; a changed manifest expectation cannot replace this fact.</li><li><strong class="pass">PASS</strong> exact recorded bytes and ranges: Production submission decoder validated UTF-8 ranges, framing, hashes and exact transport; this alone is not source trust.</li><li><strong class="pass">PASS</strong> independent protected role and pins: Verified owner-selected context/execution revisions and pinned role/asset bytes; not selected from the message.</li><li><strong class="pass">PASS</strong> ordinary is exact authored body: No marker stripping or implicit context; exact decoded authored bytes equal recorded transport.</li><li><strong class="pass">PASS</strong> recorded ordinary loader boundaries: Recorded instrumentation only: zero context loads; execution and pairing checks present; exactly one mock send.</li><li><strong class="pass">PASS</strong> ordinary durable bootstrap pairing: Protected bootstrap owner&#39;s role, context/execution pins and exact finalized native binding must pair; simulated acceptance is not retained model memory.</li><li><strong class="pass">PASS</strong> scenario coverage boundary: complete: Exact per-message native acceptance, not model consumption</li></ul>
+    <details><summary>Original recorded scenario checks (instrumentation)</summary><ul><li><strong class="pass">PASS</strong> restart-fact: accepted; expected accepted; Exact per-message native acceptance, not model consumption</li><li><strong class="pass">PASS</strong> mock-send-count: 1; expected 1; simulated effects only</li><li><strong class="pass">PASS</strong> authored-body-preserved: UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved</li><li><strong class="pass">PASS</strong> one-owner-installation: Real registry.start installs exactly one fixture RunOwner</li><li><strong class="pass">PASS</strong> measured-load-calls: Actual instrumented methods: context=0; execution=2; pairing=4</li><li><strong class="pass">PASS</strong> durable-before-effect: Original owner intent → synchronous composition persistence → single mock effect</li><li><strong class="pass">PASS</strong> exact-body-only: No context prefix, role, framework, index, Pickup or Session selected</li><li><strong class="pass">PASS</strong> real-execution-and-durable-pairing: Execution-only real validator plus accepted exact owner-journal source/role/context/execution pairing; zero context loads including callbacks</li></ul></details><details><summary>Projection provenance</summary><pre>[
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/ordinary/events.jsonl&quot;,
+    &quot;sequence&quot;: 6,
+    &quot;kind&quot;: &quot;submission&quot;
+  },
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/ordinary/events.jsonl&quot;,
+    &quot;sequence&quot;: 7,
+    &quot;kind&quot;: &quot;dispatch&quot;
+  },
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/ordinary/events.jsonl&quot;,
+    &quot;sequence&quot;: 10,
+    &quot;kind&quot;: &quot;dispatch&quot;
+  }
+]</pre></details></section>
+<section><h2>update — Explicit fixture Session root A → B update</h2><p><strong>PASS</strong> · Recovered fact: <strong>accepted (simulated only)</strong> · Expected: accepted (simulated only)</p>
+    <p>Coverage: <strong>complete</strong> · Source: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/update/events.jsonl</p><p>Coverage reason: No additional coverage reason.</p><p>Projection: Exact per-message native acceptance, not model consumption</p>
+    <details><summary>Exact original query</summary><pre>{
+  &quot;identity&quot;: {
+    &quot;source&quot;: {
+      &quot;harnessId&quot;: &quot;mock-context-demo&quot;,
+      &quot;sessionId&quot;: &quot;c664b96d-bc48-4cc0-9135-876a15c89469&quot;,
+      &quot;authorityId&quot;: &quot;fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e&quot;,
+      &quot;nativeSessionId&quot;: &quot;fixture-native-51a3201e-7be3-4ba7-afcf-ed475e0d5daa&quot;,
+      &quot;cwd&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout&quot;
+    },
+    &quot;runId&quot;: &quot;4418721c-9918-4bd7-856c-21a2f0bc2867&quot;,
+    &quot;nativeCommandId&quot;: &quot;fixture-message-25ef46d3-b765-4335-8133-d44d06cc9874&quot;
+  },
+  &quot;messageId&quot;: &quot;fixture-message-25ef46d3-b765-4335-8133-d44d06cc9874&quot;
+}</pre></details><div class="messages"><article><h3>Authored body</h3><pre>﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre><p>Structured UTF-8 range: 767 + 143 bytes</p><p>SHA-256: <code>ba283d6d1837bcd64aaf70ca8e52e174311931a7c8391fdc3db06e39cc51ac5d</code></p></article>
+      <article><h3>Exact recorded outgoing transport</h3><details open><summary>910 UTF-8 bytes</summary><pre>[SANE CONTEXT MESSAGE v1]
+SANE context update: the selected changed details supersede corresponding earlier details. Other context remains unchanged unless explicitly stated.
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;session&quot;,&quot;category&quot;:&quot;session&quot;,&quot;source&quot;:&quot;fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session&quot;,&quot;revision&quot;:&quot;fixture-root-B&quot;,&quot;reason&quot;:&quot;Explicit synthetic root selection changed A → B&quot;,&quot;bytes&quot;:225}]
+# Session
+Synthetic experiment-owned session only.
+root: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout/roots/B
+No App project or workstream records exist.
+[/SANE CONTEXT SEGMENT]
+[SANE AUTHORED BODY {&quot;bytes&quot;:143}]
+﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre></details><p>SHA-256: <code>4c5ccd9d383ba2d2b1f58cd0b8b863b664a9e4d101f3f6bde35fd0eaefc4efe0</code></p></article></div>
+      <p>Placement: <code>{&quot;kind&quot;:&quot;selected&quot;,&quot;purpose&quot;:&quot;update&quot;}</code> · Origin: context-update · Package revision: <code>none</code></p><p>Ordered selection SHA-256: <code>81bd0f2cde6f591d7c3a141275ebf9dcbe9ff61a85cab091ab12b8e3185e19fb</code></p>
+      <h3>Selected segments</h3><div class="table"><table><thead><tr><th>ID / category</th><th>Source / revision</th><th>Reason</th><th>UTF-8 range</th><th>SHA-256</th></tr></thead><tbody><tr><td>session / session</td><td>fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session<br><code>fixture-root-B</code></td><td>Explicit synthetic root selection changed A → B</td><td>482 + 225 bytes</td><td><code>9b1bac0c959c3e1b28c651a738b67364eaceaef849676a7da168b992c96810af</code></td></tr></tbody></table></div><details><summary>Structured segment provenance</summary><pre>[
+  {
+    &quot;id&quot;: &quot;session&quot;,
+    &quot;category&quot;: &quot;session&quot;,
+    &quot;sha256&quot;: &quot;9b1bac0c959c3e1b28c651a738b67364eaceaef849676a7da168b992c96810af&quot;,
+    &quot;reason&quot;: &quot;Explicit synthetic root selection changed A → B&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;fragment&quot;,
+      &quot;source&quot;: &quot;fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session&quot;,
+      &quot;revision&quot;: &quot;fixture-root-B&quot;
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 482,
+      &quot;length&quot;: 225
+    }
+  }
+]</pre></details><details><summary>Recorded instrumentation trace</summary><pre>prepare:start
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+pairing:read-same-owner-journal
+gate:sync-source-ownership-cancel
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+pairing:read-same-owner-journal
+gate:sync-source-ownership-cancel
+prepare:complete
+readiness:mocked
+gate:sync-source-ownership-cancel
+owner:installed-once
+adapter:pending-captured
+adapter:controlled-await
+revalidate:after-await
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+pairing:read-same-owner-journal
+gate:sync-source-ownership-cancel
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+pairing:read-same-owner-journal
+gate:sync-source-ownership-cancel
+adapter:read-actual-pending
+original:beforeNative
+gate:sync-source-ownership-cancel
+original:intent-durable
+persist:before-native:attempted
+mock:effect
+adapter:read-actual-pending
+original:outcome:submitted
+persist:outcome:submitted
+mock:simulated-acceptance
+owner:settled
+owner:released
+settlement:mocked
+lifecycle:admission-admitted
+lifecycle:settlement-mocked-ready</pre></details><h3>Independent replay checks</h3><ul><li><strong class="pass">PASS</strong> recovered expected fact: Recovered accepted; manifest expectation accepted is not execution proof. Accepted means simulated harness acceptance only.</li><li><strong class="pass">PASS</strong> protected owner association: Exact original query dispatch/message/run/session/checkout association; no owner substitution.</li><li><strong class="pass">PASS</strong> recorded scenario assertions: Recorded scenario assertions, not independently recovered native effects.</li><li><strong class="pass">PASS</strong> recorded expected mock effects: Recorded instrumentation: 1 sends; expected 1.</li><li><strong class="pass">PASS</strong> durable mock effect instrumentation: Recorded effect counters match exact message-correlated mock hook records; these are simulated effects, not native proof.</li><li><strong class="pass">PASS</strong> durable attempt precedes mock effect: The same owner journal orders the fsynced attempt before each scripted mock effect.</li><li><strong class="pass">PASS</strong> successful scenario simulated acceptance: Successful mock scenario must independently recover exact correlated simulated acceptance; a changed manifest expectation cannot replace this fact.</li><li><strong class="pass">PASS</strong> exact recorded bytes and ranges: Production submission decoder validated UTF-8 ranges, framing, hashes and exact transport; this alone is not source trust.</li><li><strong class="pass">PASS</strong> independent protected role and pins: Verified owner-selected context/execution revisions and pinned role/asset bytes; not selected from the message.</li><li><strong class="pass">PASS</strong> Session-only explicit update: Exactly selected Session fragment; no role, framework or Pickup resend. Fragment semantics and loader counters remain recorded scenario instrumentation.</li><li><strong class="pass">PASS</strong> scenario coverage boundary: complete: Exact per-message native acceptance, not model consumption</li></ul>
+    <details><summary>Original recorded scenario checks (instrumentation)</summary><ul><li><strong class="pass">PASS</strong> restart-fact: accepted; expected accepted; Exact per-message native acceptance, not model consumption</li><li><strong class="pass">PASS</strong> mock-send-count: 1; expected 1; simulated effects only</li><li><strong class="pass">PASS</strong> authored-body-preserved: UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved</li><li><strong class="pass">PASS</strong> one-owner-installation: Real registry.start installs exactly one fixture RunOwner</li><li><strong class="pass">PASS</strong> measured-load-calls: Actual instrumented methods: context=4; execution=4; pairing=8</li><li><strong class="pass">PASS</strong> durable-before-effect: Original owner intent → synchronous composition persistence → single mock effect</li><li><strong class="pass">PASS</strong> only-selected-session: Only fixture Session root B; no role/framework/index/Pickup resend</li></ul></details><details><summary>Projection provenance</summary><pre>[
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/update/events.jsonl&quot;,
+    &quot;sequence&quot;: 6,
+    &quot;kind&quot;: &quot;submission&quot;
+  },
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/update/events.jsonl&quot;,
+    &quot;sequence&quot;: 7,
+    &quot;kind&quot;: &quot;dispatch&quot;
+  },
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/update/events.jsonl&quot;,
+    &quot;sequence&quot;: 10,
+    &quot;kind&quot;: &quot;dispatch&quot;
+  }
+]</pre></details></section>
+<section><h2>stale-source — Source drift across a controlled await / preparation rejection</h2><p><strong>PASS</strong> · Recovered fact: <strong>no-evidence</strong> · Expected: no-evidence</p>
+    <p>Coverage: <strong>complete</strong> · Source: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/stale-source/events.jsonl</p><p>Coverage reason: No additional coverage reason.</p><p>Projection: No exact per-message submission or boundary evidence; this is not a fresh-session claim</p>
+    <details><summary>Exact original query</summary><pre>{
+  &quot;identity&quot;: {
+    &quot;source&quot;: {
+      &quot;harnessId&quot;: &quot;mock-context-demo&quot;,
+      &quot;sessionId&quot;: &quot;eea33de4-0f56-4e03-91f2-93e20193e643&quot;,
+      &quot;authorityId&quot;: &quot;fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e&quot;,
+      &quot;nativeSessionId&quot;: &quot;fixture-native-774e7fc7-1a3e-4737-8c43-4eece191b439&quot;,
+      &quot;cwd&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout&quot;
+    },
+    &quot;runId&quot;: &quot;54afa272-483d-4c64-84a1-7029994d1ee0&quot;,
+    &quot;nativeCommandId&quot;: &quot;fixture-message-5b423021-b7b9-4fa0-82b4-affffc6cff09&quot;
+  },
+  &quot;messageId&quot;: &quot;fixture-message-5b423021-b7b9-4fa0-82b4-affffc6cff09&quot;
+}</pre></details><h3>Authored body / transport</h3><p>Unavailable: no valid exact submission was recovered. No message bytes are synthesized from expectations or errors.</p><details><summary>Recorded instrumentation trace</summary><pre>load:context
+prepare:start
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+prepare:complete
+readiness:mocked
+gate:sync-source-ownership-cancel
+owner:installed-once
+adapter:pending-captured
+adapter:controlled-await
+source:drifted
+revalidate:after-await
+preparation:rejection-durable
+original:outcome:unknown
+owner:settled
+owner:released
+lifecycle:admission-unconfirmed
+lifecycle:settlement-denied</pre></details><h3>Independent replay checks</h3><ul><li><strong class="pass">PASS</strong> recovered expected fact: Recovered no-evidence; manifest expectation no-evidence is not execution proof. Accepted means simulated harness acceptance only.</li><li><strong class="pass">PASS</strong> protected owner association: Exact original query dispatch/message/run/session/checkout association; no owner substitution.</li><li><strong class="pass">PASS</strong> recorded scenario assertions: Recorded scenario assertions, not independently recovered native effects.</li><li><strong class="pass">PASS</strong> recorded expected mock effects: Recorded instrumentation: 0 sends; expected 0.</li><li><strong class="pass">PASS</strong> durable mock effect instrumentation: Recorded effect counters match exact message-correlated mock hook records; these are simulated effects, not native proof.</li><li><strong class="pass">PASS</strong> exact recorded bytes and ranges: No exact submission recorded; no transport body is invented.</li><li><strong class="pass">PASS</strong> independent protected role and pins: Verified owner-selected context/execution revisions and pinned role/asset bytes; not selected from the message.</li><li><strong class="pass">PASS</strong> recorded failure has no mock effects: Zero sends is recorded mock instrumentation; durable projection independently must not establish submission/acceptance.</li><li><strong class="pass">PASS</strong> scenario coverage boundary: complete: No exact per-message submission or boundary evidence; this is not a fresh-session claim</li></ul>
+    <details><summary>Original recorded scenario checks (instrumentation)</summary><ul><li><strong class="pass">PASS</strong> restart-fact: no-evidence; expected no-evidence; No exact per-message submission or boundary evidence; this is not a fresh-session claim</li><li><strong class="pass">PASS</strong> mock-send-count: 0; expected 0; simulated effects only</li><li><strong class="pass">PASS</strong> authored-body-preserved: UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved</li><li><strong class="pass">PASS</strong> one-owner-installation: Real registry.start installs exactly one fixture RunOwner</li><li><strong class="pass">PASS</strong> measured-load-calls: Actual instrumented methods: context=6; execution=2; pairing=2</li><li><strong class="pass">PASS</strong> uncertified-preparation-rejection: Controlled await changed live source; rejection journaled, no local-refusal or freshness claim</li></ul></details><details><summary>Projection provenance</summary><pre>[]</pre></details><h3>Recorded scenario error</h3><pre>Error: Fixture source changed during controlled await</pre></section>
+<section><h2>owner-refusal — Original synchronous owner pause / certified withholding</h2><p><strong>PASS</strong> · Recovered fact: <strong>withheld</strong> · Expected: withheld</p>
+    <p>Coverage: <strong>complete</strong> · Source: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/owner-refusal/events.jsonl</p><p>Coverage reason: No additional coverage reason.</p><p>Projection: Explicit correlated non-submission; no activation established</p>
+    <details><summary>Exact original query</summary><pre>{
+  &quot;identity&quot;: {
+    &quot;source&quot;: {
+      &quot;harnessId&quot;: &quot;mock-context-demo&quot;,
+      &quot;sessionId&quot;: &quot;0e5cf77a-4482-4bf2-ba6f-63a8356d23fa&quot;,
+      &quot;authorityId&quot;: &quot;fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e&quot;,
+      &quot;nativeSessionId&quot;: &quot;fixture-native-263ac6d8-5405-4998-ab75-9a4d31b10d1f&quot;,
+      &quot;cwd&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout&quot;
+    },
+    &quot;runId&quot;: &quot;8dc7dd58-37ca-4583-8534-b2297ab02671&quot;,
+    &quot;nativeCommandId&quot;: &quot;fixture-message-2e5d32e1-813a-4781-857c-5ba42affd2d9&quot;
+  },
+  &quot;messageId&quot;: &quot;fixture-message-2e5d32e1-813a-4781-857c-5ba42affd2d9&quot;
+}</pre></details><div class="messages"><article><h3>Authored body</h3><pre>﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre><p>Structured UTF-8 range: 9049 + 143 bytes</p><p>SHA-256: <code>ba283d6d1837bcd64aaf70ca8e52e174311931a7c8391fdc3db06e39cc51ac5d</code></p></article>
+      <article><h3>Exact recorded outgoing transport</h3><details open><summary>9192 UTF-8 bytes</summary><pre>[SANE CONTEXT MESSAGE v1]
+SANE activation: these selected procedures and session details are composed on the user&#39;s behalf. The user directs the work and may change these conventions.
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;role.assistant.engineering&quot;,&quot;category&quot;:&quot;role&quot;,&quot;source&quot;:&quot;context/agents/sane/assistant/engineering.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Selected main role activation&quot;,&quot;bytes&quot;:1577}]
+
+You are a SANE Engineering Assistant Agent.
+
+SANE is a structured, reasonable way for people and agents to acquire and apply knowledge in service of deliberate change.
+
+You write and update one document per solution area in `design/solutions/&lt;name&gt;.md`.
+Start from the approved `design/SDD.md` and follow the supplied solution template.
+Work with the user to make technical implementation decisions.
+
+Perform the following setup steps:
+
+1. Use the workstream, workstream root, and implementation root from your SANE Session context. If no workstream is listed, use `sane_link` with your phase slot and the agreed `workstream` to establish membership.
+2. Run commands in the implementation root and resolve workstream documents from the workstream root.
+3. Read `sane-assistant-engineering-pickup`, complete its steps, and report readiness. Wait for user confirmation before proceeding, including when the initial message is a handoff.
+
+Once done, perform your role steps:
+
+1. When the user confirms, read `sane-assistant-engineering-assistance` and follow it for the work and discussion with the user.
+2. For later handoffs, follow Assistance. Give each outgoing `sane_handoff` a distinct `requestId`; recover delivery with `sane_handoff_status` using that ID. Finish independent work and end your turn; replies arrive as separate handoffs.
+3. When ready for delivery, read `sane-assistant-engineering-delivery` and follow its steps.
+4. If further changes are requested, return to Assistance.
+
+If you get blocked in any of those steps stop and report to the user immediately.
+
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;framework.core&quot;,&quot;category&quot;:&quot;framework&quot;,&quot;source&quot;:&quot;context/framework/core.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Required standing framework&quot;,&quot;bytes&quot;:1946}]
+# SANE Context
+
+## SANE
+
+SANE means **Sane Agentic Noesis Edifice**. It is a structured, reasonable, and agile way for people and agents to acquire and apply knowledge in service of deliberate change.
+
+A **workstream** groups the documents and state for an undertaking. Its documents describe current requirements, solutions, and outcomes; the CLI and sessions hold progress and collaboration history. Implementation happens in the target repository, not in a separate duplicate tree.
+
+The user directs the work and makes decisions with the assistant.
+
+There are 2 types of agents: **Assistants**, and **Workers**. Assistants work directly with the user while workers can be run by assistants to perform tasks.
+
+You shall never talk about or reference workstream specific language or workflow in the implementation repository contents. Keep the meta-language separate from the implementation repository.
+
+## Context
+
+**Knowledge Gaps** are missing understanding needed to make a product,
+design, or implementation decision—for example, how a feature should
+behave or how a dependency integrates with the solution. They are often
+visible in Design and Engineering documents.
+
+**Operational Gaps** are missing procedures, tooling, or repository
+context needed for agents to carry out assigned work—for example, how a
+worker locates relevant code, prepares the environment, runs verification,
+or updates artifacts. They are often visible in Planning and Execution
+documents.
+
+**Context Artifacts** preserve reusable knowledge and operational guidance
+for future work. Skills and documentation are examples; the term is
+independent of how that context is represented or stored.
+
+## Lifecycle
+
+Workstreams have a Main Track and Support Tracks.
+
+The Main Track follows four phases: Design → Engineering → Planning → Execution.
+
+Support Tracks may run alongside the Main Track to help resolve Knowledge Gaps and Operational Gaps along the way.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;framework.assistant&quot;,&quot;category&quot;:&quot;framework&quot;,&quot;source&quot;:&quot;context/framework/assistant.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Required standing framework&quot;,&quot;bytes&quot;:1156}]
+## State
+
+Follow your role&#39;s skills for the assigned work and coordination with other sessions.
+
+View current status with `sane view` and use the CLI to record state.
+
+1. **Pickup:** at new session start, read the assigned context and check required
+   inputs. Confirm readiness and wait for the user to proceed, including when
+   the session starts from a handoff.
+2. **Assistance:** work with the user within the agreed scope. This may include
+   handoff or handling updates from other sessions, following your role&#39;s skill.
+3. **Delivery:** validate outputs with `sane validate &lt;phase&gt;` and present them
+   for user review. Delivery may include handoff when the user requests it.
+   If revisions are requested, return to Assistance and then Delivery.
+
+## State Statuses
+
+- `pending` — Not started.
+- `in_progress` — Session is in progress.
+- `delivered` — Phase work has been delivered.
+
+A worker notification or consultation is not completion. Respond to an authorized ongoing child with `sane_worker_message`; retain its worker identity. Dispatch dependent work only after its terminal outcome. Ending your own turn permits asynchronous replies.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;procedure-index&quot;,&quot;category&quot;:&quot;procedure-index&quot;,&quot;source&quot;:&quot;Pinned procedure index&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Selective loading from pinned files&quot;,&quot;bytes&quot;:1511}]
+# SANE private procedures
+
+Resolve the SANE lifecycle procedure names in your role instructions using this index and the ordinary file-reading tool, rather than native Skill discovery. Other repository skills retain their normal loading mechanism.
+
+Load only the procedure needed for the current lifecycle step. Assistant activation includes the initial Pickup procedure; this index alone does not select or repeat Pickup on update or resume.
+
+- sane-assistant-engineering-assistance: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-assistance/SKILL.md — Use after Engineering Pickup confirmation for solution work and mid-session requests.
+
+- sane-assistant-engineering-delivery: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-delivery/SKILL.md — Use when preparing Engineering solution specs for review and delivery.
+
+- sane-assistant-engineering-pickup: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md — Use when starting a new SANE Engineering Assistant session.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;sane-assistant-engineering-pickup&quot;,&quot;category&quot;:&quot;procedure&quot;,&quot;source&quot;:&quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Initial lifecycle procedure&quot;,&quot;bytes&quot;:687}]
+
+# SANE Engineering Assistant — Pickup
+
+## Workstream Setup
+
+1. Run `sane provide engineering` to supply missing starters.
+2. Run `sane view` and link this session with `sane_link` (`slot: &quot;engineering&quot;`).
+
+## Required Inputs
+
+Read `design/SDD.md`, `&lt;workstream&gt;/resources/SOLUTION_SPEC_TEMPLATE.md`, and any existing solution specs relevant to the assignment. Ask the user about missing or unclear inputs.
+
+## Initial Handoff Context
+
+If the initial message is a handoff, retain the request, referenced documents, and qualified sender identity from `From:`.
+
+## Readiness and User Confirmation
+
+Summarize the current state and solution areas to work on. Wait for the user to proceed.
+
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;session&quot;,&quot;category&quot;:&quot;session&quot;,&quot;source&quot;:&quot;fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session&quot;,&quot;revision&quot;:&quot;fixture-root-A&quot;,&quot;reason&quot;:&quot;Explicit synthetic activation state&quot;,&quot;bytes&quot;:225}]
+# Session
+Synthetic experiment-owned session only.
+root: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout/roots/A
+No App project or workstream records exist.
+[/SANE CONTEXT SEGMENT]
+[SANE AUTHORED BODY {&quot;bytes&quot;:143}]
+﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre></details><p>SHA-256: <code>9001549bc5f1f15455d3f3f8053cff208d78fe0dc022eb59d85c95b4e0124ef8</code></p></article></div>
+      <p>Placement: <code>{&quot;kind&quot;:&quot;bootstrap&quot;}</code> · Origin: activation · Package revision: <code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></p><p>Ordered selection SHA-256: <code>20f39fb8ff323c9b63b30a584fc8a5ccbca417729cfc09972b9e17a3669a028f</code></p>
+      <h3>Selected segments</h3><div class="table"><table><thead><tr><th>ID / category</th><th>Source / revision</th><th>Reason</th><th>UTF-8 range</th><th>SHA-256</th></tr></thead><tbody><tr><td>role.assistant.engineering / role</td><td>context/agents/sane/assistant/engineering.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Selected main role activation</td><td>449 + 1577 bytes</td><td><code>84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0</code></td></tr><tr><td>framework.core / framework</td><td>context/framework/core.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Required standing framework</td><td>2288 + 1946 bytes</td><td><code>0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421</code></td></tr><tr><td>framework.assistant / framework</td><td>context/framework/assistant.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Required standing framework</td><td>4506 + 1156 bytes</td><td><code>6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43</code></td></tr><tr><td>procedure-index / procedure-index</td><td>Pinned procedure index<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Selective loading from pinned files</td><td>5936 + 1511 bytes</td><td><code>807295e5870d16017717efc8ee1d7463d5a3fb30d337d27bfb5acf057a03d436</code></td></tr><tr><td>sane-assistant-engineering-pickup / procedure</td><td>context/skills/sane-assistant-engineering-pickup/SKILL.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Initial lifecycle procedure</td><td>7759 + 687 bytes</td><td><code>0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59</code></td></tr><tr><td>session / session</td><td>fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session<br><code>fixture-root-A</code></td><td>Explicit synthetic activation state</td><td>8764 + 225 bytes</td><td><code>10518629436f44987a49253ddd2746dd1ff23a3c0a7f7f655d1907e746c5a609</code></td></tr></tbody></table></div><details><summary>Structured segment provenance</summary><pre>[
+  {
+    &quot;id&quot;: &quot;role.assistant.engineering&quot;,
+    &quot;category&quot;: &quot;role&quot;,
+    &quot;sha256&quot;: &quot;84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0&quot;,
+    &quot;reason&quot;: &quot;Selected main role activation&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;role.assistant.engineering&quot;,
+        &quot;source&quot;: &quot;context/agents/sane/assistant/engineering.md&quot;,
+        &quot;sha256&quot;: &quot;84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/role.assistant.engineering.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 449,
+      &quot;length&quot;: 1577
+    }
+  },
+  {
+    &quot;id&quot;: &quot;framework.core&quot;,
+    &quot;category&quot;: &quot;framework&quot;,
+    &quot;sha256&quot;: &quot;0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421&quot;,
+    &quot;reason&quot;: &quot;Required standing framework&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;framework.core&quot;,
+        &quot;source&quot;: &quot;context/framework/core.md&quot;,
+        &quot;sha256&quot;: &quot;0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/framework.core.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 2288,
+      &quot;length&quot;: 1946
+    }
+  },
+  {
+    &quot;id&quot;: &quot;framework.assistant&quot;,
+    &quot;category&quot;: &quot;framework&quot;,
+    &quot;sha256&quot;: &quot;6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43&quot;,
+    &quot;reason&quot;: &quot;Required standing framework&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;framework.assistant&quot;,
+        &quot;source&quot;: &quot;context/framework/assistant.md&quot;,
+        &quot;sha256&quot;: &quot;6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/framework.assistant.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 4506,
+      &quot;length&quot;: 1156
+    }
+  },
+  {
+    &quot;id&quot;: &quot;procedure-index&quot;,
+    &quot;category&quot;: &quot;procedure-index&quot;,
+    &quot;sha256&quot;: &quot;807295e5870d16017717efc8ee1d7463d5a3fb30d337d27bfb5acf057a03d436&quot;,
+    &quot;reason&quot;: &quot;Selective loading from pinned files&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;procedure-index&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;assets&quot;: [
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-assistance&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-assistance/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;a122256ecab01a9ecb487d3352ac69bea736668bb4112e35dfb392dbd7b5dbb6&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-assistance/SKILL.md&quot;
+        },
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-delivery&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-delivery/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;689edd20ee8d920f45a15d9849d2d3f3145a0ceede1d88f9be084895e50addac&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-delivery/SKILL.md&quot;
+        },
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md&quot;
+        }
+      ]
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 5936,
+      &quot;length&quot;: 1511
+    }
+  },
+  {
+    &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+    &quot;category&quot;: &quot;procedure&quot;,
+    &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+    &quot;reason&quot;: &quot;Initial lifecycle procedure&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+        &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,
+        &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 7759,
+      &quot;length&quot;: 687
+    }
+  },
+  {
+    &quot;id&quot;: &quot;session&quot;,
+    &quot;category&quot;: &quot;session&quot;,
+    &quot;sha256&quot;: &quot;10518629436f44987a49253ddd2746dd1ff23a3c0a7f7f655d1907e746c5a609&quot;,
+    &quot;reason&quot;: &quot;Explicit synthetic activation state&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;fragment&quot;,
+      &quot;source&quot;: &quot;fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session&quot;,
+      &quot;revision&quot;: &quot;fixture-root-A&quot;
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 8764,
+      &quot;length&quot;: 225
+    }
+  }
+]</pre></details><details><summary>Recorded instrumentation trace</summary><pre>load:context
+prepare:start
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+prepare:complete
+readiness:mocked
+gate:sync-source-ownership-cancel
+owner:installed-once
+adapter:pending-captured
+adapter:controlled-await
+revalidate:after-await
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+adapter:read-actual-pending
+original:beforeNative
+gate:sync-source-ownership-cancel
+original:pause-durable
+original:certified-refusal:Error: Fixture owner paused before native intent; cause: Error: Fixture owner paused before native intent
+adapter:read-actual-pending
+original:outcome:not-submitted
+persist:outcome:not-submitted
+owner:settled
+owner:released
+lifecycle:admission-unconfirmed
+lifecycle:settlement-denied</pre></details><h3>Independent replay checks</h3><ul><li><strong class="pass">PASS</strong> recovered expected fact: Recovered withheld; manifest expectation withheld is not execution proof. Accepted means simulated harness acceptance only.</li><li><strong class="pass">PASS</strong> protected owner association: Exact original query dispatch/message/run/session/checkout association; no owner substitution.</li><li><strong class="pass">PASS</strong> recorded scenario assertions: Recorded scenario assertions, not independently recovered native effects.</li><li><strong class="pass">PASS</strong> recorded expected mock effects: Recorded instrumentation: 0 sends; expected 0.</li><li><strong class="pass">PASS</strong> durable mock effect instrumentation: Recorded effect counters match exact message-correlated mock hook records; these are simulated effects, not native proof.</li><li><strong class="pass">PASS</strong> exact recorded bytes and ranges: Production submission decoder validated UTF-8 ranges, framing, hashes and exact transport; this alone is not source trust.</li><li><strong class="pass">PASS</strong> independent protected role and pins: Verified owner-selected context/execution revisions and pinned role/asset bytes; not selected from the message.</li><li><strong class="pass">PASS</strong> recorded failure has no mock effects: Zero sends is recorded mock instrumentation; durable projection independently must not establish submission/acceptance.</li><li><strong class="pass">PASS</strong> genuine owner withholding recovered: Only exact correlated owner non-submission establishes withholding; errors or an edited expectation cannot certify refusal.</li><li><strong class="pass">PASS</strong> scenario coverage boundary: complete: Explicit correlated non-submission; no activation established</li></ul>
+    <details><summary>Original recorded scenario checks (instrumentation)</summary><ul><li><strong class="pass">PASS</strong> restart-fact: withheld; expected withheld; Explicit correlated non-submission; no activation established</li><li><strong class="pass">PASS</strong> mock-send-count: 0; expected 0; simulated effects only</li><li><strong class="pass">PASS</strong> authored-body-preserved: UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved</li><li><strong class="pass">PASS</strong> one-owner-installation: Real registry.start installs exactly one fixture RunOwner</li><li><strong class="pass">PASS</strong> measured-load-calls: Actual instrumented methods: context=11; execution=4; pairing=4</li><li><strong class="pass">PASS</strong> genuine-owner-refusal-nonfatal: Original synchronous pause certifies refusal; registry finish durably records withholding, without termination</li></ul></details><details><summary>Projection provenance</summary><pre>[
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/owner-refusal/events.jsonl&quot;,
+    &quot;sequence&quot;: 7,
+    &quot;kind&quot;: &quot;submission&quot;
+  },
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/owner-refusal/events.jsonl&quot;,
+    &quot;sequence&quot;: 8,
+    &quot;kind&quot;: &quot;dispatch&quot;
+  }
+]</pre></details><h3>Recorded scenario error</h3><pre>Error: Fixture owner paused before native intent; cause: Error: Fixture owner paused before native intent</pre></section>
+<section><h2>persistence-failure — Uncertified refusal-class persistence fault / fail closed</h2><p><strong>PASS</strong> · Recovered fact: <strong>unknown</strong> · Expected: unknown</p>
+    <p>Coverage: <strong>partial</strong> · Source: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/persistence-failure/events.jsonl</p><p>Coverage reason: Owner closed this journal with partial coverage; Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; Owner health failure: Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; Owner health failure: Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; Owner health failure: Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal</p><p>Projection: Evidence coverage is not complete; missing history cannot establish freshness or admission</p>
+    <details><summary>Exact original query</summary><pre>{
+  &quot;identity&quot;: {
+    &quot;source&quot;: {
+      &quot;harnessId&quot;: &quot;mock-context-demo&quot;,
+      &quot;sessionId&quot;: &quot;c624d057-5da7-4736-a86c-49b0aa1935d8&quot;,
+      &quot;authorityId&quot;: &quot;fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e&quot;,
+      &quot;nativeSessionId&quot;: &quot;fixture-native-e5439bf8-f3e1-4916-adcc-fce01f275b68&quot;,
+      &quot;cwd&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout&quot;
+    },
+    &quot;runId&quot;: &quot;74e37eb5-3a8f-482b-b678-1f312e09b61e&quot;,
+    &quot;nativeCommandId&quot;: &quot;fixture-message-7c6ff948-0cee-4a75-8e8b-6d6586ae0933&quot;
+  },
+  &quot;messageId&quot;: &quot;fixture-message-7c6ff948-0cee-4a75-8e8b-6d6586ae0933&quot;
+}</pre></details><div class="messages"><article><h3>Authored body</h3><pre>﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre><p>Structured UTF-8 range: 9049 + 143 bytes</p><p>SHA-256: <code>ba283d6d1837bcd64aaf70ca8e52e174311931a7c8391fdc3db06e39cc51ac5d</code></p></article>
+      <article><h3>Exact recorded outgoing transport</h3><details open><summary>9192 UTF-8 bytes</summary><pre>[SANE CONTEXT MESSAGE v1]
+SANE activation: these selected procedures and session details are composed on the user&#39;s behalf. The user directs the work and may change these conventions.
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;role.assistant.engineering&quot;,&quot;category&quot;:&quot;role&quot;,&quot;source&quot;:&quot;context/agents/sane/assistant/engineering.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Selected main role activation&quot;,&quot;bytes&quot;:1577}]
+
+You are a SANE Engineering Assistant Agent.
+
+SANE is a structured, reasonable way for people and agents to acquire and apply knowledge in service of deliberate change.
+
+You write and update one document per solution area in `design/solutions/&lt;name&gt;.md`.
+Start from the approved `design/SDD.md` and follow the supplied solution template.
+Work with the user to make technical implementation decisions.
+
+Perform the following setup steps:
+
+1. Use the workstream, workstream root, and implementation root from your SANE Session context. If no workstream is listed, use `sane_link` with your phase slot and the agreed `workstream` to establish membership.
+2. Run commands in the implementation root and resolve workstream documents from the workstream root.
+3. Read `sane-assistant-engineering-pickup`, complete its steps, and report readiness. Wait for user confirmation before proceeding, including when the initial message is a handoff.
+
+Once done, perform your role steps:
+
+1. When the user confirms, read `sane-assistant-engineering-assistance` and follow it for the work and discussion with the user.
+2. For later handoffs, follow Assistance. Give each outgoing `sane_handoff` a distinct `requestId`; recover delivery with `sane_handoff_status` using that ID. Finish independent work and end your turn; replies arrive as separate handoffs.
+3. When ready for delivery, read `sane-assistant-engineering-delivery` and follow its steps.
+4. If further changes are requested, return to Assistance.
+
+If you get blocked in any of those steps stop and report to the user immediately.
+
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;framework.core&quot;,&quot;category&quot;:&quot;framework&quot;,&quot;source&quot;:&quot;context/framework/core.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Required standing framework&quot;,&quot;bytes&quot;:1946}]
+# SANE Context
+
+## SANE
+
+SANE means **Sane Agentic Noesis Edifice**. It is a structured, reasonable, and agile way for people and agents to acquire and apply knowledge in service of deliberate change.
+
+A **workstream** groups the documents and state for an undertaking. Its documents describe current requirements, solutions, and outcomes; the CLI and sessions hold progress and collaboration history. Implementation happens in the target repository, not in a separate duplicate tree.
+
+The user directs the work and makes decisions with the assistant.
+
+There are 2 types of agents: **Assistants**, and **Workers**. Assistants work directly with the user while workers can be run by assistants to perform tasks.
+
+You shall never talk about or reference workstream specific language or workflow in the implementation repository contents. Keep the meta-language separate from the implementation repository.
+
+## Context
+
+**Knowledge Gaps** are missing understanding needed to make a product,
+design, or implementation decision—for example, how a feature should
+behave or how a dependency integrates with the solution. They are often
+visible in Design and Engineering documents.
+
+**Operational Gaps** are missing procedures, tooling, or repository
+context needed for agents to carry out assigned work—for example, how a
+worker locates relevant code, prepares the environment, runs verification,
+or updates artifacts. They are often visible in Planning and Execution
+documents.
+
+**Context Artifacts** preserve reusable knowledge and operational guidance
+for future work. Skills and documentation are examples; the term is
+independent of how that context is represented or stored.
+
+## Lifecycle
+
+Workstreams have a Main Track and Support Tracks.
+
+The Main Track follows four phases: Design → Engineering → Planning → Execution.
+
+Support Tracks may run alongside the Main Track to help resolve Knowledge Gaps and Operational Gaps along the way.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;framework.assistant&quot;,&quot;category&quot;:&quot;framework&quot;,&quot;source&quot;:&quot;context/framework/assistant.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Required standing framework&quot;,&quot;bytes&quot;:1156}]
+## State
+
+Follow your role&#39;s skills for the assigned work and coordination with other sessions.
+
+View current status with `sane view` and use the CLI to record state.
+
+1. **Pickup:** at new session start, read the assigned context and check required
+   inputs. Confirm readiness and wait for the user to proceed, including when
+   the session starts from a handoff.
+2. **Assistance:** work with the user within the agreed scope. This may include
+   handoff or handling updates from other sessions, following your role&#39;s skill.
+3. **Delivery:** validate outputs with `sane validate &lt;phase&gt;` and present them
+   for user review. Delivery may include handoff when the user requests it.
+   If revisions are requested, return to Assistance and then Delivery.
+
+## State Statuses
+
+- `pending` — Not started.
+- `in_progress` — Session is in progress.
+- `delivered` — Phase work has been delivered.
+
+A worker notification or consultation is not completion. Respond to an authorized ongoing child with `sane_worker_message`; retain its worker identity. Dispatch dependent work only after its terminal outcome. Ending your own turn permits asynchronous replies.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;procedure-index&quot;,&quot;category&quot;:&quot;procedure-index&quot;,&quot;source&quot;:&quot;Pinned procedure index&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Selective loading from pinned files&quot;,&quot;bytes&quot;:1511}]
+# SANE private procedures
+
+Resolve the SANE lifecycle procedure names in your role instructions using this index and the ordinary file-reading tool, rather than native Skill discovery. Other repository skills retain their normal loading mechanism.
+
+Load only the procedure needed for the current lifecycle step. Assistant activation includes the initial Pickup procedure; this index alone does not select or repeat Pickup on update or resume.
+
+- sane-assistant-engineering-assistance: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-assistance/SKILL.md — Use after Engineering Pickup confirmation for solution work and mid-session requests.
+
+- sane-assistant-engineering-delivery: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-delivery/SKILL.md — Use when preparing Engineering solution specs for review and delivery.
+
+- sane-assistant-engineering-pickup: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md — Use when starting a new SANE Engineering Assistant session.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;sane-assistant-engineering-pickup&quot;,&quot;category&quot;:&quot;procedure&quot;,&quot;source&quot;:&quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Initial lifecycle procedure&quot;,&quot;bytes&quot;:687}]
+
+# SANE Engineering Assistant — Pickup
+
+## Workstream Setup
+
+1. Run `sane provide engineering` to supply missing starters.
+2. Run `sane view` and link this session with `sane_link` (`slot: &quot;engineering&quot;`).
+
+## Required Inputs
+
+Read `design/SDD.md`, `&lt;workstream&gt;/resources/SOLUTION_SPEC_TEMPLATE.md`, and any existing solution specs relevant to the assignment. Ask the user about missing or unclear inputs.
+
+## Initial Handoff Context
+
+If the initial message is a handoff, retain the request, referenced documents, and qualified sender identity from `From:`.
+
+## Readiness and User Confirmation
+
+Summarize the current state and solution areas to work on. Wait for the user to proceed.
+
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;session&quot;,&quot;category&quot;:&quot;session&quot;,&quot;source&quot;:&quot;fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session&quot;,&quot;revision&quot;:&quot;fixture-root-A&quot;,&quot;reason&quot;:&quot;Explicit synthetic activation state&quot;,&quot;bytes&quot;:225}]
+# Session
+Synthetic experiment-owned session only.
+root: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout/roots/A
+No App project or workstream records exist.
+[/SANE CONTEXT SEGMENT]
+[SANE AUTHORED BODY {&quot;bytes&quot;:143}]
+﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre></details><p>SHA-256: <code>9001549bc5f1f15455d3f3f8053cff208d78fe0dc022eb59d85c95b4e0124ef8</code></p></article></div>
+      <p>Placement: <code>{&quot;kind&quot;:&quot;bootstrap&quot;}</code> · Origin: activation · Package revision: <code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></p><p>Ordered selection SHA-256: <code>20f39fb8ff323c9b63b30a584fc8a5ccbca417729cfc09972b9e17a3669a028f</code></p>
+      <h3>Selected segments</h3><div class="table"><table><thead><tr><th>ID / category</th><th>Source / revision</th><th>Reason</th><th>UTF-8 range</th><th>SHA-256</th></tr></thead><tbody><tr><td>role.assistant.engineering / role</td><td>context/agents/sane/assistant/engineering.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Selected main role activation</td><td>449 + 1577 bytes</td><td><code>84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0</code></td></tr><tr><td>framework.core / framework</td><td>context/framework/core.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Required standing framework</td><td>2288 + 1946 bytes</td><td><code>0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421</code></td></tr><tr><td>framework.assistant / framework</td><td>context/framework/assistant.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Required standing framework</td><td>4506 + 1156 bytes</td><td><code>6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43</code></td></tr><tr><td>procedure-index / procedure-index</td><td>Pinned procedure index<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Selective loading from pinned files</td><td>5936 + 1511 bytes</td><td><code>807295e5870d16017717efc8ee1d7463d5a3fb30d337d27bfb5acf057a03d436</code></td></tr><tr><td>sane-assistant-engineering-pickup / procedure</td><td>context/skills/sane-assistant-engineering-pickup/SKILL.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Initial lifecycle procedure</td><td>7759 + 687 bytes</td><td><code>0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59</code></td></tr><tr><td>session / session</td><td>fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session<br><code>fixture-root-A</code></td><td>Explicit synthetic activation state</td><td>8764 + 225 bytes</td><td><code>10518629436f44987a49253ddd2746dd1ff23a3c0a7f7f655d1907e746c5a609</code></td></tr></tbody></table></div><details><summary>Structured segment provenance</summary><pre>[
+  {
+    &quot;id&quot;: &quot;role.assistant.engineering&quot;,
+    &quot;category&quot;: &quot;role&quot;,
+    &quot;sha256&quot;: &quot;84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0&quot;,
+    &quot;reason&quot;: &quot;Selected main role activation&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;role.assistant.engineering&quot;,
+        &quot;source&quot;: &quot;context/agents/sane/assistant/engineering.md&quot;,
+        &quot;sha256&quot;: &quot;84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/role.assistant.engineering.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 449,
+      &quot;length&quot;: 1577
+    }
+  },
+  {
+    &quot;id&quot;: &quot;framework.core&quot;,
+    &quot;category&quot;: &quot;framework&quot;,
+    &quot;sha256&quot;: &quot;0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421&quot;,
+    &quot;reason&quot;: &quot;Required standing framework&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;framework.core&quot;,
+        &quot;source&quot;: &quot;context/framework/core.md&quot;,
+        &quot;sha256&quot;: &quot;0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/framework.core.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 2288,
+      &quot;length&quot;: 1946
+    }
+  },
+  {
+    &quot;id&quot;: &quot;framework.assistant&quot;,
+    &quot;category&quot;: &quot;framework&quot;,
+    &quot;sha256&quot;: &quot;6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43&quot;,
+    &quot;reason&quot;: &quot;Required standing framework&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;framework.assistant&quot;,
+        &quot;source&quot;: &quot;context/framework/assistant.md&quot;,
+        &quot;sha256&quot;: &quot;6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/framework.assistant.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 4506,
+      &quot;length&quot;: 1156
+    }
+  },
+  {
+    &quot;id&quot;: &quot;procedure-index&quot;,
+    &quot;category&quot;: &quot;procedure-index&quot;,
+    &quot;sha256&quot;: &quot;807295e5870d16017717efc8ee1d7463d5a3fb30d337d27bfb5acf057a03d436&quot;,
+    &quot;reason&quot;: &quot;Selective loading from pinned files&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;procedure-index&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;assets&quot;: [
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-assistance&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-assistance/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;a122256ecab01a9ecb487d3352ac69bea736668bb4112e35dfb392dbd7b5dbb6&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-assistance/SKILL.md&quot;
+        },
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-delivery&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-delivery/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;689edd20ee8d920f45a15d9849d2d3f3145a0ceede1d88f9be084895e50addac&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-delivery/SKILL.md&quot;
+        },
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md&quot;
+        }
+      ]
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 5936,
+      &quot;length&quot;: 1511
+    }
+  },
+  {
+    &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+    &quot;category&quot;: &quot;procedure&quot;,
+    &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+    &quot;reason&quot;: &quot;Initial lifecycle procedure&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+        &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,
+        &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 7759,
+      &quot;length&quot;: 687
+    }
+  },
+  {
+    &quot;id&quot;: &quot;session&quot;,
+    &quot;category&quot;: &quot;session&quot;,
+    &quot;sha256&quot;: &quot;10518629436f44987a49253ddd2746dd1ff23a3c0a7f7f655d1907e746c5a609&quot;,
+    &quot;reason&quot;: &quot;Explicit synthetic activation state&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;fragment&quot;,
+      &quot;source&quot;: &quot;fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session&quot;,
+      &quot;revision&quot;: &quot;fixture-root-A&quot;
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 8764,
+      &quot;length&quot;: 225
+    }
+  }
+]</pre></details><details><summary>Recorded instrumentation trace</summary><pre>load:context
+prepare:start
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+prepare:complete
+readiness:mocked
+gate:sync-source-ownership-cancel
+owner:installed-once
+adapter:pending-captured
+adapter:controlled-await
+revalidate:after-await
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+adapter:read-actual-pending
+original:beforeNative
+gate:sync-source-ownership-cancel
+original:intent-durable
+persist:injected-refusal-class-fault
+failClosed:Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal
+failClosed:Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal
+failClosed:Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal
+lifecycle:terminate-mocked
+adapter:read-actual-pending
+original:outcome:not-submitted
+persist:outcome:not-submitted
+owner:settled
+owner:retained-failClosed
+lifecycle:admission-unconfirmed
+lifecycle:settlement-denied</pre></details><h3>Independent replay checks</h3><ul><li><strong class="pass">PASS</strong> recovered expected fact: Recovered unknown; manifest expectation unknown is not execution proof. Accepted means simulated harness acceptance only.</li><li><strong class="pass">PASS</strong> protected owner association: Exact original query dispatch/message/run/session/checkout association; no owner substitution.</li><li><strong class="pass">PASS</strong> recorded scenario assertions: Recorded scenario assertions, not independently recovered native effects.</li><li><strong class="pass">PASS</strong> recorded expected mock effects: Recorded instrumentation: 0 sends; expected 0.</li><li><strong class="pass">PASS</strong> durable mock effect instrumentation: Recorded effect counters match exact message-correlated mock hook records; these are simulated effects, not native proof.</li><li><strong class="pass">PASS</strong> exact recorded bytes and ranges: Production submission decoder validated UTF-8 ranges, framing, hashes and exact transport; this alone is not source trust.</li><li><strong class="pass">PASS</strong> independent protected role and pins: Verified owner-selected context/execution revisions and pinned role/asset bytes; not selected from the message.</li><li><strong class="pass">PASS</strong> recorded failure has no mock effects: Zero sends is recorded mock instrumentation; durable projection independently must not establish submission/acceptance.</li><li><strong class="pass">PASS</strong> scenario coverage boundary: partial: Owner closed this journal with partial coverage; Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; Owner health failure: Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; Owner health failure: Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; Owner health failure: Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal</li></ul>
+    <details><summary>Original recorded scenario checks (instrumentation)</summary><ul><li><strong class="pass">PASS</strong> restart-fact: unknown; expected unknown; Evidence coverage is not complete; missing history cannot establish freshness or admission</li><li><strong class="pass">PASS</strong> mock-send-count: 0; expected 0; simulated effects only</li><li><strong class="pass">PASS</strong> authored-body-preserved: UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved</li><li><strong class="pass">PASS</strong> one-owner-installation: Real registry.start installs exactly one fixture RunOwner</li><li><strong class="pass">PASS</strong> measured-load-calls: Actual instrumented methods: context=11; execution=4; pairing=4</li><li><strong class="pass">PASS</strong> uncertified-refusal-fails-closed: Refusal-class decorator persistence fault is wrapped, sticky partial, terminated and owner retained; never certified as local pause</li></ul></details><details><summary>Projection provenance</summary><pre>[]</pre></details><h3>Recorded scenario error</h3><pre>Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal</pre><h3>Journal / verification issues</h3><pre>Owner closed this journal with partial coverage
+Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal
+Owner health failure: Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal
+Owner health failure: Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal
+Owner health failure: Error: Uncertified context message pre-native refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal; cause: Error: Injected decorator persistence failure, NOT an owner refusal</pre></section>
+<section><h2>attempt-unresolved — One simulated effect / deliberately unknown outcome (not a process kill)</h2><p><strong>PASS</strong> · Recovered fact: <strong>attempt-unresolved</strong> · Expected: attempt-unresolved</p>
+    <p>Coverage: <strong>complete</strong> · Source: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/attempt-unresolved/events.jsonl</p><p>Coverage reason: No additional coverage reason.</p><p>Projection: Possible native execution with no confirmed submission; never automatically resend</p>
+    <details><summary>Exact original query</summary><pre>{
+  &quot;identity&quot;: {
+    &quot;source&quot;: {
+      &quot;harnessId&quot;: &quot;mock-context-demo&quot;,
+      &quot;sessionId&quot;: &quot;e5965fa2-2efe-4899-8d5e-f915095ecb68&quot;,
+      &quot;authorityId&quot;: &quot;fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e&quot;,
+      &quot;nativeSessionId&quot;: &quot;fixture-native-80281c82-f2cd-4bec-bbd6-ce530b8dc467&quot;,
+      &quot;cwd&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout&quot;
+    },
+    &quot;runId&quot;: &quot;ff8a9604-ae6b-4198-9d63-af3c1510ec8e&quot;,
+    &quot;nativeCommandId&quot;: &quot;fixture-message-1effc0f0-24c5-40c2-8beb-f01da86d8046&quot;
+  },
+  &quot;messageId&quot;: &quot;fixture-message-1effc0f0-24c5-40c2-8beb-f01da86d8046&quot;
+}</pre></details><div class="messages"><article><h3>Authored body</h3><pre>﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre><p>Structured UTF-8 range: 9049 + 143 bytes</p><p>SHA-256: <code>ba283d6d1837bcd64aaf70ca8e52e174311931a7c8391fdc3db06e39cc51ac5d</code></p></article>
+      <article><h3>Exact recorded outgoing transport</h3><details open><summary>9192 UTF-8 bytes</summary><pre>[SANE CONTEXT MESSAGE v1]
+SANE activation: these selected procedures and session details are composed on the user&#39;s behalf. The user directs the work and may change these conventions.
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;role.assistant.engineering&quot;,&quot;category&quot;:&quot;role&quot;,&quot;source&quot;:&quot;context/agents/sane/assistant/engineering.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Selected main role activation&quot;,&quot;bytes&quot;:1577}]
+
+You are a SANE Engineering Assistant Agent.
+
+SANE is a structured, reasonable way for people and agents to acquire and apply knowledge in service of deliberate change.
+
+You write and update one document per solution area in `design/solutions/&lt;name&gt;.md`.
+Start from the approved `design/SDD.md` and follow the supplied solution template.
+Work with the user to make technical implementation decisions.
+
+Perform the following setup steps:
+
+1. Use the workstream, workstream root, and implementation root from your SANE Session context. If no workstream is listed, use `sane_link` with your phase slot and the agreed `workstream` to establish membership.
+2. Run commands in the implementation root and resolve workstream documents from the workstream root.
+3. Read `sane-assistant-engineering-pickup`, complete its steps, and report readiness. Wait for user confirmation before proceeding, including when the initial message is a handoff.
+
+Once done, perform your role steps:
+
+1. When the user confirms, read `sane-assistant-engineering-assistance` and follow it for the work and discussion with the user.
+2. For later handoffs, follow Assistance. Give each outgoing `sane_handoff` a distinct `requestId`; recover delivery with `sane_handoff_status` using that ID. Finish independent work and end your turn; replies arrive as separate handoffs.
+3. When ready for delivery, read `sane-assistant-engineering-delivery` and follow its steps.
+4. If further changes are requested, return to Assistance.
+
+If you get blocked in any of those steps stop and report to the user immediately.
+
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;framework.core&quot;,&quot;category&quot;:&quot;framework&quot;,&quot;source&quot;:&quot;context/framework/core.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Required standing framework&quot;,&quot;bytes&quot;:1946}]
+# SANE Context
+
+## SANE
+
+SANE means **Sane Agentic Noesis Edifice**. It is a structured, reasonable, and agile way for people and agents to acquire and apply knowledge in service of deliberate change.
+
+A **workstream** groups the documents and state for an undertaking. Its documents describe current requirements, solutions, and outcomes; the CLI and sessions hold progress and collaboration history. Implementation happens in the target repository, not in a separate duplicate tree.
+
+The user directs the work and makes decisions with the assistant.
+
+There are 2 types of agents: **Assistants**, and **Workers**. Assistants work directly with the user while workers can be run by assistants to perform tasks.
+
+You shall never talk about or reference workstream specific language or workflow in the implementation repository contents. Keep the meta-language separate from the implementation repository.
+
+## Context
+
+**Knowledge Gaps** are missing understanding needed to make a product,
+design, or implementation decision—for example, how a feature should
+behave or how a dependency integrates with the solution. They are often
+visible in Design and Engineering documents.
+
+**Operational Gaps** are missing procedures, tooling, or repository
+context needed for agents to carry out assigned work—for example, how a
+worker locates relevant code, prepares the environment, runs verification,
+or updates artifacts. They are often visible in Planning and Execution
+documents.
+
+**Context Artifacts** preserve reusable knowledge and operational guidance
+for future work. Skills and documentation are examples; the term is
+independent of how that context is represented or stored.
+
+## Lifecycle
+
+Workstreams have a Main Track and Support Tracks.
+
+The Main Track follows four phases: Design → Engineering → Planning → Execution.
+
+Support Tracks may run alongside the Main Track to help resolve Knowledge Gaps and Operational Gaps along the way.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;framework.assistant&quot;,&quot;category&quot;:&quot;framework&quot;,&quot;source&quot;:&quot;context/framework/assistant.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Required standing framework&quot;,&quot;bytes&quot;:1156}]
+## State
+
+Follow your role&#39;s skills for the assigned work and coordination with other sessions.
+
+View current status with `sane view` and use the CLI to record state.
+
+1. **Pickup:** at new session start, read the assigned context and check required
+   inputs. Confirm readiness and wait for the user to proceed, including when
+   the session starts from a handoff.
+2. **Assistance:** work with the user within the agreed scope. This may include
+   handoff or handling updates from other sessions, following your role&#39;s skill.
+3. **Delivery:** validate outputs with `sane validate &lt;phase&gt;` and present them
+   for user review. Delivery may include handoff when the user requests it.
+   If revisions are requested, return to Assistance and then Delivery.
+
+## State Statuses
+
+- `pending` — Not started.
+- `in_progress` — Session is in progress.
+- `delivered` — Phase work has been delivered.
+
+A worker notification or consultation is not completion. Respond to an authorized ongoing child with `sane_worker_message`; retain its worker identity. Dispatch dependent work only after its terminal outcome. Ending your own turn permits asynchronous replies.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;procedure-index&quot;,&quot;category&quot;:&quot;procedure-index&quot;,&quot;source&quot;:&quot;Pinned procedure index&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Selective loading from pinned files&quot;,&quot;bytes&quot;:1511}]
+# SANE private procedures
+
+Resolve the SANE lifecycle procedure names in your role instructions using this index and the ordinary file-reading tool, rather than native Skill discovery. Other repository skills retain their normal loading mechanism.
+
+Load only the procedure needed for the current lifecycle step. Assistant activation includes the initial Pickup procedure; this index alone does not select or repeat Pickup on update or resume.
+
+- sane-assistant-engineering-assistance: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-assistance/SKILL.md — Use after Engineering Pickup confirmation for solution work and mid-session requests.
+
+- sane-assistant-engineering-delivery: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-delivery/SKILL.md — Use when preparing Engineering solution specs for review and delivery.
+
+- sane-assistant-engineering-pickup: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md — Use when starting a new SANE Engineering Assistant session.
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;sane-assistant-engineering-pickup&quot;,&quot;category&quot;:&quot;procedure&quot;,&quot;source&quot;:&quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,&quot;revision&quot;:&quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,&quot;reason&quot;:&quot;Initial lifecycle procedure&quot;,&quot;bytes&quot;:687}]
+
+# SANE Engineering Assistant — Pickup
+
+## Workstream Setup
+
+1. Run `sane provide engineering` to supply missing starters.
+2. Run `sane view` and link this session with `sane_link` (`slot: &quot;engineering&quot;`).
+
+## Required Inputs
+
+Read `design/SDD.md`, `&lt;workstream&gt;/resources/SOLUTION_SPEC_TEMPLATE.md`, and any existing solution specs relevant to the assignment. Ask the user about missing or unclear inputs.
+
+## Initial Handoff Context
+
+If the initial message is a handoff, retain the request, referenced documents, and qualified sender identity from `From:`.
+
+## Readiness and User Confirmation
+
+Summarize the current state and solution areas to work on. Wait for the user to proceed.
+
+[/SANE CONTEXT SEGMENT]
+[SANE CONTEXT SEGMENT {&quot;id&quot;:&quot;session&quot;,&quot;category&quot;:&quot;session&quot;,&quot;source&quot;:&quot;fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session&quot;,&quot;revision&quot;:&quot;fixture-root-A&quot;,&quot;reason&quot;:&quot;Explicit synthetic activation state&quot;,&quot;bytes&quot;:225}]
+# Session
+Synthetic experiment-owned session only.
+root: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout/roots/A
+No App project or workstream records exist.
+[/SANE CONTEXT SEGMENT]
+[SANE AUTHORED BODY {&quot;bytes&quot;:143}]
+﻿  Fixture-authored body 😀
+[SANE CONTEXT MESSAGE v1]
+[/SANE CONTEXT SEGMENT]
+# Session
+These are literal authored markers, not metadata.
+</pre></details><p>SHA-256: <code>9001549bc5f1f15455d3f3f8053cff208d78fe0dc022eb59d85c95b4e0124ef8</code></p></article></div>
+      <p>Placement: <code>{&quot;kind&quot;:&quot;bootstrap&quot;}</code> · Origin: activation · Package revision: <code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></p><p>Ordered selection SHA-256: <code>20f39fb8ff323c9b63b30a584fc8a5ccbca417729cfc09972b9e17a3669a028f</code></p>
+      <h3>Selected segments</h3><div class="table"><table><thead><tr><th>ID / category</th><th>Source / revision</th><th>Reason</th><th>UTF-8 range</th><th>SHA-256</th></tr></thead><tbody><tr><td>role.assistant.engineering / role</td><td>context/agents/sane/assistant/engineering.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Selected main role activation</td><td>449 + 1577 bytes</td><td><code>84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0</code></td></tr><tr><td>framework.core / framework</td><td>context/framework/core.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Required standing framework</td><td>2288 + 1946 bytes</td><td><code>0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421</code></td></tr><tr><td>framework.assistant / framework</td><td>context/framework/assistant.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Required standing framework</td><td>4506 + 1156 bytes</td><td><code>6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43</code></td></tr><tr><td>procedure-index / procedure-index</td><td>Pinned procedure index<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Selective loading from pinned files</td><td>5936 + 1511 bytes</td><td><code>807295e5870d16017717efc8ee1d7463d5a3fb30d337d27bfb5acf057a03d436</code></td></tr><tr><td>sane-assistant-engineering-pickup / procedure</td><td>context/skills/sane-assistant-engineering-pickup/SKILL.md<br><code>8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412</code></td><td>Initial lifecycle procedure</td><td>7759 + 687 bytes</td><td><code>0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59</code></td></tr><tr><td>session / session</td><td>fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session<br><code>fixture-root-A</code></td><td>Explicit synthetic activation state</td><td>8764 + 225 bytes</td><td><code>10518629436f44987a49253ddd2746dd1ff23a3c0a7f7f655d1907e746c5a609</code></td></tr></tbody></table></div><details><summary>Structured segment provenance</summary><pre>[
+  {
+    &quot;id&quot;: &quot;role.assistant.engineering&quot;,
+    &quot;category&quot;: &quot;role&quot;,
+    &quot;sha256&quot;: &quot;84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0&quot;,
+    &quot;reason&quot;: &quot;Selected main role activation&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;role.assistant.engineering&quot;,
+        &quot;source&quot;: &quot;context/agents/sane/assistant/engineering.md&quot;,
+        &quot;sha256&quot;: &quot;84f80eb43ee8273dd4c9e4a0882eabe6be5e11151d383498acfda266057062b0&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/role.assistant.engineering.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 449,
+      &quot;length&quot;: 1577
+    }
+  },
+  {
+    &quot;id&quot;: &quot;framework.core&quot;,
+    &quot;category&quot;: &quot;framework&quot;,
+    &quot;sha256&quot;: &quot;0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421&quot;,
+    &quot;reason&quot;: &quot;Required standing framework&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;framework.core&quot;,
+        &quot;source&quot;: &quot;context/framework/core.md&quot;,
+        &quot;sha256&quot;: &quot;0de77209f54926848fd6492c6af3464000dce67930b0f67876dd437015a34421&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/framework.core.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 2288,
+      &quot;length&quot;: 1946
+    }
+  },
+  {
+    &quot;id&quot;: &quot;framework.assistant&quot;,
+    &quot;category&quot;: &quot;framework&quot;,
+    &quot;sha256&quot;: &quot;6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43&quot;,
+    &quot;reason&quot;: &quot;Required standing framework&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;framework.assistant&quot;,
+        &quot;source&quot;: &quot;context/framework/assistant.md&quot;,
+        &quot;sha256&quot;: &quot;6bcadd59bac6b12370f6376c2de1f3be2f80d711954a7dcbe7b07982ddf95a43&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/framework.assistant.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 4506,
+      &quot;length&quot;: 1156
+    }
+  },
+  {
+    &quot;id&quot;: &quot;procedure-index&quot;,
+    &quot;category&quot;: &quot;procedure-index&quot;,
+    &quot;sha256&quot;: &quot;807295e5870d16017717efc8ee1d7463d5a3fb30d337d27bfb5acf057a03d436&quot;,
+    &quot;reason&quot;: &quot;Selective loading from pinned files&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;procedure-index&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;assets&quot;: [
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-assistance&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-assistance/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;a122256ecab01a9ecb487d3352ac69bea736668bb4112e35dfb392dbd7b5dbb6&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-assistance/SKILL.md&quot;
+        },
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-delivery&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-delivery/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;689edd20ee8d920f45a15d9849d2d3f3145a0ceede1d88f9be084895e50addac&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-delivery/SKILL.md&quot;
+        },
+        {
+          &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+          &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,
+          &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+          &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md&quot;
+        }
+      ]
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 5936,
+      &quot;length&quot;: 1511
+    }
+  },
+  {
+    &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+    &quot;category&quot;: &quot;procedure&quot;,
+    &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+    &quot;reason&quot;: &quot;Initial lifecycle procedure&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;asset&quot;,
+      &quot;packageRevision&quot;: &quot;8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412&quot;,
+      &quot;asset&quot;: {
+        &quot;id&quot;: &quot;sane-assistant-engineering-pickup&quot;,
+        &quot;source&quot;: &quot;context/skills/sane-assistant-engineering-pickup/SKILL.md&quot;,
+        &quot;sha256&quot;: &quot;0d7490ad72bb045bc626b39e76d09b3b2a9e2821725db70327231ca3da169f59&quot;,
+        &quot;path&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/data/context-packages/8f2f2b7523d1809ac05d17d0ca9b985d6c9196ac94c18d56da6ecd3238de7412/sane-assistant-engineering-pickup/SKILL.md&quot;
+      }
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 7759,
+      &quot;length&quot;: 687
+    }
+  },
+  {
+    &quot;id&quot;: &quot;session&quot;,
+    &quot;category&quot;: &quot;session&quot;,
+    &quot;sha256&quot;: &quot;10518629436f44987a49253ddd2746dd1ff23a3c0a7f7f655d1907e746c5a609&quot;,
+    &quot;reason&quot;: &quot;Explicit synthetic activation state&quot;,
+    &quot;provenance&quot;: {
+      &quot;kind&quot;: &quot;fragment&quot;,
+      &quot;source&quot;: &quot;fixture:/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/synthetic-session&quot;,
+      &quot;revision&quot;: &quot;fixture-root-A&quot;
+    },
+    &quot;range&quot;: {
+      &quot;offset&quot;: 8764,
+      &quot;length&quot;: 225
+    }
+  }
+]</pre></details><details><summary>Recorded instrumentation trace</summary><pre>load:context
+prepare:start
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+prepare:complete
+readiness:mocked
+gate:sync-source-ownership-cancel
+owner:installed-once
+adapter:pending-captured
+adapter:controlled-await
+revalidate:after-await
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+pairing:real-full-validator
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:execution
+load:context
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+gate:sync-source-ownership-cancel
+load:context
+adapter:read-actual-pending
+original:beforeNative
+gate:sync-source-ownership-cancel
+original:intent-durable
+persist:before-native:attempted
+mock:effect
+adapter:read-actual-pending
+original:outcome:unknown
+persist:outcome:unknown
+mock:outcome-unknown-not-process-kill
+owner:settled
+owner:released
+lifecycle:admission-admitted
+lifecycle:settlement-denied</pre></details><h3>Independent replay checks</h3><ul><li><strong class="pass">PASS</strong> recovered expected fact: Recovered attempt-unresolved; manifest expectation attempt-unresolved is not execution proof. Accepted means simulated harness acceptance only.</li><li><strong class="pass">PASS</strong> protected owner association: Exact original query dispatch/message/run/session/checkout association; no owner substitution.</li><li><strong class="pass">PASS</strong> recorded scenario assertions: Recorded scenario assertions, not independently recovered native effects.</li><li><strong class="pass">PASS</strong> recorded expected mock effects: Recorded instrumentation: 1 sends; expected 1.</li><li><strong class="pass">PASS</strong> durable mock effect instrumentation: Recorded effect counters match exact message-correlated mock hook records; these are simulated effects, not native proof.</li><li><strong class="pass">PASS</strong> durable attempt precedes mock effect: The same owner journal orders the fsynced attempt before each scripted mock effect.</li><li><strong class="pass">PASS</strong> exact recorded bytes and ranges: Production submission decoder validated UTF-8 ranges, framing, hashes and exact transport; this alone is not source trust.</li><li><strong class="pass">PASS</strong> independent protected role and pins: Verified owner-selected context/execution revisions and pinned role/asset bytes; not selected from the message.</li><li><strong class="pass">PASS</strong> unresolved attempt never authorizes resend: One scripted effect followed by unknown outcome remains unresolved; read-only replay never sends, retries or repairs. This is not a killed native process.</li><li><strong class="pass">PASS</strong> scenario coverage boundary: complete: Possible native execution with no confirmed submission; never automatically resend</li></ul>
+    <details><summary>Original recorded scenario checks (instrumentation)</summary><ul><li><strong class="pass">PASS</strong> restart-fact: attempt-unresolved; expected attempt-unresolved; Possible native execution with no confirmed submission; never automatically resend</li><li><strong class="pass">PASS</strong> mock-send-count: 1; expected 1; simulated effects only</li><li><strong class="pass">PASS</strong> authored-body-preserved: UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved</li><li><strong class="pass">PASS</strong> one-owner-installation: Real registry.start installs exactly one fixture RunOwner</li><li><strong class="pass">PASS</strong> measured-load-calls: Actual instrumented methods: context=11; execution=4; pairing=4</li><li><strong class="pass">PASS</strong> durable-before-effect: Original owner intent → synchronous composition persistence → single mock effect</li><li><strong class="pass">PASS</strong> honest-unresolved-effect: Explicit unknown outcome after one simulated effect; no process was killed, no exact acceptance and no retry</li></ul></details><details><summary>Projection provenance</summary><pre>[
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/attempt-unresolved/events.jsonl&quot;,
+    &quot;sequence&quot;: 6,
+    &quot;kind&quot;: &quot;submission&quot;
+  },
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/attempt-unresolved/events.jsonl&quot;,
+    &quot;sequence&quot;: 7,
+    &quot;kind&quot;: &quot;dispatch&quot;
+  },
+  {
+    &quot;source&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/attempt-unresolved/events.jsonl&quot;,
+    &quot;sequence&quot;: 10,
+    &quot;kind&quot;: &quot;dispatch&quot;
+  }
+]</pre></details></section>
+<section><h2>Restart corruption / missing-record variants</h2><article><h3>torn</h3><p>Directory: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/replay-variants/torn</p><p>Fact: <strong>unknown</strong> · Coverage: <strong>partial</strong></p><p>Coverage source: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/activation/events.jsonl</p><p>Coverage reason: Decoder reported a torn or unterminated tail; replay did not repair it; log: Demo journal: checkpoint log length/hash/count mismatch</p><p>Projection: Evidence coverage is not complete; missing history cannot establish freshness or admission</p><ul><li><strong class="pass">PASS</strong> original activation query retained: Corruption never changes the query to fit surviving owner records.</li><li><strong class="pass">PASS</strong> incomplete restart stays unknown: partial: Decoder reported a torn or unterminated tail; replay did not repair it; log: Demo journal: checkpoint log length/hash/count mismatch; read-only, no resend.</li></ul><details><summary>Original activation query</summary><pre>{
+  &quot;identity&quot;: {
+    &quot;source&quot;: {
+      &quot;harnessId&quot;: &quot;mock-context-demo&quot;,
+      &quot;sessionId&quot;: &quot;c664b96d-bc48-4cc0-9135-876a15c89469&quot;,
+      &quot;authorityId&quot;: &quot;fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e&quot;,
+      &quot;nativeSessionId&quot;: &quot;fixture-native-51a3201e-7be3-4ba7-afcf-ed475e0d5daa&quot;,
+      &quot;cwd&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout&quot;
+    },
+    &quot;runId&quot;: &quot;08c8854e-01ad-47fc-9e90-901f23fcb37e&quot;,
+    &quot;nativeCommandId&quot;: &quot;fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829&quot;
+  },
+  &quot;messageId&quot;: &quot;fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829&quot;
+}</pre></details></article><article><h3>missing</h3><p>Directory: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/replay-variants/missing</p><p>Fact: <strong>unknown</strong> · Coverage: <strong>partial</strong></p><p>Coverage source: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/journals/activation/events.jsonl</p><p>Coverage reason: events.jsonl: ENOENT: no such file or directory, open &#39;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/replay-variants/missing/events.jsonl&#39;</p><p>Projection: Evidence coverage is not complete; missing history cannot establish freshness or admission</p><ul><li><strong class="pass">PASS</strong> original activation query retained: Corruption never changes the query to fit surviving owner records.</li><li><strong class="pass">PASS</strong> incomplete restart stays unknown: partial: events.jsonl: ENOENT: no such file or directory, open &#39;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/replay-variants/missing/events.jsonl&#39;; read-only, no resend.</li></ul><details><summary>Original activation query</summary><pre>{
+  &quot;identity&quot;: {
+    &quot;source&quot;: {
+      &quot;harnessId&quot;: &quot;mock-context-demo&quot;,
+      &quot;sessionId&quot;: &quot;c664b96d-bc48-4cc0-9135-876a15c89469&quot;,
+      &quot;authorityId&quot;: &quot;fixture-authority-0072eca1-8d31-45a0-9864-3c3a308e899e&quot;,
+      &quot;nativeSessionId&quot;: &quot;fixture-native-51a3201e-7be3-4ba7-afcf-ed475e0d5daa&quot;,
+      &quot;cwd&quot;: &quot;/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/checkout&quot;
+    },
+    &quot;runId&quot;: &quot;08c8854e-01ad-47fc-9e90-901f23fcb37e&quot;,
+    &quot;nativeCommandId&quot;: &quot;fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829&quot;
+  },
+  &quot;messageId&quot;: &quot;fixture-message-53f142c4-c29d-4dba-a83d-6d4ef6c32829&quot;
+}</pre></details></article></section></body></html>

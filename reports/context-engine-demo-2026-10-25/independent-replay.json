@@ -1,0 +1,68 @@
+{
+  "command": [
+    "/Users/beto/.bun/bin/bun",
+    "--tsconfig-override",
+    "/Users/beto/.local/share/opencode/worktree/74e3be/user-context-experiment/experiments/context-engine-demo/tsconfig.json",
+    "/Users/beto/.local/share/opencode/worktree/74e3be/user-context-experiment/experiments/context-engine-demo/cli.ts",
+    "replay",
+    "--manifest",
+    "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-demo-check.fOViT6/verified/run.json",
+    "--json"
+  ],
+  "exitCode": 0,
+  "stderr": "",
+  "error": null,
+  "readOnly": true,
+  "before": "dac95d63c7ccff2b21916cf92f8c31a9176e6db796cdd3bf106cdf58855ec74f",
+  "after": "dac95d63c7ccff2b21916cf92f8c31a9176e6db796cdd3bf106cdf58855ec74f",
+  "passed": true,
+  "scenarios": [
+    {
+      "id": "activation",
+      "fact": "accepted",
+      "allChecksPassed": true
+    },
+    {
+      "id": "ordinary",
+      "fact": "accepted",
+      "allChecksPassed": true
+    },
+    {
+      "id": "update",
+      "fact": "accepted",
+      "allChecksPassed": true
+    },
+    {
+      "id": "stale-source",
+      "fact": "no-evidence",
+      "allChecksPassed": true
+    },
+    {
+      "id": "owner-refusal",
+      "fact": "withheld",
+      "allChecksPassed": true
+    },
+    {
+      "id": "persistence-failure",
+      "fact": "unknown",
+      "allChecksPassed": true
+    },
+    {
+      "id": "attempt-unresolved",
+      "fact": "attempt-unresolved",
+      "allChecksPassed": true
+    }
+  ],
+  "variants": [
+    {
+      "id": "torn",
+      "fact": "unknown",
+      "coverage": "partial"
+    },
+    {
+      "id": "missing",
+      "fact": "unknown",
+      "coverage": "partial"
+    }
+  ]
+}
