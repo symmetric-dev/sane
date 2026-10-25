@@ -16,8 +16,9 @@ worker failures are covered by the Retry Policy.
 
 ## Acceptance and Limits
 
-Changes made to resolve blocking checkpoint-review findings require re-review
-before the checkpoint is accepted.
+Changes made to resolve blocking checkpoint verification findings require
+targeted re-verification through Verification Crew before the checkpoint is
+accepted. Supply the prior findings and fix evidence.
 
 Known failing tests qualify as non-blocking only when evidence supports that
 assessment; their presence does not waive required verification or regressions.

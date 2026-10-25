@@ -15,12 +15,13 @@ import "./browser-pair-dialog.css";
 type Props = {
   intent: BrowserPairIntent;
   name: string;
+  initialMode?: BrowserPairMode;
   pair: (sessionId: string, expected: BrowserPairIntent) => boolean;
   close: () => void;
 };
 
 /** Mounted at shell level: activating the pair cannot destroy its message or receipt. */
-export function BrowserPairDialog({ intent, name, pair, close }: Props) {
+export function BrowserPairDialog({ intent, name, initialMode = "replace", pair, close }: Props) {
   const [text, setText] = useState("");
   const [nativeStopped, setNativeStopped] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -29,7 +30,7 @@ export function BrowserPairDialog({ intent, name, pair, close }: Props) {
   const [stale, setStale] = useState(false);
   const [loadingLinks, setLoadingLinks] = useState(true);
   const [links, setLinks] = useState<BrowserPairSnapshot | null>(null);
-  const [mode, setMode] = useState<BrowserPairMode>("replace");
+  const [mode, setMode] = useState<BrowserPairMode>(initialMode);
   const savedLinks = useRef<BrowserPairSnapshot | null>(null);
   const activating = useRef(false);
   const messageId = useId(), acknowledgementId = useId();

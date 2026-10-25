@@ -42,6 +42,8 @@ import { notificationContextKey } from "./notification-source";
 import { ChatFileNavigationProvider } from "./chat-file-link";
 import { BrowserFooter, BrowserHeader, BrowserProvider, BrowserTabStrip, BrowserView } from "./browser-view";
 import { BROWSER_PAIR_COMPACT_MEDIA, canPairBrowserConversation, captureBrowserPairIntent, useBrowserPair, useBrowserPairCompact, type BrowserPairIntent } from "./browser-pair";
+import { useBrowserPairMenu } from "./browser-pair-menu";
+import type { BrowserPairMode } from "../shared/browser-pair-contract";
 import { BrowserPairDialog } from "./browser-pair-dialog";
 import { SystemPromptDetails } from "./system-prompt";
 import { wakePolls } from "./poll-wake";
@@ -121,7 +123,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const { view, workspaceId, worktreeId } = repository.navigation;
   const pair = useBrowserPair(state, repository, hydrationReady);
-  const [pairDialog, setPairDialog] = useState<{ intent: BrowserPairIntent; name: string } | null>(null);
+  const [pairDialog, setPairDialog] = useState<{ intent: BrowserPairIntent; name: string; mode: BrowserPairMode } | null>(null);
   const paired = pair.active;
   const compactPair = useBrowserPairCompact();
   const [pairPane, setPairPane] = useState<"preview" | "conversation">("preview");
@@ -187,13 +189,13 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     pair.clear(); setDrawer(null); setPairPane("preview");
     document.querySelector<HTMLButtonElement>('.browser-tab-strip [role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
   };
-  const startPair = (id = store.snapshot().selected) => {
+  const startPair = (id = store.snapshot().selected, mode: BrowserPairMode = "replace") => {
     const current = store.snapshot(), repository = catalog.snapshot();
     if (!canPairBrowserConversation(current, repository, id)) return;
     pair.cancelRestore();
     const intent = captureBrowserPairIntent(current, repository, id);
     const conversation = current.conversations.find(item => item.id === id);
-    if (intent && conversation) setPairDialog({ intent, name: conversation.title || `Conversation · ${id.slice(0, 8)}` });
+    if (intent && conversation) setPairDialog({ intent, name: conversation.title || `Conversation · ${id.slice(0, 8)}`, mode });
   };
   const confirmPair = (id: string, intent: BrowserPairIntent) => {
     if (!pair.pair(id, intent)) return false;
@@ -201,6 +203,10 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     setSidebarHidden(false); setPairPane("preview");
     return true;
   };
+  const pairMenu = useBrowserPairMenu({ state, model: sidebarModel, pairedSessionId: pair.sessionId,
+    interact: pair.cancelRestore, openSession: confirmPair, addSession: id => startPair(id, "add"),
+    removed: id => { if (pair.active && (id === null || id === pair.sessionId)) exitPair(); },
+  });
   // Native child activity belongs to full Chat, not the paired composer footer.
   const nativeSubagentNavigation = { ...nativeSubagents, open: (...args: Parameters<typeof nativeSubagents.open>) => { if (paired) openChat(); nativeSubagents.open(...args); } };
   const choose = (id: string) => {
@@ -283,7 +289,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     <ChatFlowLayoutProvider scope={view === "chat" && !nativeSubagents.active ? { sessionId: state.selected, nativeSessionId: nativeParent?.nativeSessionId, harness: nativeParent?.harness, workspaceId, worktreeId } : null}>
     <WorkspaceShell view={view} sidebar={sidebar} navigation={navigation} paired={paired}
       desktopSidebar={paired ? <section className="browser-pair-sidebar" aria-label="Conversation transcript">
-        <BrowserPairToolbar state={state} pane={pairPane} setPane={setPairPane} openChat={openChat} unpair={unpair} unpairBusy={pair.unlinkBusy} exitPair={exitPair} openContext={() => setDrawer("context")} />
+        <BrowserPairToolbar state={state} pane={pairPane} setPane={setPairPane} openChat={openChat} unpair={unpair} unpairBusy={pair.unlinkBusy} exitPair={exitPair} linkedSessions={pairMenu.button} openContext={() => setDrawer("context")} />
         <div className="browser-pair-transcript" ref={setDesktopTranscript} />
       </section> : undefined}
       beforeHeader={view === "browser" ? <BrowserTabStrip onSelect={() => setDrawer(null)} /> : undefined}
@@ -292,17 +298,18 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
       sidebarHidden={sidebarHidden} toggleSidebar={toggleSidebar}
       openSidebar={() => setDrawer("sidebar")} closeSidebar={() => setDrawer(null)}
-      header={<ShellHeader state={state} view={view} artifact={artifact} overview={sidebarModel.overview} overviewWorkspaceId={workspaceId} openDetails={() => setDrawer("details")} openContext={() => setDrawer("context")} openApplication={() => setDrawer("application")} />}
+      header={<ShellHeader state={state} view={view} artifact={artifact} linkedSessions={!paired ? pairMenu.button : null} overview={sidebarModel.overview} overviewWorkspaceId={workspaceId} openDetails={() => setDrawer("details")} openContext={() => setDrawer("context")} openApplication={() => setDrawer("application")} />}
       notices={<><ShellNotices state={state} view={view} openDetails={() => setDrawer("details")} />{pair.restoreError && <p className="notice error" role="alert">{pair.restoreError} <button type="button" onClick={pair.dismissRestoreError}>Dismiss</button></p>}{navigationError && <p className="notice error" role="alert">{navigationError} <button type="button" onClick={() => setNavigationError("")}>Dismiss</button></p>}</>}
     >
       <ShellContent state={state} view={view} workspaceId={workspaceId} artifact={artifact} closeArtifact={() => setArtifact(null)} openArtifact={openArtifact}
-        paired={paired} compactPair={compactPair} pairPane={pairPane} setPairPane={setPairPane} openChat={openChat} unpair={unpair} unpairBusy={pair.unlinkBusy} exitPair={exitPair}
+        paired={paired} compactPair={compactPair} pairPane={pairPane} setPairPane={setPairPane} openChat={openChat} unpair={unpair} unpairBusy={pair.unlinkBusy} exitPair={exitPair} linkedSessions={pairMenu.button}
         transcriptTarget={paired ? compactPair ? inlineTranscript : desktopTranscript : null} transcriptVisible={!paired || (compactPair ? pairPane === "conversation" : !sidebarHidden)}
         inlineTranscriptRef={setInlineTranscript} openContext={() => setDrawer("context")}
         historyPreview={historyPreview} choose={choose} signOut={signOut} navigation={null} startDocumentReview={startDocumentReview} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} />
     </WorkspaceShell>
     </ChatFlowLayoutProvider>
-    {pairDialog && <BrowserPairDialog intent={pairDialog.intent} name={pairDialog.name} pair={confirmPair} close={() => setPairDialog(null)} />}
+    {pairMenu.overlays}
+    {pairDialog && <BrowserPairDialog intent={pairDialog.intent} name={pairDialog.name} initialMode={pairDialog.mode} pair={confirmPair} close={() => setPairDialog(null)} />}
     {drawer === "application" && <ApplicationDialog state={state} signOut={signOut} close={() => setDrawer(null)} />}
     {drawer === "details" && !nativeSubagents.active && <ConversationDetails state={state} close={() => setDrawer(null)} />}
     {drawer === "context" && (view === "chat" || paired) && !nativeSubagents.active && !state.compactDialog && <ContextDialog state={state} close={() => setDrawer(null)} />}
@@ -310,9 +317,10 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   </BrowserProvider></TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceQuickOpenFeature></ChatFileNavigationProvider></WorkspaceProvider></ApplicationCommandProvider></NativeSubagentContext.Provider>;
 }
 
-function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, openDetails, openContext, openApplication }: {
+function ShellHeader({ state, view, artifact, linkedSessions, overview, overviewWorkspaceId, openDetails, openContext, openApplication }: {
   state: State; view: ActiveView; artifact: ArtifactSelection | null; openDetails: () => void; openContext: () => void; openApplication: () => void;
   overview: WorkstreamOverview | null; overviewWorkspaceId: string | null;
+  linkedSessions: ReactNode;
 }) {
   const conversation = state.conversations.find(item => item.id === state.selected);
   const nativeSubagents = useNativeSubagents();
@@ -325,7 +333,7 @@ function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, ope
     <button type="button" className="details-button" aria-label="Conversation details" onClick={openDetails}><Icon name="details" /><span>Details</span></button>
   </>;
   else if (view === "terminal") heading = <TerminalHeader />;
-   else if (view === "browser") heading = <BrowserHeader />;
+   else if (view === "browser") heading = <><BrowserHeader />{linkedSessions}</>;
   else if (view === "history") heading = <div className="conversation-heading">History</div>;
   else if (viewGroup(view) === "settings") heading = <div className="conversation-heading">{view === "workstreams" ? "Settings · Workstreams" : "Settings"}</div>;
   else if (artifact && view === "code") heading = <div className="conversation-heading">Files · Read-only workstream artifact</div>;
@@ -351,7 +359,7 @@ function ShellNotices({ state, view, openDetails }: { state: State; view: Active
 }
 
 /** Hidden chat stays mounted: switching views must not destroy native input state. */
-function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openArtifact, historyPreview, choose, signOut, navigation, startDocumentReview, reviewRequest, reviewRequestHandled, paired, compactPair, pairPane, setPairPane, openChat, unpair, unpairBusy, exitPair, transcriptTarget, transcriptVisible, inlineTranscriptRef, openContext }: {
+function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openArtifact, historyPreview, choose, signOut, navigation, startDocumentReview, reviewRequest, reviewRequestHandled, paired, compactPair, pairPane, setPairPane, openChat, unpair, unpairBusy, exitPair, linkedSessions, transcriptTarget, transcriptVisible, inlineTranscriptRef, openContext }: {
   state: State; view: ActiveView; workspaceId: string | null; artifact: ArtifactSelection | null;
   closeArtifact: () => void; openArtifact: (selection: ArtifactSelection) => void;
   historyPreview: string | null; choose: (id: string) => void; signOut: () => void; navigation: ReactNode;
@@ -359,6 +367,7 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
   paired: boolean; compactPair: boolean; pairPane: "preview" | "conversation"; setPairPane: (pane: "preview" | "conversation") => void;
   openChat: () => void; unpair: () => void; unpairBusy: boolean; exitPair: () => void; transcriptTarget: HTMLElement | null; transcriptVisible: boolean;
   inlineTranscriptRef: (element: HTMLDivElement | null) => void; openContext: () => void;
+  linkedSessions: ReactNode;
 }) {
   const nativeSubagents = useNativeSubagents();
   const child = nativeSubagents?.active;
@@ -388,7 +397,7 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
     };
   }, [paired, compactPair, pairPane]);
   return <>
-    {paired && compactPair && <BrowserPairToolbar state={state} pane={pairPane} setPane={setPairPane} openChat={openChat} unpair={unpair} unpairBusy={unpairBusy} exitPair={exitPair} openContext={openContext} />}
+    {paired && compactPair && <BrowserPairToolbar state={state} pane={pairPane} setPane={setPairPane} openChat={openChat} unpair={unpair} unpairBusy={unpairBusy} exitPair={exitPair} linkedSessions={linkedSessions} openContext={openContext} />}
     {view === "chat" && child && <div className="chat-surface"><NativeSubagentView key={nativeSubagentVirtualKey(child.summary)} /></div>}
     {view !== "chat" && view !== "terminal" && view !== "browser" && <div className="shell-content">
       {view === "history" && <HistoryDetail state={state} previewId={historyPreview} onOpen={choose} />}
@@ -406,9 +415,10 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
   </>;
 }
 
-function BrowserPairToolbar({ state, pane, setPane, openChat, unpair, unpairBusy, exitPair, openContext }: {
+function BrowserPairToolbar({ state, pane, setPane, openChat, unpair, unpairBusy, exitPair, linkedSessions, openContext }: {
   state: State; pane: "preview" | "conversation"; setPane: (pane: "preview" | "conversation") => void;
   openChat: () => void; unpair: () => void; unpairBusy: boolean; exitPair: () => void; openContext: () => void;
+  linkedSessions: ReactNode;
 }) {
   const conversation = state.conversations.find(item => item.id === state.selected);
   return <section className="browser-pair-toolbar" aria-label="Paired conversation controls">
@@ -419,6 +429,7 @@ function BrowserPairToolbar({ state, pane, setPane, openChat, unpair, unpairBusy
     <div className="browser-pair-actions">
       <button type="button" className="icon-button browser-pair-icon-button" aria-label="Open Chat" title="Open Chat" onClick={openChat}><FiMessageSquare size={16} aria-hidden="true" /></button>
       <button type="button" className="icon-button browser-pair-icon-button" aria-label="Unpair" title="Remove this conversation’s link to this tab" disabled={unpairBusy} onClick={unpair}><LuUnlink size={16} aria-hidden="true" /></button>
+      {linkedSessions}
       <ContextControl state={state} open={openContext} />
     </div>
     <div className="browser-pair-pane-toggle" role="group" aria-label="Paired view">

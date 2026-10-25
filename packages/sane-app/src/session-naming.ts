@@ -1,8 +1,6 @@
-import { consume, createRun } from "../shared/conversation/cc-reducer";
-import { transcriptMessages } from "../shared/conversation/transcript";
 import type { Message } from "../shared/conversation/types";
 import { normalizeSessionTitle, type SessionTitleResponse } from "../shared/conversation/session-title";
-import type { Event, Run, Session } from "./history";
+import type { Run, Session } from "./history";
 import type { TranscriptPage } from "./transcript-contract";
 
 export class SessionNamingError extends Error {
@@ -26,10 +24,12 @@ export function namingTranscript(messages: readonly Message[]): string | undefin
   return JSON.stringify(selected);
 }
 
-export function completedRunNamingTranscript(session: Session, run: Run, events: Event[]): string | undefined {
-  const display = createRun({ id: run.runId, conversationId: session.sessionId, cwd: run.cwd, status: run.status, createdAt: run.createdAt, endedAt: run.endedAt, harness: session.harness, nativeSessionId: session.nativeSessionId, nativeCommandId: run.nativeCommandId });
-  consume(display, events);
-  return namingTranscript(transcriptMessages(undefined, [display]));
+/** Automatic naming sees only the original user input, before App expansion. */
+export function submissionNamingTranscript(text: string): string | undefined {
+  const message = { role: "user", text: text.trim().slice(0, 6000) };
+  if (!message.text) return;
+  while (JSON.stringify(message).length > 8500) message.text = message.text.slice(0, Math.floor(message.text.length * 0.8));
+  return JSON.stringify([message]);
 }
 
 /** Search canonical history rather than mistaking the UI's latest window for
@@ -113,13 +113,12 @@ export class SessionNamingService {
     if (this.pending.has(id)) throw new SessionNamingError(409, "title-busy", "Title generation is already in progress");
     if (this.pending.size >= 2) throw new SessionNamingError(429, "title-capacity", "Title generation is busy; retry later");
   }
-  /** Called only for new terminal evidence, never on GET or startup replay. */
-  completed(sessionId: string, run: Run, events: Event[]) {
+  /** Called only after the first user submission commits, never on GET or replay. */
+  submitted(sessionId: string, run: Run, text: string) {
     const session = this.deps.session(sessionId);
     if (this.closed || !this.deps.healthy() || !session?.titleAutoEligible || session.titleSource !== "fallback"
-      || session.titleGeneration || session.agentKind === "worker" || run.operation === "compact" || run.status !== "completed") return;
-    let transcript: string | undefined;
-    try { transcript = completedRunNamingTranscript(session, run, events); } catch { return; }
+      || session.titleGeneration || session.agentKind === "worker" || session.attachment || run.operation === "compact") return;
+    const transcript = submissionNamingTranscript(text);
     if (!transcript) return;
     void this.request(sessionId, session.titleRevision ?? 0, transcript, true).catch(() => { /* Optional naming never blocks sends. */ });
   }

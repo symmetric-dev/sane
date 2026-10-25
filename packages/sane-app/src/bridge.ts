@@ -281,6 +281,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let pendingInputRecovery: PendingInputRecovery | undefined;
   let pendingInputWake: PendingInputWake | undefined;
   let sessionNaming: SessionNamingService | undefined;
+  const namingSubmissions = new WeakMap<Run, string>();
   const queueServiceTasks = new Set<Promise<void>>();
   const queueAdmissionTasks = new Set<Promise<void>>();
   let classifyingPendingInputs = false;
@@ -1182,6 +1183,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   function emit(run: Run, kind: Event["kind"], data: unknown) {
     if (!events.has(run.runId) && deferredJournals.has(run.runId)) journalEvents(run.runId);
     const list = events.get(run.runId)!;
+    let namingText: string | undefined;
+    if (kind === "submission" && namingSubmissions.has(run)) {
+      const original = namingSubmissions.get(run)!;
+      namingSubmissions.delete(run);
+      // Only live first-submission evidence qualifies. Never backfill a name
+      // from a later send, even if an earlier automatic attempt was unavailable.
+      try {
+        if (!list.some(event => event.kind === "submission") && !meta.runs.some(previous => previous.sessionId === run.sessionId && previous.runId !== run.runId
+          && previous.operation !== "compact" && journalEvents(previous.runId).some(event => event.kind === "submission"))) namingText = original;
+      } catch { /* Optional naming cannot interfere with submission. */ }
+    }
     const event: Event = { seq: (list.at(-1)?.seq ?? 0) + 1, time: new Date().toISOString(), runId: run.runId, sessionId: run.sessionId, kind, data };
     list.push(event);
     transcripts.ingest(run, [event]);
@@ -1200,9 +1212,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (captured) { try { chromePush?.journalCommitted(captured.session, captured.run, captured.event); } catch { /* optional device delivery */ } }
       if (session && kind === "message" && !retirementPaused(session.sessionId)) nativeSubagentRecorder.refresh(session, run);
     });
-    if (kind === "status" && (data as { status?: string } | null)?.status === "completed" && run.operation !== "compact") {
-      // Generation runs on a later turn, never inside emit/finalization's queue.
-      void committed.then(() => { setTimeout(() => sessionNaming?.completed(run.sessionId, run, events.get(run.runId) ?? []), 0); }).catch(() => {});
+    if (namingText !== undefined) {
+      const original = namingText;
+      // Both harnesses commit submissions here. Generation runs on a later
+      // turn, never inside the journal queue or the run admission barrier.
+      void committed.then(() => { setTimeout(() => sessionNaming?.submitted(run.sessionId, run, original), 0); }).catch(() => {});
     }
     return committed;
   }
@@ -1858,6 +1872,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const { conversationId, cwd, harness } = prepared.binding;
     const input = prepared.normalized, { model, effort, agent } = prepared.configuration;
     const { queuedFollowupId, publish } = options;
+    let namingText = prepared.prompt;
     // Copy explicit context before any await. Hooks are capabilities, not mutable
     // settings aliases; IDs, intent and origin cannot drift during preflight.
     const context = options.context && Object.freeze({ ...options.context, intent: Object.freeze({ ...options.context.intent }), evidence: options.context.evidence && Object.freeze({ ...options.context.evidence }) });
@@ -1868,6 +1883,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         || context?.runId !== receipt.association?.runId || (context?.nativeCommandId ?? null) !== receipt.association?.nativeCommandId
         || context?.origin !== "user" || context.delivery !== "idle-only" || queuedFollowupId) throw new UserInputPreparationError("Science admission must use its exact reserved text and original dispatch identity", 409);
       if ((receipt.intent.version === 2 ? receipt.intent.rolePrefix : "") !== ordinaryRolePrefix(prepared)) throw new UserInputPreparationError("Science dispatch role instructions changed", 409);
+      namingText = receipt.intent.text;
     }
     if (context && (context.delivery !== "idle-only" && context.delivery !== "native-queued-handoff"
       || !["user", "queued-user", "questionnaire-response", "worker-report", "worker-exchange", "handoff"].includes(context.origin))) throw new UserInputPreparationError("Explicit admission requires a known delivery policy and origin", 409);
@@ -2006,6 +2022,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const effectivePrompt = !options.scienceSubmission && isStoredAssistantAgentId(agent) && harness === "opencode" && !session.nativeAgentSelected && !configured.saneContext?.package
       ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n${prepared.prompt}` : prepared.prompt;
     const installedSnapshot = structuredClone(configured);
+    // Capture only user-origin input before role/science/context expansion.
+    // Other dispatch origins and inherited/attached sessions remain ineligible.
+    if ((origin === "user" || origin === "queued-user") && session.titleAutoEligible && session.agentKind !== "worker" && !session.attachment) namingSubmissions.set(run, namingText);
     const lifecycle = executePrompt(lease, session, run, effectivePrompt, prepared.resume, origin, {
       requestId: intent.requestId,
       coordinatorIntent: intent.kind,
@@ -3557,7 +3576,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (req.method !== "PUT") return json({ error: "Method not allowed" }, 405, { allow: "GET, PUT" });
         if (url.searchParams.size) throw new BrowserPairError(400, "browser-pair-input", "Pairing writes do not accept query parameters");
         const input = await body(req);
-        if (!isBrowserPairWrite(input)) throw new BrowserPairError(400, "browser-pair-input", "Provide an exact browser tab, conversation identity, operation and expected revision");
+        if (!isBrowserPairWrite(input)) throw new BrowserPairError(400, "browser-pair-input", "Provide an exact browser tab, operation, expected revision, and conversation identity for session-level changes");
         // Metadata only: no native refresh, prompt preparation or dispatch. The
         // browser owns its tab IDs; the server never fetches a tab's URL.
         const assertCurrent = () => {
@@ -3565,8 +3584,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (req.signal.aborted || !auth.authenticated(req)) throw new BrowserPairError(409, "browser-pair-interrupted", "Pairing request is no longer current");
           if (!catalog.workspaceName(input.workspaceId)) throw new BrowserPairError(404, "browser-pair-workspace", "Unknown browser workspace");
           // Removing a stale link must remain possible after retirement/replacement.
-          if (input.operation === "remove") return;
-          const session = meta.sessions.find(session => session.sessionId === input.session.sessionId);
+          if (input.operation === "remove" || input.operation === "clear") return;
+          const expected = input.session;
+          const session = meta.sessions.find(session => session.sessionId === expected.sessionId);
           if (!session || !sameBrowserPairSession(input.session, { sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId ?? "", nativeSessionId: session.nativeSessionId ?? "" })) throw new BrowserPairError(409, "browser-pair-identity", "Conversation identity changed; reconnect before pairing");
           assertCatalogActive(session);
           if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || session.attachment?.state === "pending"
