@@ -1,0 +1,13 @@
+<sane-context kind="update">
+SANE reports a membership/root change selected for this experiment. The following replaces the earlier Session roots going forward; role and preferences are unchanged.
+
+# SANE Session
+
+Workstream: probe-beta
+Workstream root: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/sane-grok-context-uRgmHy/beta/workstream
+Implementation root: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/sane-grok-context-uRgmHy/beta/implementation
+</sane-context>
+
+<user-message>
+Where should that same retry specification go now? Reply with one JSON object: workstream, artifact (absolute path), implementationRoot, migrationStrategy.
+</user-message>

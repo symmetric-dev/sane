@@ -1,0 +1,9 @@
+{
+  "kind": "historical-manifest-read-only-verification",
+  "at": "2026-10-25T12:44:44.158779+00:00",
+  "manifest": "reports/user-context-antigravity-2026-10-25/MANIFEST.json",
+  "manifestSha256": "5ce3cdea7d295c1688dfc556b3f3632a504f86ae64cf77da94912e2a81800474",
+  "entriesChecked": 171,
+  "mismatches": [],
+  "note": "No historical source/evidence was rewritten; all original entries still match."
+}

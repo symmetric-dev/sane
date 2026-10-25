@@ -1,0 +1,47 @@
+{
+  "live": false,
+  "complete": true,
+  "harnesses": [
+    "cc"
+  ],
+  "chargedTurns": 0,
+  "turnBudget": 5,
+  "fixture": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/sane-user-context-53agwC",
+  "evidence": [
+    {
+      "at": "2026-10-25T11:53:27.866Z",
+      "stage": "prepared",
+      "root": "/Users/beto/.local/share/opencode/worktree/74e3be/user-context-experiment",
+      "models": {
+        "cc": {
+          "model": "sonnet",
+          "effort": "medium"
+        },
+        "oc": {
+          "providerID": "opencode-go",
+          "id": "deepseek-v4.1-flash",
+          "variant": "high"
+        }
+      },
+      "activationBytes": 6168
+    },
+    {
+      "at": "2026-10-25T11:53:27.866Z",
+      "stage": "dry-run",
+      "note": "No native commands, sessions, or model calls. Inputs only."
+    },
+    {
+      "at": "2026-10-25T11:53:27.867Z",
+      "stage": "fixtures-removed",
+      "ccProject": "/Users/beto/.claude/projects/-private-var-folders-6v-wnsbl7cj5w96s83lszq3454w0000gn-T-sane-user-context-53agwC-native",
+      "fixture": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/sane-user-context-53agwC"
+    },
+    {
+      "at": "2026-10-25T11:53:27.867Z",
+      "stage": "finished",
+      "complete": true,
+      "failedResponses": 0
+    }
+  ],
+  "results": []
+}

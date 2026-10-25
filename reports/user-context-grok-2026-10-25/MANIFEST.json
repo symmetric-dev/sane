@@ -1,0 +1,879 @@
+{
+  "kind": "grok-experiment-new-artifact-inventory",
+  "note": "Only new Grok sources/evidence inventoried; excludes this manifest. Read-only dependencies listed separately. Prior evidence/manifests unchanged. Live executed-runner.ts precedes the final source cleanup enhancement, which received only an input-only dry run.",
+  "sourceFiles": [
+    "experiments/user-owned-context/grok.ts",
+    "experiments/user-owned-context/GROK.md",
+    "experiments/user-owned-context/grok-history.py"
+  ],
+  "evidenceDirectory": "reports/user-context-grok-2026-10-25",
+  "files": [
+    {
+      "path": "experiments/user-owned-context/GROK.md",
+      "bytes": 4543,
+      "sha256": "3e4fc0b7bebca6d999aab2c22579098329b42378f49c0288897e5b2f96a58072"
+    },
+    {
+      "path": "experiments/user-owned-context/grok-history.py",
+      "bytes": 4927,
+      "sha256": "aca32d6e2527d633453732bc5401d5295ea13e873ed18ff7354f278edd876c8f"
+    },
+    {
+      "path": "experiments/user-owned-context/grok.ts",
+      "bytes": 14335,
+      "sha256": "f72a06a5f2d73ef0fa32dfc4233a1771f750d8a1f1ec113d494304b156779614"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/evidence.json",
+      "bytes": 1792,
+      "sha256": "1d60c95b19926c158a47d01ad83cbaeb4105dce847d1e8fadd425e17834b62b5"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/executed-runner.ts",
+      "bytes": 14335,
+      "sha256": "f72a06a5f2d73ef0fa32dfc4233a1771f750d8a1f1ec113d494304b156779614"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/grok-1-activation.body.txt",
+      "bytes": 498,
+      "sha256": "0f2d86bdede00a0c22f1615ad5e6a65cec9d0d3c7ff91e54d14b41b996ef6420"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/grok-1-activation.prompt.txt",
+      "bytes": 6717,
+      "sha256": "a40481aa3908d5fa1770a00d21accf103dc42fd900e2008ce08e892c3950e48e"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/grok-2-ordinary-followup.body.txt",
+      "bytes": 224,
+      "sha256": "52c8567f0f82fdc351548948a19ed5f76e9a1a618ca1bf23651605bab2efecf1"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/grok-2-ordinary-followup.prompt.txt",
+      "bytes": 224,
+      "sha256": "52c8567f0f82fdc351548948a19ed5f76e9a1a618ca1bf23651605bab2efecf1"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/grok-3-context-update.body.txt",
+      "bytes": 155,
+      "sha256": "70ec9354c84076c8f11634dca4be88cf07b574f9e52113b12e51260f6da1f8eb"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/grok-3-context-update.prompt.txt",
+      "bytes": 696,
+      "sha256": "481afdc1b2dc543a8ef91edcec0adbd291a046d72c23221ff7fef837b54c13b5"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/grok-4-user-override.body.txt",
+      "bytes": 239,
+      "sha256": "32456543fe27b2d8518e68fedea2c427e00be3f690d50cef50a2195cc727c501"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/grok-4-user-override.prompt.txt",
+      "bytes": 239,
+      "sha256": "32456543fe27b2d8518e68fedea2c427e00be3f690d50cef50a2195cc727c501"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/grok-5-ordinary-after-update.body.txt",
+      "bytes": 307,
+      "sha256": "7a8078de19290f8a0d7cb0746a72d3e56451f7198d4b89f4c302ddb3d9ff2ff7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/grok-5-ordinary-after-update.prompt.txt",
+      "bytes": 307,
+      "sha256": "7a8078de19290f8a0d7cb0746a72d3e56451f7198d4b89f4c302ddb3d9ff2ff7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/inputs.json",
+      "bytes": 18319,
+      "sha256": "552afdb803da398fd4cd56e3c497f93c714c7268ade9e04b1083ccd534618fbd"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/1e1f66ef-cedd-4dd5-ab15-585903b15403/responses.md",
+      "bytes": 79,
+      "sha256": "3f29fceceaddb1555a2412992e1756858ed909d5018278e1d4beb0d068ef7812"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/evidence.json",
+      "bytes": 1792,
+      "sha256": "9f93facdf675ded1a237e54bfd40c479f55f9a38c2b8e0662162513d71b9563f"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/grok-1-activation.body.txt",
+      "bytes": 498,
+      "sha256": "0f2d86bdede00a0c22f1615ad5e6a65cec9d0d3c7ff91e54d14b41b996ef6420"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/grok-1-activation.prompt.txt",
+      "bytes": 6717,
+      "sha256": "cd99b9d20e4e285f752773a049d4bd094630ac2e22c0125ff372765978ddd0ab"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/grok-2-ordinary-followup.body.txt",
+      "bytes": 224,
+      "sha256": "52c8567f0f82fdc351548948a19ed5f76e9a1a618ca1bf23651605bab2efecf1"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/grok-2-ordinary-followup.prompt.txt",
+      "bytes": 224,
+      "sha256": "52c8567f0f82fdc351548948a19ed5f76e9a1a618ca1bf23651605bab2efecf1"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/grok-3-context-update.body.txt",
+      "bytes": 155,
+      "sha256": "70ec9354c84076c8f11634dca4be88cf07b574f9e52113b12e51260f6da1f8eb"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/grok-3-context-update.prompt.txt",
+      "bytes": 696,
+      "sha256": "1a40e5ee4fc14cb58edee3103b5b0249a3fc0cea5953327e29957d7bcabffebb"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/grok-4-user-override.body.txt",
+      "bytes": 239,
+      "sha256": "32456543fe27b2d8518e68fedea2c427e00be3f690d50cef50a2195cc727c501"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/grok-4-user-override.prompt.txt",
+      "bytes": 239,
+      "sha256": "32456543fe27b2d8518e68fedea2c427e00be3f690d50cef50a2195cc727c501"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/grok-5-ordinary-after-update.body.txt",
+      "bytes": 307,
+      "sha256": "7a8078de19290f8a0d7cb0746a72d3e56451f7198d4b89f4c302ddb3d9ff2ff7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/grok-5-ordinary-after-update.prompt.txt",
+      "bytes": 307,
+      "sha256": "7a8078de19290f8a0d7cb0746a72d3e56451f7198d4b89f4c302ddb3d9ff2ff7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/inputs.json",
+      "bytes": 18319,
+      "sha256": "ff96cfa7091d424f82d5d3dd3ad391eef636b15a7367b606b4ff33b5407092b5"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/45e1ca96-28b1-45ea-a77e-05370c89b4cb/responses.md",
+      "bytes": 79,
+      "sha256": "3f29fceceaddb1555a2412992e1756858ed909d5018278e1d4beb0d068ef7812"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/evidence.json",
+      "bytes": 1792,
+      "sha256": "a41b9a4d8e4f8cbc36ddfd765f816524a3e9d0ef18e44c5bb8e3a5f3e4a2f66b"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/grok-1-activation.body.txt",
+      "bytes": 498,
+      "sha256": "0f2d86bdede00a0c22f1615ad5e6a65cec9d0d3c7ff91e54d14b41b996ef6420"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/grok-1-activation.prompt.txt",
+      "bytes": 6717,
+      "sha256": "f46130c5f86957c4ee00de7a99c8583023ed6a88f7b6d48b34a665286b750864"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/grok-2-ordinary-followup.body.txt",
+      "bytes": 224,
+      "sha256": "52c8567f0f82fdc351548948a19ed5f76e9a1a618ca1bf23651605bab2efecf1"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/grok-2-ordinary-followup.prompt.txt",
+      "bytes": 224,
+      "sha256": "52c8567f0f82fdc351548948a19ed5f76e9a1a618ca1bf23651605bab2efecf1"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/grok-3-context-update.body.txt",
+      "bytes": 155,
+      "sha256": "70ec9354c84076c8f11634dca4be88cf07b574f9e52113b12e51260f6da1f8eb"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/grok-3-context-update.prompt.txt",
+      "bytes": 696,
+      "sha256": "4be525128fe42241884f56d19033e6e5daf780e33e90f8b832baf3a90a511e8d"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/grok-4-user-override.body.txt",
+      "bytes": 239,
+      "sha256": "32456543fe27b2d8518e68fedea2c427e00be3f690d50cef50a2195cc727c501"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/grok-4-user-override.prompt.txt",
+      "bytes": 239,
+      "sha256": "32456543fe27b2d8518e68fedea2c427e00be3f690d50cef50a2195cc727c501"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/grok-5-ordinary-after-update.body.txt",
+      "bytes": 307,
+      "sha256": "7a8078de19290f8a0d7cb0746a72d3e56451f7198d4b89f4c302ddb3d9ff2ff7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/grok-5-ordinary-after-update.prompt.txt",
+      "bytes": 307,
+      "sha256": "7a8078de19290f8a0d7cb0746a72d3e56451f7198d4b89f4c302ddb3d9ff2ff7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/inputs.json",
+      "bytes": 18319,
+      "sha256": "319e5c587ab058652d46465402bfe21a63b7213f774dca9ba2d1084bd4677ec0"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/861c1ebd-cea6-421c-a00d-3b956c13ca8b/responses.md",
+      "bytes": 79,
+      "sha256": "3f29fceceaddb1555a2412992e1756858ed909d5018278e1d4beb0d068ef7812"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/REPORT.md",
+      "bytes": 11519,
+      "sha256": "9fd76943b55d38038ba69fa0029e5a0afc9814acf7754b1f1bf26cf8b12169fc"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-help.command.json",
+      "bytes": 766,
+      "sha256": "4a24f6e697ec3c858f19e3c281b35ee62ce0ce1b9621cfa3cbe0ed4b52378d5b"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-help.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-help.stdout.jsonl",
+      "bytes": 5161,
+      "sha256": "90e7432419efc161095f0c5f616b8f11324357136eb81c05dc726579373de5c4"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-inspect.command.json",
+      "bytes": 781,
+      "sha256": "3f7601697b1087d8f9a825d6e8a66b31de1b96f3d0f3a49a7e2f261328975e84"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-inspect.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-inspect.stdout.jsonl",
+      "bytes": 27661,
+      "sha256": "938ab15df2e2217ab086ad72988d4d3063ca4c5d5cd37d09f2f4ca71e864b8f1"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-model-selection.json",
+      "bytes": 3795,
+      "sha256": "1e422eaa1c70c75e6021902588d537502af9fffd642ed992c5d1186621268fed"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-models.command.json",
+      "bytes": 766,
+      "sha256": "6cda698f1e6fdc76142fba46251c15af58d7f87f8b52df2f23c6c6ff6b4a8d51"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-models.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-models.stdout.jsonl",
+      "bytes": 150,
+      "sha256": "761b89325e8ad709b7b3db273ba1b0427f82d046bdbc5bb26be46af8e4516995"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-version.command.json",
+      "bytes": 769,
+      "sha256": "79e6b8e9aa11505a49ba5d9dfeaea8067e309331311b0fd51dfadfff593702c3"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-version.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/discovery-version.stdout.jsonl",
+      "bytes": 36,
+      "sha256": "a6d1a7b05b0bfed71026e3faa86ad980272559dc05babc849d092bf6a5b0d161"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/evidence.json",
+      "bytes": 3178,
+      "sha256": "d0b71bafee952e06b83c9d1fdb2972da1c6207e068e27eadec144e91b9257bb0"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/grok-1-activation.body.txt",
+      "bytes": 498,
+      "sha256": "0f2d86bdede00a0c22f1615ad5e6a65cec9d0d3c7ff91e54d14b41b996ef6420"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/grok-1-activation.prompt.txt",
+      "bytes": 6717,
+      "sha256": "0a3d667099626b7fab37bf1c2e188351b6b9b7a4d664bf4ddf37891b01ffbdd7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/grok-2-ordinary-followup.body.txt",
+      "bytes": 224,
+      "sha256": "52c8567f0f82fdc351548948a19ed5f76e9a1a618ca1bf23651605bab2efecf1"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/grok-2-ordinary-followup.prompt.txt",
+      "bytes": 224,
+      "sha256": "52c8567f0f82fdc351548948a19ed5f76e9a1a618ca1bf23651605bab2efecf1"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/grok-3-context-update.body.txt",
+      "bytes": 155,
+      "sha256": "70ec9354c84076c8f11634dca4be88cf07b574f9e52113b12e51260f6da1f8eb"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/grok-3-context-update.prompt.txt",
+      "bytes": 696,
+      "sha256": "a09297d9d2a5afbb0915849bf3a42b352d1c531e144dfb26e34d7d1b6fdab276"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/grok-4-user-override.body.txt",
+      "bytes": 239,
+      "sha256": "32456543fe27b2d8518e68fedea2c427e00be3f690d50cef50a2195cc727c501"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/grok-4-user-override.prompt.txt",
+      "bytes": 239,
+      "sha256": "32456543fe27b2d8518e68fedea2c427e00be3f690d50cef50a2195cc727c501"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/grok-5-ordinary-after-update.body.txt",
+      "bytes": 307,
+      "sha256": "7a8078de19290f8a0d7cb0746a72d3e56451f7198d4b89f4c302ddb3d9ff2ff7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/grok-5-ordinary-after-update.prompt.txt",
+      "bytes": 307,
+      "sha256": "7a8078de19290f8a0d7cb0746a72d3e56451f7198d4b89f4c302ddb3d9ff2ff7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/inputs.json",
+      "bytes": 18319,
+      "sha256": "079b7cfce207a0c409399184ccd55607a0b1eb5553a58bea816462d8ca995a1a"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/a68fd5ba-95fd-4eff-882c-774074e38b7c/responses.md",
+      "bytes": 79,
+      "sha256": "0a2f698b546ea6399142a99a0098dc27b2c1b327b6947b6b33e1fe4a82e9e00b"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/discovery-identity.json",
+      "bytes": 667,
+      "sha256": "fa32703589cf5a2b01c4d7feab012da9d236e75e95b941301e8028e6a61086e8"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/cleanup-owned-session.command.json",
+      "bytes": 826,
+      "sha256": "8e955056a5e0f26bbe63ebdcdff9f9ccbd7f781ac1f8a814a8a6d99da7c8aa02"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/cleanup-owned-session.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/cleanup-owned-session.stdout.jsonl",
+      "bytes": 53,
+      "sha256": "f2357ffa00f9b917209a81b204f4aa633a0b90e9cf1d1041753f21cd8c8649f2"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-help.command.json",
+      "bytes": 766,
+      "sha256": "8ad7b8fd2ff9a3be9edec61924425eade5bb7fbb7e71ab613709868663f985db"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-help.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-help.stdout.jsonl",
+      "bytes": 5161,
+      "sha256": "90e7432419efc161095f0c5f616b8f11324357136eb81c05dc726579373de5c4"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-inspect.command.json",
+      "bytes": 781,
+      "sha256": "e9c22dbaa74103cc0a3be8c434b0032fdc2c3b927a8d9a60356ec9d3db7247e9"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-inspect.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-inspect.stdout.jsonl",
+      "bytes": 27661,
+      "sha256": "3427e3f044c67936912f4b024eae94fcb0f05a5d82101a566cd90bf597c0eb5d"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-model-selection.json",
+      "bytes": 3795,
+      "sha256": "1e422eaa1c70c75e6021902588d537502af9fffd642ed992c5d1186621268fed"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-models.command.json",
+      "bytes": 766,
+      "sha256": "1805841cecca3fa15be0acac945ff5231cb974f5d0dd94f85a9d7e7a17bba79b"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-models.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-models.stdout.jsonl",
+      "bytes": 150,
+      "sha256": "761b89325e8ad709b7b3db273ba1b0427f82d046bdbc5bb26be46af8e4516995"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-version.command.json",
+      "bytes": 769,
+      "sha256": "ad7b4d8cdcd9ec4fd44ae02674f687e5af87e42a78a2dc0552370a623c741e9c"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-version.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/discovery-version.stdout.jsonl",
+      "bytes": 36,
+      "sha256": "a6d1a7b05b0bfed71026e3faa86ad980272559dc05babc849d092bf6a5b0d161"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/evidence.json",
+      "bytes": 31525,
+      "sha256": "42255cbd93af5a018c341a47baf1fe9789f79b9abe63a0e92e8dd86800e95df3"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/executed-runner.ts",
+      "bytes": 13345,
+      "sha256": "e0b687028a75d4d3e66730fb80c4f3a52ce7131ba724fd87114607c7f2b51aef"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/final.native/chat_history.jsonl",
+      "bytes": 32378,
+      "sha256": "fc631a6a3e31d08ff97845298acddfc630a9623b30e12e24971dfbc7f4d551f7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/final.native/signals.json",
+      "bytes": 1508,
+      "sha256": "76929109e58c43a453efef90297d9652c9f342cf683cd5bb9e8f8df37c06a54b"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/final.native/summary.json",
+      "bytes": 918,
+      "sha256": "ada1bfb44641495317ccc2ec2c069349ee1e8efd11fa147c150fc1bfc9d64ef7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/final.native/system_prompt.txt",
+      "bytes": 4959,
+      "sha256": "01f114a49919f33dba5c44ae3f21913bdc6adb414f4897b3e82ff65ca5c7abe6"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/final.native/tool_definitions.json",
+      "bytes": 50138,
+      "sha256": "c1b7b51924dbae840e1ce469743fc1fe93e375f6474deaa28743efb4141c0124"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/final.native/updates.jsonl",
+      "bytes": 21542,
+      "sha256": "826ab8a65adc69fd721744d5a5119f731af6d7dcbb9f3e3d575b802f5c3fbe7a"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.body.txt",
+      "bytes": 498,
+      "sha256": "0f2d86bdede00a0c22f1615ad5e6a65cec9d0d3c7ff91e54d14b41b996ef6420"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.command.json",
+      "bytes": 1320,
+      "sha256": "c0e921e000d6d5f22e1c9a966220137bdecf70cb43c5072c3d5a9df10a8ef28e"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.events.json",
+      "bytes": 5327,
+      "sha256": "921dc8f6bca3a7f53149cdefe638bfa1f5b5782ddf7a8933b24cc2264b9602a0"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.native/chat_history.jsonl",
+      "bytes": 24632,
+      "sha256": "c2f0d00e64f03818d09f5adbb659539089c095989681f4be4707292f858a9244"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.native/signals.json",
+      "bytes": 1508,
+      "sha256": "9f8dc5ba4ab02ed157022699c68a8c0e8e3e2991e47f5e3cbcdddfae6deccbcd"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.native/summary.json",
+      "bytes": 807,
+      "sha256": "d0bc1fa46783a58ddf58335aad12182b217519c936aa3485b2d5ff3507ff34b6"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.native/system_prompt.txt",
+      "bytes": 4959,
+      "sha256": "01f114a49919f33dba5c44ae3f21913bdc6adb414f4897b3e82ff65ca5c7abe6"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.native/tool_definitions.json",
+      "bytes": 50138,
+      "sha256": "c1b7b51924dbae840e1ce469743fc1fe93e375f6474deaa28743efb4141c0124"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.native/updates.jsonl",
+      "bytes": 9403,
+      "sha256": "cdd9042ea6282038f2c73dc06de34efd44b12cc57027d8d5a9a8a8e31667a297"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.prompt.txt",
+      "bytes": 6717,
+      "sha256": "2121d18f6a39ee847266cb702f6302b363c05111008157f62897385a3f57a95b"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-1-activation.stdout.jsonl",
+      "bytes": 4246,
+      "sha256": "78766697ec750650ae5032aee9d94c21923291cde2075138e03a1c3c6682ccf4"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.body.txt",
+      "bytes": 224,
+      "sha256": "52c8567f0f82fdc351548948a19ed5f76e9a1a618ca1bf23651605bab2efecf1"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.command.json",
+      "bytes": 1323,
+      "sha256": "beb6789d3c3b199866d0ce1ec69fe84b51ac65a7dff54023c98e5cff53f468d9"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.events.json",
+      "bytes": 5229,
+      "sha256": "67d5743a890b642d71e900df36988be4e500b5229ada1f7423f10e9f5ae2e646"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.native/chat_history.jsonl",
+      "bytes": 26614,
+      "sha256": "10af27867da522cbea24d5d7bc2a821504bcf81ca7760d20eea62ed036fbc096"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.native/signals.json",
+      "bytes": 1508,
+      "sha256": "e2b5e7e61553cb3880d02b4958b4846d45df23803c4c6af8a158a6e7c7260ef6"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.native/summary.json",
+      "bytes": 915,
+      "sha256": "bf77f26392c4ec8db5acb3de00625249da433aa0686f6c1fee3bcd016e39b19c"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.native/system_prompt.txt",
+      "bytes": 4959,
+      "sha256": "01f114a49919f33dba5c44ae3f21913bdc6adb414f4897b3e82ff65ca5c7abe6"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.native/tool_definitions.json",
+      "bytes": 50138,
+      "sha256": "c1b7b51924dbae840e1ce469743fc1fe93e375f6474deaa28743efb4141c0124"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.native/updates.jsonl",
+      "bytes": 12298,
+      "sha256": "061c594b9e47b0508fc82058dda3c0020ca0c64cb031edecb4b005eb0c527303"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.prompt.txt",
+      "bytes": 224,
+      "sha256": "52c8567f0f82fdc351548948a19ed5f76e9a1a618ca1bf23651605bab2efecf1"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.stdout.jsonl",
+      "bytes": 4148,
+      "sha256": "6643352654abe3d6b6964f11833429300c7b337575d7c40cbf2894a8c89426b5"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.body.txt",
+      "bytes": 155,
+      "sha256": "70ec9354c84076c8f11634dca4be88cf07b574f9e52113b12e51260f6da1f8eb"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.command.json",
+      "bytes": 1320,
+      "sha256": "a56c57fdb8f25a608efb2270c0e092ecef908cd0db2810b4cb8890bfcb77feeb"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.events.json",
+      "bytes": 4756,
+      "sha256": "6c8a45d6b3b8ca1decba0c2441ed1d28c6862cf5f67f7960a253759ebb78c64e"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.native/chat_history.jsonl",
+      "bytes": 28444,
+      "sha256": "1fec5723e913733593666a35aa701ad58c2cd03837d4c516a0b67ea8375305d7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.native/signals.json",
+      "bytes": 1507,
+      "sha256": "695b8c77e6a68fb25185c8bcce3406984b4def47eaae66caa9a6a790ed449586"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.native/summary.json",
+      "bytes": 918,
+      "sha256": "7ad31204a0ea049ec47b7a2870f18225ac194894c567e1a47871e665e9a31819"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.native/system_prompt.txt",
+      "bytes": 4959,
+      "sha256": "01f114a49919f33dba5c44ae3f21913bdc6adb414f4897b3e82ff65ca5c7abe6"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.native/tool_definitions.json",
+      "bytes": 50138,
+      "sha256": "c1b7b51924dbae840e1ce469743fc1fe93e375f6474deaa28743efb4141c0124"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.native/updates.jsonl",
+      "bytes": 15824,
+      "sha256": "ed9da23a4cd043c8844802fc973e4287d74f7a0461728a40e9430a71b4c37845"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.prompt.txt",
+      "bytes": 696,
+      "sha256": "8d92e69f4d80d68b70899eba6324f5e7caef850214d14a7774dd6dc08257a1dc"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-3-context-update.stdout.jsonl",
+      "bytes": 3675,
+      "sha256": "96d4e5ae715dc596982f832b729f81254e6231209b31b3c2075f2f062b856711"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.body.txt",
+      "bytes": 239,
+      "sha256": "32456543fe27b2d8518e68fedea2c427e00be3f690d50cef50a2195cc727c501"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.command.json",
+      "bytes": 1319,
+      "sha256": "9db297109a2aa6be3476883f663f9851844084cf2dc7d12c14833790e417fdf0"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.events.json",
+      "bytes": 3585,
+      "sha256": "e78fdad260db0a5c73e588ec0858c166fd6b9de641f47ec29dbf1023501c9879"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.native/chat_history.jsonl",
+      "bytes": 29323,
+      "sha256": "c8f6e5d37da62e94571babce8fbe97d77e357b28180cb2c26357c2b01e29502f"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.native/signals.json",
+      "bytes": 1507,
+      "sha256": "3a1921a2d6e66e26ba58b6c91cd1be36c003c277388b7e4bfb9e519ed55afab0"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.native/summary.json",
+      "bytes": 918,
+      "sha256": "b8c931cff11741d1429e648409d8ad2656c633183217ebc1b1d36fa6c3e9eda0"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.native/system_prompt.txt",
+      "bytes": 4959,
+      "sha256": "01f114a49919f33dba5c44ae3f21913bdc6adb414f4897b3e82ff65ca5c7abe6"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.native/tool_definitions.json",
+      "bytes": 50138,
+      "sha256": "c1b7b51924dbae840e1ce469743fc1fe93e375f6474deaa28743efb4141c0124"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.native/updates.jsonl",
+      "bytes": 17974,
+      "sha256": "44dd99ca3b222cc3b17d23cd7235969d33b6ab6026af42088775ffe22c0fa703"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.prompt.txt",
+      "bytes": 239,
+      "sha256": "32456543fe27b2d8518e68fedea2c427e00be3f690d50cef50a2195cc727c501"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-4-user-override.stdout.jsonl",
+      "bytes": 2558,
+      "sha256": "b96150ba1e52052e5f3feff14475a97c063f50cce99157450dda55ff17471032"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.body.txt",
+      "bytes": 307,
+      "sha256": "7a8078de19290f8a0d7cb0746a72d3e56451f7198d4b89f4c302ddb3d9ff2ff7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.command.json",
+      "bytes": 1327,
+      "sha256": "f0fda22650b60f710890aeba62a60b5f7b4960feae4476c0f5cd46e587597464"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.events.json",
+      "bytes": 6559,
+      "sha256": "f124e47f1407827958e6c225a7bc22b096924afc2866c814269d5561543b1e51"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.native/chat_history.jsonl",
+      "bytes": 32378,
+      "sha256": "fc631a6a3e31d08ff97845298acddfc630a9623b30e12e24971dfbc7f4d551f7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.native/signals.json",
+      "bytes": 1508,
+      "sha256": "76929109e58c43a453efef90297d9652c9f342cf683cd5bb9e8f8df37c06a54b"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.native/summary.json",
+      "bytes": 918,
+      "sha256": "ada1bfb44641495317ccc2ec2c069349ee1e8efd11fa147c150fc1bfc9d64ef7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.native/system_prompt.txt",
+      "bytes": 4959,
+      "sha256": "01f114a49919f33dba5c44ae3f21913bdc6adb414f4897b3e82ff65ca5c7abe6"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.native/tool_definitions.json",
+      "bytes": 50138,
+      "sha256": "c1b7b51924dbae840e1ce469743fc1fe93e375f6474deaa28743efb4141c0124"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.native/updates.jsonl",
+      "bytes": 21542,
+      "sha256": "826ab8a65adc69fd721744d5a5119f731af6d7dcbb9f3e3d575b802f5c3fbe7a"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.prompt.txt",
+      "bytes": 307,
+      "sha256": "7a8078de19290f8a0d7cb0746a72d3e56451f7198d4b89f4c302ddb3d9ff2ff7"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-5-ordinary-after-update.stdout.jsonl",
+      "bytes": 5478,
+      "sha256": "5185eff16477bec9027c8a0efbaf25faff1894cd788cbd081a177e752b3338d8"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/history-review.json",
+      "bytes": 4478,
+      "sha256": "08a77c5b135eb62de7423dcffb2b8d44ef2086eabca59f5855a2feb70221c0eb"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/inputs.json",
+      "bytes": 18319,
+      "sha256": "b31572837d963a6fe8e1e62affde6bfd5c5819161008d94fe28e2a6f34cb90fa"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/native-cwd-prompt-history.jsonl",
+      "bytes": 8950,
+      "sha256": "d994c45b3b794a7c7b083962fb0519b803849f7b019c42f2958fa7536d9bca82"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/post-run-cleanup.json",
+      "bytes": 846,
+      "sha256": "086c5f1f9539e12cde3688c1b1f1b5954aa8410539896ef0ea2aa20a768c0708"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/residual-check.json",
+      "bytes": 541,
+      "sha256": "2ede0aca3b7f76b7122c63068a50f28fa26ceefc2fd29dd824a242876c560e2c"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/responses.md",
+      "bytes": 2634,
+      "sha256": "ec2d46c695f6fa5804342278ebf00bb3ba6234b93130d4b157e6ac34b2628d56"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/review.json",
+      "bytes": 4020,
+      "sha256": "9968851cdc1ae58497c2a94f997f793826981a99fdfbbb8b30c2ae831502988b"
+    },
+    {
+      "path": "reports/user-context-grok-2026-10-25/historical-manifest-verification.json",
+      "bytes": 403,
+      "sha256": "4d819f12df972e32bd3661ead12c2e69e33a8fdf2976279f13ed4c83c931dd72"
+    }
+  ],
+  "readOnlyDependencies": [
+    {
+      "path": "experiments/user-owned-context/probes.ts",
+      "bytes": 5016,
+      "sha256": "6a592c868c09a620683ee2635b185f3345482072b4edd2e2c8921ddc098409ec"
+    },
+    {
+      "path": "experiments/user-owned-context/checks.ts",
+      "bytes": 1118,
+      "sha256": "4b6d82844dc4f015d6d50a2ea8cde14d40bbbb85f5977c9b06f2da8d075c23af"
+    },
+    {
+      "path": "experiments/user-owned-context/review.ts",
+      "bytes": 2298,
+      "sha256": "0364654ac1278c57b1100ff6fa3a846d45710beb902511d5141ca1dff009a602"
+    },
+    {
+      "path": "packages/sane-app/tests/native-live-gate.ts",
+      "bytes": 836,
+      "sha256": "7a3e3f060e8505102c1e5447fc17670fe7f55803f205dce1689081ecd4f9694b"
+    },
+    {
+      "path": "packages/sane-core/src/context-markdown.ts",
+      "bytes": 772,
+      "sha256": "4dc00efabb363b99ce8d40ff07601ad2ca0f5ba1595d53ba8d2da1236f447bcd"
+    },
+    {
+      "path": "packages/sane-core/src/sane-context.ts",
+      "bytes": 3265,
+      "sha256": "5cea1d64d22086b8e7e8be4052aebd2e554e8937f12cbed7010bd173a11542f4"
+    },
+    {
+      "path": "context/agents/sane/assistant/engineering.md",
+      "bytes": 1766,
+      "sha256": "5c5c04d4db86c92fd16bc320b8ee8617f83047a11050efd2f8d4b0c0d4b57c51"
+    },
+    {
+      "path": "context/framework/core.md",
+      "bytes": 2070,
+      "sha256": "a622e7ba16656a2340affa1393118ac3d9ff52fa5c1ccf4655e25d3ce8d61889"
+    },
+    {
+      "path": "context/framework/assistant.md",
+      "bytes": 1284,
+      "sha256": "8a40663fe195d4edb1c73354f693c608ec848da70726ccc14c8350e150513369"
+    },
+    {
+      "path": "context/skills/sane-assistant-engineering-pickup/SKILL.md",
+      "bytes": 808,
+      "sha256": "81fe4581db13e7b58082f9b469312476484e92bf96b3d43aaec5e5501ea0cb3c"
+    }
+  ]
+}

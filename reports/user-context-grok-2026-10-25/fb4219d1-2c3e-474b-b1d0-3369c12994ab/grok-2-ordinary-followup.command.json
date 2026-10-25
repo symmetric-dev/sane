@@ -1,0 +1,43 @@
+{
+  "argv": [
+    "grok",
+    "--model",
+    "grok-4.7",
+    "--reasoning-effort",
+    "low",
+    "--output-format",
+    "streaming-messages-json",
+    "--verbatim",
+    "--no-plan",
+    "--no-subagents",
+    "--disable-web-search",
+    "--permission-mode",
+    "dontAsk",
+    "--deny",
+    "*",
+    "--max-turns",
+    "1",
+    "--resume",
+    "7d5dd369-f257-4895-bc31-9b7720d03c18",
+    "--prompt-file",
+    "/Users/beto/.local/share/opencode/worktree/74e3be/user-context-experiment/reports/user-context-grok-2026-10-25/fb4219d1-2c3e-474b-b1d0-3369c12994ab/grok-2-ordinary-followup.prompt.txt"
+  ],
+  "cwd": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/sane-grok-context-uRgmHy/native",
+  "stdin": "ignored",
+  "timeoutMs": 180000,
+  "envOverrides": {
+    "GROK_MEMORY": "0",
+    "GROK_MANAGED_MCPS_ENABLED": "false",
+    "GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED": "false",
+    "GROK_CLAUDE_AGENTS_ENABLED": "false",
+    "GROK_CLAUDE_RULES_ENABLED": "false",
+    "GROK_CLAUDE_HOOKS_ENABLED": "false",
+    "GROK_CLAUDE_MCPS_ENABLED": "false",
+    "GROK_CLAUDE_SKILLS_ENABLED": "false",
+    "GROK_CURSOR_AGENTS_ENABLED": "false",
+    "GROK_CURSOR_RULES_ENABLED": "false",
+    "GROK_CURSOR_HOOKS_ENABLED": "false",
+    "GROK_CURSOR_MCPS_ENABLED": "false",
+    "GROK_CURSOR_SKILLS_ENABLED": "false"
+  }
+}

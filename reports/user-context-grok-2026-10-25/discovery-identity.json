@@ -1,0 +1,14 @@
+{
+  "executable": "/Users/beto/.local/bin/grok",
+  "resolvedExecutable": "/Users/beto/.grok/downloads/grok-1.0.70-macos-aarch64",
+  "bytes": 179063008,
+  "sha256": "5c8a688251bf61e35370b828b6a353b0a20fcc3f64000de8a91d426039f29cec",
+  "reportedVersion": "grok 1.0.70 (f50904eaee6c) [stable]",
+  "localReferenceFiles": [
+    "/Users/beto/.grok/docs/user-guide/14-headless-mode.md",
+    "/Users/beto/.grok/docs/user-guide/17-sessions.md",
+    "/Users/beto/.grok/docs/user-guide/22-permissions-and-safety.md",
+    "/Users/beto/.grok/docs/user-guide/26-config-reference.md"
+  ],
+  "limit": "Executable hashed after live run; no independent version/backend attestation."
+}

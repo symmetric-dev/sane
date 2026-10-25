@@ -1,0 +1,45 @@
+{
+  "live": false,
+  "complete": true,
+  "harnesses": [
+    "grok"
+  ],
+  "modelRequested": "grok-4.7",
+  "effortRequested": "low",
+  "modelSelection": "Authenticated default, supported low effort. Fast variant explicitly costs 2x; no dollar pricing/cap or cheapest-model claim. No fallback.",
+  "nativeSessionId": "32dab567-39b0-4a67-88d9-650294e30760",
+  "chargedTurns": 0,
+  "turnBudget": 5,
+  "fixture": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/sane-grok-context-6KWOLQ",
+  "evidence": [
+    {
+      "at": "2026-10-25T12:38:10.758Z",
+      "stage": "prepared",
+      "root": "/Users/beto/.local/share/opencode/worktree/74e3be/user-context-experiment",
+      "activationBytes": 6186,
+      "limits": [
+        "Model init/usage are harness reports, not independent backend resolution.",
+        "Raw output does not by itself acknowledge exact admitted user bytes; native history must be inspected separately.",
+        "Catch-all deny gates execution, but does not remove every tool schema. Native system context remains."
+      ]
+    },
+    {
+      "at": "2026-10-25T12:38:10.758Z",
+      "stage": "dry-run",
+      "note": "Inputs only: zero native discovery, sessions, or model calls."
+    },
+    {
+      "at": "2026-10-25T12:38:10.759Z",
+      "stage": "fixtures-removed",
+      "fixture": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/sane-grok-context-6KWOLQ",
+      "residual": "Native CLI may retain cwd-group/index/log/cache metadata. No shared metadata, global configuration, or other sessions reset. Incomplete submitted sessions/fixtures retained; no automatic replay."
+    },
+    {
+      "at": "2026-10-25T12:38:10.759Z",
+      "stage": "finished",
+      "complete": true,
+      "failedResponses": 0
+    }
+  ],
+  "results": []
+}

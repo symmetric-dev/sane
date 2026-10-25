@@ -1,0 +1,24 @@
+{
+  "info": {
+    "id": "7d5dd369-f257-4895-bc31-9b7720d03c18",
+    "cwd": "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/sane-grok-context-uRgmHy/native"
+  },
+  "agent_id": "ag1.e56c52bacb534d73887b099642820979",
+  "attempt_id": "at1.1121993b88c647daa3830372ba1dc76b",
+  "session_summary": "Locate retries.md per document conventions",
+  "created_at": "2026-10-25T12:39:14.630552Z",
+  "updated_at": "2026-10-25T12:39:31.123834Z",
+  "num_messages": 18,
+  "num_chat_messages": 15,
+  "current_model_id": "grok-4.7",
+  "next_trace_turn": 4,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "request_id": "bd76ef0c-6ceb-4d9a-bffb-e23a5e1232dc",
+  "grok_home": "/Users/beto/.grok",
+  "last_active_at": "2026-10-25T12:39:31.123834Z",
+  "generated_title": "Locate retries.md per document conventions",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "low"
+}

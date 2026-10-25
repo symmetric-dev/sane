@@ -1,0 +1,1 @@
+Where should the retry solution specification go under your role's normal document convention? Use retries.md as its filename. Reply with one JSON object: artifact (absolute path), migrationStrategy. Do not perform the work.

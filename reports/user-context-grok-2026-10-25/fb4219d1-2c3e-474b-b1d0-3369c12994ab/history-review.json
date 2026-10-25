@@ -1,0 +1,132 @@
+{
+  "kind": "offline-grok-native-history-inspection",
+  "realModelCalls": 0,
+  "originalRunComplete": true,
+  "nativeSessionId": "7d5dd369-f257-4895-bc31-9b7720d03c18",
+  "checks": {
+    "fiveSerialAuthoredNativePrompts": true,
+    "activationOnlyInFirstAuthoredUserMessage": true,
+    "updateOnlyInThirdAuthoredUserMessage": true,
+    "ordinaryPromptsAreBodyOnly": true,
+    "noSaneContextInNativeExtraUserMessages": true,
+    "noSaneInNativeSystemPrompt": true,
+    "noObservedNativeToolCalls": true,
+    "fiveNativeAssistantReplies": true,
+    "requestedLowEffortReportedInNativeHistory": true,
+    "nativeSummaryMatchesSession": true
+  },
+  "observations": [
+    {
+      "turn": "activation",
+      "promptSha256": "2121d18f6a39ee847266cb702f6302b363c05111008157f62897385a3f57a95b",
+      "nativePromptIndices": [
+        0
+      ],
+      "nativeAuthoredHistoryEqualsExactPrefix": true,
+      "nativeUserUpdatesEqualExactPrefix": true,
+      "sameNativeSessionInUpdates": true
+    },
+    {
+      "turn": "ordinary-followup",
+      "promptSha256": "52c8567f0f82fdc351548948a19ed5f76e9a1a618ca1bf23651605bab2efecf1",
+      "nativePromptIndices": [
+        0,
+        1
+      ],
+      "nativeAuthoredHistoryEqualsExactPrefix": true,
+      "nativeUserUpdatesEqualExactPrefix": true,
+      "sameNativeSessionInUpdates": true
+    },
+    {
+      "turn": "context-update",
+      "promptSha256": "8d92e69f4d80d68b70899eba6324f5e7caef850214d14a7774dd6dc08257a1dc",
+      "nativePromptIndices": [
+        0,
+        1,
+        2
+      ],
+      "nativeAuthoredHistoryEqualsExactPrefix": true,
+      "nativeUserUpdatesEqualExactPrefix": true,
+      "sameNativeSessionInUpdates": true
+    },
+    {
+      "turn": "user-override",
+      "promptSha256": "32456543fe27b2d8518e68fedea2c427e00be3f690d50cef50a2195cc727c501",
+      "nativePromptIndices": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "nativeAuthoredHistoryEqualsExactPrefix": true,
+      "nativeUserUpdatesEqualExactPrefix": true,
+      "sameNativeSessionInUpdates": true
+    },
+    {
+      "turn": "ordinary-after-update",
+      "promptSha256": "7a8078de19290f8a0d7cb0746a72d3e56451f7198d4b89f4c302ddb3d9ff2ff7",
+      "nativePromptIndices": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "nativeAuthoredHistoryEqualsExactPrefix": true,
+      "nativeUserUpdatesEqualExactPrefix": true,
+      "sameNativeSessionInUpdates": true
+    }
+  ],
+  "nativeExtraUserMessages": [
+    {
+      "row": 1,
+      "syntheticReason": null,
+      "bytes": 2231,
+      "sha256": "384e4f4890361872616763ba751e95686bc8f504a11abe36cdffd95cff26c4ef",
+      "hasSaneContextMarker": false
+    },
+    {
+      "row": 2,
+      "syntheticReason": "system_reminder",
+      "bytes": 8507,
+      "sha256": "19ee7ba15836f957f872d628f1e3b8d78e49a9c9afd6c71759f3b79f1960b44b",
+      "hasSaneContextMarker": false
+    }
+  ],
+  "nativeAssistantModels": [
+    {
+      "model_id": "grok-4.7-build",
+      "model_fingerprint": "fp_5719f1aec35dd73c",
+      "reasoning_effort": "low"
+    },
+    {
+      "model_id": "grok-4.7-build",
+      "model_fingerprint": "fp_5719f1aec35dd73c",
+      "reasoning_effort": "low"
+    },
+    {
+      "model_id": "grok-4.7-build",
+      "model_fingerprint": "fp_5719f1aec35dd73c",
+      "reasoning_effort": "low"
+    },
+    {
+      "model_id": "grok-4.7-build",
+      "model_fingerprint": "fp_5719f1aec35dd73c",
+      "reasoning_effort": "low"
+    },
+    {
+      "model_id": "grok-4.7-build",
+      "model_fingerprint": "fp_5719f1aec35dd73c",
+      "reasoning_effort": "low"
+    }
+  ],
+  "nativeFilesSha256": {
+    "summary.json": "ada1bfb44641495317ccc2ec2c069349ee1e8efd11fa147c150fc1bfc9d64ef7",
+    "updates.jsonl": "826ab8a65adc69fd721744d5a5119f731af6d7dcbb9f3e3d575b802f5c3fbe7a",
+    "system_prompt.txt": "01f114a49919f33dba5c44ae3f21913bdc6adb414f4897b3e82ff65ca5c7abe6",
+    "tool_definitions.json": "c1b7b51924dbae840e1ce469743fc1fe93e375f6474deaa28743efb4141c0124",
+    "chat_history.jsonl": "fc631a6a3e31d08ff97845298acddfc630a9623b30e12e24971dfbc7f4d551f7",
+    "signals.json": "76929109e58c43a453efef90297d9652c9f342cf683cd5bb9e8f8df37c06a54b"
+  },
+  "limit": "Decoded native persisted authored messages and ACP updates match exact inputs at each prefix. Not an independent admission receipt, provider/backend attestation, or proof of consumption. Native user-info/rules and a bundled-skills synthetic reminder precede authored activation; no claim of a synthetic-free transcript."
+}

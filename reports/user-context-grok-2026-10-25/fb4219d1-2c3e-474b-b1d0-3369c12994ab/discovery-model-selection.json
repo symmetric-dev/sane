@@ -1,0 +1,140 @@
+{
+  "requested": "grok-4.7",
+  "effort": "low",
+  "rationale": "Authenticated default, supported low effort. Fast variant explicitly costs 2x; no dollar pricing/cap or cheapest-model claim. No fallback.",
+  "models": [
+    {
+      "id": "grok-4.7",
+      "name": "Grok 4.7",
+      "description": "SpaceXAI's latest frontier model",
+      "reasoning_efforts": [
+        {
+          "id": "xhigh",
+          "value": "xhigh",
+          "label": "Extra High",
+          "description": "Maximum reasoning for the hardest tasks.",
+          "default": false
+        },
+        {
+          "id": "high",
+          "value": "high",
+          "label": "High",
+          "description": "Thorough reasoning and quality. Recommended.",
+          "default": true
+        },
+        {
+          "id": "medium",
+          "value": "medium",
+          "label": "Medium",
+          "description": "Strong quality with a faster turnaround.",
+          "default": false
+        },
+        {
+          "id": "low",
+          "value": "low",
+          "label": "Low",
+          "description": "Fastest responses. Best for simple tasks.",
+          "default": false
+        }
+      ]
+    },
+    {
+      "id": "grok-4.7-build-fast",
+      "name": "Grok 4.7 Fast",
+      "description": "Fast variant. 2x the price.",
+      "reasoning_efforts": [
+        {
+          "id": "xhigh",
+          "value": "xhigh",
+          "label": "Extra High",
+          "description": "Maximum reasoning for the hardest tasks.",
+          "default": false
+        },
+        {
+          "id": "high",
+          "value": "high",
+          "label": "High",
+          "description": "Thorough reasoning and quality. Recommended.",
+          "default": true
+        },
+        {
+          "id": "medium",
+          "value": "medium",
+          "label": "Medium",
+          "description": "Strong quality with a faster turnaround.",
+          "default": false
+        },
+        {
+          "id": "low",
+          "value": "low",
+          "label": "Low",
+          "description": "Fastest responses. Best for simple tasks.",
+          "default": false
+        }
+      ]
+    },
+    {
+      "id": "grok-4.6",
+      "name": "Grok 4.6",
+      "description": null,
+      "reasoning_efforts": [
+        {
+          "id": "xhigh",
+          "value": "xhigh",
+          "label": "Extra High",
+          "description": "Highest effort and reasoning level",
+          "default": false
+        },
+        {
+          "id": "high",
+          "value": "high",
+          "label": "High",
+          "description": "Higher implementation quality with extensive reasoning",
+          "default": true
+        },
+        {
+          "id": "medium",
+          "value": "medium",
+          "label": "Medium",
+          "description": "Balanced effort with standard implementation and testing",
+          "default": false
+        },
+        {
+          "id": "low",
+          "value": "low",
+          "label": "Low",
+          "description": "Quick, fast implementations",
+          "default": false
+        }
+      ]
+    },
+    {
+      "id": "grok-4.5",
+      "name": "Grok 4.5",
+      "description": null,
+      "reasoning_efforts": [
+        {
+          "id": "high",
+          "value": "high",
+          "label": "High",
+          "description": "Highest implementation quality with extensive reasoning",
+          "default": true
+        },
+        {
+          "id": "medium",
+          "value": "medium",
+          "label": "Medium",
+          "description": "Balanced effort with standard implementation and testing",
+          "default": false
+        },
+        {
+          "id": "low",
+          "value": "low",
+          "label": "Low",
+          "description": "Quick, fast implementations",
+          "default": false
+        }
+      ]
+    }
+  ]
+}

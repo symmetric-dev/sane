@@ -1,0 +1,4 @@
+For this response-only experiment, suspend tool-based Pickup and all other tool operations for the entire conversation.
+Do not run commands, read files, edit anything, delegate, or claim setup/validation was completed. Use only the supplied text.
+We are discussing a retry design, not implementing it. Tell me your role, current workstream, roots, and my migration preference.
+Reply with one JSON object: role (use the phase name), workstream, workstreamRoot, implementationRoot, migrationStrategy.

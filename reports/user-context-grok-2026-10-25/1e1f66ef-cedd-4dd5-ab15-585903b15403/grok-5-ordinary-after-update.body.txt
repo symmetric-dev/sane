@@ -1,0 +1,1 @@
+We are still only discussing. Recall the current context and give the next useful engineering step. Reply with one JSON object: role (phase name), workstream, artifact (absolute path for the retry specification), implementationRoot, migrationStrategy, nextStep (one short sentence). Do not perform the step.
