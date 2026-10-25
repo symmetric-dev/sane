@@ -4,7 +4,8 @@ import { normalizeNativeSource } from "sane-core/server";
 import type { NativeSourceDescriptor, NativeAuthority, ConversationRef, CheckoutPin } from "sane-core/contracts";
 import { uuid, validateMetadata, validModel, validEffort, validVariant, validProfileId } from "./history";
 import { isAssistantAgentId, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, ASSISTANT_AGENT_DESCRIPTIONS, isWorkerAgentId, WORKER_AGENT_IDS } from "sane-core/agent-catalog";
-import { AGENT_COLOR_IDS, AGENT_ICON_IDS, BASE_PROFILE_IDS, LEGACY_KNOWLEDGE_PROFILE, builtinProfiles, builtinWorkerDefaults, seedAgentProfiles, templateProfileId, workerTemplateProfileId, type AgentProfiles } from "./agent-profiles-contract";
+import { isUtilityAgentId, UTILITY_AGENT_IDS } from "sane-core/agent-catalog";
+import { AGENT_COLOR_IDS, AGENT_ICON_IDS, BASE_PROFILE_IDS, LEGACY_KNOWLEDGE_PROFILE, builtinProfiles, builtinWorkerDefaults, seedAgentProfiles, templateProfileId, workerTemplateProfileId, utilityTemplateProfileId, type AgentProfiles } from "./agent-profiles-contract";
 
 /** Fresh format only. Callers hold installation ownership, then data ownership. */
 export type AppManifest = { format: "sane-app-store"; version: 1; storeId: string; createdAt: string };
@@ -87,22 +88,28 @@ export function validateAdmissions(value: unknown): AdmissionRecords {
   return value as AdmissionRecords;
 }
 const PROFILE_KEYS = ["id", "kind", "role", "harness", "model", "effort", "label", "description", "icon", "color", "builtin", "locked", "order", "updatedAt"] as const;
+// Utility configuration is not a conversation snapshot identity. Keep history's
+// narrower profile-ID validator unchanged so utilities cannot be assigned there.
+const validConfiguredProfileId = (value: unknown): value is string => validProfileId(value)
+  || typeof value === "string" && value.startsWith("utility:") && isUtilityAgentId(value.slice(8));
 /** Validate relationships before normalization; only the original Knowledge
  * builtin or a custom UUID may carry the legitimate legacy assistant role. */
 function validateProfileIdentity(p: Record<string, any>, allowLegacyKnowledge = false): void {
   const invalid = (): never => corrupt(`Invalid id/kind/role/builtin relationship for agent profile ${String(p.id)}; reconcile agents.json before restarting the App. No profile was written.`);
   const legacy = p.id === LEGACY_KNOWLEDGE_PROFILE.id;
-  if (!validProfileId(p.id) || legacy && !allowLegacyKnowledge) invalid();
+  if (!validConfiguredProfileId(p.id) || legacy && !allowLegacyKnowledge) invalid();
   const base = Object.values(BASE_PROFILE_IDS).includes(p.id);
   const template = ASSISTANT_AGENT_IDS.some(role => templateProfileId(role) === p.id);
   const worker = WORKER_AGENT_IDS.some(role => workerTemplateProfileId(role) === p.id);
-  if (p.builtin !== (base || template || worker || legacy)) invalid();
-  if (p.kind === "base" ? p.role !== null : p.kind === "worker" ? !isWorkerAgentId(p.role) : p.kind !== "assistant" || !(isAssistantAgentId(p.role) || allowLegacyKnowledge && p.role === "knowledge")) invalid();
+  const utility = UTILITY_AGENT_IDS.some(role => utilityTemplateProfileId(role) === p.id);
+  if (p.builtin !== (base || template || worker || utility || legacy)) invalid();
+  if (p.kind === "base" ? p.role !== null : p.kind === "worker" ? !isWorkerAgentId(p.role) : p.kind === "utility" ? !isUtilityAgentId(p.role) : p.kind !== "assistant" || !(isAssistantAgentId(p.role) || allowLegacyKnowledge && p.role === "knowledge")) invalid();
   if (p.role === "knowledge" && (!allowLegacyKnowledge || p.kind !== "assistant" || !(legacy || uuid(p.id)))) invalid();
   if (legacy && (p.kind !== "assistant" || p.role !== "knowledge")) invalid();
   if (base && (p.kind !== "base" || BASE_PROFILE_IDS[p.harness as "claude-code" | "opencode"] !== p.id)) invalid();
   if (template && (p.kind !== "assistant" || templateProfileId(p.role) !== p.id)) invalid();
   if (worker && (p.kind !== "worker" || workerTemplateProfileId(p.role) !== p.id)) invalid();
+  if (utility && (p.kind !== "utility" || utilityTemplateProfileId(p.role) !== p.id)) invalid();
 }
 /** Strict agents.json validation; messages double as API 400 errors. */
 export function validateAgentProfiles(value: unknown): AgentProfiles {
@@ -111,7 +118,7 @@ export function validateAgentProfiles(value: unknown): AgentProfiles {
   const ids = new Set<string>(), bases = Object.values(BASE_PROFILE_IDS), templates = ASSISTANT_AGENT_IDS.map(templateProfileId), workers = WORKER_AGENT_IDS.map(workerTemplateProfileId);
   for (const p of value.profiles) {
     exact(p, PROFILE_KEYS, ["hidden", "workerProfiles"]);
-    if (!validProfileId(p.id) || p.id === LEGACY_KNOWLEDGE_PROFILE.id || ids.has(p.id)) corrupt("Invalid or duplicate selectable agent profile id");
+    if (!validConfiguredProfileId(p.id) || p.id === LEGACY_KNOWLEDGE_PROFILE.id || ids.has(p.id)) corrupt("Invalid or duplicate agent profile id");
     ids.add(p.id);
     validateProfileIdentity(p);
     if (p.locked !== false) corrupt("Invalid agent profile locked flag");
@@ -125,7 +132,7 @@ export function validateAgentProfiles(value: unknown): AgentProfiles {
     if (typeof p.color !== "string" || !(AGENT_COLOR_IDS as readonly string[]).includes(p.color) && !/^#[0-9a-fA-F]{6}$/.test(p.color)) corrupt("Invalid color");
     if (!Number.isSafeInteger(p.order) || !time(p.updatedAt) || p.hidden !== undefined && typeof p.hidden !== "boolean") corrupt("Invalid agent profile record");
   }
-  if (![...bases, ...templates, ...workers].every(id => ids.has(id))) corrupt("Builtin agent profiles are missing");
+  if (![...bases, ...templates, ...workers, ...UTILITY_AGENT_IDS.map(utilityTemplateProfileId)].every(id => ids.has(id))) corrupt("Builtin agent profiles are missing");
   const mappings = (mapping: unknown, owner: string) => {
     if (mapping === undefined) return;
     if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) corrupt(`Invalid worker mappings for ${owner}`);
@@ -136,9 +143,12 @@ export function validateAgentProfiles(value: unknown): AgentProfiles {
     }
   };
   mappings(value.workerDefaults, "global defaults");
-  for (const p of value.profiles) mappings(p.workerProfiles, p.id);
+  for (const p of value.profiles) {
+    if (p.kind === "utility" && p.workerProfiles !== undefined) corrupt("Utility profiles cannot carry worker mappings");
+    mappings(p.workerProfiles, p.id);
+  }
   const fallback = value.profiles.find((p: any) => p.id === value.defaultId);
-  if (!fallback || fallback.hidden || fallback.kind === "worker") corrupt("Default agent must be an existing visible Base or assistant profile");
+  if (!fallback || fallback.hidden || !["base", "assistant"].includes(fallback.kind)) corrupt("Default agent must be an existing visible Base or assistant profile");
   return value as AgentProfiles;
 }
 /** Migrate mutable configuration only; historical snapshot references stay untouched. */

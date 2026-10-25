@@ -14,8 +14,10 @@ import type { ConversationActivity } from "../shared/conversation/activity";
 import type { TranscriptPage, TranscriptMetadataPage, TranscriptRefresh, TranscriptRefreshRequest } from "../src/transcript-contract";
 import type { ConversationUpdateFeedRequest, ConversationUpdatePage, ConversationUpdateSource } from "../shared/conversation/conversation-updates";
 import type { WorkerProtocolStatus } from "../src/worker-contract";
-import type { SessionCatalogQuery, SessionCatalogPageInfo } from "../shared/conversation/session-catalog";
-export type { SessionCatalogQuery, SessionCatalogPageInfo } from "../shared/conversation/session-catalog";
+import type { SessionTitleResponse, SessionTitleSource } from "../shared/conversation/session-title";
+export type SessionTitleResult = SessionTitleResponse;
+import type { SessionCatalogQuery, SessionCatalogPageInfo, SessionCatalogGroup, SessionCatalogGroupsResponse } from "../shared/conversation/session-catalog";
+export type { SessionCatalogQuery, SessionCatalogPageInfo, SessionCatalogGroup, SessionCatalogGroupsResponse } from "../shared/conversation/session-catalog";
 import type { PendingInputCapability, PendingInputRemovalRequest, PendingInputRemovalResult, PendingInputRequest, PendingInputResumeRequest, PendingInputSubmissionResult } from "../shared/conversation/pending-input-contract";
 import type { PendingInputResumeResult, PendingInputStatus, PendingInputView } from "./pending-input-presentation";
 export type { ConversationUpdateCursor, ConversationUpdateFeedRequest, ConversationUpdatePage, ConversationUpdateSource } from "../shared/conversation/conversation-updates";
@@ -26,7 +28,7 @@ export type { WorkerProtocolStatus };
 export const harnessName = (harness: Harness) => harness === "opencode" ? "OpenCode" : "Claude Code";
 export const harnessShort = (harness: Harness): "OC" | "CC" => harness === "opencode" ? "OC" : "CC";
 export type AgentChoice = { id: string; label: string; description: string };
-export type Conversation = { id: string; harness: Harness; authorityId?: string; nativeSessionId?: string; updateSource?: ConversationUpdateSource; activity?: ConversationActivity; nativeActivity?: "active" | "idle" | "unknown"; nativeActivityReason?: string; updatedAt?: string | null; cwd: string; lastRunId: string | null; lastRunStatus?: RunStatus; lastRunOperation?: "prompt" | "compact"; lastRunEndedAt?: string; status: RunStatus; title?: string; hidden?: boolean; model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; availability?: Availability; queuedFollowups?: QueuedFollowup[]; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; workerProtocol?: WorkerProtocolStatus; directWorkerCount?: number; branchOrigin?: string; branchDraft?: string; replacedBy?: string } & Partial<Association>;
+export type Conversation = { id: string; harness: Harness; authorityId?: string; nativeSessionId?: string; updateSource?: ConversationUpdateSource; activity?: ConversationActivity; nativeActivity?: "active" | "idle" | "unknown"; nativeActivityReason?: string; updatedAt?: string | null; cwd: string; lastRunId: string | null; lastRunStatus?: RunStatus; lastRunOperation?: "prompt" | "compact"; lastRunEndedAt?: string; status: RunStatus; title?: string; titleSource?: SessionTitleSource; titleRevision?: number; hidden?: boolean; model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; availability?: Availability; queuedFollowups?: QueuedFollowup[]; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; workerProtocol?: WorkerProtocolStatus; directWorkerCount?: number; branchOrigin?: string; branchDraft?: string; replacedBy?: string } & Partial<Association>;
 export type Capabilities = {
   concurrency: { scope: "bridge" | "conversation"; limit: number; perConversation?: number; sharedCheckoutWrites?: boolean };
   cancelRun: boolean; midRunInput: boolean; permissionReplies: boolean;
@@ -42,6 +44,8 @@ export function liveInputReady(conversation: Conversation | undefined, availabil
     && availability.liveInputRunId === conversation.lastRunId;
 }
 export type SearchHit = { sessionId: string; runId?: string; snippet: string; score: number };
+export type ConversationGroupPage = { ids: string[]; hasMore: boolean; loading: boolean; loadingMore: boolean; error: string };
+export type ConversationGroupDirectory = { queryKey: string; groups: SessionCatalogGroup[]; loading: boolean; error: string };
 export type CompletionVerificationTarget = { sessionId: string; runId: string; nativeSessionId: string; nativeCommandId: string };
 export type CompletionVerificationRequest = { requestId: string; nativeSessionId: string; nativeCommandId: string; confirm: true; reason: string };
 export interface ConversationClient {
@@ -61,6 +65,7 @@ export interface ConversationClient {
   login(password: string): Promise<void>;
   logout(): Promise<void>;
   conversations(signal?: AbortSignal, query?: SessionCatalogQuery): Promise<{ conversations: Conversation[]; availability: Availability; page?: SessionCatalogPageInfo }>;
+  conversationGroups?(query: SessionCatalogQuery, signal?: AbortSignal): Promise<SessionCatalogGroupsResponse>;
   conversationSummaries?(ids: string[], signal?: AbortSignal): Promise<{ conversations: Conversation[]; availability: Availability; missing: { sessionId: string; reason: "retired" | "not-found" }[] }>;
   runs(id: string, signal?: AbortSignal): Promise<RunMetadata[]>;
   compactState?(id: string, signal?: AbortSignal): Promise<CompactState>;
@@ -76,7 +81,9 @@ export interface ConversationClient {
    replyHandoff?(id: string, approvalId: string, reply: HandoffApprovalReply): Promise<void>;
     cancel(id: string): Promise<{ interrupted: boolean }>;
     hide?(id: string): Promise<void>;
-    unhide?(id: string): Promise<void>;
+     unhide?(id: string): Promise<void>;
+     renameConversation?(id: string, input: { title: string; expectedRevision: number }): Promise<SessionTitleResult>;
+     regenerateConversationName?(id: string, input: { expectedRevision: number }): Promise<SessionTitleResult>;
     search?(query: string, opts?: { workspaceId?: string | null; worktreeId?: string | null; limit?: number; signal?: AbortSignal }): Promise<{ results: import("./types").SearchHit[] }>;
      reconcile?(id: string): Promise<{ history: import("../shared/conversation/native-history-contract").ReconciledHistory }>;
      nativeHistory?(id: string, signal?: AbortSignal): Promise<{ history: import("../shared/conversation/native-history-contract").ReconciledHistory | null }>;

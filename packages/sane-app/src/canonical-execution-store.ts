@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { link, lstat, mkdir, open, readFile, realpath, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { WORKER_AGENT_IDS, type StoredSaneAgentIdentity } from "sane-core/agent-catalog";
+import { WORKER_AGENT_IDS, UTILITY_AGENT_IDS, type StoredSaneAgentIdentity } from "sane-core/agent-catalog";
 import { contextHash } from "./context-package";
 import { parseCanonicalAgentOperations, type CanonicalAgentOperations } from "./canonical-agent-operations";
 import { loadAgentModelConfig } from "../../sane-cli/src/agent-model-config";
@@ -18,7 +18,7 @@ export class CanonicalExecutionStore {
   constructor(private readonly sourceRoot: string, private readonly directory: string, private readonly modelConfig?: string) {}
   async create(identity: StoredSaneAgentIdentity): Promise<CanonicalExecutionRef> {
     if (identity.role === "knowledge") throw new Error("Historical Knowledge requires its archived execution configuration");
-    const names = [...ASSISTANT_AGENT_IDS.map(id => `sane/assistant/${id}`), ...WORKER_AGENT_IDS.map(id => `sane/worker/${id}`)];
+    const names = [...ASSISTANT_AGENT_IDS.map(id => `sane/assistant/${id}`), ...WORKER_AGENT_IDS.map(id => `sane/worker/${id}`), ...UTILITY_AGENT_IDS.map(id => `sane/utility/${id}`)];
     const overrides = this.modelConfig ? await loadAgentModelConfig(this.modelConfig, names.map(name => `${name}.md`)) : undefined;
     const sourceRoot = await realpath(this.sourceRoot);
     const load = async (name: string) => {
@@ -27,7 +27,7 @@ export class CanonicalExecutionStore {
       return parseCanonicalAgentOperations(await readFile(path, "utf8"), name, overrides?.get(name));
     };
     const policy = await load(`sane/${identity.kind}/${identity.role}`);
-    const children = await Promise.all(WORKER_AGENT_IDS.map(role => load(`sane/worker/${role}`)));
+    const children = identity.kind === "utility" ? [] : await Promise.all(WORKER_AGENT_IDS.map(role => load(`sane/worker/${role}`)));
     const body = { schema: 1 as const, policy, children }, revision = contextHash(JSON.stringify(body));
     const snapshot = { ...body, revision }, text = JSON.stringify(snapshot);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });

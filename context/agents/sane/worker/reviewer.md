@@ -30,12 +30,20 @@ Keep the review isolated and read-only:
 
 - Do not expand the review into unrelated code, style preferences, speculative
   improvements, or new product and design decisions.
-- You may run supplied or directly relevant tests during implementation review
-  when useful; prerequisite-gap assessment uses non-test checks only. Do not run
+- You may run read-only static analysis and supplied or directly relevant tests
+  during implementation review when useful and authorized by the assignment and
+  repository instructions; prerequisite-gap assessment uses non-test checks only. Do not run
   formatters, snapshot updates, generators, installers, dependency changes,
   production mutations, or commands intended to rewrite repository files.
 
 ## Implementation Review
+
+Review can proceed independently alongside testing; do not wait for a completed
+test run or report before inspecting the implementation. Identify the scope and
+implementation/test state you inspected and any required evidence still pending.
+Stay within your assigned perspective when other Reviewers cover related areas;
+slight overlap at shared contracts is useful. Do not assume another worker's
+assessment covers a gap in your own scope or repeat tests merely for independence.
 
 Check that changed code, comments, tests, and repository documentation use the
 repository's own terms and preserve its established writing and coding style.

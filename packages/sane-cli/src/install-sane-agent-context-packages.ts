@@ -14,6 +14,7 @@ export const AGENT_FILENAMES = [
   "sane/assistant/execution.md",
   "sane/assistant/planning.md",
   "sane/assistant/research.md",
+  "sane/utility/session-namer.md",
   "sane/worker/critic.md",
   "sane/worker/fixer.md",
   "sane/worker/grounder.md",
@@ -23,6 +24,7 @@ export const AGENT_FILENAMES = [
   "sane/worker/scout-crew.md",
   "sane/worker/scout.md",
   "sane/worker/tester.md",
+  "sane/worker/verification-crew.md",
 ] as const
 
 export const ROLE_SKILL_NAMES = [
@@ -282,7 +284,7 @@ async function resourceInstallationEntries(
 
 /**
  * Derive global CC agent files + per-agent settings profiles from loaded OC
- * agent entries. CC agents keep all tools (no `tools` restriction); the
+ * agent entries. CC assistants/workers keep their existing tool policy; utilities expose no tools. The
  * ask/allow profile lives in the sibling settings file. OC model overrides
  * never leak into CC output.
  */

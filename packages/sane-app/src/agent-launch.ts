@@ -17,11 +17,13 @@ export class AgentLaunchConfigurationError extends Error {}
 /** Persist only after native selection is established (or CC launch is configured).
  * OC callers should overlay the effective model/variant returned by resolveLaunch. */
 export function agentLaunchSnapshot(launch: ResolvedAgentLaunch): CanonicalAgentSnapshot & Pick<ResolvedAgentLaunch, "profileId" | "model" | "effort"> {
+  if (launch.identity?.kind === "utility") throw new AgentLaunchConfigurationError("Utilities run as isolated app operations, not conversations");
   return { profileId: launch.profileId, ...(launch.model ? { model: launch.model } : {}), ...(launch.effort ? { effort: launch.effort } : {}), ...(launch.identity ? { agent: launch.identity.role, agentKind: launch.identity.kind, nativeAgentSelected: true } : {}) };
 }
 
 /** Only SANE session creation records context; allowlisted identities only. */
 export function saneSessionContext(identity: StoredSaneAgentIdentity | undefined, assignment?: string, framework = frameworkContext(identity)): Pick<Session, "saneContext"> {
+  if (identity?.kind === "utility") return {};
   return framework ? { saneContext: { version: framework.version, framework: framework.text, ...(assignment !== undefined ? { assignment } : {}) } } : {};
 }
 /** Resolve a new worker's procedure, roots and assigned jobs from its enrolled identity. An

@@ -167,17 +167,13 @@
 .browser-pair :is(.composer-frame,.composer-status-lid,.composer-surface>.composer,.composer-flow-slot>*,.thread-safety>*,.thread-composer>.notice) { pointer-events:auto; }
 /* Native top-layer dialogs still inherit from their composer owner. */
 .browser-pair>.main>.chat-surface dialog,.browser-pair>.main>.chat-surface dialog::backdrop { pointer-events:auto; }
-.browser-pair-toolbar { display:flex; flex-wrap:wrap; align-items:center; flex-shrink:0; gap:8px 16px; padding:9px 12px; border-bottom:1px solid var(--border); background:var(--background); }
+.browser-pair-toolbar { display:flex; flex-wrap:wrap; align-items:center; flex-shrink:0; gap:4px 16px; padding:6px 12px; border-bottom:1px solid var(--border); background:var(--background); }
 .browser-pair-sidebar>.browser-pair-toolbar { align-items:stretch; flex-direction:column; }
 .browser-pair-sidebar .browser-pair-heading { flex:0 0 auto; }
 .browser-pair-heading { display:flex; flex:1 1 220px; flex-direction:column; gap:3px; min-width:0; font-size:11px; color:var(--muted-foreground); }
 .browser-pair-heading>strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:var(--foreground); }
-.browser-pair-heading>span { overflow-wrap:anywhere; }
-.browser-pair-heading>.browser-pair-mismatch { color:var(--foreground); }
 .browser-pair-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
-.browser-pair-button { flex-shrink:0; padding:6px 8px; border:1px solid var(--border); border-radius:7px; font-size:12px; white-space:nowrap; }
-.browser-pair-button:hover:not(:disabled) { background:var(--accent); }
-.browser-pair-button:disabled { opacity:.5; }
+.browser-pair-actions>.browser-pair-icon-button { min-height:28px; padding-block:4px; }
 .browser-pair-pane-toggle { display:none; }
 .shell-content {
   display:flex;
@@ -271,25 +267,6 @@
 .history-sidebar-button:hover,.history-sidebar-button[aria-pressed="true"] { background:var(--accent); color:var(--primary); }
 .sidebar-body>.history-search-row { flex-shrink:0; margin:0 0 4px; }
 .sidebar-body>.history-search-row .history-search { min-width:0; }
-.conversation-sidebar-actions {
-  display:flex;
-  align-items:stretch;
-  gap:8px;
-  flex-shrink:0;
-  margin-top:auto;
-  padding-top:12px;
-  border-top:1px solid var(--border);
-}
-.conversation-sidebar-actions .new-chat {
-  flex:1;
-  min-width:0;
-  width:auto;
-  gap:6px;
-  padding:10px 8px;
-  font-size:12px;
-}
-.conversation-sidebar-actions .new-chat svg { flex-shrink:0; }
-.conversation-sidebar-actions .history-sidebar-button { padding:10px 8px; font-size:12px; }
 .drawer-content>.sidebar-body { padding:12px 0; }
 .sidebar-body:has(>.sidebar-mode-control) { padding:0; gap:0; }
 .drawer-content>.shell-sidebar-header { height:var(--shell-header-height, 52px); min-height:var(--shell-header-height, 52px); padding:0; }
@@ -323,7 +300,6 @@
   .sidebar { display:none; }
   .app-shell .topbar { height:calc(var(--shell-header-height) + env(safe-area-inset-top)); min-height:calc(var(--shell-header-height) + env(safe-area-inset-top)); padding:env(safe-area-inset-top) max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left)); gap:6px; }
   .topbar .mobile-shell-logo { display:inline-flex; }
-  .view-chat .topbar>.browser-pair-button { max-width:92px; white-space:normal; padding:4px 6px; font-size:11px; }
   .drawer-content:has(>.shell-sidebar-header) { padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left)); }
   .drawer-content>.shell-sidebar-header { min-height:52px; }
   .drawer-content>.shell-sidebar-header>.icon-button { min-width:40px; min-height:40px; padding:8px; }
@@ -332,9 +308,6 @@
   .contextual-navigation button { min-width:40px; min-height:40px; }
   .composer-options { flex:1 1 100%; }
   .composer-actions { justify-content:flex-end; width:100%; }
-  .conversation-sidebar-actions { flex-direction:column; }
-  .conversation-sidebar-actions .new-chat { flex:none; width:100%; padding:11px 13px; font-size:13px; }
-  .conversation-sidebar-actions .history-sidebar-button { padding:11px 13px; font-size:13px; }
 }
 @media(max-width:640px) {
   .composer-toolbar { flex-direction:column; align-items:stretch; gap:8px; }

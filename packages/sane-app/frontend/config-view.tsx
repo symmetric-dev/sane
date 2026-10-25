@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { FiCommand, FiGitBranch, FiPlus, FiSliders, FiUsers } from "react-icons/fi";
 import { ASSISTANT_AGENT_LABELS, WORKER_AGENT_CATALOG, isAssistantAgentId, isWorkerAgentId } from "sane-core/agent-catalog";
+import { UTILITY_AGENT_CATALOG, isUtilityAgentId } from "sane-core/agent-catalog";
 import { AGENT_COLOR_IDS, AGENT_ICON_IDS, type AgentColor, type AgentIconId } from "../src/agent-profiles-contract";
 import { store, type State } from "./store";
 import { catalog } from "./catalog";
@@ -59,7 +60,7 @@ export const configSection = {
   set: (next: ConfigSection) => { section = next; try { localStorage.setItem(SECTION_KEY, next); } catch {} sectionListeners.forEach(l => l()); },
 };
 const SECTIONS = [
-  { id: "agents", label: "Agents", hint: "Conversation and worker profiles", Icon: FiUsers },
+  { id: "agents", label: "Agents", hint: "Conversation, worker, and utility profiles", Icon: FiUsers },
   { id: "workstreams", label: "Workstreams", hint: "Repository workstreams and associations", Icon: FiGitBranch },
   { id: "application", label: "Application", hint: "Appearance, connection, harnesses, account", Icon: FiSliders },
   { id: "hotkeys", label: "Shortcuts", hint: "Global and view-local keyboard shortcuts", Icon: FiCommand },
@@ -84,7 +85,7 @@ export function ConfigView({ state, signOut, workspaceId = null, openArtifact, o
   return current === "application" ? <ApplicationSettings state={state} signOut={signOut} /> : <AgentSettings state={state} />;
 }
 
-const AGENT_TABS = ["base", "assistants", "workers"] as const;
+const AGENT_TABS = ["base", "assistants", "workers", "utilities"] as const;
 
 function AgentSettings({ state }: { state: State }) {
   const set = store.profileSet();
@@ -98,21 +99,21 @@ function AgentSettings({ state }: { state: State }) {
   const rememberFocus = () => { opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; };
   const open = (profile: AgentProfile) => { rememberFocus(); store.clearProfileError(); setEditing(profile); };
   const create = async (from: AgentProfile) => {
-    if (from.kind === "worker") return;
+    if (from.kind === "worker" || from.kind === "utility") return;
     const created = await store.createProfile(from.id, { label: copyLabel(from), hidden: false });
     if (created) { setChooser(false); setEditing(created); }
   };
   const cards = (items: AgentProfile[]) => items.map(p => <AgentCard key={p.id} profile={p} edit tag={p.hidden ? "Hidden" : p.id === set.defaultId ? "Default" : undefined} onSelect={() => open(p)} />);
   return <section className="history-view agent-config-view" aria-label="Agent configuration">
     <header className="history-view-header"><h2>Agents</h2></header>
-    <p className="muted agent-config-intro">Configure new conversations and worker launches. Existing sessions keep their saved configuration.</p>
+    <p className="muted agent-config-intro">Configure new conversations, worker launches, and App-invoked utilities. Existing sessions keep their saved configuration.</p>
     <div className="agent-tabs" role="tablist" aria-label="Agent types">{AGENT_TABS.map(value => <button key={value} type="button" role="tab" id={`agents-tab-${value}`} aria-selected={tab === value} aria-controls={`agents-panel-${value}`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)} onKeyDown={event => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
       const index = AGENT_TABS.indexOf(value);
       const next = AGENT_TABS[event.key === "Home" ? 0 : event.key === "End" ? AGENT_TABS.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + AGENT_TABS.length) % AGENT_TABS.length]!;
       setTab(next); document.getElementById(`agents-tab-${next}`)?.focus();
-    }}>{value === "base" ? "Base" : value === "assistants" ? "Assistants" : "Workers"}</button>)}</div>
+    }}>{value === "base" ? "Base" : value === "assistants" ? "Assistants" : value === "workers" ? "Workers" : "Utilities"}</button>)}</div>
     {!editing && !chooser && state.profileError && <p className="notice error" role="alert">{state.profileError}</p>}
     <div ref={grid} className="agent-config-grid" onKeyDown={event => moveCardFocus(event, grid.current)}>
       <div role="tabpanel" id="agents-panel-base" aria-labelledby="agents-tab-base" hidden={tab !== "base"}>
@@ -129,8 +130,12 @@ function AgentSettings({ state }: { state: State }) {
         <p className="muted">Fixed worker roles launched through orchestration. Edit their profiles for future launches.</p>
         <div className="agent-grid">{cards(list.filter(p => p.kind === "worker"))}</div>
       </div>
+      <div role="tabpanel" id="agents-panel-utilities" aria-labelledby="agents-tab-utilities" hidden={tab !== "utilities"}>
+        <p className="muted">Bounded App operations, not conversation agents or workers. Automatic operations use the built-in profile for each role, independently of the source conversation. Copies preserve alternate settings but do not replace the built-in or appear in the conversation picker.</p>
+        <div className="agent-grid">{cards(list.filter(p => p.kind === "utility"))}</div>
+      </div>
     </div>
-    {editing ? <AgentEditor key={editing.id} profile={editing} state={state} close={() => setEditing(null)} created={setEditing} restoreFocus={restoreFocus} /> : chooser && <ShellDialog title="New assistant" restoreFocus={restoreFocus} close={() => { if (!state.profileBusy) setChooser(false); }}><p className="muted">Choose a profile to duplicate, then edit its name and settings.</p>{state.profileError && <p className="notice error" role="alert">{state.profileError}</p>}<div className="agent-picker"><div className="agent-grid">{list.filter(p => p.kind !== "worker").map(p => <AgentCard key={p.id} profile={p} disabled={state.profileBusy} onSelect={() => void create(p)} />)}</div></div></ShellDialog>}
+    {editing ? <AgentEditor key={editing.id} profile={editing} state={state} close={() => setEditing(null)} created={setEditing} restoreFocus={restoreFocus} /> : chooser && <ShellDialog title="New assistant" restoreFocus={restoreFocus} close={() => { if (!state.profileBusy) setChooser(false); }}><p className="muted">Choose a profile to duplicate, then edit its name and settings.</p>{state.profileError && <p className="notice error" role="alert">{state.profileError}</p>}<div className="agent-picker"><div className="agent-grid">{list.filter(p => p.kind === "base" || p.kind === "assistant").map(p => <AgentCard key={p.id} profile={p} disabled={state.profileBusy} onSelect={() => void create(p)} />)}</div></div></ShellDialog>}
   </section>;
 }
 
@@ -187,12 +192,14 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
   return <ShellDialog title={`Edit ${profile.label}`} close={dismiss} className="agent-edit-dialog" restoreFocus={restoreFocus}>
     {confirmation ? <><div className="agent-edit-body"><h3>{confirmation === "discard" ? "Discard unsaved changes?" : confirmation === "delete" ? "Delete this profile?" : confirmation === "reset" ? "Reset this profile to its template?" : "Duplicate saved profile?"}</h3><p>{confirmation === "delete" ? "Existing conversations keep their settings." : confirmation === "duplicate" ? "The copy starts from saved settings. Unsaved changes here will be discarded." : "Unsaved changes will be discarded."}</p></div><footer className="dialog-actions agent-actions"><button ref={confirmFocus} type="button" disabled={busy} onClick={() => setConfirmation(null)}>Keep editing</button><button type="button" disabled={busy} onClick={() => void confirm()}>{busy ? "Working…" : confirmation === "discard" ? "Discard changes" : confirmation === "delete" ? "Delete profile" : confirmation === "reset" ? "Reset profile" : "Duplicate"}</button></footer></> : <>
       <div className="agent-edit-body">
-        <p className="muted">Changes apply to {profile.kind === "worker" ? "future worker launches" : "new conversations"}. Existing sessions keep their saved configuration.</p>
+        <p className="muted">Changes apply to {profile.kind === "worker" ? "future worker launches" : profile.kind === "utility" ? "future utility operations" : "new conversations"}. Existing sessions keep their saved configuration.</p>
+        {profile.kind === "utility" && <p className="muted">{profile.builtin ? "The App uses this built-in profile for automatic operations. Tools and interaction are disabled." : "This copy preserves alternate utility settings. Automatic operations still use the built-in profile. This profile cannot be assigned to a conversation."}</p>}
+        {profile.kind === "utility" && form.harness === "opencode" && !form.model && <p className="muted">Leave the model and variant empty to use the native default. To set a variant, select a model here or configure one in the utility’s canonical agent definition.</p>}
         {state.profileError && <p ref={errorNotice} className="notice error" role="alert">{state.profileError}</p>}
         <fieldset className="interaction-fields" disabled={busy}>
           <div className="interaction-field"><label htmlFor="agent-label">Name</label><input id="agent-label" value={form.label} maxLength={80} onChange={event => patch({ label: event.target.value })} /></div>
           <div className="interaction-field"><label htmlFor="agent-description">Description</label><textarea id="agent-description" rows={2} value={form.description} maxLength={400} onChange={event => patch({ description: event.target.value })} /></div>
-          <div className="interaction-field"><span className="agent-field-label">Fixed role</span><span className="agent-readonly">{profile.kind === "base" ? "None (harness defaults, no instructions)" : isWorkerAgentId(profile.role) ? `Worker · ${WORKER_AGENT_CATALOG[profile.role].label}` : isAssistantAgentId(profile.role) ? `Assistant · ${ASSISTANT_AGENT_LABELS[profile.role]}` : profile.role}</span></div>
+          <div className="interaction-field"><span className="agent-field-label">Fixed role</span><span className="agent-readonly">{profile.kind === "base" ? "None (harness defaults, no instructions)" : isWorkerAgentId(profile.role) ? `Worker · ${WORKER_AGENT_CATALOG[profile.role].label}` : isUtilityAgentId(profile.role) ? `Utility · ${UTILITY_AGENT_CATALOG[profile.role].label}` : isAssistantAgentId(profile.role) ? `Assistant · ${ASSISTANT_AGENT_LABELS[profile.role]}` : profile.role}</span></div>
           <div className="interaction-field"><span className="agent-field-label" id="agent-harness">Harness</span><div className="agent-segmented" role="group" aria-labelledby="agent-harness">{(["claude-code", "opencode"] as const).map(h => <button type="button" key={h} aria-pressed={form.harness === h} disabled={fixedHarness} onClick={() => { if (form.harness !== h) patch({ harness: h, model: "", effort: "" }); }}>{harnessName(h)}</button>)}</div><small>{fixedHarness ? "Fixed for built-in Base." : "Changing harness clears the model and effort selection."}</small></div>
           {capabilities.modelSelection && descriptor?.policies.modelInput === "live-catalog" && descriptor.policies.effortMode === "model-variant" ? <>
              <div className="interaction-field"><label htmlFor="agent-oc-model">Model</label><ModelPicker id="agent-oc-model" models={ocModels} value={form.model} defaultLabel={profile.kind === "base" ? "Native default" : "Agent default model"} disabled={busy || (state.modelsLoading && !ocModels.length)} loading={state.modelsLoading} onChange={model => patch({ model, effort: "" })} /><small>{state.modelsLoading ? "Loading the live catalog…" : profile.kind === "base" ? "Live catalog for the current directory. Empty means the native default." : "Empty uses the agent's configured model, then the native default."}</small></div>
@@ -208,7 +215,7 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
         {state.modelsError && descriptor?.policies.modelInput === "live-catalog" && <p className="notice" role="status">{state.modelsError} <button type="button" className="text-button" disabled={state.modelsLoading || !capabilities.listModels} onClick={() => void store.loadModels(form.harness)}>Retry connection</button></p>}
         {ocMissing && <p className="notice" role="status">Model {form.model} is not in the current OpenCode catalog for this directory. Sending will still use the selection.</p>}
         {problem && <p className="notice error" role="alert">{problem}</p>}
-        {profile.kind !== "worker" && <div className="agent-toggles">
+        {(profile.kind === "base" || profile.kind === "assistant") && <div className="agent-toggles">
           <label className="agent-toggle" title={isDefault ? "The default agent cannot be hidden" : undefined}><input type="checkbox" checked={form.hidden} disabled={isDefault || busy} onChange={event => patch({ hidden: event.target.checked })} /><span>Hidden from conversation picker</span></label>
           <button type="button" className="text-button" disabled={isDefault || busy || dirty || !!profile.hidden} onClick={() => void store.setDefaultProfile(profile.id)}>{isDefault ? "Default for new conversations" : "Use saved profile as conversation default"}</button>
           {dirty && !isDefault && <small className="muted">Save changes before making this the default.</small>}

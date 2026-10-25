@@ -9,7 +9,7 @@ export type SaneFrameworkContext = { version: number; text: string }
 /** Current assistants get core + assistant; Planning and Execution also get assignment discipline.
  * Workers get core; everything else gets none. */
 export function frameworkContext(agent: StoredSaneAgentIdentity | undefined, pinned?: readonly { id: string; text: string }[]): SaneFrameworkContext | null {
-  if (!agent || !(agent.kind === "assistant" ? isAssistantAgentId(agent.role) : isWorkerAgentId(agent.role))) return null
+  if (!agent || agent.kind === "utility" || !(agent.kind === "assistant" ? isAssistantAgentId(agent.role) : isWorkerAgentId(agent.role))) return null
   const text = standingFrameworkNames(agent).map(name => {
     if (!pinned) return readFramework(name).text
     const asset = pinned.find(asset => asset.id === `framework.${name}`)

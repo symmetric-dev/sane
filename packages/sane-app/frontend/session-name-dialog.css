@@ -1,0 +1,6 @@
+.session-name-dialog { width: min(480px, calc(100vw - 32px)); }
+.session-name-dialog form { display: flex; flex-direction: column; gap: 12px; }
+.session-name-dialog p { margin: 0; }
+.session-name-dialog input { width: 100%; }
+.session-name-current { display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
+.session-name-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }

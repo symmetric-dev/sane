@@ -24,6 +24,7 @@ export function readFramework(name: FrameworkName) {
 }
 
 export function standingFrameworkNames(identity: StoredSaneAgentIdentity): FrameworkName[] {
+  if (identity.kind === "utility") return []
   const names: FrameworkName[] = ["core"]
   if (identity.kind === "assistant") {
     names.push("assistant")
@@ -33,5 +34,6 @@ export function standingFrameworkNames(identity: StoredSaneAgentIdentity): Frame
 }
 
 export function frameworkNames(identity: StoredSaneAgentIdentity): FrameworkName[] {
+  if (identity.kind === "utility") return []
   return [...standingFrameworkNames(identity), "branch-continuation", ...(identity.kind === "worker" ? ["worker-protocol" as const] : [])]
 }

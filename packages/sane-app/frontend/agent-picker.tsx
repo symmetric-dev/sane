@@ -19,7 +19,7 @@ export function AgentPicker({ close, restoreFocus }: { close: () => void; restor
   useEffect(() => { if (chainLocked) close(); }, [chainLocked, close]);
   const currentId = assign ? store.pendingUpgrade()?.id ?? store.conversationProfileId(store.state.selected) : store.draftProfile().id;
   const q = query.trim().toLowerCase();
-  const visible = store.profileList().filter(p => !p.hidden && matches(p, q));
+  const visible = store.profileList().filter(p => (p.kind === "base" || p.kind === "assistant") && !p.hidden && matches(p, q));
   const choose = (profile: AgentProfile) => { if (store.state.selected && store.pendingInputChainLocked()) return; store.pickProfile(profile.id); close(); };
   const section = (title: string, list: AgentProfile[]) => !!list.length && <section className="agent-section" aria-label={title}>
     <h3>{title}</h3>

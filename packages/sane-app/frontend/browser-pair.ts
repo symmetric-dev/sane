@@ -1,15 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { catalog } from "./catalog";
 import { store, type State } from "./store";
 import type { Conversation } from "./types";
 import { workspaceEpoch } from "./workspace-store";
 import { workerReference } from "./worker-client";
+import { browserTabs } from "./browser-tabs";
+import { readBrowserPairs, writeBrowserPairs } from "./browser-pair-client";
+import { isBrowserPairSession, type BrowserPairSession, type BrowserPairTarget } from "../shared/browser-pair-contract";
 
 export const BROWSER_PAIR_COMPACT_MEDIA = "(max-width:1000px)";
 
 type Repository = ReturnType<typeof catalog.snapshot>;
 export type BrowserPairIntent = {
   sessionId: string;
+  session: BrowserPairSession;
+  target: BrowserPairTarget;
   config: State["config"];
   auth: number;
   identity: string;
@@ -28,13 +33,17 @@ function worktreeIdentity(repository: Repository, workspaceId?: string | null, w
 }
 export function captureBrowserPairIntent(state: State, repository: Repository, sessionId: string): BrowserPairIntent | null {
   const conversation = state.conversations.find(item => item.id === sessionId);
-  if (state.phase !== "ready" || !state.config?.authenticated || !state.conversationsReady || !conversation || conversation.replacedBy
+  if (state.phase !== "ready" || !state.config?.authenticated || typeof state.config.storeId !== "string" || !state.conversationsReady || !conversation || conversation.replacedBy
     || conversation.worker || workerReference(sessionId) || conversation.agentKind === "worker" || conversation.attachment?.state === "pending"
     || conversation.association !== "resolved") return null;
   const browsing = worktreeIdentity(repository, repository.navigation.workspaceId, repository.navigation.worktreeId);
   const execution = worktreeIdentity(repository, conversation.workspaceId, conversation.worktreeId);
-  if (!browsing || !execution) return null;
-  return { sessionId: conversation.id, config: state.config, auth: workspaceEpoch(), identity: identity(conversation), browsing, execution };
+  const workspaceId = repository.navigation.workspaceId;
+  const tabs = browserTabs.snapshot(workspaceId);
+  const tab = tabs.tabs.find(tab => tab.id === tabs.activeId);
+  const session = { sessionId: conversation.id, harness: conversation.harness, authorityId: conversation.authorityId, nativeSessionId: conversation.nativeSessionId };
+  if (!browsing || !execution || !workspaceId || !tab || !isBrowserPairSession(session)) return null;
+  return { sessionId: conversation.id, session, target: { workspaceId, tabId: tab.id }, config: state.config, auth: workspaceEpoch(), identity: identity(conversation), browsing, execution };
 }
 
 export function browserPairIntentMatches(intent: BrowserPairIntent, state: State, repository: Repository, paired = false): boolean {
@@ -42,6 +51,7 @@ export function browserPairIntentMatches(intent: BrowserPairIntent, state: State
   return !!current && ["chat", "browser"].includes(repository.navigation.view)
     && current.config === intent.config && current.auth === intent.auth && current.identity === intent.identity
     && current.browsing === intent.browsing && current.execution === intent.execution
+    && current.target.workspaceId === intent.target.workspaceId && current.target.tabId === intent.target.tabId
     && (!paired || (state.selected === intent.sessionId && repository.navigation.view === "browser" && repository.navigation.conversationId === intent.sessionId));
 }
 
@@ -51,7 +61,10 @@ export function canPairBrowserConversation(state: State, repository: Repository,
 
 /** Explicit pin, never a derived retarget to whichever conversation happens to be selected. */
 export function useBrowserPair(state: State, repository: Repository) {
+  useSyncExternalStore(browserTabs.subscribe, () => browserTabs.snapshot(repository.navigation.workspaceId));
   const [pin, setPin] = useState<BrowserPairIntent | null>(null);
+  const unlinking = useRef(false);
+  const [unlinkBusy, setUnlinkBusy] = useState(false);
   const active = !!pin && browserPairIntentMatches(pin, state, repository, true);
   // Invalidity takes effect during render, before cleanup; a later visit cannot revive the pin.
   useEffect(() => { if (pin && !active) setPin(null); }, [pin, active]);
@@ -68,7 +81,19 @@ export function useBrowserPair(state: State, repository: Repository) {
     setPin(next);
     return true;
   };
-  return { active, sessionId: active ? pin?.sessionId : undefined, canPair: canPairBrowserConversation(state, repository, state.selected), pair, clear: () => setPin(null) };
+  const unlink = async () => {
+    if (!pin || !active || unlinking.current) return;
+    const expected = pin;
+    const current = () => browserPairIntentMatches(expected, store.snapshot(), catalog.snapshot(), true);
+    unlinking.current = true; setUnlinkBusy(true);
+    try {
+      const snapshot = await readBrowserPairs(expected.config!.storeId!, expected.target);
+      if (!current()) throw new Error("The selected browser tab or conversation changed. No unlink request was sent.");
+      await writeBrowserPairs(snapshot, expected.session, "remove");
+      setPin(value => value === expected ? null : value);
+    } finally { unlinking.current = false; setUnlinkBusy(false); }
+  };
+  return { active, sessionId: active ? pin?.sessionId : undefined, canPair: canPairBrowserConversation(state, repository, state.selected), pair, clear: () => setPin(null), unlink, unlinkBusy };
 }
 
 export function useBrowserPairCompact() {

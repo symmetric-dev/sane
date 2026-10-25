@@ -1,6 +1,7 @@
 import type { CSSProperties, KeyboardEvent } from "react";
 import type { IconType } from "react-icons";
 import { ASSISTANT_AGENT_LABELS, WORKER_AGENT_CATALOG, isAssistantAgentId, isWorkerAgentId } from "sane-core/agent-catalog";
+import { UTILITY_AGENT_CATALOG, isUtilityAgentId } from "sane-core/agent-catalog";
 import { FiBookOpen, FiBox, FiCheck, FiCircle, FiClipboard, FiCode, FiCoffee, FiCompass, FiCpu, FiDatabase, FiFeather, FiFlag, FiGitBranch, FiGlobe, FiLayers, FiMoon, FiPenTool, FiSearch, FiShield, FiStar, FiSun, FiTarget, FiTerminal, FiTool, FiZap } from "react-icons/fi";
 import type { AgentColor, AgentColorId, AgentIconId, AgentProfile } from "../src/agent-profiles-contract";
 import { harnessName, harnessShort } from "./types";
@@ -29,8 +30,8 @@ export function AgentCard({ profile, selected, disabled, reason, tag, edit, onSe
   return <button type="button" className="agent-card" aria-pressed={selected} aria-disabled={disabled || undefined} title={disabled ? reason : profile.description || undefined} data-agent-id={profile.id} onKeyDown={onKeyDown} onClick={() => { if (!disabled) onSelect?.(); }}>
     <span className="agent-card-head"><AgentAvatar profile={profile} />{edit && <span className="agent-card-edit">Edit<span className="sr-only"> {profile.label}</span></span>}{selected && <span className="agent-card-check" aria-hidden="true"><FiCheck size={12} /></span>}</span>
     <span className="agent-card-label">{profile.label}{tag && <span className="harness-badge">{tag}</span>}</span>
-    {edit && <span className="agent-card-role">{profile.kind === "base" ? "Base · No role" : isWorkerAgentId(profile.role) ? `Worker · ${WORKER_AGENT_CATALOG[profile.role].label}` : isAssistantAgentId(profile.role) ? `Assistant · ${ASSISTANT_AGENT_LABELS[profile.role]}` : profile.role}</span>}
-    <span className="agent-card-description">{profile.description || (profile.kind === "base" ? "Harness defaults." : profile.kind === "worker" ? "SANE worker." : "SANE assistant.")}</span>
+    {edit && <span className="agent-card-role">{profile.kind === "base" ? "Base · No role" : isWorkerAgentId(profile.role) ? `Worker · ${WORKER_AGENT_CATALOG[profile.role].label}` : isUtilityAgentId(profile.role) ? `Utility · ${UTILITY_AGENT_CATALOG[profile.role].label}` : isAssistantAgentId(profile.role) ? `Assistant · ${ASSISTANT_AGENT_LABELS[profile.role]}` : profile.role}</span>}
+    <span className="agent-card-description">{profile.description || (profile.kind === "base" ? "Harness defaults." : profile.kind === "worker" ? "SANE worker." : profile.kind === "utility" ? "App-invoked utility." : "SANE assistant.")}</span>
     <span className="agent-card-footer"><span className="harness-badge" title={harnessName(profile.harness)}>{edit ? harnessName(profile.harness) : harnessShort(profile.harness)}</span><span className="agent-card-model">{edit ? [profile.model || defaultModel, profile.effort].filter(Boolean).join(" · ") : profileSummary(profile)}</span></span>
     {disabled && reason && <span className="sr-only">Unavailable: {reason}</span>}
   </button>;

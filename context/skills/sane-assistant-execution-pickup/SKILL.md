@@ -13,7 +13,7 @@ description: Use when starting a new SANE Execution Assistant session.
 
 ## Required Inputs
 
-Read the Execution Plan (`execution/PLAN.md`), the next Job Specs and their dependencies, the relevant Verification Specs, and the Job Report and Test Report templates. Consult Solution Specs or the SDD where needed to resolve an assignment question. Keep Verification Specs out of Implementer context. When resuming, read relevant existing Job Reports, Test Reports, and review dispositions available in the session; defer the Final Report template until the user requests the Final Report.
+Read the Execution Plan (`execution/PLAN.md`), the next Job Specs and their dependencies, the relevant Verification Specs, and the Job Report and Test Report templates. Consult Solution Specs or the SDD where needed to resolve an assignment question. Keep Verification Specs out of Implementer context. When resuming, read relevant existing Job Reports, Test Reports, consolidated Verification Reports, and review dispositions available in the session; defer the Final Report template until the user requests the Final Report.
 
 ## Initial Handoff Context
 

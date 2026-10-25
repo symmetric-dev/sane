@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { FiMoreHorizontal } from "react-icons/fi";
+import { FiMessageSquare, FiMoreHorizontal } from "react-icons/fi";
+import { LuUnlink } from "react-icons/lu";
 import { PenroseTriangle } from "./penrose-triangle";
 import { store, useShellState, type State } from "./store";
 import { catalog } from "./catalog";
@@ -15,7 +16,10 @@ import { WorkstreamArtifact } from "./workstream-artifact";
 import { HistoryDetail } from "./history-view";
 import { ConfigMenu, ConfigView } from "./config-view";
 import { ConversationSidebar, useConversationSidebarModel } from "./conversation-sidebar";
+import { conversationSidebarGroups } from "./conversation-sidebar-buckets";
+import { compareConversationActivity } from "./conversation-activity";
 import { ChatWorktreeShortcuts } from "./chat-worktree-shortcuts";
+import { NewConversationShortcut } from "./new-conversation-shortcut";
 import { ConversationHeading } from "./conversation-heading";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { Facts, LoadedTranscriptDiagnostics, NativeHistoryDetails, NativeUsage, RunDetails, Thread, Usage } from "./thread";
@@ -36,7 +40,7 @@ import { PushNavigation, usePushInbox, type PushInbox } from "./push-navigation"
 import { notificationStore } from "./notifications";
 import { notificationContextKey } from "./notification-source";
 import { ChatFileNavigationProvider } from "./chat-file-link";
-import { BrowserFooter, BrowserHeader, BrowserPreviewHelp, BrowserProvider, BrowserTabStrip, BrowserView } from "./browser-view";
+import { BrowserFooter, BrowserHeader, BrowserProvider, BrowserTabStrip, BrowserView } from "./browser-view";
 import { BROWSER_PAIR_COMPACT_MEDIA, canPairBrowserConversation, captureBrowserPairIntent, useBrowserPair, useBrowserPairCompact, type BrowserPairIntent } from "./browser-pair";
 import { BrowserPairDialog } from "./browser-pair-dialog";
 import { SystemPromptDetails } from "./system-prompt";
@@ -145,19 +149,21 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   const reviewRequestHandled = useCallback((requestId: number) => setReviewRequest(current => current?.requestId === requestId ? null : current), []);
   const mode = view === "history" ? "history" : "chat";
   // The desktop sidebar and mobile drawer share one filter/search state owner.
-  const sidebarModel = useConversationSidebarModel(state, mode);
+  const sidebarModel = useConversationSidebarModel(state, mode, mode === "history" ? historyPreview ?? state.selected : state.selected);
   const selectorIsOpen = sidebarModel.workspaceSelection.isOpen;
   useEffect(() => { setArtifact(null); }, [workspaceId, worktreeId, repository.navigation.filePath]);
   useEffect(() => { setHistoryPreview(null); }, [workspaceId, worktreeId]);
   useEffect(() => {
     if (view !== "history") return;
     if (historyPreview && state.conversations.some(conversation => conversation.id === historyPreview)) return;
-    const listed = state.conversationPageIds
-      ? state.conversationPageIds.flatMap(id => state.conversations.find(conversation => conversation.id === id) ?? [])
-      : [...state.conversations].reverse();
-    const scoped = listed.filter(conversation => conversation.workspaceId === workspaceId && conversation.worktreeId === worktreeId);
+    // Per-worktree page unions have no global ordering. Use only eligible,
+    // already-loaded sidebar rows and the same normalized bucket identities.
+    const scoped = conversationSidebarGroups(sidebarModel, "history", historyPreview)
+      .flatMap(group => group.buckets)
+      .filter(bucket => bucket.workspaceId === workspaceId && bucket.worktreeId === worktreeId)
+      .flatMap(bucket => bucket.pinned ? [...bucket.conversations, bucket.pinned] : bucket.conversations).sort(compareConversationActivity);
     setHistoryPreview(scoped.find(conversation => conversation.id === state.selected)?.id ?? scoped[0]?.id ?? null);
-  }, [view, workspaceId, worktreeId, state.selected, state.conversations, state.conversationPageIds, historyPreview]);
+  }, [view, workspaceId, worktreeId, state.selected, state.conversations, sidebarModel.visible, sidebarModel.filter, sidebarModel.groups, repository.workspaces, historyPreview]);
   useEffect(() => { if (!selectorIsOpen()) setDrawer(null); }, [state.selected, selectorIsOpen]);
   useEffect(() => {
     if ((view !== "chat" && !paired) || nativeSubagents.active || state.compactDialog) setDrawer(current => current === "context" ? null : current);
@@ -172,6 +178,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   }, [reviewRequest, view, paired, state.selected, state.conversations, reviewRequestHandled]);
   const navigate = (next: ActiveView) => { choiceSerial.current++; if (next !== "browser") pair.clear(); setNavigationError(""); if (next !== "chat" && !(next === "browser" && paired)) setReviewRequest(null); setArtifact(null); catalog.navigate({ view: next }); setDrawer(null); };
   const openChat = () => { pair.clear(); setNavigationError(""); setArtifact(null); setDrawer(null); catalog.navigate({ view: "chat", conversationId: store.snapshot().selected || null }); };
+  const unpair = () => { setNavigationError(""); void pair.unlink().catch(error => setNavigationError(error instanceof Error ? error.message : "Could not remove the browser link. Check stored links before trying again.")); };
   const startPair = (id = store.snapshot().selected) => {
     const current = store.snapshot(), repository = catalog.snapshot();
     if (!canPairBrowserConversation(current, repository, id)) return;
@@ -252,7 +259,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   const sidebar = group === "chat" || group === "browser" || paired ? <ConversationSidebar
     state={state} model={sidebarModel} mode={mode} selectedId={mode === "history" ? historyPreview : state.selected}
     onChoose={choose} onPreview={id => { setHistoryPreview(id); setDrawer(null); }}
-    onHistory={() => navigate(view === "history" ? "chat" : "history")}
+    onHistory={id => { navigate("history"); setHistoryPreview(id); }}
     onConnect={view === "chat" || view === "browser" ? startPair : undefined}
     canConnect={conversation => canPairBrowserConversation(state, repository, conversation.id)}
   /> : group === "files" ? <><FilesModeControl activeView={view} onNavigate={navigate} /><WorkspaceSidebar /></>
@@ -262,11 +269,12 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     <PushNavigation state={state} inbox={inbox} hydrationReady={hydrationReady} openNotification={openNotification} />
     <ViewNavigationCommands onNavigate={navigate} />
     <SidebarToggleCommand onToggle={toggleSidebar} />
+    <NewConversationShortcut isSelectionOpen={selectorIsOpen} onNew={() => { pair.clear(); nativeSubagents.back(); setArtifact(null); choose(""); }} />
     {view === "chat" && <ChatWorktreeShortcuts model={sidebarModel} onChoose={id => { nativeSubagents.back(); choose(id); }} />}
     <ChatFlowLayoutProvider scope={view === "chat" && !nativeSubagents.active ? { sessionId: state.selected, nativeSessionId: nativeParent?.nativeSessionId, harness: nativeParent?.harness, workspaceId, worktreeId } : null}>
     <WorkspaceShell view={view} sidebar={sidebar} navigation={navigation} paired={paired}
       desktopSidebar={paired ? <section className="browser-pair-sidebar" aria-label="Conversation transcript">
-        <BrowserPairToolbar state={state} pane={pairPane} setPane={setPairPane} openChat={openChat} unpair={pair.clear} openDetails={() => setDrawer("details")} openContext={() => setDrawer("context")} />
+        <BrowserPairToolbar state={state} pane={pairPane} setPane={setPairPane} openChat={openChat} unpair={unpair} unpairBusy={pair.unlinkBusy} openContext={() => setDrawer("context")} />
         <div className="browser-pair-transcript" ref={setDesktopTranscript} />
       </section> : undefined}
       beforeHeader={view === "browser" ? <BrowserTabStrip onSelect={() => setDrawer(null)} /> : undefined}
@@ -275,13 +283,13 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
       sidebarHidden={sidebarHidden} toggleSidebar={toggleSidebar}
       openSidebar={() => setDrawer("sidebar")} closeSidebar={() => setDrawer(null)}
-      header={<ShellHeader state={state} view={view} canPair={pair.canPair} onPair={() => startPair()} artifact={artifact} overview={sidebarModel.overview} overviewWorkspaceId={workspaceId} openDetails={() => setDrawer("details")} openContext={() => setDrawer("context")} openApplication={() => setDrawer("application")} />}
+      header={<ShellHeader state={state} view={view} artifact={artifact} overview={sidebarModel.overview} overviewWorkspaceId={workspaceId} openDetails={() => setDrawer("details")} openContext={() => setDrawer("context")} openApplication={() => setDrawer("application")} />}
       notices={<><ShellNotices state={state} view={view} openDetails={() => setDrawer("details")} />{navigationError && <p className="notice error" role="alert">{navigationError} <button type="button" onClick={() => setNavigationError("")}>Dismiss</button></p>}</>}
     >
       <ShellContent state={state} view={view} workspaceId={workspaceId} artifact={artifact} closeArtifact={() => setArtifact(null)} openArtifact={openArtifact}
-        paired={paired} compactPair={compactPair} pairPane={pairPane} setPairPane={setPairPane} openChat={openChat} unpair={pair.clear}
+        paired={paired} compactPair={compactPair} pairPane={pairPane} setPairPane={setPairPane} openChat={openChat} unpair={unpair} unpairBusy={pair.unlinkBusy}
         transcriptTarget={paired ? compactPair ? inlineTranscript : desktopTranscript : null} transcriptVisible={!paired || (compactPair ? pairPane === "conversation" : !sidebarHidden)}
-        inlineTranscriptRef={setInlineTranscript} openDetails={() => setDrawer("details")} openContext={() => setDrawer("context")}
+        inlineTranscriptRef={setInlineTranscript} openContext={() => setDrawer("context")}
         historyPreview={historyPreview} choose={choose} signOut={signOut} navigation={null} startDocumentReview={startDocumentReview} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} />
     </WorkspaceShell>
     </ChatFlowLayoutProvider>
@@ -293,9 +301,8 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   </BrowserProvider></TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceQuickOpenFeature></ChatFileNavigationProvider></WorkspaceProvider></ApplicationCommandProvider></NativeSubagentContext.Provider>;
 }
 
-function ShellHeader({ state, view, canPair, onPair, artifact, overview, overviewWorkspaceId, openDetails, openContext, openApplication }: {
+function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, openDetails, openContext, openApplication }: {
   state: State; view: ActiveView; artifact: ArtifactSelection | null; openDetails: () => void; openContext: () => void; openApplication: () => void;
-  canPair: boolean; onPair: () => void;
   overview: WorkstreamOverview | null; overviewWorkspaceId: string | null;
 }) {
   const conversation = state.conversations.find(item => item.id === state.selected);
@@ -307,7 +314,6 @@ function ShellHeader({ state, view, canPair, onPair, artifact, overview, overvie
     <span className="harness-badge">{harnessName(store.harness())}</span>
     <ContextControl state={state} open={openContext} />
     <button type="button" className="details-button" aria-label="Conversation details" onClick={openDetails}><Icon name="details" /><span>Details</span></button>
-    <button type="button" className="browser-pair-button" disabled={!canPair} onClick={onPair} title={canPair ? "Use this conversation alongside the workspace browser" : "Select an available conversation and workspace before pairing"}>Pair with Browser</button>
   </>;
   else if (view === "terminal") heading = <TerminalHeader />;
    else if (view === "browser") heading = <BrowserHeader />;
@@ -336,14 +342,14 @@ function ShellNotices({ state, view, openDetails }: { state: State; view: Active
 }
 
 /** Hidden chat stays mounted: switching views must not destroy native input state. */
-function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openArtifact, historyPreview, choose, signOut, navigation, startDocumentReview, reviewRequest, reviewRequestHandled, paired, compactPair, pairPane, setPairPane, openChat, unpair, transcriptTarget, transcriptVisible, inlineTranscriptRef, openDetails, openContext }: {
+function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openArtifact, historyPreview, choose, signOut, navigation, startDocumentReview, reviewRequest, reviewRequestHandled, paired, compactPair, pairPane, setPairPane, openChat, unpair, unpairBusy, transcriptTarget, transcriptVisible, inlineTranscriptRef, openContext }: {
   state: State; view: ActiveView; workspaceId: string | null; artifact: ArtifactSelection | null;
   closeArtifact: () => void; openArtifact: (selection: ArtifactSelection) => void;
   historyPreview: string | null; choose: (id: string) => void; signOut: () => void; navigation: ReactNode;
   startDocumentReview: (launch: DocumentReviewLaunch) => void; reviewRequest: DocumentReviewRequest | null; reviewRequestHandled: (requestId: number) => void;
   paired: boolean; compactPair: boolean; pairPane: "preview" | "conversation"; setPairPane: (pane: "preview" | "conversation") => void;
-  openChat: () => void; unpair: () => void; transcriptTarget: HTMLElement | null; transcriptVisible: boolean;
-  inlineTranscriptRef: (element: HTMLDivElement | null) => void; openDetails: () => void; openContext: () => void;
+  openChat: () => void; unpair: () => void; unpairBusy: boolean; transcriptTarget: HTMLElement | null; transcriptVisible: boolean;
+  inlineTranscriptRef: (element: HTMLDivElement | null) => void; openContext: () => void;
 }) {
   const nativeSubagents = useNativeSubagents();
   const child = nativeSubagents?.active;
@@ -373,7 +379,7 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
     };
   }, [paired, compactPair, pairPane]);
   return <>
-    {paired && compactPair && <BrowserPairToolbar state={state} pane={pairPane} setPane={setPairPane} openChat={openChat} unpair={unpair} openDetails={openDetails} openContext={openContext} />}
+    {paired && compactPair && <BrowserPairToolbar state={state} pane={pairPane} setPane={setPairPane} openChat={openChat} unpair={unpair} unpairBusy={unpairBusy} openContext={openContext} />}
     {view === "chat" && child && <div className="chat-surface"><NativeSubagentView key={nativeSubagentVirtualKey(child.summary)} /></div>}
     {view !== "chat" && view !== "terminal" && view !== "browser" && <div className="shell-content">
       {view === "history" && <HistoryDetail state={state} previewId={historyPreview} onOpen={choose} />}
@@ -391,28 +397,17 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
   </>;
 }
 
-function BrowserPairToolbar({ state, pane, setPane, openChat, unpair, openDetails, openContext }: {
+function BrowserPairToolbar({ state, pane, setPane, openChat, unpair, unpairBusy, openContext }: {
   state: State; pane: "preview" | "conversation"; setPane: (pane: "preview" | "conversation") => void;
-  openChat: () => void; unpair: () => void; openDetails: () => void; openContext: () => void;
+  openChat: () => void; unpair: () => void; unpairBusy: boolean; openContext: () => void;
 }) {
-  const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const conversation = state.conversations.find(item => item.id === state.selected);
-  const describe = (workspaceId?: string | null, worktreeId?: string | null) => {
-    const workspace = repository.workspaces.find(item => item.workspaceId === workspaceId);
-    const worktree = workspace?.worktrees.find(item => item.worktreeId === worktreeId);
-    return worktree ? `${workspace?.name} / ${worktreeDisplay(worktree)}` : "Unavailable worktree";
-  };
-  const execution = describe(conversation?.workspaceId, conversation?.worktreeId);
-  const browsing = describe(repository.navigation.workspaceId, repository.navigation.worktreeId);
-  const mismatch = conversation?.workspaceId !== repository.navigation.workspaceId || conversation?.worktreeId !== repository.navigation.worktreeId;
   return <section className="browser-pair-toolbar" aria-label="Paired conversation controls">
-    <div className="browser-pair-heading"><strong title={conversation?.title || conversation?.id}>{conversation?.title || `Conversation · ${conversation?.id.slice(0, 8)}`}</strong><span title={conversation?.cwd}>Runs in: {execution}</span>{mismatch && <span className="browser-pair-mismatch" role="status">Preview worktree: {browsing} · Different from execution</span>}</div>
+    <div className="browser-pair-heading"><strong title={conversation?.title || conversation?.id}>{conversation?.title || `Conversation · ${conversation?.id.slice(0, 8)}`}</strong></div>
     <div className="browser-pair-actions">
+      <button type="button" className="icon-button browser-pair-icon-button" aria-label="Open Chat" title="Open Chat" onClick={openChat}><FiMessageSquare size={16} aria-hidden="true" /></button>
+      <button type="button" className="icon-button browser-pair-icon-button" aria-label="Unpair" title="Remove this conversation’s link to this tab" disabled={unpairBusy} onClick={unpair}><LuUnlink size={16} aria-hidden="true" /></button>
       <ContextControl state={state} open={openContext} />
-      <button type="button" className="details-button" onClick={openDetails}>Details</button>
-      <BrowserPreviewHelp />
-      <button type="button" className="browser-pair-button" onClick={openChat}>Open Chat</button>
-      <button type="button" className="browser-pair-button" onClick={unpair}>Unpair</button>
     </div>
     <div className="browser-pair-pane-toggle" role="group" aria-label="Paired view">
       <button type="button" aria-pressed={pane === "preview"} onClick={() => setPane("preview")}>Preview</button>

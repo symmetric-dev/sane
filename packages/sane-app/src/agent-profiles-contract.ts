@@ -2,7 +2,7 @@
  * No node imports: frontend code imports this file directly.
  *
  * A profile is a configured client: a behaviour (Base = none, or one SANE
- * assistant or worker role) bound to one harness with model/effort defaults and visuals.
+ * assistant, worker, or utility role) bound to one harness with model/effort defaults and visuals.
  * Base = harness defaults with no SANE instructions; Base builtins allow model,
  * effort and visual edits but keep their harness.
  * Persisted globally in <dataDir>/agents.json. Sessions snapshot the resolved
@@ -11,6 +11,7 @@
  */
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, WORKER_AGENT_IDS, WORKER_AGENT_CATALOG, isWorkerAgentId, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId, type SaneAgentIdentity, type WorkerAgentId, type AssistantAgentId, type StoredAssistantAgentId } from "sane-core/agent-catalog";
 import { canonicalSlot, isStoredSlot } from "sane-core/contracts";
+import { UTILITY_AGENT_IDS, UTILITY_AGENT_CATALOG, isUtilityAgentId, type UtilityAgentId } from "sane-core/agent-catalog";
 import type { Harness } from "./oc-contract";
 import type { AgentSnapshot } from "./history";
 
@@ -24,13 +25,13 @@ export const AGENT_COLOR_IDS = ["slate", "violet", "blue", "teal", "green", "amb
 export type AgentColorId = (typeof AGENT_COLOR_IDS)[number];
 export type AgentColor = AgentColorId | `#${string}`;
 
-export type AgentProfileKind = "base" | "assistant" | "worker";
+export type AgentProfileKind = "base" | "assistant" | "worker" | "utility";
 export type WorkerProfileMappings = Partial<Record<WorkerAgentId, string>>;
 
 export type AgentProfile = {
-  id: string;                        // uuid for custom; base:*, template:<assistant>, worker:<worker> for builtins
+  id: string;                        // uuid for custom; base:*, template:<assistant>, worker:<worker>, utility:<utility> for builtins
   kind: AgentProfileKind;
-  role: AssistantAgentId | WorkerAgentId | null; // null iff kind === "base"
+  role: AssistantAgentId | WorkerAgentId | UtilityAgentId | null; // null iff kind === "base"
   workerProfiles?: WorkerProfileMappings; // Execution choices, never an allowlist.
   harness: Harness;
   model: string;                     // "" = configured agent model, then harness default
@@ -88,6 +89,7 @@ export const templateProfileId = (role: AssistantAgentId) => `template:${role}`;
 /** Current configuration reference only; never apply to historical snapshots or native identity. */
 export const currentConfigProfileId = (id: string): string => id === LEGACY_KNOWLEDGE_PROFILE.id ? templateProfileId("curation") : id;
 export const workerTemplateProfileId = (role: WorkerAgentId) => `worker:${role}`;
+export const utilityTemplateProfileId = (role: UtilityAgentId) => `utility:${role}`;
 export const builtinWorkerDefaults = (): WorkerProfileMappings => Object.fromEntries(WORKER_AGENT_IDS.map(role => [role, workerTemplateProfileId(role)]));
 
 const TEMPLATE_VISUALS: Record<AssistantAgentId, { icon: AgentIconId; color: AgentColorId }> = {
@@ -120,6 +122,11 @@ export function builtinProfiles(now = new Date().toISOString()): AgentProfile[] 
       label: WORKER_AGENT_CATALOG[role].label, description: WORKER_AGENT_CATALOG[role].description,
       icon: "tool", color: "slate", builtin: true, locked: false, order: 30 + i, updatedAt: now,
     })),
+    ...UTILITY_AGENT_IDS.map((role, i): AgentProfile => ({
+      id: utilityTemplateProfileId(role), kind: "utility", role, harness: "opencode", model: "", effort: "",
+      label: UTILITY_AGENT_CATALOG[role].label, description: UTILITY_AGENT_CATALOG[role].description,
+      icon: "feather", color: "teal", builtin: true, locked: false, order: 50 + i, updatedAt: now,
+    })),
   ];
 }
 
@@ -138,6 +145,7 @@ export type AssignCheck = { ok: true } | { ok: false; reason: string };
  * New conversation: visible Base/assistant profiles. Base session: assistant profiles on the same harness.
  * Assistant session: none. */
 export function canAssign(current: Pick<AgentProfile, "kind" | "harness"> | undefined, next: Pick<AgentProfile, "kind" | "harness" | "hidden">): AssignCheck {
+  if (next.kind === "utility" || current?.kind === "utility") return { ok: false, reason: "Utilities are invoked only by the App for bounded operations" };
   if (next.kind === "worker" || current?.kind === "worker") return { ok: false, reason: "Workers are launched through worker orchestration" };
   if (!current) return next.hidden ? { ok: false, reason: "Hidden agent" } : { ok: true };
   if (current.kind === "assistant") return { ok: false, reason: "Session already has an assistant" };
@@ -171,14 +179,25 @@ export function resolveAgentLaunch(profile: AgentProfile): ResolvedAgentLaunch {
   let identity: SaneAgentIdentity | undefined;
   if (profile.kind === "assistant" && isAssistantAgentId(profile.role)) identity = { kind: "assistant", role: profile.role };
   else if (profile.kind === "worker" && isWorkerAgentId(profile.role)) identity = { kind: "worker", role: profile.role };
+  else if (profile.kind === "utility" && isUtilityAgentId(profile.role)) identity = { kind: "utility", role: profile.role };
   else if (profile.kind !== "base" || profile.role !== null) throw new AgentProfileResolutionError(`Invalid kind/role for profile ${profile.id}`);
   return { profileId: profile.id, harness: profile.harness, ...(identity ? { identity, agent: nativeAgentId(identity, profile.harness) } : {}), ...(profile.model ? { model: profile.model } : {}), ...(profile.effort ? { effort: profile.effort } : {}) };
+}
+/** App operations use their builtin configuration, never the source conversation
+ * or a caller's worker mappings. Custom copies do not replace the builtin. */
+export function resolveUtilityProfile(profiles: AgentProfiles, role: UtilityAgentId = "session-namer"): ResolvedAgentLaunch {
+  if (!isUtilityAgentId(role)) throw new AgentProfileResolutionError(`Unknown utility role: ${role}`);
+  const id = utilityTemplateProfileId(role);
+  const profile = profiles.profiles.find(p => p.id === id);
+  if (!profile || !profile.builtin || profile.kind !== "utility" || profile.role !== role) throw new AgentProfileResolutionError(`Utility ${role} requires its configured builtin profile ${id}`);
+  return resolveAgentLaunch(profile);
 }
 /** Caller mapping wins by presence. An invalid mapping never falls back. */
 export function resolveWorkerProfile(profiles: AgentProfiles, role: WorkerAgentId, callerProfileId?: string): ResolvedAgentLaunch {
   if (!isWorkerAgentId(role)) throw new AgentProfileResolutionError(`Unknown worker role: ${role}`);
   const caller = callerProfileId === undefined ? undefined : profiles.profiles.find(p => p.id === currentConfigProfileId(callerProfileId));
   if (callerProfileId !== undefined && !caller) throw new AgentProfileResolutionError(`Caller profile ${callerProfileId} is missing; configure its worker mappings`);
+  if (caller?.kind === "utility") throw new AgentProfileResolutionError("Utilities cannot launch workers");
   const id = caller?.workerProfiles && Object.hasOwn(caller.workerProfiles, role) ? caller.workerProfiles[role] : profiles.workerDefaults?.[role];
   if (!id) throw new AgentProfileResolutionError(`No profile mapped for worker ${role}; configure workerDefaults or the caller's workerProfiles`);
   const profile = profiles.profiles.find(p => p.id === id);

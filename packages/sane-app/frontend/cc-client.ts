@@ -1,9 +1,11 @@
-import type { ConversationClient, RunMetadata, RunStatus } from "./types";
+import type { ConversationClient, RunMetadata, RunStatus, SessionCatalogQuery, SessionTitleResult } from "./types";
+import { validConversationGroups } from "./conversation-listing";
 import { coalescedFetch } from "./request-coalescing";
 import { isConversationUpdateFeedRequest, isConversationUpdatePage } from "../shared/conversation/conversation-updates";
 import { nativeNotificationSource } from "./notification-source";
 import { SESSION_REFRESH_ERROR } from "./notification-presentation";
 import { pendingInputClient } from "./pending-input-client";
+import { normalizeSessionTitle, SESSION_TITLE_SOURCES } from "../shared/conversation/session-title";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
@@ -17,11 +19,37 @@ export async function request(path: string, init: RequestInit = {}) {
   return body;
 }
 const transcriptSignal = (signal?: AbortSignal) => signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : undefined;
+function catalogParams(query?: SessionCatalogQuery, directory = false) {
+  const params = new URLSearchParams({ summary: "1" });
+  if (query) {
+    params.set("limit", String(directory ? 5 : query.limit ?? 50));
+    for (const key of ["mode", "workspaceId", "worktreeId", "harness", "status", "workstreamId", "phase", "cursor"] as const) {
+      if (key === "cursor" && directory) continue;
+      if (query[key] !== undefined && query[key] !== null) params.set(key, String(query[key]));
+    }
+    if (query.showDeleted) params.set("showDeleted", "1");
+    if (query.availableOnly) params.set("availableOnly", "1");
+    if (query.query) params.set("q", query.query);
+  }
+  return params;
+}
 function mapConversations(data: any) {
   if (!Array.isArray(data?.sessions) || data.sessions.some((session: any) => !session || typeof session.sessionId !== "string" || !session.sessionId)) throw new Error(SESSION_REFRESH_ERROR, { cause: new Error("Invalid conversation listing.") });
-  const conversations = data.sessions.map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", authorityId: s.authorityId, nativeSessionId: s.nativeSessionId, ...(s.updateSource !== undefined ? { updateSource: s.updateSource } : {}), activity: s.activity, nativeActivity: s.nativeActivity, nativeActivityReason: s.nativeActivityReason, updatedAt: s.updatedAt, cwd: s.cwd, lastRunId: s.lastRunId, lastRunStatus: s.lastRunStatus, lastRunOperation: s.lastRunOperation, lastRunEndedAt: s.lastRunEndedAt, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, queuedFollowups: s.queuedFollowups, attachment: s.attachment, worker: s.worker, ...(s.workerProtocol !== undefined ? { workerProtocol: s.workerProtocol } : {}), directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy }));
+  const conversations = data.sessions.map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", authorityId: s.authorityId, nativeSessionId: s.nativeSessionId, ...(s.updateSource !== undefined ? { updateSource: s.updateSource } : {}), activity: s.activity, nativeActivity: s.nativeActivity, nativeActivityReason: s.nativeActivityReason, updatedAt: s.updatedAt, cwd: s.cwd, lastRunId: s.lastRunId, lastRunStatus: s.lastRunStatus, lastRunOperation: s.lastRunOperation, lastRunEndedAt: s.lastRunEndedAt, status: s.lastStatus as RunStatus, title: s.title, titleSource: s.titleSource, titleRevision: s.titleRevision ?? 0, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, queuedFollowups: s.queuedFollowups, attachment: s.attachment, worker: s.worker, ...(s.workerProtocol !== undefined ? { workerProtocol: s.workerProtocol } : {}), directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy }));
   if (conversations.some((c: any) => c.updateSource !== undefined && !nativeNotificationSource(c))) throw new Error(SESSION_REFRESH_ERROR, { cause: new Error("Invalid conversation update source in listing.") });
   return { conversations, availability: data.availability ?? { canSend: false, reason: "Waiting for bridge availability." } };
+}
+async function updateSessionTitle(id: string, input: { title?: string; expectedRevision: number }, regenerate = false): Promise<SessionTitleResult> {
+  const result = await request(`/api/sessions/${encodeURIComponent(id)}/title${regenerate ? "/regenerate" : ""}`, {
+    method: regenerate ? "POST" : "PUT", body: JSON.stringify(input),
+    // Generation is awaited by the API and can take longer than an ordinary GET.
+    signal: AbortSignal.timeout(regenerate ? 120000 : 25000),
+  });
+  if (normalizeSessionTitle(result.title) !== result.title || !result.title || !Number.isSafeInteger(result.titleRevision)
+    || result.titleRevision <= input.expectedRevision || !SESSION_TITLE_SOURCES.includes(result.titleSource)) {
+    throw new Error("The name change was not confirmed. Check the current name before retrying.");
+  }
+  return { title: result.title, titleSource: result.titleSource, titleRevision: result.titleRevision };
 }
 export const conversationClient: ConversationClient = {
   scienceSubmissions: async (id, signal) => (await request(`/api/sessions/${encodeURIComponent(id)}/science-submissions`, { signal })).submissions,
@@ -43,17 +71,18 @@ export const conversationClient: ConversationClient = {
   config: (signal) => request("/api/config", { signal }),
   login: (password) => request("/api/login", { method: "POST", body: JSON.stringify({ password }) }),
   logout: () => request("/api/logout", { method: "POST" }),
-  async conversations(signal, query) {
-    const params = new URLSearchParams({ summary: "1" });
-    if (query) {
-      params.set("limit", String(query.limit ?? 50));
-      for (const key of ["mode", "workspaceId", "worktreeId", "harness", "status", "workstreamId", "phase", "cursor"] as const) {
-        if (query[key] !== undefined && query[key] !== null) params.set(key, String(query[key]));
-      }
-      if (query.showDeleted) params.set("showDeleted", "1");
-      if (query.availableOnly) params.set("availableOnly", "1");
-      if (query.query) params.set("q", query.query);
+  async conversationGroups(query, signal) {
+    try {
+      const data = await request(`/api/sessions/groups?${catalogParams(query, true)}`, { signal: transcriptSignal(signal) });
+      if (!validConversationGroups(data)) throw new Error("Invalid conversation group directory. This bridge may require an update.");
+      return data;
+    } catch (error) {
+      if (error instanceof ApiError && [404, 405].includes(error.status)) throw new ApiError("Conversation group directory is unavailable on this bridge. Update the bridge to use grouped browsing.", error.status, error.code);
+      throw error;
     }
+  },
+  async conversations(signal, query) {
+    const params = catalogParams(query);
     const data = await request(`/api/sessions?${params}`, { signal: transcriptSignal(signal) });
     if (data.page !== undefined && (data.page?.kind !== "partial" || typeof data.page.hasMore !== "boolean"
       || data.page.nextCursor !== null && (typeof data.page.nextCursor !== "string" || !data.page.nextCursor)
@@ -116,6 +145,8 @@ export const conversationClient: ConversationClient = {
   compact: (id, input) => request(`/api/sessions/${encodeURIComponent(id)}/compact`, { method: "POST", body: JSON.stringify(input) }),
   hide: id => request(`/api/sessions/${encodeURIComponent(id)}/hide`, { method: "POST", body: "{}" }),
   unhide: id => request(`/api/sessions/${encodeURIComponent(id)}/unhide`, { method: "POST", body: "{}" }),
+  renameConversation: (id, input) => updateSessionTitle(id, input),
+  regenerateConversationName: (id, input) => updateSessionTitle(id, input, true),
   search: async (query, opts) => {
     const params = new URLSearchParams({ q: query });
     if (opts?.workspaceId && opts.workspaceId !== "all" && opts.workspaceId !== "unavailable") params.set("workspaceId", opts.workspaceId);

@@ -53,9 +53,9 @@
 .browser-empty h2 { font-size:18px; margin:0; }
 .browser-empty p { max-width:480px; margin:0; color:var(--muted-foreground); }
 .browser-footer { align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 12px; }
-.browser-help-button { display:flex; align-items:center; justify-content:center; flex-shrink:0; min-width:36px; min-height:36px; padding:8px; border-radius:7px; color:var(--muted-foreground); }
-.browser-help-button svg { flex-shrink:0; }
-.browser-help-button:hover { background:var(--accent); color:var(--foreground); }
+.browser-help-button,.browser-pair-icon-button { display:flex; align-items:center; justify-content:center; flex-shrink:0; min-width:36px; min-height:36px; padding:8px; border-radius:7px; color:var(--muted-foreground); }
+.browser-help-button svg,.browser-pair-icon-button svg { flex-shrink:0; }
+.browser-help-button:hover,.browser-pair-icon-button:hover { background:var(--accent); color:var(--foreground); }
 .browser-limitations { padding-left:20px; color:var(--muted-foreground); }
 .browser-limitations li+li { margin-top:12px; }
 .browser-notice { flex-shrink:0; margin:0; padding:6px 16px; font-size:12px; color:var(--warning); }

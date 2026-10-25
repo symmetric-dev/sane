@@ -8,6 +8,7 @@ import { isMacPlatform } from "./application-commands";
 import { SIDEBAR_TOGGLE_SHORTCUT, shortcutHint } from "./shortcut-definitions";
 import { ChatFlowSidebarDismissContext, useChatFlowSidebarSlot } from "./chat-flow-layout";
 import { BROWSER_PAIR_COMPACT_MEDIA } from "./browser-pair";
+import { SessionNameDialog } from "./session-name-dialog";
 
 type ShellProps = {
   view: ActiveView;
@@ -59,6 +60,7 @@ export function WorkspaceShell({ view, sidebar, desktopSidebar, paired = false, 
   const expanded = mobile ? sidebarOpen : !sidebarHidden;
   const toggleLabel = mobile ? "Open workspace navigation" : sidebarHidden ? "Show sidebar" : "Hide sidebar";
   return <div className={`app-shell view-${view} group-${group}${paired ? " browser-pair" : ""}`}>
+    <SessionNameDialog />
     <aside id={sidebarId} className="sidebar" aria-label={paired ? "Paired conversation" : flowSidebar?.title ?? "Workspace sidebar"} hidden={sidebarHidden} inert={sidebarHidden}><ShellSidebar navigation={navigation} retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar}>{desktopSidebar !== undefined ? desktopSidebar : flowSidebar && mobile ? null : sidebarContent}</ShellSidebar></aside>
     <main className="main">
       {beforeHeader}

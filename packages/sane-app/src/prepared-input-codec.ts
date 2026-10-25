@@ -142,7 +142,7 @@ export function decodePreparedUserInput(value: unknown): PreparedUserInput {
   for (const key of ["selectedProfile", "stagedUpgrade"]) if (key in value) profile(value[key]);
   if ("selectedProfile" in value) requireRecord(value.selectedProfile.id === n.profileId, "Prepared selected profile mismatch");
   if (!value.resume && value.selectedProfile) {
-    requireRecord(value.selectedProfile.harness === harness && !value.selectedProfile.hidden && value.selectedProfile.kind !== "worker");
+    requireRecord(value.selectedProfile.harness === harness && !value.selectedProfile.hidden && ["base", "assistant"].includes(value.selectedProfile.kind));
     const launch = resolveAgentLaunch(value.selectedProfile);
     requireRecord(n.agent === launch.identity?.role && (launch.model === undefined || n.model === launch.model) && (launch.effort === undefined || n.effort === launch.effort), "Prepared profile launch mismatch");
   }
@@ -160,7 +160,7 @@ export function decodePreparedUserInput(value: unknown): PreparedUserInput {
   requireRecord(equal(expected, value.configuration), "Prepared prior/effective configuration mismatch");
   if ("nativeLaunch" in value) {
     requireRecord(!value.resume && harness === "opencode"); shape(value.nativeLaunch, [], ["agent", "model"]);
-    if ("agent" in value.nativeLaunch) requireRecord(token(value.nativeLaunch.agent));
+    if ("agent" in value.nativeLaunch) requireRecord(token(value.nativeLaunch.agent) && !value.nativeLaunch.agent.startsWith("sane/utility/") && !value.nativeLaunch.agent.startsWith("sane-utility-"), "Utilities cannot be selected for conversation input");
     if (isAssistantAgentId(value.configuration.agent)) requireRecord(value.nativeLaunch.agent === nativeAgentId({ kind: "assistant", role: value.configuration.agent }, "opencode"), "Prepared native agent mismatch");
     if ("model" in value.nativeLaunch) {
       const model = value.nativeLaunch.model; shape(model, ["id", "providerID"], ["variant"]);
