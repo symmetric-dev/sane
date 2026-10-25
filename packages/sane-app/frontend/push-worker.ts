@@ -1,4 +1,4 @@
-import { isPushPayload, pushNotificationBody, pushNotificationFragment, pushNotificationTitle } from "../shared/push-notifications";
+import { isPushPayload, pushNotificationBody, pushNotificationFragment, pushNotificationTitle, type PushPayload } from "../shared/push-notifications";
 
 // A push-only worker: it never intercepts requests or caches authenticated data.
 type WorkerClient = { url: string; focus(): Promise<WorkerClient>; postMessage(value: unknown, transfer?: Transferable[]): void };
@@ -19,6 +19,20 @@ type PushWorker = {
   addEventListener(name: string, listener: (event: WorkerEvent) => void): void;
 };
 const worker = globalThis as unknown as PushWorker;
+async function hintRefresh(payload: PushPayload): Promise<void> {
+  if (payload.kind === "test") return;
+  try {
+    const clients = await worker.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of clients) {
+      try {
+        const destination = new URL(client.url);
+        if (destination.origin !== worker.location.origin || destination.pathname !== "/") continue;
+        // A read hint only: never focus, navigate, or wait for a page acknowledgement.
+        client.postMessage({ type: "sane:push-refresh", payload });
+      } catch { /* A disappearing or inaccessible window must not block other clients. */ }
+    }
+  } catch { /* Notification delivery does not depend on window enumeration. */ }
+}
 async function handOff(client: WorkerClient, payload: unknown): Promise<boolean> {
   const channel = new MessageChannel();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -53,7 +67,10 @@ worker.addEventListener("push", event => {
       silent: true,
       data: payload,
     };
-    await worker.registration.showNotification(pushNotificationTitle(payload), options);
+    // Start OS delivery before enumerating clients; a failed refresh hint must
+    // neither delay nor replace the user-visible notification.
+    const notification = worker.registration.showNotification(pushNotificationTitle(payload), options);
+    await Promise.all([notification, hintRefresh(payload)]);
   })());
 });
 

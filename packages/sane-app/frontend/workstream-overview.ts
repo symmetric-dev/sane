@@ -34,8 +34,9 @@ function overviewInFlight(overview: WorkstreamOverview | null) {
   // projections rather than treating an unchanged overview as settled work.
   const ids = new Set(overview.conversations.flatMap(row => row.sessionId ? [row.sessionId] : []));
   const state = store.snapshot();
-  return state.conversations.some(row => ids.has(row.id) && (active(row.status) || !!row.lastRunStatus && active(row.lastRunStatus)
-    || row.nativeActivity === "active" || workerProjectionInFlight(workersFor(row.id))))
+  return [...ids].some(id => workerProjectionInFlight(workersFor(id)))
+    || state.conversations.some(row => ids.has(row.id) && (active(row.status) || !!row.lastRunStatus && active(row.lastRunStatus)
+    || row.nativeActivity === "active"))
     || ids.has(state.selected) && state.runs.some(run => active(run.status));
 }
 

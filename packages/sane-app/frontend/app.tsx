@@ -38,9 +38,10 @@ import { notificationContextKey } from "./notification-source";
 import { ChatFileNavigationProvider } from "./chat-file-link";
 import { BrowserFooter, BrowserHeader, BrowserProvider, BrowserSidebar, BrowserView } from "./browser-view";
 import { SystemPromptDetails } from "./system-prompt";
+import { wakePolls } from "./poll-wake";
 
-// Restore selection without replacing the independently bookmarked browsing pair.
-const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
+// Manual recovery shares the config-scoped restore owner with automatic retries.
+const hydrateCatalog = () => catalog.retryHydration();
 
 export function App() {
   const state = useShellState();
@@ -49,10 +50,23 @@ export function App() {
   useEffect(() => chromePush.start(), []);
   useEffect(() => {
     store.start();
+    // Focus/BFCache restoration may not produce a visibility transition on
+    // mobile. Coalesce ready reads and re-arm startup if hiding interrupted it.
+    const refreshVisible = () => {
+      if (document.hidden) return;
+      // Hidden teardown removes the chat's wake subscription. Request a read
+      // directly as well, so focus-only restoration can re-arm that scheduler.
+      store.reconnect();
+      wakePolls();
+    };
     window.addEventListener("online", store.reconnect);
+    window.addEventListener("focus", refreshVisible);
+    window.addEventListener("pageshow", refreshVisible);
     document.addEventListener("visibilitychange", store.reconnect);
     return () => {
       window.removeEventListener("online", store.reconnect);
+      window.removeEventListener("focus", refreshVisible);
+      window.removeEventListener("pageshow", refreshVisible);
       document.removeEventListener("visibilitychange", store.reconnect);
     };
   }, []);
@@ -60,10 +74,12 @@ export function App() {
     if (state.phase !== "ready") { setHydratedConfig(undefined); return; }
     const config = state.config;
     let active = true;
-    void catalog.hydrate(bookmark => {
-      if (store.snapshot().phase === "ready" && store.snapshot().config === config) store.choose(bookmark.conversationId ?? "");
-    }).then(() => { if (active && store.snapshot().config === config) setHydratedConfig(config); });
-    return () => { active = false; };
+    const current = () => active && store.snapshot().phase === "ready" && store.snapshot().config === config;
+    // Restore selection without replacing the independently bookmarked browsing pair.
+    const stop = catalog.startHydration(bookmark => {
+      if (current()) store.choose(bookmark.conversationId ?? "");
+    }, current, () => { if (current()) setHydratedConfig(config); });
+    return () => { active = false; stop(); };
   }, [state.phase, state.config]);
   const signOut = () => {
     if (workspaceHasDirtyBuffers() && !window.confirm("Discard unsaved workspace changes and sign out?")) return;
@@ -115,6 +131,8 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   const [historyPreview, setHistoryPreview] = useState<string | null>(null);
   const [reviewRequest, setReviewRequest] = useState<DocumentReviewRequest | null>(null);
   const reviewSerial = useRef(0);
+  const choiceSerial = useRef(0);
+  const [navigationError, setNavigationError] = useState("");
   const reviewRequestHandled = useCallback((requestId: number) => setReviewRequest(current => current?.requestId === requestId ? null : current), []);
   const mode = view === "history" ? "history" : "chat";
   // The desktop sidebar and mobile drawer share one filter/search state owner.
@@ -125,9 +143,12 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   useEffect(() => {
     if (view !== "history") return;
     if (historyPreview && state.conversations.some(conversation => conversation.id === historyPreview)) return;
-    const scoped = state.conversations.filter(conversation => conversation.workspaceId === workspaceId && conversation.worktreeId === worktreeId);
-    setHistoryPreview(scoped.find(conversation => conversation.id === state.selected)?.id ?? scoped.at(-1)?.id ?? null);
-  }, [view, workspaceId, worktreeId, state.selected, state.conversations, historyPreview]);
+    const listed = state.conversationPageIds
+      ? state.conversationPageIds.flatMap(id => state.conversations.find(conversation => conversation.id === id) ?? [])
+      : [...state.conversations].reverse();
+    const scoped = listed.filter(conversation => conversation.workspaceId === workspaceId && conversation.worktreeId === worktreeId);
+    setHistoryPreview(scoped.find(conversation => conversation.id === state.selected)?.id ?? scoped[0]?.id ?? null);
+  }, [view, workspaceId, worktreeId, state.selected, state.conversations, state.conversationPageIds, historyPreview]);
   useEffect(() => { if (!selectorIsOpen()) setDrawer(null); }, [state.selected, selectorIsOpen]);
   useEffect(() => {
     if (view !== "chat" || nativeSubagents.active || state.compactDialog) setDrawer(current => current === "context" ? null : current);
@@ -139,10 +160,27 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     const target = current.conversations.find(conversation => conversation.id === reviewRequest.sessionId);
     if (catalog.snapshot().navigation.view !== "chat" || current.selected !== reviewRequest.sessionId || !target || target.replacedBy || target.workspaceId !== reviewRequest.workspaceId) reviewRequestHandled(reviewRequest.requestId);
   }, [reviewRequest, view, state.selected, state.conversations, reviewRequestHandled]);
-  const navigate = (next: ActiveView) => { if (next !== "chat") setReviewRequest(null); setArtifact(null); catalog.navigate({ view: next }); setDrawer(null); };
+  const navigate = (next: ActiveView) => { choiceSerial.current++; setNavigationError(""); if (next !== "chat") setReviewRequest(null); setArtifact(null); catalog.navigate({ view: next }); setDrawer(null); };
   const choose = (id: string) => {
-    if (store.snapshot().sending) return;
+    const current = store.snapshot(), navigation = catalog.snapshot().navigation;
+    if (current.sending || current.phase !== "ready") return;
+    const serial = ++choiceSerial.current;
+    setNavigationError("");
     if (id !== reviewRequest?.sessionId) setReviewRequest(null);
+    if (id && !current.conversations.some(conversation => conversation.id === id)) {
+      const ownsChoice = () => serial === choiceSerial.current && store.snapshot().phase === "ready"
+        && store.snapshot().config === current.config && !store.snapshot().sending
+        && store.snapshot().selected === current.selected && store.snapshot().drafts === current.drafts
+        && catalog.snapshot().navigation === navigation;
+      void store.ensureConversations([id], AbortSignal.timeout(25000)).then(() => {
+        if (!ownsChoice()) return;
+        if (store.openConversation(id)) setDrawer(null);
+        else setNavigationError("This conversation is no longer in the active catalog. Archived history is preserved.");
+      }).catch(() => {
+        if (ownsChoice()) setNavigationError("Could not load this conversation. Select it again to retry.");
+      });
+      return;
+    }
     store.openConversation(id); setDrawer(null);
   };
   const openNotification = (id: string) => {
@@ -206,7 +244,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
       sidebarHidden={sidebarHidden} toggleSidebar={toggleSidebar}
       openSidebar={() => setDrawer("sidebar")} closeSidebar={() => setDrawer(null)}
       header={<ShellHeader state={state} view={view} artifact={artifact} overview={sidebarModel.overview} overviewWorkspaceId={workspaceId} openDetails={() => setDrawer("details")} openContext={() => setDrawer("context")} openApplication={() => setDrawer("application")} />}
-      notices={<ShellNotices state={state} view={view} openDetails={() => setDrawer("details")} />}
+      notices={<><ShellNotices state={state} view={view} openDetails={() => setDrawer("details")} />{navigationError && <p className="notice error" role="alert">{navigationError} <button type="button" onClick={() => setNavigationError("")}>Dismiss</button></p>}</>}
     >
       <ShellContent state={state} view={view} workspaceId={workspaceId} artifact={artifact} closeArtifact={() => setArtifact(null)} openArtifact={openArtifact}
         historyPreview={historyPreview} choose={choose} signOut={signOut} navigation={null} startDocumentReview={startDocumentReview} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} />
@@ -250,6 +288,7 @@ function ShellNotices({ state, view, openDetails }: { state: State; view: Active
   const worktree = workspace?.worktrees.find(item => item.worktreeId === conversation?.worktreeId);
   const mismatch = conversation && (conversation.workspaceId !== repository.navigation.workspaceId || conversation.worktreeId !== repository.navigation.worktreeId);
   return <>
+    {!repository.ready && repository.error && <div className="connection-notice" role="status">Workspace navigation unavailable. {repository.error}<button type="button" onClick={hydrateCatalog}>Retry</button></div>}
     {state.connectionError && (view !== "chat" || nativeSubagents?.active) && <div className="connection-notice" role="status">{state.connectionError}<button type="button" onClick={store.reconnect}>Reconnect</button></div>}
     {mismatch && view !== "terminal" && view !== "browser" && !(view === "chat" && nativeSubagents?.active) && <div className="execution-context" role="status">
       <span title={worktree ? `${worktreeLabel(worktree)} · ${worktree.root}` : conversation.cwd}>Runs in: {worktree ? worktreeDisplay(worktree) : conversation.cwd || "Unavailable worktree"}</span>

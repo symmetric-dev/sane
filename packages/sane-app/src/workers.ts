@@ -3,7 +3,7 @@ import type { ConversationRef } from "sane-core/contracts";
 import { resolveWorkerProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { WorkerStore, workerSelection, type WorkerSelection } from "./worker-store";
 import { DEFAULT_MAX_UNFINISHED_EXPLICIT_WORKERS, DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, workerTerminal, type WorkerCaller, type WorkerProtocolPin, type WorkerRecord, type WorkerStart } from "./worker-contract";
-import { attentionBoundary, completionBlockedMessage, continuationActive, isExplicitWorker, occupiesExecution, protocolAllows, sameProtocolPin, unfinishedExplicit, userOrParentWaitOpen, validProtocolPin, workerInvocationKey, workerPayloadFingerprint, workerWaitUnsettled, type CompletionBlocker } from "./worker-protocol";
+import { attentionBoundary, completionBlockedMessage, continuationActive, isExplicitWorker, occupiesExecution, protocolAllows, sameProtocolPin, unfinishedExplicit, userOrParentWaitOpen, validProtocolPin, workerInvocationKey, workerPayloadFingerprint, workerWaitUnsettled, workerBlocksParentGate, type CompletionBlocker } from "./worker-protocol";
 import { WorkstreamAdapterError } from "./workstreams";
 import { synchronousDispatchHook } from "./dispatch-evidence";
 import { PendingInputStorageError } from "./pending-input-contract";
@@ -14,6 +14,9 @@ export type WorkerExecutor = {
   parent(caller: WorkerCaller): Promise<WorkerParent>;
   assertCurrentParent(parent: WorkerParent): void;
   hasActiveExecution(worker: WorkerSelection): boolean;
+  /** Historical workers remain readable, but not in normal catalog/polling. */
+  catalogActive?(sessionId: string): boolean;
+  observeAllowed?(sessionId: string): boolean;
   assertCapacity(): void;
   launch(worker: WorkerRecord): Promise<void>;
   observe(worker: WorkerRecord): Promise<Partial<WorkerRecord>>;
@@ -60,15 +63,20 @@ export class WorkerService {
   private launches = new Set<Promise<void>>();
   private observed = new Map<string, { revision: number; key: string }>();
   constructor(readonly store: WorkerStore, private executor: WorkerExecutor, private profiles: () => AgentProfiles, readonly checkoutLimit = DEFAULT_MAX_WORKERS_PER_CHECKOUT, readonly unfinishedExplicitLimit = DEFAULT_MAX_UNFINISHED_EXPLICIT_WORKERS) {}
-  active() { return this.store.listMatching(w => !workerTerminal(w) || this.executor.hasActiveExecution(w)); }
-  private occupies(worker: WorkerSelection) { return occupiesExecution(worker, this.executor.hasActiveExecution(worker)); }
+  /** Both durable retirement and an in-flight catalog reservation fence mutations. */
+  private targetAllowed(sessionId: string) { return this.executor.catalogActive?.(sessionId) !== false && this.executor.observeAllowed?.(sessionId) !== false; }
+  private assertTargetAllowed(sessionId: string) {
+    if (!this.targetAllowed(sessionId)) error("worker-unavailable", "Target conversation is retired or a catalog operation is pending; restore it or retry after the operation completes");
+  }
+  active() { return this.store.listMatching(w => (this.executor.catalogActive?.(w.sessionId) !== false && !workerTerminal(w)) || this.executor.hasActiveExecution(w)); }
+  private occupies(worker: WorkerSelection) { const active = this.executor.hasActiveExecution(worker); return active || this.executor.catalogActive?.(worker.sessionId) !== false && occupiesExecution(worker, active); }
   /** Execution slots only. Explicit idle workers are excluded. */
   executionCount(checkout: string, exceptSessionId?: string) {
     return this.store.countMatching(worker => worker.checkout === checkout && worker.sessionId !== exceptSessionId && this.occupies(worker));
   }
   executionOccupants() { return this.store.listMatching(worker => this.occupies(worker)); }
   private unfinishedCount(checkout: string, exceptId?: string) {
-    return this.store.countMatching(worker => worker.checkout === checkout && worker.id !== exceptId && unfinishedExplicit(worker));
+    return this.store.countMatching(worker => this.executor.catalogActive?.(worker.sessionId) !== false && worker.checkout === checkout && worker.id !== exceptId && unfinishedExplicit(worker));
   }
   private terminalObservationKey(w: WorkerSelection) {
     if (!workerTerminal(w) || !w.hasOutcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || this.executor.hasActiveExecution(w)) return;
@@ -79,11 +87,11 @@ export class WorkerService {
     return previous !== undefined && previous.revision === this.store.revision && previous.key === this.terminalObservationKey(w);
   }
   /** Select before cloning histories. Outbox reconciliation/dispatch remain separate. */
-  listForRefresh() { return this.store.listMatching(w => !this.observationCurrent(w)); }
+  listForRefresh() { return this.store.listMatching(w => this.executor.catalogActive?.(w.sessionId) !== false && this.executor.observeAllowed?.(w.sessionId) !== false && !this.observationCurrent(w)); }
   tree(parentSessionId: string) {
     return this.store.listDescendants(parentSessionId);
   }
-  hasBlockingDescendants(parentSessionId: string) { return this.store.hasBlockingDescendants(parentSessionId); }
+  hasBlockingDescendants(parentSessionId: string) { return this.store.listDescendants(parentSessionId).some(w => this.executor.catalogActive?.(w.sessionId) !== false && workerBlocksParentGate(w)); }
   async start(caller: WorkerCaller, input: WorkerStart, assertActive: () => void = () => {}) {
     if (!input || !isWorkerAgentId(input.worker) || typeof input.requestId !== "string" || !input.requestId || input.requestId.length > 200 || typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 100000 || input.context !== undefined && (typeof input.context !== "string" || input.context.length > 100000)) error("invalid-worker-input", "Worker role, request ID and bounded prompt/context text required");
     const jobs = workerJobsProblem(input.worker, input.jobs);
@@ -120,11 +128,13 @@ export class WorkerService {
   async drainLaunches() { await Promise.all(this.launches); }
   async refresh(w: WorkerRecord): Promise<WorkerRecord> {
     w = this.store.get(w.id)!;
+    if (!this.targetAllowed(w.sessionId)) return w;
     if (this.observationCurrent(workerSelection(w))) return w;
     this.observed.delete(w.id);
     const revision = this.store.revision, key = this.terminalObservationKey(workerSelection(w));
     const change = await this.executor.observe(w);
     const latest = this.store.get(w.id)!;
+    if (!this.targetAllowed(w.sessionId)) return latest;
     if (isExplicitWorker(latest)) {
       if (!latest.outcome && !latest.completion && latest.cancelRequestedAt && !change.outcome && change.state !== "uncertain") change.state = "cancelling";
       const changed = (Object.keys(change) as (keyof WorkerRecord)[]).some(key => JSON.stringify(change[key]) !== JSON.stringify(latest[key]));
@@ -195,14 +205,23 @@ export class WorkerService {
   async cancelForSession(parentSessionId: string, ids: string[] | "all", includeDescendants = false) {
     const descendants = new Set(this.store.descendantIds(parentSessionId));
     if (ids !== "all" && (!Array.isArray(ids) || !ids.length || ids.length > 256 || ids.some(id => !descendants.has(id)))) error("worker-scope", "Explicit workers must belong to the selected parent session's tree");
-    return this.cancelSelected(this.store.listDescendants(parentSessionId, ids === "all" ? undefined : ids), includeDescendants);
+    return this.cancelSelected(this.store.listDescendants(parentSessionId, ids === "all" ? undefined : ids), includeDescendants, ids === "all");
   }
-  private async cancelSelected(selected: WorkerRecord[], includeDescendants: boolean) {
+  private async cancelSelected(selected: WorkerRecord[], includeDescendants: boolean, skipUnavailable = false) {
+    // Explicit targets reject clearly; bulk/expanded retired descendants stay historical.
+    const explicitIds = new Set(skipUnavailable ? [] : selected.map(w => w.id));
+    const allowed = (row: WorkerRecord) => {
+      if (explicitIds.has(row.id)) this.assertTargetAllowed(row.sessionId);
+      return this.targetAllowed(row.sessionId);
+    };
+    selected.forEach(allowed);
     if (includeDescendants) selected = [...new Map(selected.flatMap(w => [w, ...this.tree(w.sessionId)]).map(w => [w.id, w])).values()];
+    const actionable = selected.filter(allowed);
+    if (!actionable.length) return selected.map(w => this.store.get(w.id)!);
     let pinned: ReturnType<NonNullable<WorkerExecutor["beforeCancel"]>> | undefined;
     let returned = false;
     try {
-      synchronousDispatchHook(() => { pinned = this.executor.beforeCancel?.(selected); returned = true; return pinned; });
+      synchronousDispatchHook(() => { pinned = this.executor.beforeCancel?.(actionable); returned = true; return pinned; });
     } catch (error) {
       // Preserve ordinary synchronous read/availability refusals. A returned
       // asynchronous fence, however, cannot establish durable control safety.
@@ -211,7 +230,8 @@ export class WorkerService {
     }
     const cancel = pinned ?? (w => this.executor.cancel(w));
     // Fence ALL explicit targets before any refresh or native cancellation.
-    for (const row of selected) {
+    for (const row of actionable) {
+      if (!allowed(row)) continue;
       try {
         synchronousDispatchHook(() => this.executor.suppressCancellation ? this.executor.suppressCancellation(row.sessionId) : this.store.suppress(row.sessionId, true));
       } catch (error) {
@@ -219,12 +239,19 @@ export class WorkerService {
       }
     }
     return Promise.all(selected.map(async row => {
+      if (!allowed(row)) return this.store.get(row.id)!;
       let w = await this.refresh(row);
+      // Refresh may yield to retirement. No suppression, assignment/history commit,
+      // or native cancellation may proceed once the target has been reserved.
+      if (!allowed(w)) return this.store.get(w.id)!;
       if (w.outcome) {
         if (!this.executor.hasActiveExecution(workerSelection(w))) return w;
         const requestedAt = new Date().toISOString();
         w = this.store.update(w.id, { state: "cancelling", continuation: w.continuation ? { ...w.continuation, state: "cancelling" } : undefined, continuationCancellation: { requestedAt } });
-        try { await cancel(w); } catch (e) { return this.store.update(w.id, { continuationCancellation: { requestedAt, error: e instanceof Error ? e.message : "Continuation cancellation unconfirmed" } }); }
+        try { await cancel(w); } catch (e) {
+          if (!allowed(w)) return this.store.get(w.id)!;
+          return this.store.update(w.id, { continuationCancellation: { requestedAt, error: e instanceof Error ? e.message : "Continuation cancellation unconfirmed" } });
+        }
         return w; // Requested only; actual continuation termination remains in its ordinary run log.
       }
       if (isExplicitWorker(w)) {
@@ -235,7 +262,10 @@ export class WorkerService {
         }
         w = committed.worker;
       } else w = this.store.update(w.id, { state: "cancelling", cancelRequestedAt: w.cancelRequestedAt ?? new Date().toISOString() });
-      try { await cancel(w); } catch (e) { return this.store.update(w.id, { error: e instanceof Error ? e.message : "Cancellation unconfirmed" }); }
+      try { await cancel(w); } catch (e) {
+        if (!allowed(w)) return this.store.get(w.id)!;
+        return this.store.update(w.id, { error: e instanceof Error ? e.message : "Cancellation unconfirmed" });
+      }
       return this.refresh(this.store.get(w.id)!);
     }));
   }
@@ -262,6 +292,7 @@ export class WorkerService {
     const worker = await this.callerWorker(caller);
     const fingerprint = workerPayloadFingerprint({ operation: "complete", outcome: { status: input.outcome.status, summary: input.outcome.summary } });
     const invocationKey = workerInvocationKey(caller);
+    this.assertTargetAllowed(worker.sessionId);
     const result = this.store.commitCompletion(worker.id, { requestId, fingerprint, invocationKey, outcome: { status: input.outcome.status, summary: input.outcome.summary }, cancelCommitted: this.cancellationCommitted(worker), uncertain: row => this.uncertain(row) });
     if (result.status === "conflict") return error("worker-request-conflict", "Completion request identity is already bound to another invocation or payload");
     if (result.status === "terminal") return error("worker-terminal", "Assignment is already terminal");
@@ -279,6 +310,7 @@ export class WorkerService {
     const invocationKey = workerInvocationKey(caller);
     const boundary = attentionBoundary(worker.sessionId, requestId);
     const now = new Date().toISOString();
+    this.assertTargetAllowed(worker.sessionId);
     const result = this.store.commitAttention(worker.id, { requestId, intent: input.intent, fingerprint, invocationKey, occurrenceBoundary: boundary, at: now }, input.intent === "request" ? { reason: "user", correlationId: requestId, since: now } : undefined);
     if (result.status === "conflict") return error("worker-request-conflict", "Notification request identity is already bound to another invocation or payload");
     if (result.status === "terminal") return error("worker-terminal", "Assignment is already terminal");
@@ -298,6 +330,8 @@ export class WorkerService {
     const invocationKey = workerInvocationKey(caller);
     const correlationId = input.awaitReply ? crypto.randomUUID() : `notice:${requestId}`;
     const exchange = this.exchangeDraft({ requestId, fingerprint, invocationKey, direction: "child-to-parent", kind: input.awaitReply ? "consultation" : "notice", correlationId, sender: { sessionId: worker.sessionId, native: worker.child }, recipient: { sessionId: parent.sessionId, native: parent.native }, text: input.text });
+    this.assertTargetAllowed(worker.sessionId);
+    this.assertTargetAllowed(parent.sessionId);
     const result = this.store.commitExchange(worker.id, exchange, input.awaitReply ? { reason: "parent", correlationId, since: new Date().toISOString() } : undefined);
     return this.exchangeResult(result);
   }
@@ -311,6 +345,9 @@ export class WorkerService {
     const invocationKey = workerInvocationKey(caller);
     const correlationId = child.wait?.reason === "parent" && child.wait.correlationId ? child.wait.correlationId : `guidance:${requestId}`;
     const exchange = this.exchangeDraft({ requestId, fingerprint, invocationKey, direction: "parent-to-child", kind: "guidance", correlationId, sender: { sessionId: callerSession.sessionId, native: callerSession.native }, recipient: { sessionId: child.sessionId, native: child.child }, text: input.text });
+    this.executor.assertCurrentParent(callerSession);
+    this.assertTargetAllowed(callerSession.sessionId);
+    this.assertTargetAllowed(child.sessionId);
     const result = this.store.commitExchange(child.id, exchange, undefined, child.wait?.reason === "parent" ? child.wait.correlationId : undefined);
     return this.exchangeResult(result);
   }

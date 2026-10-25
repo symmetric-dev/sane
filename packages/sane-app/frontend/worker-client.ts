@@ -19,6 +19,7 @@ export const workerStateIdentity = (worker: WorkerRecord) => JSON.stringify([wor
 const sameWorker = (left: WorkerRecord, right: WorkerRecord) => workerStateIdentity(left) === workerStateIdentity(right);
 let viewer: WorkerRecord | null = null;
 let references: Record<string, WorkerSessionMetadata> = {};
+let summaryCounts: Record<string, number> = {};
 let opening = { sessionId: "", loading: false, error: "" };
 let openGeneration = 0;
 let navigateToWorker: (sessionId: string) => void = () => {};
@@ -35,7 +36,7 @@ export const workerClient = {
 export function clearWorkerStates() {
   ++stateGeneration;
   for (const controller of stateControllers) controller.abort();
-  stateControllers.clear(); stateFlights.clear(); states = {}; emit();
+  stateControllers.clear(); stateFlights.clear(); states = {}; references = {}; summaryCounts = {}; projections = {}; emit();
 }
 const stateFor = (worker: WorkerRecord) => states[worker.id]?.identity === workerStateIdentity(worker) ? states[worker.id]! : emptyState;
 export function useWorkerState(worker: WorkerRecord) { return useSyncExternalStore(subscribe, () => stateFor(worker)); }
@@ -125,12 +126,27 @@ export function directWorkerCounts(): Map<string, number> {
   };
   Object.values(references).forEach(add);
   Object.values(projections).forEach(projection => projection.workers.forEach(add));
-  return new Map([...children].map(([id, workers]) => [id, workers.size]));
+  const counts = new Map(Object.entries(summaryCounts));
+  for (const [id, workers] of children) counts.set(id, Math.max(counts.get(id) ?? 0, workers.size));
+  return counts;
 }
-export function registerWorkerSessions(sessions: { id: string; worker?: WorkerSessionMetadata }[]) {
-  const next = Object.fromEntries(sessions.filter(s => s.worker).map(s => [s.id, s.worker!]));
-  if (JSON.stringify(references) === JSON.stringify(next)) return;
-  references = next; projections = { ...projections }; emit();
+export function registerWorkerSessions(sessions: { id: string; worker?: WorkerSessionMetadata; directWorkerCount?: number }[], partial = false) {
+  const next = partial ? { ...references } : {} as Record<string, WorkerSessionMetadata>;
+  const counts = partial ? { ...summaryCounts } : {} as Record<string, number>;
+  for (const session of sessions) {
+    if (session.worker) next[session.id] = session.worker; else delete next[session.id];
+    if (session.directWorkerCount !== undefined) counts[session.id] = session.directWorkerCount;
+  }
+  if (JSON.stringify(references) === JSON.stringify(next) && JSON.stringify(summaryCounts) === JSON.stringify(counts)) return;
+  references = next; summaryCounts = counts; projections = { ...projections }; emit();
+}
+export function forgetWorkerSessions(ids: readonly string[]) {
+  references = { ...references }; summaryCounts = { ...summaryCounts }; projections = { ...projections };
+  for (const id of ids) { delete references[id]; delete summaryCounts[id]; delete projections[id]; }
+  for (const [id, projection] of Object.entries(projections)) {
+    if (projection.workers.some(worker => ids.includes(worker.sessionId))) projections[id] = { ...projection, workers: projection.workers.filter(worker => !ids.includes(worker.sessionId)) };
+  }
+  emit();
 }
 export async function openWorkerSession(sessionId: string): Promise<void> {
   closeWorker();

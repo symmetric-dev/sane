@@ -1,6 +1,6 @@
 import { useRef, useSyncExternalStore } from "react";
 import { ApiError, conversationClient } from "./cc-client";
-import { publishWorkers, workersFor, registerWorkerSessions, setWorkerNavigator, workerReference, workerProjectionInFlight, clearWorkerStates } from "./worker-client";
+import { publishWorkers, workersFor, registerWorkerSessions, forgetWorkerSessions, setWorkerNavigator, workerReference, workerProjectionInFlight, clearWorkerStates } from "./worker-client";
 import { consume, createRun } from "./cc-reducer";
 import { pendingTurnRecorded, transcriptMessages } from "./transcript";
 import { contextUsageFor, type ContextUsageSnapshot } from "./context-usage";
@@ -16,14 +16,15 @@ import type { ReconciledHistory } from "../src/reconcile";
 import type { CompactRequest, CompactState, CompactionRecord } from "../src/oc-contract";
 import { compactCommand, compactionsFor } from "./compaction";
 import { ConversationCache, cloneRunForConsume, conversationKey } from "./conversation-cache";
-import { ConversationListing } from "./conversation-listing";
+import { ConversationListing, conversationQueryKey } from "./conversation-listing";
+import type { SessionCatalogQuery } from "./types";
 import { canonicalCount, equalValue, mergePage, pageMessages, pagedUsage, refreshPages, sameRunMetadata, TranscriptCoverageError, type PagedTranscript, type PageRequest } from "./transcript-pages";
 import type { TranscriptMetadataItem, TranscriptMetadataPage, TranscriptPage } from "../src/transcript-contract";
 import { capabilitiesFor, getHarnessDescriptor, type HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 import { notificationStore } from "./notifications";
-import { notificationContextKey } from "./notification-source";
+import { notificationContextKey, notificationSourceMatches } from "./notification-source";
 import type { NotificationFeedStatus } from "./notification-presentation";
-import { isConversationUpdatePage, type ConversationUpdateFeedRequest } from "../shared/conversation/conversation-updates";
+import { isConversationUpdatePage, updateSourceKey, type ConversationUpdateFeedRequest } from "../shared/conversation/conversation-updates";
 import type { PendingInputOperation, PendingInputView } from "./pending-input-presentation";
 import { isPendingInputResumeResult, isPendingInputStatus, isPendingInputView } from "./pending-input-presentation";
 import { isPendingInputCapability, isPendingInputRemovalResult, isPendingInputSubmissionResult, type PendingInputRemovalRequest, type PendingInputRequest, type PendingInputResumeRequest } from "../shared/conversation/pending-input-contract";
@@ -32,7 +33,8 @@ import { PendingInputLedger, pendingInputLedgerKey, type PendingInputRecord } fr
 import type { ScienceShareSnapshot } from "../shared/science-chat-contract";
 import type { ScienceSubmissionView } from "../shared/conversation/types";
 import { jitteredDelay } from "./visibility";
-import { wakePolls } from "./poll-wake";
+import { subscribeWake, wakePolls } from "./poll-wake";
+import { invalidateCoalescedRequests } from "./request-coalescing";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
@@ -40,6 +42,7 @@ export type ScienceStagedSnapshot = ScienceShareSnapshot & { snapshotId: string 
 export type SciencePendingSend = { version: 1; requestId: string; conversationId: string; text: string; snapshots: ScienceStagedSnapshot[] };
 export type ScienceRejectedRecovery = SciencePendingSend & { status: "rejected" };
 export type Draft = { text: string; cwd: string; profileId: string; upgradeId: string; scienceSnapshots?: ScienceStagedSnapshot[] };
+export type UnconfirmedSubmission = { conversationId: string; sourceKey: string; localId: string; requestId?: string; text: string; draft: Draft };
 export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "queued"; conversationId: string; requestId: string } | { status: "blocked" | "rejected" | "unknown" };
 export type PendingCompact = { payload: CompactRequest; phase: "sending" | "unconfirmed" | "accepted" | "rejected"; runId?: string };
 export type State = {
@@ -51,9 +54,15 @@ export type State = {
   pendingInputs?: PendingInputView | null; pendingInputLoading?: boolean; pendingInputError?: string;
   pendingInputOperations?: Record<string, PendingInputOperation>;
   phase: "connecting" | "login" | "ready"; config?: Config; conversations: Conversation[]; conversationsReady: boolean;
+  /** Matching loaded sidebar pages only; conversations is the known-summary union. */
+  conversationPageIds?: string[];
+  conversationPage?: { hasMore: boolean; loading: boolean; loadingMore: boolean; error: string; queryKey: string };
+  globalAvailability?: Availability;
   selected: string; runs: Run[]; messages: Message[]; drafts: Record<string, Draft>;
   connected: boolean; interactive?: boolean; loading: boolean; sending: boolean; availability: Availability;
   connectionError: string; submissionError: string; authError: string;
+  /** Original-source evidence only, never a retry/replay queue. */
+  unconfirmedSubmissions?: Record<string, UnconfirmedSubmission>;
   models: ModelChoice[]; modelsLoading: boolean; modelsError: string; modelsLoaded: boolean;
   modelsCwd: string; interactions: Interaction[]; handoffApprovals: Interaction[]; interactionError: string; actionBusy: boolean; actionNotice: string;
   nativeHistory?: ReconciledHistory | null;
@@ -521,11 +530,225 @@ export class ChatStore {
   private notificationScope = "";
   private notificationSources = new Map<string, string>();
   private queuedNotificationReceipts = new Map<string, Set<string>>();
+  private notificationRefreshCursor?: { epoch: string; after: number };
   private timer?: ReturnType<typeof setTimeout>;
   private controller?: AbortController;
+  private pollFlight?: { generation: number };
+  private selectedRefreshPending = false;
+  private unsubscribeRefreshWake?: () => void;
+  private emittingListingWake = false;
+  private subscribeRefreshWake() {
+    if (this.unsubscribeRefreshWake) return;
+    this.unsubscribeRefreshWake = subscribeWake(id => {
+      // Listing changes wake auxiliary consumers, not this same poll again.
+      if (!this.emittingListingWake && (!id || id === this.state.selected)) this.requestSelectedRefresh();
+    });
+  }
+  /** Read-only invalidation. A burst during a poll becomes ONE fresh successor;
+   * never abort useful history progress or replay a composer/queue operation. */
+  private requestSelectedRefresh = () => {
+    if (this.state.phase !== "ready") return;
+    this.selectedRefreshPending = true;
+    clearTimeout(this.timer); this.timer = undefined;
+    if (this.state.sending || typeof document !== "undefined" && document.hidden || this.pollFlight?.generation === this.generation) return;
+    this.timer = setTimeout(() => { this.timer = undefined; void this.poll(); }, 0);
+  };
   private runMap = new Map<string, Run>();
   private conversationCache = new ConversationCache();
-  private conversationListing = new ConversationListing(signal => this.client.conversations(signal));
+  private conversationListing: ConversationListing;
+  private conversationQuery: SessionCatalogQuery = { mode: "chat", limit: 50 };
+  private catalogController = new AbortController();
+  private summaryRequests = new Set<AbortController>();
+  private catalogHead?: Promise<void>;
+  private catalogCursor: string | null = null;
+  private catalogSnapshotPinned = false;
+  private catalogMoreSerial = 0;
+  private catalogMoreError = "";
+  private catalogSummarySerial = 0;
+  private catalogSummaryVersions = new Map<string, number>();
+  private catalogMissing = new Set<string>();
+  private activeSubmission?: { recovery: UnconfirmedSubmission; draftKey: string; preserveDraft: boolean };
+
+  setConversationQuery = (query: SessionCatalogQuery): void => {
+    const next = { ...query, limit: query.limit ?? 50, cursor: undefined };
+    if (conversationQueryKey(next) === conversationQueryKey(this.conversationQuery) && this.state.conversationPage) return;
+    this.conversationQuery = next;
+    this.resetConversationPages();
+    if (this.state.phase === "ready") void this.refreshConversationHead();
+  };
+  private resetConversationPages() {
+    this.catalogController.abort(); this.catalogController = new AbortController();
+    this.catalogHead = undefined; this.catalogCursor = null;
+    this.catalogSnapshotPinned = false; this.catalogMoreSerial++;
+    this.catalogMoreError = "";
+    this.update({ conversationPageIds: [], conversationPage: { hasMore: false, loading: this.state.phase !== "login", loadingMore: false, error: "", queryKey: conversationQueryKey(this.conversationQuery) } });
+  }
+  private conversationPagePatch(patch: Partial<NonNullable<State["conversationPage"]>>) {
+    this.update({ conversationPage: { hasMore: false, loading: false, loadingMore: false, error: "", queryKey: conversationQueryKey(this.conversationQuery), ...this.state.conversationPage, ...patch } });
+  }
+  /** Old loaded tails keep their original frozen snapshot cursor. Head refreshes
+   * prepend new matches, but never splice a new snapshot into that traversal.
+   * Expiry (409) explicitly resets sidebar IDs to a fresh head, not the cache. */
+  private refreshConversationHead(): Promise<void> {
+    if (this.catalogHead) return this.catalogHead;
+    const owner = this.catalogController, auth = this.authEpoch, query = this.conversationQuery, readSerial = ++this.catalogSummarySerial;
+    // Sidebar acquisition belongs to its query/auth owner, not to whichever
+    // selected poll first requested it. Selection changes must not strand an
+    // aborted head promise or turn an unacquired first page into "no matches".
+    const requestSignal = AbortSignal.any([owner.signal, AbortSignal.timeout(25000)]);
+    const current = () => owner === this.catalogController && auth === this.authEpoch && this.state.phase === "ready";
+    this.conversationPagePatch({ loading: !this.state.conversationsReady || !this.state.conversationPageIds?.length });
+    const task = (async () => {
+      try {
+        const acquired = await this.conversationListing.read(requestSignal, 1000, query);
+        requestSignal.throwIfAborted();
+        if (!current() || acquired.revision !== this.conversationListing.revision) return;
+        const data = acquired.value;
+        if (!data.page) {
+          this.conversationCache.prune(data.conversations);
+          this.update({ conversations: data.conversations, conversationsReady: true, conversationPageIds: undefined, conversationPage: undefined, globalAvailability: data.availability });
+          registerWorkerSessions(data.conversations); this.observeNotifications(data.conversations);
+          return;
+        }
+        const tail = this.catalogSnapshotPinned ? this.state.conversationPageIds ?? [] : [];
+        if (!this.catalogSnapshotPinned) {
+          this.catalogCursor = data.page.nextCursor;
+          // Even an initially exhausted snapshot remains exhausted. New head
+          // membership is still merged without silently reopening traversal.
+          if (!data.page.hasMore) this.catalogSnapshotPinned = true;
+        }
+        // A fresh head can authoritatively rediscover an explicitly restored
+        // session; an old frozen continuation cannot undo a missing result.
+        this.mergeConversationSummaries(data.conversations, data.availability, [], readSerial, true);
+        if (!current()) return;
+        const head = [...new Set(data.conversations.map(c => c.id))].filter(id => !this.catalogMissing.has(id));
+        this.update({ conversationsReady: true, conversationPageIds: [...new Set([...head, ...tail])] });
+        this.conversationPagePatch({ hasMore: this.catalogCursor !== null, error: this.catalogMoreError });
+      } catch (error) {
+        if (current() && !this.expired(error)) this.conversationPagePatch({ error: error instanceof Error ? error.message : "Conversations unavailable." });
+      } finally {
+        if (current() && this.state.conversationPage) this.conversationPagePatch({ loading: false });
+      }
+    })();
+    this.catalogHead = task;
+    void task.finally(() => { if (this.catalogHead === task) this.catalogHead = undefined; });
+    return task;
+  }
+  loadMoreConversations = async (): Promise<void> => {
+    if (this.state.phase !== "ready" || !this.catalogCursor || this.state.conversationPage?.loadingMore || this.state.conversationPage?.loading) return;
+    const owner = this.catalogController, auth = this.authEpoch, serial = ++this.catalogMoreSerial;
+    const cursor = this.catalogCursor, query = { ...this.conversationQuery, cursor }, readSerial = ++this.catalogSummarySerial;
+    const signal = AbortSignal.any([owner.signal, AbortSignal.timeout(25000)]);
+    const current = () => owner === this.catalogController && auth === this.authEpoch && serial === this.catalogMoreSerial && this.state.phase === "ready";
+    this.catalogSnapshotPinned = true;
+    this.catalogMoreError = "";
+    this.conversationPagePatch({ loadingMore: true, error: "" });
+    try {
+      const acquired = await this.conversationListing.read(signal, 1000, query);
+      signal.throwIfAborted();
+      if (!current() || acquired.revision !== this.conversationListing.revision) return;
+      const data = acquired.value;
+      if (!data.page) throw new Error("Conversation pagination is unavailable.");
+      this.mergeConversationSummaries(data.conversations, data.availability, [], readSerial);
+      if (!current()) return;
+      this.catalogCursor = data.page.nextCursor;
+      this.update({ conversationPageIds: [...new Set([...(this.state.conversationPageIds ?? []), ...data.conversations.map(c => c.id)])].filter(id => !this.catalogMissing.has(id)) });
+      this.conversationPagePatch({ hasMore: data.page.hasMore });
+    } catch (error) {
+      if (!current() || this.expired(error)) return;
+      if (error instanceof ApiError && error.status === 409 && error.code === "session-catalog-reset") {
+        this.resetConversationPages(); this.conversationListing.invalidate(); await this.refreshConversationHead();
+      } else {
+        this.catalogMoreError = error instanceof Error ? error.message : "More conversations unavailable.";
+        this.conversationPagePatch({ error: this.catalogMoreError });
+      }
+    } finally { if (current()) this.conversationPagePatch({ loadingMore: false }); }
+  };
+  retryConversations = (): void => {
+    this.conversationListing.invalidate();
+    // A retry targets the failed continuation when one exists; it never drains.
+    if (this.catalogMoreError && this.catalogCursor) void this.loadMoreConversations();
+    else { this.resetConversationPages(); if (this.state.phase === "ready") void this.refreshConversationHead(); }
+  };
+  private mergeConversationSummaries(rows: Conversation[], availability: Availability, missing: string[] = [], serial = ++this.catalogSummarySerial, targeted = false) {
+    const fresh = (id: string) => serial >= (this.catalogSummaryVersions.get(id) ?? 0);
+    rows = rows.filter(row => fresh(row.id) && (targeted || !this.catalogMissing.has(row.id)));
+    missing = missing.filter(fresh);
+    for (const row of rows) { this.catalogSummaryVersions.set(row.id, serial); if (targeted) this.catalogMissing.delete(row.id); }
+    for (const id of missing) { this.catalogSummaryVersions.set(id, serial); this.catalogMissing.add(id); }
+    const previousSelected = this.state.conversations.find(c => c.id === this.state.selected);
+    const next = new Map(this.state.conversations.map(c => [c.id, c]));
+    for (const id of missing) { next.delete(id); this.invalidateConversationCache(id); this.notificationSources.delete(id); }
+    for (const row of rows) {
+      const previous = next.get(row.id);
+      const sameIdentity = previous && conversationKey(previous) === conversationKey(row);
+      if (previous && !sameIdentity) this.invalidateConversationCache(row.id);
+      next.set(row.id, !row.title && sameIdentity && previous.title ? { ...row, title: previous.title } : row);
+    }
+    this.update({ conversations: [...next.values()], globalAvailability: availability,
+      ...(missing.length && this.state.conversationPageIds ? { conversationPageIds: this.state.conversationPageIds.filter(id => !missing.includes(id)) } : {}) });
+    if (missing.length) { notificationStore.forget(missing); forgetWorkerSessions(missing); }
+    registerWorkerSessions(rows, true); this.observeNotifications(rows, true);
+    const selected = next.get(this.state.selected);
+    if (previousSelected && (missing.includes(previousSelected.id) || selected && conversationKey(previousSelected) !== conversationKey(selected))) {
+      const submission = this.state.sending && this.activeSubmission?.recovery.conversationId === previousSelected.id ? this.activeSubmission : undefined;
+      const draft = submission && (this.state.drafts[submission.draftKey] ?? submission.recovery.draft);
+      const restoreDraft = !!submission && !submission.preserveDraft && !!draft && !draft.text && !draft.scienceSnapshots?.length;
+      const submissionPatch: Partial<State> = submission ? {
+        unconfirmedSubmissions: { ...this.state.unconfirmedSubmissions, [submission.recovery.requestId ?? submission.recovery.localId]: submission.recovery },
+        ...(restoreDraft ? { drafts: { ...this.state.drafts, [submission.draftKey]: { ...draft!, text: submission.recovery.text,
+          ...(submission.recovery.draft.scienceSnapshots?.length ? { scienceSnapshots: submission.recovery.draft.scienceSnapshots } : {}) } } } : {}),
+        submissionError: `The original native source changed while submitting. Acceptance is unknown; nothing was canceled or resent. ${submission.recovery.requestId ? `Original request: ${submission.recovery.requestId}. ` : `Local submission: ${submission.recovery.localId}. `}Check the original source before sending again. ${restoreDraft ? "Your draft is restored." : "Your current draft is preserved; the original submission is retained separately."}`,
+      } : {};
+      if (submission) this.activeSubmission = undefined;
+      // Targeted retirement/rebinding is authoritative even outside a selected
+      // poll (push, feed hydration, message search). Fence actions immediately.
+      this.stop(); this.selectionEpoch++; this.actionSerial++; this.compactReadSerial++;
+      this.runMap = new Map(); this.transcriptKey = ""; this.cacheable = false; this.nativeHistoryLoaded = false; this.workerReady = false;
+      this.runGateId = ""; this.runGateMarkers = ""; this.replied.clear();
+      if (this.paged) this.resetPages();
+      const pendingCompacts = { ...this.state.pendingCompacts }, compactInstructions = { ...this.state.compactInstructions };
+      delete pendingCompacts[previousSelected.id]; delete compactInstructions[previousSelected.id];
+      this.update({ runs: [], messages: [], pendingTurn: null, sending: false, ...submissionPatch, nativeHistory: null, contextUsage: null,
+        compactState: null, compactions: [], compactDialog: "", compactError: "", pendingCompacts, compactInstructions,
+        interactions: [], handoffApprovals: [], interactionError: "", pendingInputs: null, pendingInputOperations: {}, actionBusy: false, actionNotice: "",
+        availability: { canSend: false }, connected: false, loading: !!selected,
+        connectionError: selected ? "" : "Conversation is no longer in the active catalog. Archived history is preserved." });
+      this.pendingInputFresh = "";
+      this.timer = setTimeout(() => void this.poll(), selected ? 0 : 5000);
+    }
+  }
+  /** Direct active/hidden/worker lookups, independent of the sidebar query.
+   * Legacy clients may supply only a complete unpaginated listing. */
+  ensureConversations = async (ids: readonly string[], signal?: AbortSignal): Promise<Conversation[]> => {
+    const requested = [...new Set(ids.filter(Boolean))];
+    if (!requested.length) return [];
+    if (this.state.phase !== "ready") throw new Error("Sign in before loading conversations.");
+    const controller = new AbortController(), auth = this.authEpoch;
+    this.summaryRequests.add(controller);
+    const combined = AbortSignal.any([controller.signal, ...(signal ? [signal] : []), AbortSignal.timeout(25000)]);
+    try {
+      for (let offset = 0; offset < requested.length; offset += 100) {
+        const batch = requested.slice(offset, offset + 100), readSerial = ++this.catalogSummarySerial;
+        if (this.client.conversationSummaries) {
+          const acquired = await this.conversationListing.readSummaries(batch, combined);
+          combined.throwIfAborted();
+          if (auth !== this.authEpoch || acquired.revision !== this.conversationListing.revision) throw new Error("Conversation lookup invalidated.");
+          this.mergeConversationSummaries(acquired.value.conversations, acquired.value.availability, acquired.value.missing.map(item => item.sessionId), readSerial, true);
+        } else {
+          const acquired = await this.conversationListing.read(combined);
+          combined.throwIfAborted();
+          if (auth !== this.authEpoch || acquired.revision !== this.conversationListing.revision) throw new Error("Conversation lookup invalidated.");
+          if (acquired.value.page) throw new Error("This bridge cannot resolve off-page conversations without targeted summaries.");
+          this.mergeConversationSummaries(acquired.value.conversations, acquired.value.availability, batch.filter(id => !acquired.value.conversations.some(c => c.id === id)), readSerial, true);
+          this.observeNotifications(acquired.value.conversations);
+          registerWorkerSessions(acquired.value.conversations);
+        }
+      }
+      return requested.flatMap(id => this.state.conversations.find(c => c.id === id) ?? []);
+    } catch (error) { if (auth === this.authEpoch) this.expired(error); throw error; }
+    finally { this.summaryRequests.delete(controller); }
+  };
   private async listingMutation<T>(run: () => Promise<T>): Promise<T> {
     const auth = this.authEpoch;
     this.conversationListing.invalidate();
@@ -585,6 +808,12 @@ export class ChatStore {
     this.update({ connected: false, loading: true, availability: { canSend: false }, compactState: null, contextUsage: null, interactions: [], handoffApprovals: [] });
   }
   private clearCachedHistory() {
+    this.resetConversationPages();
+    for (const controller of this.summaryRequests) controller.abort();
+    this.summaryRequests.clear();
+    this.catalogSummaryVersions.clear(); this.catalogMissing.clear();
+    this.activeSubmission = undefined;
+    this.update({ conversations: [], conversationsReady: false, globalAvailability: { canSend: false }, unconfirmedSubmissions: {} });
     clearWorkerStates();
     this.conversationCache.clear(); this.runMap = new Map();
     this.runGateId = ""; this.runGateMarkers = "";
@@ -698,7 +927,10 @@ export class ChatStore {
   }
   state: State = { phase: "connecting", conversations: [], conversationsReady: false, selected: "", runs: [], messages: [], drafts: {}, connected: false, loading: true, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", authError: "", models: [], modelsLoading: false, modelsError: "", modelsLoaded: false, modelsCwd: "", interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false };
   constructor(private client: ConversationClient) {
+    this.conversationListing = new ConversationListing((signal, query) => client.conversations(signal, query), 1000,
+      () => performance.now(), client.conversationSummaries ? (ids, signal) => client.conversationSummaries!(ids, signal) : undefined);
     this.state = { ...this.state, transcriptPaged: this.paged }; onWorkspaceAuthExpired(() => this.loginRequired());
+    if (client.conversationSummaries) this.resetConversationPages();
     if (typeof window !== "undefined") window.addEventListener("storage", event => {
       if (event.key === this.pendingInputKey()) { this.loadPendingInputLedger(); if (this.pendingInputVisible) void this.refreshPendingInputs(); }
     });
@@ -1181,13 +1413,16 @@ export class ChatStore {
   private stop() {
     clearTimeout(this.scienceTimer); this.scienceTimer = undefined;
     this.scienceController?.abort(); this.scienceController = undefined;
-    this.generation++; clearTimeout(this.timer); this.controller?.abort();
+    this.generation++; clearTimeout(this.timer); this.timer = undefined; this.controller?.abort();
+    this.selectedRefreshPending = false;
+    this.unsubscribeRefreshWake?.(); this.unsubscribeRefreshWake = undefined;
     this.pageFence++; this.pageRequests.forEach(request => request.abort()); this.pageRequests.clear();
     if (this.paged) this.update({ pageBusy: "", transcriptRefreshing: false });
   }
   private stopNotifications() {
     this.stopNotificationPolling();
     this.notificationScope = ""; this.notificationSources.clear(); this.queuedNotificationReceipts.clear();
+    this.notificationRefreshCursor = undefined;
   }
   private stopNotificationPolling() {
     this.notificationFence++; clearTimeout(this.notificationTimer); this.notificationTimer = undefined;
@@ -1210,8 +1445,8 @@ export class ChatStore {
   private notificationSource(conversation: Conversation) {
     return notificationContextKey(conversation);
   }
-  private observeNotifications(conversations: Conversation[]) {
-    this.notificationSources = new Map(conversations.map(conversation => [conversation.id, this.notificationSource(conversation)]));
+  private observeNotifications(conversations: Conversation[], partial = false) {
+    this.notificationSources = new Map([...(partial ? this.notificationSources : []), ...conversations.map(conversation => [conversation.id, this.notificationSource(conversation)] as const)]);
     for (const conversation of conversations) {
       const pending = this.queuedNotificationReceipts.get(conversation.id);
       if (!pending) continue;
@@ -1225,7 +1460,7 @@ export class ChatStore {
       }
       if (!pending.size) this.queuedNotificationReceipts.delete(conversation.id);
     }
-    notificationStore.observe(conversations);
+    notificationStore.observe(conversations, partial);
   }
   private async pollNotifications() {
     const scope = this.notificationScope, fence = this.notificationFence, auth = this.authEpoch;
@@ -1240,12 +1475,22 @@ export class ChatStore {
       if (!current()) return;
       const listing = async () => {
         try {
+          if (this.client.conversationSummaries) {
+            // Explicit missing results stay suppressed until rediscovered by a
+            // fresh head, direct navigation, or a new feed occurrence. Persisted
+            // old unread evidence must not repeatedly fetch retired summaries.
+            const ids = [...notificationStore.summaryIds(), ...this.queuedNotificationReceipts.keys()].filter(id => !this.catalogMissing.has(id));
+            await this.ensureConversations(ids, controller.signal);
+            if (current()) healthy = true;
+            return;
+          }
           // Notification sources tolerate a stale listing: the feed cursors are
           // self-healing, and the main poll publishes anything newer. Sharing
           // the main loop's cache avoids a second listing GET per cycle.
           const acquired = await this.conversationListing.read(AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]), 15000);
           if (!current() || acquired.revision !== this.conversationListing.revision) return;
           const data = acquired.value;
+          if (data.page) throw new Error("Off-page notifications require targeted conversation summaries.");
           // Metadata/legacy OC fallback only. Selected-chat polling remains the
           // sole publisher of main conversation/transcript state.
           this.observeNotifications(data.conversations); healthy = true;
@@ -1266,8 +1511,29 @@ export class ChatStore {
             if (!current()) return;
             if (!isConversationUpdatePage(page, { storeId: scope, epoch: input.cursor?.epoch, cursor: input.cursor, through: input.through, limit: input.limit })
               || bootstrap !== !!page.bootstrap) throw new Error("Invalid conversation update page or authenticated store identity.");
+            // Resolve every feed source (including bootstrap-only worker waits)
+            // BEFORE source validation/display. A failed lookup must not advance
+            // the durable cursor and silently lose an off-page notification.
+            await this.ensureConversations([...page.updates.map(update => update.conversationId),
+              ...(page.bootstrap?.outstandingWorkerAttention ?? []).map(item => item.workerSessionId)], controller.signal);
+            if (!current()) return;
             if (!await notificationStore.applyPage(page, input.cursor ?? null, bootstrap)) throw new Error("Notification updates could not be saved. The same page will retry.");
             if (!current()) return;
+            const previousRefresh = this.notificationRefreshCursor;
+            const after = Math.max(input.cursor?.after ?? 0, previousRefresh?.epoch === page.epoch ? previousRefresh.after : 0);
+            this.notificationRefreshCursor = { ...page.nextCursor };
+            const conversation = this.state.conversations.find(item => item.id === this.state.selected);
+            // Seeding includes ALL pages of the bootstrap traversal, not just
+            // the first page. Historical attention is not a live invalidation.
+            // Successful cursor-CAS application plus transport order dedupes
+            // occurrences AND revisions, including page retries and resets.
+            if (!bootstrap && !resume?.seeding && conversation && page.updates.some(update => {
+              const source = updateSourceKey(update.source);
+              const baseline = page.coverage.find(item => item.sourceKey === source)?.baselineThrough;
+              return update.sequence > after && !update.historical && update.conversationId === conversation.id
+                && notificationSourceMatches(conversation, source)
+                && (baseline === undefined || update.sourceSequence !== undefined && update.sourceSequence > baseline);
+            })) this.requestSelectedRefresh();
             healthy = true;
             resume = notificationStore.resume(); bootstrap = false;
             if (!page.hasMore) break;
@@ -1307,14 +1573,18 @@ export class ChatStore {
   private expired(error: unknown) { if ((error instanceof ApiError || error instanceof PendingInputApiError) && error.status === 401) { this.loginRequired(); return true; } return false; }
   start = () => { if (this.started) return; this.started = true; void this.boot(); };
   reconnect = () => {
+    // Foreground/online reads must not join pre-suspension GETs, even when a
+    // send keeps its own lifecycle alive. Retirement does not abort existing
+    // consumers or replay mutations; their auth/generation fences still apply.
+    invalidateCoalescedRequests();
     this.stopNotificationPolling();
     if (typeof document !== "undefined" && document.hidden) { if (!this.state.sending) this.stop(); return; }
     if (this.state.phase === "login") return;
     if (this.state.sending) { void this.pollNotifications(); return; }
-    this.conversationListing.invalidate();
-    this.pendingInputFresh = ""; this.pendingInputPolling(); this.nativeHistoryLoaded = false; this.stop(); this.workerPollAfter = 0;
+    this.pendingInputFresh = ""; this.pendingInputPolling();
     void this.pollNotifications(); this.sciencePolling(true);
-    void (this.state.phase === "connecting" ? this.boot() : this.poll());
+    if (this.state.phase === "connecting") void this.boot();
+    else this.requestSelectedRefresh();
   };
   private async boot() {
     if (typeof document !== "undefined" && document.hidden) return;
@@ -1384,9 +1654,20 @@ export class ChatStore {
     if (capture) notificationStore.acknowledgeCaptured(capture);
     return true;
   };
+  openWorkerConversation = async (id: string): Promise<void> => {
+    const auth = this.authEpoch, selection = this.selectionEpoch;
+    const current = () => auth === this.authEpoch && selection === this.selectionEpoch && this.state.phase === "ready";
+    try {
+      await this.ensureConversations([id]);
+      if (!current()) return;
+      if (!this.openConversation(id)) this.update({ submissionError: "Worker conversation is no longer in the active catalog." });
+    } catch (error) {
+      if (current() && !this.expired(error)) this.update({ submissionError: error instanceof Error ? error.message : "Worker conversation unavailable." });
+    }
+  };
   choose = (selected: string, pendingTurn: PendingTurn | null = null) => {
     if (this.state.sending) return;
-    if (selected === this.state.selected) return;
+    if (selected === this.state.selected) { if (selected) this.requestSelectedRefresh(); return; }
     this.selectionEpoch++;
     this.stop(); this.conversationListing.invalidate(); this.cacheConversation();
     const conversation = this.state.conversations.find(c => c.id === selected);
@@ -1414,10 +1695,10 @@ export class ChatStore {
     this.sciencePolling(true);
     void this.poll();
   };
-  private async pollPaged(listing: { conversations: Conversation[]; availability: Availability }, current: () => boolean, signal: AbortSignal) {
+  private async pollPaged(listing: { conversations: Conversation[]; availability: Availability }, current: () => boolean, signal: AbortSignal, forceRead = false) {
     const id = this.state.selected, conversation = listing.conversations.find(item => item.id === id);
     const awaitingCompact = this.compactInFlight.has(id);
-    this.update({ conversations: listing.conversations, availability: awaitingCompact ? { canSend: false } : conversation?.availability ?? listing.availability });
+    this.update({ availability: awaitingCompact ? { canSend: false } : conversation?.availability ?? listing.availability });
     if (!id) { this.update({ connected: true, loading: false, connectionError: "", transcriptInitialLoading: false }); return; }
     this.update({ transcriptRefreshing: !this.pageValidated || !!this.state.transcriptError });
     const metadataHead = (async () => {
@@ -1450,14 +1731,14 @@ export class ChatStore {
         let head: TranscriptMetadataPage | undefined;
         // Uncertain coverage must load independently of metadata availability.
         // Only an already validated tail can wait for the cheap skip decision.
-        if (validatedTail()) {
+        if (!forceRead && validatedTail()) {
           try { head = await metadataHead; }
           catch (error) { if (!current() || this.expired(error)) return; }
         }
         if (!current()) return;
         let readFence = this.pageFence, readSerial = this.publicationSerial;
         const transcript = validatedTail();
-        const unchanged = head && transcript?.summary.epoch === head.epoch && transcript.summary.revision === head.revision;
+        const unchanged = !forceRead && head && transcript?.summary.epoch === head.epoch && transcript.summary.revision === head.revision;
         let latest = unchanged && head ? head : await this.client.transcriptPage!(id, {}, signal);
         if (!current()) return;
         // Parallel metadata can reset the epoch while the tail is in flight.
@@ -1485,7 +1766,7 @@ export class ChatStore {
             this.acceptPage({ ...submitted, target: undefined }, undefined, false, undefined, submittedSerial);
           } catch (error) { if (!current() || this.expired(error)) return; if (!(error instanceof ApiError && error.status === 404)) throw error; }
         }
-        if (reopen || this.refreshedRevision !== latest.revision) {
+        if (forceRead || reopen || this.refreshedRevision !== latest.revision) {
           const requested = pageMessages(this.state.transcript).map(message => ({ id: message.id, version: message.version }));
           const epoch = this.state.transcript!.summary.epoch;
           const coverageSerial = this.coverageSerial;
@@ -1533,7 +1814,7 @@ export class ChatStore {
               if (this.state.transcript && page.epoch !== this.state.transcript.summary.epoch) { this.resetPages(); this.update({ messages: [] }); }
               if (!cursor) { revision = page.metadataRevision; epoch = page.epoch; }
               else if (revision !== page.metadataRevision || epoch !== page.epoch) throw new ApiError("Metadata changed; retrying traversal.", 409, "transcript-reset");
-              if (!cursor && this.state.transcript?.metadataRevision === revision && !this.state.metadataError) return true;
+              if (!forceRead && !cursor && this.state.transcript?.metadataRevision === revision && !this.state.metadataError) return true;
               items.push(...page.items); cursor = page.nextCursor ?? undefined;
             } while (cursor);
             break;
@@ -1651,8 +1932,10 @@ export class ChatStore {
   /** Live sessions (running work or pending submission state) poll fast; static opened sessions back off. */
   private pollBusy() {
     return this.state.loading || this.state.sending || !!this.state.pendingTurn || this.state.actionBusy
+      || !!this.state.transcriptInitialLoading || !!this.state.transcriptError || !!this.state.metadataError
       || this.state.interactions.length > 0 || this.state.handoffApprovals.length > 0
       || this.state.conversations.some(conversation => conversation.status === "running" || conversation.status === "starting" || conversation.lastRunStatus === "running" || conversation.lastRunStatus === "starting")
+      || this.state.conversations.some(conversation => conversation.id === this.state.selected && (conversation.nativeActivity === "active" || !!conversation.activity))
       || workerProjectionInFlight(workersFor(this.state.selected))
       || this.state.runs.some(run => run.status === "running" || run.status === "starting");
   }
@@ -1660,25 +1943,40 @@ export class ChatStore {
   private runGateId = "";
   private runGateMarkers = "";
   private async poll() {
-    if (this.state.phase !== "ready" || typeof document !== "undefined" && document.hidden) return;
-    this.pendingInputPolling();
-    this.sciencePolling();
+    if (this.state.phase !== "ready" || this.state.sending || typeof document !== "undefined" && document.hidden || this.pollFlight?.generation === this.generation) return;
+    clearTimeout(this.timer); this.timer = undefined;
+    const flight = this.pollFlight = { generation: this.generation };
+    const forceRead = this.selectedRefreshPending;
+    this.selectedRefreshPending = false;
     const generation = this.generation, auth = this.authEpoch, selected = this.state.selected, selection = this.selectionEpoch;
     const controller = this.controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 25000);
     const lifecycleCurrent = () => generation === this.generation && auth === this.authEpoch && selection === this.selectionEpoch && selected === this.state.selected;
     let listingRevision: number | undefined;
-    const current = () => lifecycleCurrent() && (listingRevision === undefined || listingRevision === this.conversationListing.revision);
+    const current = () => lifecycleCurrent() && this.pollFlight === flight && (listingRevision === undefined || listingRevision === this.conversationListing.revision);
     try {
-      const acquired = await this.conversationListing.read(controller.signal);
-      listingRevision = acquired.revision;
-      const listing = acquired.value;
+      this.subscribeRefreshWake();
+      if (forceRead) {
+        // Invalidate only when the preceding poll has settled. Listing revision
+        // changes here must not fence out the poll that received the hint.
+        invalidateCoalescedRequests(); this.conversationListing.invalidate();
+        this.nativeHistoryLoaded = false; this.refreshedRevision = "";
+        this.runGateId = ""; this.runGateMarkers = ""; this.workerPollAfter = 0;
+      }
+      this.pendingInputPolling();
+      this.sciencePolling();
+      // Sidebar head acquisition has its own scope/auth fences. With targeted
+      // support it runs alongside the selected read, not in front of it.
+      const head = this.refreshConversationHead();
+      if (selected && this.client.conversationSummaries) await this.ensureConversations([selected], controller.signal);
+      else await head;
+      listingRevision = this.conversationListing.revision;
+      const listing = { conversations: this.state.conversations, availability: this.state.globalAvailability ?? this.state.availability };
       if (!current()) return;
       controller.signal.throwIfAborted();
-      if (!this.notificationScope && !(this.state.config?.conversationUpdates === true && this.client.conversationUpdates)) this.observeNotifications(listing.conversations);
+      if (!this.notificationScope && !(this.state.config?.conversationUpdates === true && this.client.conversationUpdates)) this.observeNotifications(listing.conversations, !!this.state.conversationPage);
       if (!current()) return;
-      this.conversationCache.prune(listing.conversations);
-      registerWorkerSessions(listing.conversations);
+      registerWorkerSessions(listing.conversations, !!this.state.conversationPage);
       const currentConversation = listing.conversations.find(c => c.id === selected);
       if (selected && (!currentConversation || this.transcriptKey && this.transcriptKey !== conversationKey(currentConversation))) {
         // A listing can remove or rebind an App id even while its history GET
@@ -1690,7 +1988,7 @@ export class ChatStore {
         this.stop();
         const pendingCompacts = { ...this.state.pendingCompacts }, compactInstructions = { ...this.state.compactInstructions };
         delete pendingCompacts[selected]; delete compactInstructions[selected];
-        this.update({ conversations: listing.conversations, conversationsReady: true, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], compactDialog: "", compactError: "", pendingCompacts, compactInstructions, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", availability: { canSend: false }, connected: false, loading: !!currentConversation, connectionError: currentConversation ? "" : "Conversation is no longer available. History will reconnect automatically." });
+        this.update({ conversations: listing.conversations, conversationsReady: true, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], compactDialog: "", compactError: "", pendingCompacts, compactInstructions, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", availability: { canSend: false }, connected: false, loading: !!currentConversation, connectionError: currentConversation ? "" : "Conversation is no longer in the active catalog. If retired, restore it explicitly before reopening. Archived history is preserved." });
         // Restart with a fresh action/selection fence and the new identity.
         if (currentConversation) void this.poll();
         else this.timer = setTimeout(() => void this.poll(), 5000);
@@ -1701,7 +1999,9 @@ export class ChatStore {
         this.scienceListing = currentConversation;
         this.sciencePolling(true);
         // Run/worker markers changed (possibly from another client).
-        wakePolls(selected);
+        this.emittingListingWake = true;
+        try { wakePolls(selected); }
+        finally { this.emittingListingWake = false; }
       }
       const conversations = listing.conversations.map(conversation => {
         const title = this.state.conversations.find(previous => previous.id === conversation.id)?.title;
@@ -1710,7 +2010,7 @@ export class ChatStore {
       this.update({ conversations: equalValue(this.state.conversations, conversations) ? this.state.conversations : conversations, conversationsReady: true,
         interactive: !this.compactInFlight.has(selected), availability: this.compactInFlight.has(selected) ? { canSend: false } : currentConversation?.availability ?? listing.availability });
       if (!current()) return;
-      if (this.paged) { await this.pollPaged(listing, current, controller.signal); return; }
+      if (this.paged) { await this.pollPaged(listing, current, controller.signal, forceRead); return; }
       // Safe GET also notices reconciliation by another view/client. Reuse the
       // snapshot identity when the backend refresh timestamp has not changed.
       const historyRead = selected && this.client.nativeHistory ? (await this.client.nativeHistory(selected, controller.signal)).history : null;
@@ -1804,7 +2104,7 @@ export class ChatStore {
       // Backend titles win (persisted first prompt or handoff `<Role> #<n>`).
       // Otherwise the open conversation derives from its transcript and other
       // rows keep their previous derived value until the backend backfills.
-      const titledConversations = listing.conversations.map(c => {
+      const titledConversations = this.state.conversations.map(c => {
         if (c.title) return c;
         if (c.id === selected && title?.type === "text") return { ...c, title: title.text };
         const old = this.state.conversations.find(prev => prev.id === c.id)?.title;
@@ -1885,9 +2185,11 @@ export class ChatStore {
       this.update({ connected: false, loading: false, connectionError: `${error instanceof Error ? error.message : "Connection lost."} History will reconnect automatically.` });
     } finally {
       clearTimeout(deadline);
-      if (lifecycleCurrent() && this.state.phase === "ready") {
-        // A static opened session backs off to 15s; live sessions keep the 1.5s cadence.
-        this.timer = setTimeout(() => void this.poll(), this.pollDelay(this.state.connected));
+      if (this.pollFlight === flight) this.pollFlight = undefined;
+      if (lifecycleCurrent() && this.state.phase === "ready" && !(typeof document !== "undefined" && document.hidden)) {
+        // Errors/observed activity stay on bounded fast retries even when run
+        // metadata alone is ready. Wake bursts get one immediate successor.
+        this.timer = setTimeout(() => { this.timer = undefined; void this.poll(); }, this.selectedRefreshPending ? 0 : this.pollDelay(this.state.connected));
       }
     }
   }
@@ -1931,6 +2233,8 @@ export class ChatStore {
       } catch (error) { this.update({ submissionError: error instanceof Error ? error.message : "Science send cannot be recorded durably" }); return { status: "blocked" }; }
     }
     this.stop(); const generation = this.generation, auth = this.authEpoch;
+    const submission = this.activeSubmission = { recovery: { conversationId: selected, sourceKey: conversation ? conversationKey(conversation) : "", localId: pendingTurn.id,
+      ...(sciencePending ? { requestId: sciencePending.requestId } : {}), text, draft: structuredClone(draft) }, draftKey, preserveDraft };
     // Move text into a local bubble immediately; retain it here for failure recovery.
     // This is presentation, not acceptance evidence. Never auto-retry POST.
     this.update({ ...(!preserveDraft ? { drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "", ...(scienceSnapshots.length ? { scienceSnapshots: [] } : {}) } } } : {}), pendingTurn, sending: true, submissionError: "", availability: { canSend: false, reason: "Submitting…" } });
@@ -1938,6 +2242,7 @@ export class ChatStore {
       const navigation = catalog.state.navigation;
       const result = await this.listingMutation(() => this.client.submit({ text, ...(sciencePending ? { requestId: sciencePending.requestId, scienceSnapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) } : {}), ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) }));
       if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
+      if (this.activeSubmission === submission) this.activeSubmission = undefined;
       // Local activity: pull idle handoff/worker polls back to fast cadence.
       wakePolls(result.conversationId);
       if (sciencePending) {
@@ -1981,6 +2286,7 @@ export class ChatStore {
       return { status: "accepted", conversationId: result.conversationId, runId: result.runId };
     } catch (error) {
       if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
+      if (this.activeSubmission === submission) this.activeSubmission = undefined;
       const definite = error instanceof ApiError && error.status >= 400 && error.status < 500 && error.code !== "science-submission-unknown";
       if (sciencePending && definite && scienceStorage) {
         try {
@@ -2008,7 +2314,7 @@ export class ChatStore {
   };
 }
 export const store = new ChatStore(conversationClient);
-setWorkerNavigator(store.openConversation);
+setWorkerNavigator(id => { void store.openWorkerConversation(id); });
 
 export function useShellState(): State {
   useSyncExternalStore(store.subscribe, store.shellSnapshot);

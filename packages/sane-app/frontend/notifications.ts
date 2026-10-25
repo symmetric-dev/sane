@@ -186,6 +186,7 @@ class NotificationStore {
   private contexts = new Map<string, { key: string; revision: number }>();
   private contextRevision = 0;
   private feedEnabled = false;
+  private catalogPartial = false;
   private feedError = "";
   private state: NotificationSnapshot = Object.freeze({ items: Object.freeze([]) as unknown as NotificationItem[], unreadCount: 0, storageError: "", feedError: "" });
   snapshot = () => this.state;
@@ -288,7 +289,7 @@ class NotificationStore {
       return (!coverage && !!native) || coverage?.state === "degraded" || coverage?.state === "unavailable" ? [c.id] : [];
     }) : [];
     const next = { items, unreadCount: items.length, storageError: this.scope === null ? "" : this.memory.storageError,
-      feedError: this.scope === null ? "" : this.feedError, deliveryIssues: Object.freeze(deliveryIssues) };
+      feedError: this.scope === null ? "" : this.feedError || (!this.feedEnabled && this.catalogPartial ? "Reply notifications may be incomplete outside loaded conversations on this bridge." : ""), deliveryIssues: Object.freeze(deliveryIssues) };
     if (JSON.stringify(next) === JSON.stringify(this.state)) return;
     items.forEach(i => Object.freeze(i)); Object.freeze(items); this.state = Object.freeze(next);
     this.listeners.forEach(fn => fn());
@@ -426,7 +427,7 @@ class NotificationStore {
     this.publish();
   };
   suspend = (): void => {
-    this.binding++; this.scope = null; this.legacyScope = null; this.catalog = null; this.feedEnabled = false; this.feedError = "";
+    this.binding++; this.scope = null; this.legacyScope = null; this.catalog = null; this.catalogPartial = false; this.feedEnabled = false; this.feedError = "";
     this.contexts.clear();
     this.channel?.close(); this.channel = null; this.db.close();
     if (typeof window !== "undefined") {
@@ -559,9 +560,11 @@ class NotificationStore {
       if (this.current(owner, binding) && this.memory.storageError !== STORAGE_ERROR) this.notify();
     });
   }
-  observe = (conversations: readonly Conversation[]): void => {
+  /** Targets are merged for partial catalogs; only explicit missing IDs retire them. */
+  observe = (conversations: readonly Conversation[], partial = false): void => {
     if (this.scope === null) return;
-    this.catalog = new Map(conversations.map(c => [c.id, c]));
+    this.catalogPartial = partial;
+    this.catalog = new Map([...(partial ? this.catalog ?? [] : []), ...conversations.map(c => [c.id, c] as const)]);
     for (const id of this.contexts.keys()) if (!this.catalog.has(id)) this.contexts.delete(id);
     for (const c of conversations) {
       const key = notificationContextKey(c);
@@ -572,6 +575,16 @@ class NotificationStore {
     }
     this.reconcile(this.memory); this.publish(); this.writeEvidence(this.scope, this.binding);
   };
+  forget = (ids: readonly string[]): void => {
+    for (const id of ids) { this.catalog?.delete(id); this.contexts.delete(id); }
+    this.publish();
+  };
+  /** Rehydrate persisted unread identities without ever walking the sidebar. */
+  summaryIds = (): string[] => [...new Set([
+    ...[...this.memory.events.values()].filter(r => r.eligible && !this.memory.reads.has(r.update.id)).map(r => r.update.conversationId),
+    ...[...this.memory.legacy.records.values()].filter(item => item.item && !item.readAt).map(item => item.conversationId),
+    ...(this.memory.resume.outstandingWorkerAttention ?? []).map(item => item.workerSessionId),
+  ])];
   acceptRun = (conversationId: string, runId: string): void => {
     if (this.scope === null || !text(conversationId) || !text(runId)) return;
     // App acceptance proves the exact App run, not a native creation. Bind

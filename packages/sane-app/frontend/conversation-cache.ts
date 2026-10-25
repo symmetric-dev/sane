@@ -2,7 +2,9 @@ import type { ReconciledHistory } from "../src/reconcile";
 import type { Conversation, Message, Run } from "./types";
 import type { PagedTranscript } from "./transcript-pages";
 
-export const conversationKey = (conversation: Conversation) => JSON.stringify([conversation.id, conversation.harness, conversation.nativeSessionId ?? conversation.id, conversation.cwd]);
+// Optional notification-source presentation can disappear during an integration
+// outage. It is not a native transcript identity change.
+export const conversationKey = (conversation: Conversation) => JSON.stringify([conversation.id, conversation.harness, conversation.nativeSessionId ?? conversation.id, conversation.cwd, conversation.authorityId ?? null]);
 export type ConversationSnapshot = { runs: Map<string, Run>; messages: Message[]; nativeHistory: ReconciledHistory | null | undefined; nativeHistoryLoaded: boolean; transcript?: PagedTranscript | null };
 
 /** Copy only what consume mutates. Event payloads, usage snapshots, and nested

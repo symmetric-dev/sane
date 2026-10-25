@@ -1,4 +1,4 @@
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { catalog } from "./catalog";
 import { store, type State } from "./store";
 import { harnessName } from "./types";
@@ -35,11 +35,26 @@ export function HistoryDetail({ state, previewId, onOpen }: { state: State; prev
   const record = previewId ? hydratedWorker(previewId) : undefined;
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const conversation = state.conversations.find(c => c.id === previewId) ?? null;
+  const [lookup, setLookup] = useState({ id: "", loading: false, error: "" });
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!previewId || !state.conversationPage || state.phase !== "ready") return;
+    const controller = new AbortController();
+    setLookup({ id: previewId, loading: true, error: "" });
+    void store.ensureConversations([previewId], controller.signal).then(() => {
+      if (!controller.signal.aborted) setLookup({ id: previewId, loading: false, error: "" });
+    }).catch(() => {
+      if (!controller.signal.aborted) setLookup({ id: previewId, loading: false, error: "Session summary could not be loaded." });
+    });
+    return () => controller.abort();
+  }, [previewId, state.phase, state.config, !!state.conversationPage, retry]);
   const overview = useWorkstreamOverview(conversation?.workspaceId ?? null);
   const membershipMap = useMemo(() => buildWorkstreamMap(overview, []), [overview]);
   const membership = conversation ? membershipMap.get(conversation.id) : undefined;
   const { runs, loading, error } = usePreviewRuns(previewId);
-  if (!conversation) return <section className="history-detail" aria-label="Session preview"><p className="eyebrow">SESSION PREVIEW</p><h2>No session selected</h2><p className="muted">Choose a session on the left to preview its metadata. Opening chat only happens via Open in Chat.</p></section>;
+  if (!conversation) return <section className="history-detail" aria-label="Session preview"><p className="eyebrow">SESSION PREVIEW</p><h2>{previewId ? "Session preview" : "No session selected"}</h2>{previewId
+    ? <p className="muted" role="status">{lookup.id !== previewId || lookup.loading ? "Loading session…" : lookup.error || "This session is no longer in the active catalog."} {!lookup.loading && <button type="button" onClick={() => setRetry(value => value + 1)}>Retry</button>}</p>
+    : <p className="muted">Choose a session on the left to preview its metadata. Opening chat only happens via Open in Chat.</p>}</section>;
   const workspace = repository.workspaces.find(w => w.workspaceId === conversation.workspaceId);
   const worktree = workspace?.worktrees.find(t => t.worktreeId === conversation.worktreeId);
   const lastActivity = runs[0]?.endedAt || runs[0]?.createdAt || "";

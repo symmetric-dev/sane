@@ -17,6 +17,12 @@ export async function request(path: string, init: RequestInit = {}) {
   return body;
 }
 const transcriptSignal = (signal?: AbortSignal) => signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : undefined;
+function mapConversations(data: any) {
+  if (!Array.isArray(data?.sessions) || data.sessions.some((session: any) => !session || typeof session.sessionId !== "string" || !session.sessionId)) throw new Error(SESSION_REFRESH_ERROR, { cause: new Error("Invalid conversation listing.") });
+  const conversations = data.sessions.map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", authorityId: s.authorityId, nativeSessionId: s.nativeSessionId, ...(s.updateSource !== undefined ? { updateSource: s.updateSource } : {}), activity: s.activity, nativeActivity: s.nativeActivity, nativeActivityReason: s.nativeActivityReason, updatedAt: s.updatedAt, cwd: s.cwd, lastRunId: s.lastRunId, lastRunStatus: s.lastRunStatus, lastRunOperation: s.lastRunOperation, lastRunEndedAt: s.lastRunEndedAt, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, queuedFollowups: s.queuedFollowups, attachment: s.attachment, worker: s.worker, ...(s.workerProtocol !== undefined ? { workerProtocol: s.workerProtocol } : {}), directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy }));
+  if (conversations.some((c: any) => c.updateSource !== undefined && !nativeNotificationSource(c))) throw new Error(SESSION_REFRESH_ERROR, { cause: new Error("Invalid conversation update source in listing.") });
+  return { conversations, availability: data.availability ?? { canSend: false, reason: "Waiting for bridge availability." } };
+}
 export const conversationClient: ConversationClient = {
   scienceSubmissions: async (id, signal) => (await request(`/api/sessions/${encodeURIComponent(id)}/science-submissions`, { signal })).submissions,
   scienceSubmission: async (id, requestId, signal) => (await request(`/api/sessions/${encodeURIComponent(id)}/science-submissions/${encodeURIComponent(requestId)}`, { signal })).submission,
@@ -37,13 +43,32 @@ export const conversationClient: ConversationClient = {
   config: (signal) => request("/api/config", { signal }),
   login: (password) => request("/api/login", { method: "POST", body: JSON.stringify({ password }) }),
   logout: () => request("/api/logout", { method: "POST" }),
-  async conversations(signal) {
-    const data = await request("/api/sessions", { signal });
-    if (!Array.isArray(data?.sessions) || data.sessions.some((session: any) => !session || typeof session.sessionId !== "string" || !session.sessionId)) throw new Error(SESSION_REFRESH_ERROR, { cause: new Error("Invalid conversation listing.") });
-    const conversations = data.sessions.map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", authorityId: s.authorityId, nativeSessionId: s.nativeSessionId, ...(s.updateSource !== undefined ? { updateSource: s.updateSource } : {}), activity: s.activity, nativeActivity: s.nativeActivity, nativeActivityReason: s.nativeActivityReason, updatedAt: s.updatedAt, cwd: s.cwd, lastRunId: s.lastRunId, lastRunStatus: s.lastRunStatus, lastRunOperation: s.lastRunOperation, lastRunEndedAt: s.lastRunEndedAt, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, queuedFollowups: s.queuedFollowups, attachment: s.attachment, worker: s.worker, ...(s.workerProtocol !== undefined ? { workerProtocol: s.workerProtocol } : {}), directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy }));
-    if (conversations.some((c: any) => c.updateSource !== undefined && !nativeNotificationSource(c))) throw new Error(SESSION_REFRESH_ERROR, { cause: new Error("Invalid conversation update source in listing.") });
-    return { conversations,
-      availability: data.availability ?? { canSend: false, reason: "Waiting for bridge availability." } };
+  async conversations(signal, query) {
+    const params = new URLSearchParams({ summary: "1" });
+    if (query) {
+      params.set("limit", String(query.limit ?? 50));
+      for (const key of ["mode", "workspaceId", "worktreeId", "harness", "status", "workstreamId", "phase", "cursor"] as const) {
+        if (query[key] !== undefined && query[key] !== null) params.set(key, String(query[key]));
+      }
+      if (query.showDeleted) params.set("showDeleted", "1");
+      if (query.availableOnly) params.set("availableOnly", "1");
+      if (query.query) params.set("q", query.query);
+    }
+    const data = await request(`/api/sessions?${params}`, { signal: transcriptSignal(signal) });
+    if (data.page !== undefined && (data.page?.kind !== "partial" || typeof data.page.hasMore !== "boolean"
+      || data.page.nextCursor !== null && (typeof data.page.nextCursor !== "string" || !data.page.nextCursor)
+      || data.page.hasMore !== (data.page.nextCursor !== null))) throw new Error("Invalid conversation page.");
+    return { ...mapConversations(data), ...(data.page ? { page: data.page } : {}) };
+  },
+  async conversationSummaries(ids, signal) {
+    const requested = [...new Set(ids)];
+    if (!requested.length || requested.length > 100 || requested.some(id => !id)) throw new Error("Request between one and 100 conversation summaries.");
+    const data = await request(`/api/sessions/summaries?ids=${requested.map(encodeURIComponent).join(",")}`, { signal: transcriptSignal(signal) });
+    const mapped = mapConversations(data);
+    if (!Array.isArray(data.missing) || data.missing.some((item: any) => !item || !requested.includes(item.sessionId) || !["retired", "not-found"].includes(item.reason))) throw new Error("Invalid missing conversation summaries.");
+    const returned = [...mapped.conversations.map((c: any) => c.id), ...data.missing.map((item: any) => item.sessionId)];
+    if (returned.length !== requested.length || new Set(returned).size !== returned.length || returned.some(id => !requested.includes(id))) throw new Error("Conversation summary identity mismatch.");
+    return { ...mapped, missing: data.missing };
   },
   async runs(id, signal): Promise<RunMetadata[]> {
     const data = await request(`/api/sessions/${encodeURIComponent(id)}/runs`, { signal });

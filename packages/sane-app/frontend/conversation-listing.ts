@@ -1,58 +1,80 @@
-import type { ConversationClient } from "./types";
+import type { ConversationClient, SessionCatalogQuery } from "./types";
 
 type Listing = Awaited<ReturnType<ConversationClient["conversations"]>>;
-type Request = { controller: AbortController; promise: Promise<Listing>; consumers: number };
+type Summaries = Awaited<ReturnType<NonNullable<ConversationClient["conversationSummaries"]>>>;
+type Value = Listing | Summaries;
+type Request = { controller: AbortController; promise: Promise<Value>; consumers: number };
 
-/** Acquisition only: callers retain their own publication and lifecycle fences. */
+/** Stable scope identity, deliberately independent of snapshot continuation. */
+export function conversationQueryKey(query: SessionCatalogQuery = {}): string {
+  return JSON.stringify([query.mode ?? "chat", query.workspaceId ?? null, query.worktreeId ?? null,
+    query.harness ?? "all", query.status ?? "all", query.workstreamId ?? "", query.phase ?? "",
+    query.showDeleted ?? false, query.availableOnly ?? false, query.query ?? "", query.limit ?? 50]);
+}
+
+/** Acquisition only: callers retain their own publication and lifecycle fences.
+ * Both sidebar pages and direct summaries coalesce without sharing identities. */
 export class ConversationListing {
   revision = 0;
-  private cached?: { value: Listing; at: number };
-  private pending?: Request;
-  constructor(private load: ConversationClient["conversations"], private freshnessMs = 1000, private now = () => performance.now()) {}
+  private cached = new Map<string, { value: Value; at: number }>();
+  private pending = new Map<string, Request>();
+  constructor(private load: ConversationClient["conversations"], private freshnessMs = 1000,
+    private now = () => performance.now(), private summaries?: ConversationClient["conversationSummaries"]) {}
 
   invalidate() {
-    this.revision++;
-    this.cached = undefined;
-    const pending = this.pending;
-    this.pending = undefined;
-    pending?.controller.abort();
+    this.revision++; this.cached.clear();
+    const pending = [...this.pending.values()]; this.pending.clear();
+    pending.forEach(request => request.controller.abort());
   }
 
-  async read(signal: AbortSignal, freshnessMs = this.freshnessMs): Promise<{ value: Listing; revision: number }> {
+  read(signal: AbortSignal, freshnessMs = this.freshnessMs, query?: SessionCatalogQuery): Promise<{ value: Listing; revision: number }> {
+    const key = query ? `${conversationQueryKey(query)}:${JSON.stringify(query.cursor ?? null)}` : "legacy";
+    return this.acquire(key, signal, freshnessMs, signal => this.load(signal, query)) as Promise<{ value: Listing; revision: number }>;
+  }
+
+  readSummaries(ids: string[], signal: AbortSignal, freshnessMs = this.freshnessMs): Promise<{ value: Summaries; revision: number }> {
+    if (!this.summaries) throw new Error("Targeted conversation summaries are unavailable.");
+    const sorted = [...new Set(ids)].sort();
+    return this.acquire(`ids:${JSON.stringify(sorted)}`, signal, freshnessMs, signal => this.summaries!(sorted, signal)) as Promise<{ value: Summaries; revision: number }>;
+  }
+
+  private async acquire(key: string, signal: AbortSignal, freshnessMs: number, load: (signal: AbortSignal) => Promise<Value>): Promise<{ value: Value; revision: number }> {
     for (;;) {
       signal.throwIfAborted();
-      const revision = this.revision;
-      if (this.cached && this.now() - this.cached.at < freshnessMs) return { value: this.cached.value, revision };
-      const request = this.pending ?? this.start();
+      const revision = this.revision, cached = this.cached.get(key);
+      if (cached && this.now() - cached.at < freshnessMs) return { value: cached.value, revision };
+      const request = this.pending.get(key) ?? this.start(key, load);
       try {
-        const value = await this.join(request, signal);
+        const value = await this.join(key, request, signal);
         signal.throwIfAborted();
         if (revision === this.revision) return { value, revision };
       } catch (error) {
         signal.throwIfAborted();
-        // A mutation invalidates all old reads. Live consumers join its successor;
-        // auth teardown aborts consumers first, so they cannot cross that boundary.
         if (revision === this.revision) throw error;
       }
     }
   }
 
-  private start(): Request {
+  private start(key: string, load: (signal: AbortSignal) => Promise<Value>): Request {
     const controller = new AbortController();
-    const request: Request = { controller, consumers: 0, promise: Promise.resolve().then(() => { controller.signal.throwIfAborted(); return this.load(controller.signal); }) };
-    this.pending = request;
+    const request: Request = { controller, consumers: 0, promise: Promise.resolve().then(() => { controller.signal.throwIfAborted(); return load(controller.signal); }) };
+    this.pending.set(key, request);
     request.promise = request.promise.then(value => {
       if (!Array.isArray(value.conversations) || value.conversations.some(conversation => !conversation || typeof conversation.id !== "string" || !conversation.id)) throw new Error("Invalid conversation listing.");
-      if (this.pending === request && !controller.signal.aborted) this.cached = { value, at: this.now() };
+      if (this.pending.get(key) === request && !controller.signal.aborted) {
+        this.cached.delete(key); this.cached.set(key, { value, at: this.now() });
+        // Snapshot cursors and arbitrary targeted sets must not grow the cache forever.
+        while (this.cached.size > 64) this.cached.delete(this.cached.keys().next().value!);
+      }
       return value;
-    }).finally(() => { if (this.pending === request) this.pending = undefined; });
+    }).finally(() => { if (this.pending.get(key) === request) this.pending.delete(key); });
     return request;
   }
 
-  private join(request: Request, signal: AbortSignal): Promise<Listing> {
+  private join(key: string, request: Request, signal: AbortSignal): Promise<Value> {
     request.consumers++;
     let abort: () => void;
-    return new Promise<Listing>((resolve, reject) => {
+    return new Promise<Value>((resolve, reject) => {
       abort = () => reject(signal.aborted ? signal.reason : request.controller.signal.reason);
       signal.addEventListener("abort", abort, { once: true });
       request.controller.signal.addEventListener("abort", abort, { once: true });
@@ -61,9 +83,8 @@ export class ConversationListing {
     }).finally(() => {
       signal.removeEventListener("abort", abort);
       request.controller.signal.removeEventListener("abort", abort);
-      if (--request.consumers === 0 && this.pending === request) {
-        this.pending = undefined;
-        request.controller.abort();
+      if (--request.consumers === 0 && this.pending.get(key) === request) {
+        this.pending.delete(key); request.controller.abort();
       }
     });
   }

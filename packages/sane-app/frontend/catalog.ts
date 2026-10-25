@@ -7,10 +7,18 @@ const empty = (): NavigationBookmark => ({ revision: 0, workspaceId: null, workt
 /** Browser is client-only until the backend gains a preview navigation contract. */
 export type CatalogNavigation = Omit<NavigationBookmark, "view"> & { view: NavigationBookmark["view"] | "browser" };
 type CatalogState = { workspaces: WorkspaceRecord[]; navigation: CatalogNavigation; ready: boolean; loading: boolean; error: string };
+type Hydration = { epoch: number; auth: number; intent: number; restore: (bookmark: NavigationBookmark) => void; current: () => boolean; complete: () => void; cleanup: () => void };
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await coalescedFetch(path, { credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(25000), ...init, headers: { "Content-Type": "application/json" } });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new WorkspaceError(body.error || `Request failed (${response.status}).`, response.status, body.code);
+  const deadline = AbortSignal.timeout(25000);
+  const response = await coalescedFetch(path, { credentials: "same-origin", cache: "no-store", ...init, signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline, headers: { "Content-Type": "application/json" } });
+  let body;
+  try { body = await response.json(); }
+  catch (error) {
+    // Successful responses must not turn invalid JSON into a ready, empty catalog.
+    if (response.ok) throw error;
+    throw new WorkspaceError(`Request failed (${response.status}).`, response.status);
+  }
+  if (!response.ok) throw new WorkspaceError(body?.error || `Request failed (${response.status}).`, response.status, body?.code);
   return body;
 }
 class CatalogStore {
@@ -23,26 +31,100 @@ class CatalogStore {
   private pending: NavigationBookmark | null = null;
   private busy = false;
   private timer?: ReturnType<typeof setTimeout>;
+  private hydration?: Hydration;
+  private hydrationTimer?: ReturnType<typeof setTimeout>;
+  private hydrationController?: AbortController;
+  private hydrationFailures = 0;
   state: CatalogState = { workspaces: [], navigation: empty(), ready: false, loading: false, error: "" };
   subscribe = (fn: () => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
   snapshot = () => this.state;
   private update(patch: Partial<CatalogState>) { this.state = { ...this.state, ...patch }; this.listeners.forEach(fn => fn()); }
-  invalidate = () => { this.epoch++; this.intent++; clearTimeout(this.timer); this.pending = null; this.busy = false; this.update({ ready: false, loading: false }); };
-  hydrate = async (restore: (bookmark: NavigationBookmark) => void) => {
-    if (this.state.loading || this.state.ready) return;
-    const epoch = this.epoch, intent = this.intent;
+  invalidate = () => {
+    this.epoch++; this.intent++;
+    this.hydration?.cleanup(); this.hydration = undefined;
+    this.pauseHydration(); this.hydrationFailures = 0;
+    clearTimeout(this.timer); this.pending = null; this.busy = false;
+    this.update({ ready: false, loading: false });
+  };
+  private hydrationAvailable() { return !document.hidden && navigator.onLine !== false; }
+  private hydrationCurrent(hydration: Hydration) { return this.hydration === hydration && hydration.epoch === this.epoch && hydration.auth === workspaceEpoch() && hydration.current(); }
+  private pauseHydration() {
+    clearTimeout(this.hydrationTimer); this.hydrationTimer = undefined;
+    const controller = this.hydrationController; this.hydrationController = undefined;
+    controller?.abort();
+    if (this.state.loading) this.update({ loading: false });
+  }
+  /** One restore owner per authenticated config; retries never capture a newer intent. */
+  startHydration = (restore: Hydration["restore"], current: Hydration["current"], complete: Hydration["complete"]) => {
+    this.hydration?.cleanup(); this.hydration = undefined;
+    this.pauseHydration(); this.hydrationFailures = 0;
+    const resume = () => {
+      if (!this.hydrationAvailable()) { this.pauseHydration(); return; }
+      this.retryHydration();
+    };
+    const cleanup = () => {
+      window.removeEventListener("online", resume);
+      window.removeEventListener("offline", resume);
+      window.removeEventListener("pageshow", resume);
+      window.removeEventListener("pagehide", pause);
+      document.removeEventListener("visibilitychange", resume);
+    };
+    const pause = () => this.pauseHydration();
+    const hydration: Hydration = { epoch: this.epoch, auth: workspaceEpoch(), intent: this.intent, restore, current, complete, cleanup };
+    this.hydration = hydration;
+    window.addEventListener("online", resume);
+    window.addEventListener("offline", resume);
+    window.addEventListener("pageshow", resume);
+    window.addEventListener("pagehide", pause);
+    document.addEventListener("visibilitychange", resume);
+    if (this.state.ready && this.hydrationCurrent(hydration)) complete();
+    else resume();
+    return () => { cleanup(); if (this.hydration === hydration) this.invalidate(); };
+  };
+  retryHydration = () => {
+    clearTimeout(this.hydrationTimer); this.hydrationTimer = undefined;
+    void this.hydrate();
+  };
+  private scheduleHydration(hydration: Hydration) {
+    if (!this.hydrationCurrent(hydration) || !this.hydrationAvailable() || this.state.ready || this.state.loading) return;
+    const delay = Math.min(30000, 1000 * 2 ** Math.min(this.hydrationFailures - 1, 5));
+    clearTimeout(this.hydrationTimer);
+    this.hydrationTimer = setTimeout(() => { this.hydrationTimer = undefined; void this.hydrate(); }, delay);
+  }
+  private async hydrate() {
+    const hydration = this.hydration;
+    if (!hydration || !this.hydrationCurrent(hydration) || !this.hydrationAvailable() || this.state.loading || this.state.ready) return;
+    const controller = this.hydrationController = new AbortController();
+    const current = () => this.hydrationCurrent(hydration) && this.hydrationController === controller && !controller.signal.aborted;
     this.update({ loading: true, error: "" });
     try {
-      const [catalog, navigation] = await Promise.all([request<CatalogResponse>("/api/workspaces"), request<NavigationBookmark>("/api/navigation")]);
-      if (epoch !== this.epoch) return;
+      if (!current()) return;
+      const [catalog, navigation] = await Promise.all([request<CatalogResponse>("/api/workspaces", { signal: controller.signal }), request<NavigationBookmark>("/api/navigation", { signal: controller.signal })]);
+      if (!current()) return;
       this.revision = navigation.revision;
       this.persistedView = navigation.view;
+      this.hydrationFailures = 0;
       // Publish readiness with the restored bookmark, never with a stale browsing
       // pair that could erase client-side context while hydration is in progress.
-      if (intent === this.intent) { this.update({ workspaces: catalog.workspaces, ready: true, loading: false, navigation }); restore(navigation); }
+      if (hydration.intent === this.intent) {
+        this.update({ workspaces: catalog.workspaces, ready: true, loading: false, navigation });
+        if (current() && hydration.intent === this.intent) hydration.restore(navigation);
+      }
       else { this.update({ workspaces: catalog.workspaces, ready: true, loading: false }); if (this.pending) this.schedule(); }
-    } catch (error) { if (epoch === this.epoch) this.update({ loading: false, error: workspaceFailure(error) }); }
-  };
+      if (current()) hydration.complete();
+    } catch (error) {
+      if (!current()) return;
+      const message = workspaceFailure(error);
+      // A 401 synchronously invalidates this owner through the shell's auth handler.
+      if (!current()) return;
+      this.update({ loading: false, error: message });
+      this.hydrationFailures++;
+      this.scheduleHydration(hydration);
+    } finally {
+      if (this.hydrationController === controller) this.hydrationController = undefined;
+      controller.abort();
+    }
+  }
   navigate = (patch: Partial<Omit<CatalogNavigation, "revision">>) => {
     this.intent++;
     const navigation = { ...this.state.navigation, ...patch };

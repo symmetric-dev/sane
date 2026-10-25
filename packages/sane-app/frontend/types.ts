@@ -14,6 +14,8 @@ import type { ConversationActivity } from "../shared/conversation/activity";
 import type { TranscriptPage, TranscriptMetadataPage, TranscriptRefresh, TranscriptRefreshRequest } from "../src/transcript-contract";
 import type { ConversationUpdateFeedRequest, ConversationUpdatePage, ConversationUpdateSource } from "../shared/conversation/conversation-updates";
 import type { WorkerProtocolStatus } from "../src/worker-contract";
+import type { SessionCatalogQuery, SessionCatalogPageInfo } from "../shared/conversation/session-catalog";
+export type { SessionCatalogQuery, SessionCatalogPageInfo } from "../shared/conversation/session-catalog";
 import type { PendingInputCapability, PendingInputRemovalRequest, PendingInputRemovalResult, PendingInputRequest, PendingInputResumeRequest, PendingInputSubmissionResult } from "../shared/conversation/pending-input-contract";
 import type { PendingInputResumeResult, PendingInputStatus, PendingInputView } from "./pending-input-presentation";
 export type { ConversationUpdateCursor, ConversationUpdateFeedRequest, ConversationUpdatePage, ConversationUpdateSource } from "../shared/conversation/conversation-updates";
@@ -58,7 +60,8 @@ export interface ConversationClient {
   config(signal?: AbortSignal): Promise<Config>;
   login(password: string): Promise<void>;
   logout(): Promise<void>;
-  conversations(signal?: AbortSignal): Promise<{ conversations: Conversation[]; availability: Availability }>;
+  conversations(signal?: AbortSignal, query?: SessionCatalogQuery): Promise<{ conversations: Conversation[]; availability: Availability; page?: SessionCatalogPageInfo }>;
+  conversationSummaries?(ids: string[], signal?: AbortSignal): Promise<{ conversations: Conversation[]; availability: Availability; missing: { sessionId: string; reason: "retired" | "not-found" }[] }>;
   runs(id: string, signal?: AbortSignal): Promise<RunMetadata[]>;
   compactState?(id: string, signal?: AbortSignal): Promise<CompactState>;
   compact?(id: string, input: CompactRequest): Promise<CompactResponse>;

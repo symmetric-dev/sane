@@ -30,12 +30,13 @@ export interface SessionListRow {
 
 export interface SessionListResponseInput {
   rows: readonly SessionListRow[];
+  /** Summary omits row admissions only; default preserves the full list contract. */
+  presentation?: "full" | "summary";
   runs: readonly Run[];
   /** Loaded journals append in place; replay/materialization uses a new array. */
   events: ReadonlyMap<string, readonly Event[]>;
   indexes: SessionListProjection;
   native: { active: Readonly<Record<string, { type: string }>>; error: string };
-  admissions: Admission[];
   availability: SessionListAvailability;
 }
 
@@ -87,7 +88,22 @@ export function sessionListResponse(input: SessionListResponseInput, followups: 
     const run = session.lastRunId ? runsById.get(session.lastRunId) : undefined;
     const sessionRuns = runsBySession.get(session.sessionId) ?? [];
     return {
-      ...session,
+      // List DTO, not a persisted Session: never send standing framework/context,
+      // assignments, execution revisions, or future session-detail fields here.
+      sessionId: session.sessionId,
+      harness: session.harness,
+      nativeSessionId: session.nativeSessionId,
+      authorityId: session.authorityId,
+      cwd: session.cwd,
+      lastStatus: session.lastStatus,
+      lastRunId: session.lastRunId,
+      hidden: session.hidden,
+      model: session.model,
+      effort: session.effort,
+      agent: session.agent,
+      agentKind: session.agentKind,
+      nativeAgentSelected: session.nativeAgentSelected,
+      ...(session.attachment ? { attachment: { state: session.attachment.state, error: session.attachment.error } } : {}),
       ...(run?.sessionId === session.sessionId ? { lastRunStatus: run.status, lastRunOperation: run.operation ?? "prompt", lastRunEndedAt: run.endedAt } : {}),
       ...(updateSource ? { updateSource } : {}),
       ...(activity ? { activity } : {}),
@@ -101,11 +117,15 @@ export function sessionListResponse(input: SessionListResponseInput, followups: 
       directWorkerCount: indexes.workerCounts.get(session.sessionId) ?? 0,
       profileId: session.profileId ?? legacyProfileId(session.harness ?? "claude-code", session.agent),
       title: sessionDisplayTitle(session, sessionRuns, events),
-      admission,
+      // Raw list consumers need admissions for workstream enrollment/recovery;
+      // the opt-in chat summary discards these and needs no admission payload.
+      ...(input.presentation === "summary" ? {} : { admission }),
       ...association,
       ...nativeState(session, availability, input.native),
+      // Recovery needs complete unsent prompts; notification reconciliation also
+      // needs historical dispatched receipts. Keep the shared receipt contract.
       ...(session.harness === "claude-code" ? { queuedFollowups: followupProjection.project(session.sessionId, sessionRuns, id => events.get(id) ?? emptyEvents, id => followups.followupPending(id)) } : {}),
     };
   });
-  return { sessions, admissions: input.admissions, availability: input.availability };
+  return { sessions, availability: input.availability };
 }

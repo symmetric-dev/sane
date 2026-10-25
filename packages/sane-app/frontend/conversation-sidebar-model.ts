@@ -3,14 +3,16 @@ import { catalog } from "./catalog";
 import { store, type State } from "./store";
 import { defaultFilterFor, filterConversations, type ConversationFilterState, type WorkstreamMembership } from "./conversation-filter";
 import { buildWorkstreamMap } from "./conversation-filter-dialog";
-import { useMessageHits, useWorkstreamOverviewState } from "./conversation-hooks";
+import { useMessageHitsState, useWorkstreamOverviewState } from "./conversation-hooks";
+import { conversationQueryKey } from "./conversation-listing";
+import type { Conversation, SessionCatalogQuery } from "./types";
 import { workerReference as knownWorker, useWorkerDiscovery, directWorkerCounts } from "./worker-client";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { workstreamCheckout } from "./workstream-checkout";
 import { readWorkstreamSelection, saveWorkstreamSelection } from "./workstream-selection-storage";
 import { readWorkstreamMembership, saveWorkstreamMembership } from "./workstream-membership-storage";
 import { workspaceEpoch } from "./workspace-store";
-import { resolveWorkspaceActivation, workspaceSelectionBlocked } from "./workspace-activation";
+import { refreshWorkspaceActivation, resolveWorkspaceActivation, workspaceSelectionBlocked } from "./workspace-activation";
 
 export type ConversationSidebarMode = "chat" | "history";
 
@@ -131,6 +133,7 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     saveWorkstreamSelection(target.workspaceId, null, filter);
     setContext({ workspaceId: target.workspaceId, worktreeId: target.worktreeId, workstreamId: null, filter });
     catalog.navigate({ ...target, filePath: null, comparison: null, ...(direct ? { view: "chat" as const } : {}) });
+    refreshWorkspaceActivation(target, false, setSelectionError);
     return true;
   };
   const workspaceSelection: WorkspaceSelectionModel = {
@@ -163,6 +166,34 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   };
   const deferredQuery = useDeferredValue(filter.query);
   const deferred = useMemo(() => ({ ...filter, query: deferredQuery }), [filter, deferredQuery]);
+  const query = useMemo<SessionCatalogQuery>(() => ({
+    mode,
+    workspaceId: deferred.workspaceId === "all" || deferred.workspaceId === null ? undefined : deferred.workspaceId,
+    worktreeId: deferred.worktreeId === "all" || deferred.worktreeId === null ? undefined : deferred.worktreeId,
+    harness: deferred.harness,
+    status: deferred.status,
+    workstreamId: deferred.workstreamId,
+    phase: deferred.phase,
+    showDeleted: !!deferred.showDeleted,
+    query: deferred.query,
+    limit: 50,
+  }), [mode, deferred]);
+  const queryKey = conversationQueryKey(query);
+  useEffect(() => {
+    if (!repository.ready || state.phase !== "ready" || auth !== workspaceEpoch() || !sidebarActive) return;
+    store.setConversationQuery?.(query);
+  }, [query, auth, repository.ready, state.phase, sidebarActive]);
+  // The known-cache union also contains selected, worker, notification and search
+  // targets. Only matching page IDs are sidebar rows on paginated clients.
+  const paginated = !!state.conversationPage && Array.isArray(state.conversationPageIds);
+  const pageCurrent = state.conversationPage?.queryKey === queryKey;
+  const page = paginated ? {
+    ...state.conversationPage!,
+    loading: !pageCurrent || state.conversationPage!.loading,
+    loadingMore: pageCurrent && state.conversationPage!.loadingMore,
+    error: pageCurrent ? state.conversationPage!.error : "",
+    hasMore: pageCurrent && state.conversationPage!.hasMore,
+  } : null;
   const cachedMembership = useMemo(() => repository.ready ? readWorkstreamMembership(nav.workspaceId) : null, [auth, repository.ready, nav.workspaceId, overview]);
   // Membership is derived solely from the overview, not the chat polling list.
   const workstreamMap = useMemo(() => overview ? buildWorkstreamMap(overview, []) : cachedMembership ?? new Map<string, WorkstreamMembership>(), [overview, cachedMembership]);
@@ -171,19 +202,34 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     if (auth === workspaceEpoch() && repository.ready && current.ready && current.navigation.workspaceId === nav.workspaceId && nav.workspaceId && overview && !overviewState.error) saveWorkstreamMembership(nav.workspaceId, workstreamMap);
   }, [auth, repository.ready, nav.workspaceId, overview, overviewState.error, workstreamMap]);
   const membershipLoading = overviewState.loading && !overview && !cachedMembership;
-  const membershipPending = (deferred.workstreamId !== "all" || deferred.phase !== "all") && !overview && !cachedMembership;
+  const hitMembershipPending = (deferred.workstreamId !== "all" || deferred.phase !== "all") && !overview && !cachedMembership;
+  const membershipPending = !paginated && hitMembershipPending;
   const membershipError = membershipPending ? overviewState.error : "";
-  const visible = useMemo(() => membershipPending ? [] : filterConversations(
-    [...state.conversations].reverse().filter(c => mode === "history" || !knownWorker(c.id)),
-    deferred,
-    { workstreamMap, includeReplaced: mode === "history" },
-  ), [state.conversations, deferred, workstreamMap, workerDiscovery, mode, membershipPending]);
-  const messageHits = useMessageHits(deferred.query, deferred.workspaceId, deferred.worktreeId);
+  const visible = useMemo<Conversation[]>(() => {
+    if (paginated) {
+      if (!pageCurrent) return [];
+      const known = new Map(state.conversations.map(conversation => [conversation.id, conversation]));
+      // IDs are already newest first, with every filter applied by the server.
+      return state.conversationPageIds!.flatMap((id: string) => {
+        const conversation = known.get(id);
+        return conversation ? [conversation] : [];
+      });
+    }
+    return membershipPending ? [] : filterConversations(
+      [...state.conversations].reverse().filter(c => mode === "history" || (!c.worker && !knownWorker(c.id))),
+      deferred,
+      { workstreamMap, includeReplaced: mode === "history" },
+    );
+  }, [state.conversations, state.conversationPageIds, paginated, pageCurrent, deferred, workstreamMap, workerDiscovery, mode, membershipPending]);
+  const messageSearch = useMessageHitsState(deferred.query, deferred.workspaceId, deferred.worktreeId, queryKey);
+  const messageHits = messageSearch.hits;
   const hits = useMemo(() => {
-    if (membershipPending) return [];
-    const eligible = new Set(filterConversations(state.conversations.filter(c => mode === "history" || !knownWorker(c.id)), { ...deferred, query: "" }, { workstreamMap, includeReplaced: mode === "history" }).map(c => c.id));
+    if (hitMembershipPending) return [];
+    const eligible = new Set(filterConversations(state.conversations.filter(c => mode === "history" || (!c.worker && !knownWorker(c.id))), { ...deferred, query: "" }, { workstreamMap, includeReplaced: mode === "history" }).map(c => c.id));
     return messageHits.filter(hit => eligible.has(hit.sessionId));
-  }, [messageHits, mode, state.conversations, deferred, workstreamMap, workerDiscovery, membershipPending]);
+  }, [messageHits, mode, state.conversations, deferred, workstreamMap, workerDiscovery, hitMembershipPending]);
+  const messageHitsLoading = messageSearch.loading || (!!messageHits.length && hitMembershipPending && !overviewState.error);
+  const messageHitsError = messageSearch.error || (messageHits.length > 0 && hitMembershipPending ? overviewState.error : "");
   const workerCounts = useMemo(() => {
     const counts = directWorkerCounts();
     for (const conversation of state.conversations) counts.set(conversation.id, Math.max(conversation.directWorkerCount ?? 0, counts.get(conversation.id) ?? 0));
@@ -197,7 +243,7 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   const activeFilterCount = (filter.harness !== "all" ? 1 : 0) + (filter.status !== "all" ? 1 : 0) + (filter.workstreamId !== "all" ? 1 : 0) + (filter.phase !== "all" ? 1 : 0) + (filter.showDeleted ? 1 : 0)
     + (filter.workspaceId === defaults.workspaceId && filter.worktreeId === defaults.worktreeId ? 0 : 1);
   const scoped = deferred.workspaceId !== "all" && deferred.workspaceId !== "unavailable";
-  return { repository, nav, filter, setFilter, defaults, workspaceSelection, worktreeSelectionVersion, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, workerCounts, groups, scoped, activeFilterCount };
+  return { repository, nav, filter, setFilter, defaults, workspaceSelection, worktreeSelectionVersion, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, messageHitsLoading, messageHitsError, page, workerCounts, groups, scoped, activeFilterCount };
 }
 
 export type ConversationSidebarModel = ReturnType<typeof useConversationSidebarModel>;

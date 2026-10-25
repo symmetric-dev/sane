@@ -1,4 +1,4 @@
-import { useCallback, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { FiBell, FiCheckCircle, FiPauseCircle, FiX, FiXCircle } from "react-icons/fi";
 import { catalog } from "./catalog";
 import { notificationStore, type NotificationItem } from "./notifications";
@@ -44,6 +44,8 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
   const panelId = useId(), headingId = `${panelId}-heading`;
   const trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false), [notice, setNotice] = useState("");
+  const [openingId, setOpeningId] = useState("");
+  const openingSerial = useRef(0);
   const notifications = useSyncExternalStore(notificationStore.subscribe, notificationStore.snapshot);
   const catalogState = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const state = useShellState();
@@ -52,7 +54,24 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
   // Occurrence order is source-qualified; different sources use their observation times.
   const items = notifications.items;
   const unread = notifications.unreadCount;
+  const lookupKey = JSON.stringify([...new Set(items.map(item => item.conversationId))].sort());
+  const [lookup, setLookup] = useState({ key: "", loading: false, error: "" });
+  const [lookupRetry, setLookupRetry] = useState(0);
+  useEffect(() => {
+    if (!open || !available || !state.conversationPage) return;
+    const ids: string[] = JSON.parse(lookupKey);
+    if (!ids.length) return;
+    const controller = new AbortController();
+    setLookup({ key: lookupKey, loading: true, error: "" });
+    void store.ensureConversations(ids, controller.signal).then(() => {
+      if (!controller.signal.aborted) setLookup({ key: lookupKey, loading: false, error: "" });
+    }).catch(() => {
+      if (!controller.signal.aborted) setLookup({ key: lookupKey, loading: false, error: "Could not check notification destinations." });
+    });
+    return () => controller.abort();
+  }, [open, available, lookupKey, lookupRetry, state.config, !!state.conversationPage]);
   const dismiss = useCallback((restore = true) => {
+    openingSerial.current++; setOpeningId("");
     const element = panel.current;
     if (element) {
       element.dataset.open = "false";
@@ -66,7 +85,8 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
     if (!available) return;
     activeCenter?.dismiss(false);
     activeCenter = { id: panelId, dismiss };
-    setNotice(""); setOpen(true);
+    openingSerial.current++;
+    setNotice(""); setLookup({ key: "", loading: true, error: "" }); setOpen(true);
   };
 
   useLayoutEffect(() => {
@@ -149,10 +169,23 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
     };
   }, [open, available, dismiss, panelId]);
 
-  const choose = (item: NotificationItem) => {
+  const choose = async (item: NotificationItem) => {
     const conversationId = item.conversationId;
-    const current = store.snapshot();
-    if (current.phase !== "ready" || !current.conversationsReady || current.sending || !matchesDestination(item, current.conversations.find(conversation => conversation.id === conversationId))) {
+    const current = store.snapshot(), navigation = catalog.snapshot().navigation;
+    if (openingId || current.phase !== "ready" || !current.conversationsReady || current.sending) return;
+    const serial = ++openingSerial.current;
+    setOpeningId(conversationId);
+    const ownsClick = () => serial === openingSerial.current && store.snapshot().phase === "ready" && store.snapshot().config === current.config
+      && !store.snapshot().sending && store.snapshot().selected === current.selected
+      && catalog.snapshot().navigation === navigation && activeCenter?.id === panelId;
+    try { await store.ensureConversations([conversationId], AbortSignal.timeout(25000)); }
+    catch {
+      if (ownsClick()) setNotice("Could not check this session. Try opening the notification again.");
+      if (serial === openingSerial.current) setOpeningId(""); return;
+    }
+    if (serial === openingSerial.current) setOpeningId("");
+    if (!ownsClick()) return;
+    if (!matchesDestination(item, store.snapshot().conversations.find(conversation => conversation.id === conversationId))) {
       setNotice("This session cannot be opened right now."); return;
     }
     if (!onOpen(conversationId)) { setNotice("This session cannot be opened right now."); return; }
@@ -188,26 +221,28 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
         {deliveryNotice && <p className="notification-center-notice" role="status">{deliveryNotice}</p>}
         {state.sending && <p className="notification-center-notice">Session navigation is unavailable while sending.</p>}
         {notice && <p className="notification-center-notice" role="status">{notice}</p>}
+        {lookup.key === lookupKey && lookup.error && <p className="notification-center-notice" role="status">{lookup.error} <button type="button" onClick={() => setLookupRetry(value => value + 1)}>Retry</button></p>}
         <div className="notification-center-list">
           {items.length ? <ul>{items.map(item => {
             const workspace = catalogState.workspaces.find(workspace => workspace.workspaceId === item.workspaceId);
             const worktree = workspace?.worktrees.find(worktree => worktree.worktreeId === item.worktreeId);
             const location = notificationLocation(item.workspaceId, workspace?.name, worktree?.alias || worktree?.branch);
             const valid = matchesDestination(item, state.conversations.find(conversation => conversation.id === item.conversationId));
-            const disabled = state.sending || !valid;
+             const checking = !!state.conversationPage && (lookup.key !== lookupKey || lookup.loading);
+             const disabled = state.sending || !!openingId || !valid || checking || !!lookup.error;
             const time = timeLabel(item.time);
             const outcome = notificationOutcome(item);
             const Icon = item.kind === "worker-attention" || item.status === "attention" ? FiBell : item.status === "completed" ? FiCheckCircle : item.status === "failed" ? FiXCircle : FiPauseCircle;
             const jobs = item.jobs?.length ? item.jobs.join(", ") : "";
             return <li key={item.groupId ?? item.conversationId}>
-              <button type="button" className="notification-center-entry" disabled={disabled} onClick={() => choose(item)}>
+               <button type="button" className="notification-center-entry" disabled={disabled} onClick={() => { void choose(item); }}>
                 <Icon aria-hidden="true" />
                 <span className="notification-center-label">
                   <span className="notification-center-title">{item.title || "Untitled session"}</span>
                   <span className="notification-center-location" title={location}>{location}</span>
                   <span className="notification-center-outcome">{outcome}<span aria-hidden="true"> · </span><time dateTime={time.iso} title={time.iso}>{time.label}</time></span>
                   {jobs && <span className="notification-center-location" title={jobs}>{item.jobs!.length === 1 ? "Job" : "Jobs"}: {jobs}</span>}
-                  {!valid && <span className="notification-center-unavailable">Session unavailable</span>}
+                  {!valid && <span className="notification-center-unavailable">{state.conversationPage && (lookup.key !== lookupKey || lookup.loading) ? "Checking session…" : lookup.error ? "Session lookup unavailable" : "Session unavailable"}</span>}
                 </span>
               </button>
             </li>;

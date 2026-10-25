@@ -54,10 +54,11 @@ type Props = {
   overview: WorkstreamOverview | null;
   defaults?: ConversationFilterState;
   resultCount?: number;
+  partialResults?: boolean;
   onClose: () => void;
 };
 
-export function ConversationFilterDialog({ value, onChange, workspaces, navigation, overview, defaults, resultCount, onClose }: Props) {
+export function ConversationFilterDialog({ value, onChange, workspaces, navigation, overview, defaults, resultCount, partialResults, onClose }: Props) {
   const [draftQuery, setDraftQuery] = useState(value.query);
   useEffect(() => setDraftQuery(value.query), [value.query]);
   useEffect(() => {
@@ -108,7 +109,7 @@ export function ConversationFilterDialog({ value, onChange, workspaces, navigati
         ...["starting", "running", "completed", "failed", "interrupted", "unknown"].map(status => ({ value: status, label: status })),
       ]} />
       <button type="button" role="switch" aria-checked={!!value.showDeleted} className="filter-switch" onClick={() => set({ showDeleted: !value.showDeleted })}><span className="filter-switch-track" aria-hidden="true"><span className="filter-switch-thumb" /></span>Show hidden</button>
-      {typeof resultCount === "number" && <p className="muted" role="status">{resultCount} match{resultCount === 1 ? "" : "es"}</p>}
+      {typeof resultCount === "number" && <p className="muted" role="status">{resultCount} {partialResults ? "loaded " : ""}match{resultCount === 1 ? "" : "es"}</p>}
       {!overview && <p className="muted">Workstream membership needs a repository workspace; unknown rows stay grouped as unknown.</p>}
       <div className="dialog-actions"><button type="button" onClick={reset}>Reset to current</button><button type="button" onClick={onClose}>Done</button></div>
     </div>

@@ -33,6 +33,8 @@ export type OpenCodeReplyIntegrationOptions = {
   /** Optional bulk snapshot avoids repeated linear admission lookups at refresh. */
   admissions?: () => readonly Admission[];
   isWorker: (conversationId: string) => boolean;
+  /** Live catalog overlay; durable metadata/history are never rewritten for it. */
+  catalogVisible?: (conversationId: string) => boolean;
   isClosing: () => boolean;
   /** Recheck live App ownership, admission and configured source at publication. */
   isCurrent: (conversationId: string, source: ConversationUpdateSource, admissionSnapshot?: Admission) => boolean;
@@ -162,7 +164,7 @@ export class OpenCodeReplyIntegration {
     this.refresh();
     if (this.enabled.size) this.timer = setInterval(() => this.refresh(), SWEEP_MS);
   }
-  private sessions(): readonly Session[] { return this.publishedMetadata?.sessions ?? this.options.sessions(); }
+  private sessions(): readonly Session[] { return (this.publishedMetadata?.sessions ?? this.options.sessions()).filter(session => this.options.catalogVisible?.(session.sessionId) !== false); }
   hasQualifiedAuthorities(): boolean { return this.enabled.size > 0 && !this.closing; }
   /** O(1) primary publication hook. Disabled production keeps no duplicate
    * metadata; qualified capture coalesces outside the primary storage queue. */

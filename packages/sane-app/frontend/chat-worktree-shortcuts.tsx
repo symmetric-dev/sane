@@ -5,7 +5,7 @@ import { conversationSidebarGroups, type WorktreeBucket } from "./conversation-s
 import type { ConversationSidebarModel } from "./conversation-sidebar-model";
 import { CHAT_WORKTREE_SHORTCUTS } from "./shortcut-definitions";
 import { store, type State } from "./store";
-import { resolveWorktreeActivation, workspaceSelectionBlocked } from "./workspace-activation";
+import { refreshWorkspaceActivation, resolveWorktreeActivation, workspaceSelectionBlocked } from "./workspace-activation";
 
 type WorktreeTarget = { workspaceId: string; worktreeId: string; conversationId: string | null };
 
@@ -38,6 +38,7 @@ export function ChatWorktreeShortcuts({ model, onChoose }: { model: Conversation
     if (navigation.workspaceId !== target.workspaceId || navigation.worktreeId !== target.worktreeId) return;
     onChoose(target.conversationId ?? "");
     setFocusRequest({ target, config: store.snapshot().config });
+    refreshWorkspaceActivation(target, true);
   };
   return <>{CHAT_WORKTREE_SHORTCUTS.map((shortcut, index) => <ChatWorktreeShortcut key={shortcut.id} shortcut={shortcut} bucket={buckets[index]} model={model} activate={activate} />)}</>;
 }

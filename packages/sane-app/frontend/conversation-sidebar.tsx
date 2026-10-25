@@ -43,7 +43,7 @@ export function ConversationSidebar({ state, model, mode, selectedId, onChoose, 
 export function ConversationSidebarList({ state, model, mode, selectedId, onSelect }: {
   state: State; model: ConversationSidebarModel; mode: ConversationSidebarMode; selectedId: string | null; onSelect: (id: string) => void;
 }) {
-  const { repository, nav, filter, setFilter, workspaceSelection, worktreeSelectionVersion, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, workerCounts, scoped, activeFilterCount } = model;
+  const { repository, nav, filter, setFilter, workspaceSelection, worktreeSelectionVersion, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, messageHitsLoading, messageHitsError, page, workerCounts, scoped, activeFilterCount } = model;
   // Dialog visibility is presentation-local: opening the drawer must not create two modal dialogs.
   const [dialogOpen, setDialogOpen] = useState(false);
   const [expandedWorktrees, setExpandedWorktrees] = useState<Record<string, boolean>>({});
@@ -51,6 +51,11 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
   const unreadSessions = new Set(notifications.items.map(item => item.conversationId));
   const history = mode === "history";
   const hasQuery = !!filter.query.trim();
+  const listBusy = !!page?.loading || membershipPending && !membershipError;
+  const listError = page?.error || membershipError;
+  const emptyLabel = listBusy ? "Loading conversations…" : listError ? "Conversations could not be loaded." : messageHitsLoading
+    ? "Searching messages…" : messageHitsError ? "Message matches could not be fully loaded."
+    : page?.hasMore ? "No conversations loaded in this worktree yet. Load more to continue." : history ? "No sessions in this selection." : "No conversations in this selection.";
   const bucketGroups = conversationSidebarGroups(model, mode, selectedId);
   const shortcutBuckets = bucketGroups.flatMap(group => group.buckets).slice(0, 9);
 
@@ -94,12 +99,14 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
       <label className="history-search"><span className="sr-only">{history ? "Search sessions" : "Search conversations"}</span><input value={filter.query} onChange={e => setFilter({ ...filter, query: e.target.value })} placeholder={history ? "Search sessions" : "Search conversations"} maxLength={200} /></label>
       <button type="button" className="history-filter-button" aria-label={history ? "Open session filters" : "Open conversation filters"} title={history ? "Filter sessions" : "Filter conversations"} onClick={() => setDialogOpen(true)}>Filter{activeFilterCount ? ` · ${activeFilterCount}` : ""}</button>
     </div>
-    {dialogOpen && <ConversationFilterDialog value={filter} onChange={setFilter} defaults={model.defaults} workspaces={repository.workspaces} navigation={nav} overview={overview} resultCount={visible.length} onClose={() => setDialogOpen(false)} />}
+    {dialogOpen && <ConversationFilterDialog value={filter} onChange={setFilter} defaults={model.defaults} workspaces={repository.workspaces} navigation={nav} overview={overview} resultCount={visible.length} partialResults={!!page} onClose={() => setDialogOpen(false)} />}
     {!!hits.length && <div className="history-hits" aria-label="Message matches"><p className="muted">Message matches · best effort</p>{hits.slice(0, 3).map((hit, index) => {
       const conversation = state.conversations.find(c => c.id === hit.sessionId);
       return <button key={`${hit.sessionId}:${hit.runId ?? "title"}:${index}`} type="button" className="history-hit" disabled={!history && state.sending} onClick={() => onSelect(hit.sessionId)} title={conversation?.title ? `${conversation.title}\n${conversation.cwd}` : conversation?.cwd || hit.sessionId}><span>{formatTitle(conversation?.title, basename(conversation?.cwd))}</span><small className="muted"> {hit.snippet}</small></button>;
     })}</div>}
-    <nav className="history-list conversation-sidebar-list" aria-label={history ? "Sessions" : "Conversation history"} aria-busy={membershipPending && !membershipError}>{bucketGroups.map(group => {
+    {messageHitsLoading && <p className="muted conversation-sidebar-search-status" role="status">Searching messages…</p>}
+    {messageHitsError && <p className="muted conversation-sidebar-search-status" role="status">{messageHitsError}</p>}
+    <nav className="history-list conversation-sidebar-list" aria-label={history ? "Sessions" : "Conversation history"} aria-busy={listBusy || !!page?.loadingMore}>{bucketGroups.map(group => {
       const { buckets } = group;
       renderedBuckets += buckets.length;
       return <section className="history-group" key={group.id ?? "unavailable"}>
@@ -134,7 +141,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
                 <span className="worktree-group-name">{bucket.label}</span>
                 {!bucket.available && bucket.worktreeId && <span className="worktree-group-unavailable" title="Worktree directory missing or unavailable">Missing</span>}
                 {hasUnread && <span className="conversation-sidebar-unread" title="Unread update in worktree"><FiBell size={12} aria-hidden="true" /><span className="sr-only">Unread update</span></span>}
-                <span className="worktree-group-count" aria-label={`${bucket.conversations.length} ${bucket.conversations.length === 1 ? "conversation" : "conversations"}`}>{bucket.conversations.length}</span>
+                <span className="worktree-group-count" title={page ? "Loaded conversations" : undefined} aria-label={`${bucket.conversations.length} ${page ? "loaded " : ""}${bucket.conversations.length === 1 ? "conversation" : "conversations"}`}>{bucket.conversations.length}</span>
               </button>
               {!history && bucket.available && bucket.worktreeId && (
                 <button
@@ -179,15 +186,24 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
                   <ConversationMenu conversationId={c.id} hidden={c.hidden} disabled={state.actionBusy || !!c.replacedBy} />
                 </div>;
               })}
-              {!bucket.conversations.length && <p className="muted worktree-group-empty">{membershipPending
+              {!bucket.conversations.length && <p className="muted worktree-group-empty">{page || messageHitsLoading || messageHitsError ? emptyLabel : membershipPending
                 ? membershipError ? "Workstream membership is unavailable. Retrying…" : "Loading workstream membership…"
                 : history ? "No sessions in this worktree." : "No conversations in this worktree."}</p>}
             </div>}
           </section>;
         })}
       </section>;
-    })}{!visible.length && !renderedBuckets && <p className="muted history-empty" role="status">{membershipPending
+    })}{!visible.length && !renderedBuckets && <p className="muted history-empty" role="status">{page || messageHitsLoading || messageHitsError ? emptyLabel : membershipPending
       ? membershipError ? "Workstream membership is unavailable. Retrying…" : "Loading workstream membership…"
-      : history ? "No sessions in this selection." : "No conversations in this selection."}</p>}</nav>
+      : history ? "No sessions in this selection." : "No conversations in this selection."}</p>}
+      {page && <div className="conversation-sidebar-pagination" aria-label="Conversation pagination">
+        <p className="muted" role="status" aria-live="polite">{page.loading ? "Loading conversations…" : `${visible.length} loaded ${history ? "sessions" : "conversations"}`}</p>
+        {page.error && <p className="notice error" role="alert">{page.error}</p>}
+         {page.error ? <button type="button" disabled={page.loading || page.loadingMore} onClick={() => store.retryConversations()}>Retry loading conversations</button>
+           : page.hasMore && <button type="button" disabled={page.loading || page.loadingMore} onClick={() => { void store.loadMoreConversations(); }}>{page.loadingMore ? "Loading more…" : "Load more conversations"}</button>}
+         {!page.error && <button type="button" disabled={page.loading || page.loadingMore} onClick={() => store.retryConversations()} title="Start a fresh conversation list with the current filters">Refresh list</button>}
+        {page.loadingMore && <span className="sr-only" role="status">Loading more conversations…</span>}
+      </div>}
+    </nav>
   </>;
 }

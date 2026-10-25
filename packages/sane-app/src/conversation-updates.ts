@@ -428,7 +428,7 @@ export class ConversationUpdates<State = UpdateJson> {
       return this.enqueue(() => this.store.commitCandidates([captured], { key, sourceKey, through: 1 }));
     } catch { return Promise.resolve(false); }
   }
-  getCoverage(): ConversationUpdateCoverage[] {
+  getCoverage(visible?: (sourceKey: string) => boolean): ConversationUpdateCoverage[] {
     const result = new Map(this.store.getCoverage().map(coverage => [coverage.sourceKey, coverage]));
     try {
       for (const coverage of this.options.coverage?.() ?? []) {
@@ -441,11 +441,11 @@ export class ConversationUpdates<State = UpdateJson> {
     if (this.store.getHealth().state !== "ready") for (const coverage of result.values()) {
       coverage.state = "unavailable"; coverage.reason = "Conversation update storage is unavailable";
     }
-    return [...result.values()];
+    return [...result.values()].filter(coverage => !visible || visible(coverage.sourceKey));
   }
   getHead() { return this.store.getHead(); }
   getHealth() { return this.store.getHealth(); }
-  async page(request: ConversationUpdateFeedRequest = {}, bootstrap = false) {
+  async page(request: ConversationUpdateFeedRequest = {}, bootstrap = false, visible?: (sourceKey: string) => boolean) {
     await this.flush();
     let snapshot: ConversationUpdateBootstrap | false = false;
     if (bootstrap) {
@@ -453,10 +453,13 @@ export class ConversationUpdates<State = UpdateJson> {
         // Requiring the callback prevents falsely declaring no runs active after restart.
         if (!this.options.bootstrap) throw new Error("No authoritative bootstrap provider");
         snapshot = structuredClone(this.options.bootstrap());
+        if (visible) snapshot.sourceBaselines = snapshot.sourceBaselines.filter(value => visible(value.sourceKey));
         if (!isConversationUpdateBootstrap(snapshot)) throw new Error("Invalid bootstrap");
       } catch { throw new ConversationUpdateServiceError("CONVERSATION_UPDATES_UNAVAILABLE", "Authoritative active-run bootstrap is unavailable"); }
     }
-    return this.store.page(request, snapshot, this.getCoverage());
+    // Filter archived coverage before the hard response-metadata byte budget,
+    // not just after page construction. Durable events/cursors are unchanged.
+    return this.store.page(request, snapshot, this.getCoverage(visible));
   }
   async flush(): Promise<void> { this.sealPrimaryBatch(); await this.queue; await this.store.flush(); }
   async close(): Promise<void> { this.closing = true; await this.flush(); this.closed = true; await this.store.close(); }

@@ -75,7 +75,7 @@ export function slotSessionIndex(assignments: readonly SlotAssignment[], phase: 
 }
 
 export class HandoffService {
-  constructor(private admissions: AdmissionService, private catalog: CatalogService, private router: RepositoryRouter, private sources: SourceRecords, private sessions: () => Session[], private assertAvailable: () => void, private ownerId: string, private resolveRecipient: (to: string, checkout: string) => Promise<{ harness: HandoffRecipient["harness"]; executionConfig: HandoffExecutionConfig }>) {}
+  constructor(private admissions: AdmissionService, private catalog: CatalogService, private router: RepositoryRouter, private sources: SourceRecords, private sessions: () => Session[], private assertAvailable: () => void, private ownerId: string, private resolveRecipient: (to: string, checkout: string) => Promise<{ harness: HandoffRecipient["harness"]; executionConfig: HandoffExecutionConfig }>, private catalogActive: (sessionId: string) => boolean = () => true) {}
   /**
    * Qualify the native sender. A kickoff from an unenrolled sender carries an
    * `enroll` request (trusted hook checkout + nearest enrolled ancestor); it is
@@ -153,7 +153,7 @@ export class HandoffService {
     if (!recipient && args.createNew) recipient = await this.newRecipient(domain, args, args.checkout ? domain.validateExecutionCheckout(args.checkout) : workstream.defaultCheckout);
     else if (!recipient) {
       const linked = domain.getWorkstreamStatus(workstream.id).activePhases.filter(a => equivalentSlots(a.phase, args.to));
-      const candidates = this.admissions.list().filter(a => a.state === "ready" && a.nativeId && a.binding.domain.mode === "repository" && a.binding.domain.repositoryId === domain.repositoryId && this.sessions().some(s => s.sessionId === a.sessionId && s.attachment?.state !== "pending")).filter(a => linked.some(l => same(l.ref, { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! })));
+      const candidates = this.admissions.list().filter(a => this.catalogActive(a.sessionId) && a.state === "ready" && a.nativeId && a.binding.domain.mode === "repository" && a.binding.domain.repositoryId === domain.repositoryId && this.sessions().some(s => s.sessionId === a.sessionId && s.attachment?.state !== "pending")).filter(a => linked.some(l => same(l.ref, { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! })));
       const eligible = args.target ? candidates.filter(a => same(args.target!, { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! })) : candidates;
       const selected = [...new Map(eligible.map(a => [JSON.stringify([a.source.descriptor.harness, a.source.authorityId, a.nativeId]), a])).values()];
       if (selected.length !== 1) throw new DomainError(selected.length > 1 ? "AMBIGUOUS_TARGET" : "NOT_FOUND", selected.length > 1 ? "Several linked App recipients are eligible; select an exact qualified target." : args.target ? "The explicit qualified target is not an eligible ready App recipient in this workstream and destination slot." : "No linked App-managed or attached recipient is eligible; select or explicitly create one.");
@@ -163,6 +163,7 @@ export class HandoffService {
       recipient = { ownerId: this.ownerId, sessionId: admission.sessionId, ref: target, harness: target.harness, authorityId: target.authorityId, checkout: domain.getConversation(target)!.executionCheckout };
     }
     this.assertAvailable();
+    this.assertRecipientPermitted(recipient.sessionId);
     if (recipient.ref) this.assertRecipientReady({ repositoryId: domain.repositoryId, recipient });
     return domain.admitHandoff(ref, args, recipient, { actor: { kind: "native", repositoryId: domain.repositoryId, ref }, correlationId: args.requestId });
   }
@@ -196,8 +197,9 @@ export class HandoffService {
     const current = domain.getHandoff(handoffId);
     if (current.recipient.ownerId !== this.ownerId) throw new DomainError("CONFLICT", "Delivery belongs to another App store.");
     if (current.status !== "awaiting_approval") throw new DomainError("CONFLICT", "Handoff is not awaiting approval.");
+    this.assertRecipientPermitted(current.recipient.sessionId);
     // Bound deliveries revalidate the exact admission/session pin before
-    // entering the queued pipeline; unbound createNew stays unchecked.
+    // entering the queued pipeline; unbound createNew checks catalog permission only.
     if (current.recipient.ref) this.assertRecipientReady(current);
     if (!current.recipient.ref && !current.input.kickoff) {
       if (current.input.to === "execution") await domain.registerJobs(current.workstreamId, human(handoffId));
@@ -206,6 +208,7 @@ export class HandoffService {
         domain.setPhaseStatus(current.workstreamId, upstream, "delivered", human(handoffId));
       }
     }
+    this.assertRecipientPermitted(current.recipient.sessionId);
     return domain.advanceHandoff(handoffId, expectedRevision, { status: "queued", ...(trimmed ? { evidence: trimmed } : { evidence: "Approved handoff delivery" }) }, human(handoffId));
   }
   /**
@@ -266,11 +269,15 @@ export class HandoffService {
       };
     });
   }
+  private assertRecipientPermitted(sessionId: string): void {
+    if (!this.catalogActive(sessionId)) throw new DomainError("CONFLICT", "Recipient is retired or a catalog operation is pending; restore it or retry after the operation completes.");
+  }
   /** No awaits: also used inside the core's atomic dispatch reservation. */
   assertRecipientReady(h: Pick<Handoff, "recipient" | "repositoryId">): void {
     this.assertAvailable();
     const r = h.recipient, ref = r.ref, admission = this.admissions.get(r.sessionId), session = this.sessions().find(s => s.sessionId === r.sessionId);
     if (r.ownerId !== this.ownerId) throw new DomainError("CONFLICT", "Delivery belongs to another App store.");
+    this.assertRecipientPermitted(r.sessionId);
     if (!ref || !admission || admission.state !== "ready" || !admission.nativeId) throw new DomainError("CONFLICT", "Queued recipient admission is not ready; reconcile before delivery.");
     if (!same(ref, { harness: admission.source.descriptor.harness, authorityId: admission.source.authorityId, nativeId: admission.nativeId }) || ref.harness !== r.harness || ref.authorityId !== r.authorityId || normalizeNativeSource(admission.source.descriptor).authorityId !== ref.authorityId) throw new DomainError("CONFLICT", "Queued recipient's qualified admission identity changed.");
     const binding = admission.binding;
@@ -283,6 +290,7 @@ export class HandoffService {
     this.assertAvailable();
     if (h.recipient.ownerId !== this.ownerId) throw new WorkstreamAdapterError(409, "handoff-owner-mismatch", "Delivery belongs to another App store");
     if (h.status !== "queued") throw new WorkstreamAdapterError(409, "handoff-not-queued", "Delivery is not queued");
+    this.assertRecipientPermitted(h.recipient.sessionId);
     revalidateCheckout(domain.context, h.recipient.checkout);
     if (!h.recipient.ref) {
       await create(h);

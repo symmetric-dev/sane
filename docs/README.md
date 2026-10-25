@@ -15,6 +15,10 @@ Design, Engineering, Planning, and Execution, with Research available throughout
 
 ## Proposals
 
+- [User-owned context delivery](proposals/USER_OWNED_CONTEXT_DELIVERY.md) —
+  workstream/session audit discussion, delivery corrections, alternatives, and
+  the plan for replacing harness-specific context injection with selected
+  user-role prompt composition.
 - [Assistant context draft review](proposals/ASSISTANT_CONTEXT_REVIEW.md) —
   locations of the editable lifecycle skills and agents, Design fixes, and
   remaining alignment issues.

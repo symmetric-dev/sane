@@ -80,7 +80,10 @@ export function ContextualNavigation({ state, activeView, onNavigate }: { state:
   // Sender-session handoff approvals badge together with permission/question
   // prompts. Approvals attach to the sender sessionId, never the recipient.
   const pending = state.interactions.length + (state.handoffApprovals?.length ?? 0);
-  const running = state.sending || state.runs.some(run => active(run.status)) || state.conversations.some(conversation => active(conversation.status));
+  // A paged catalog is not an authoritative global activity snapshot. Off-page
+  // cached rows may be old; only the selected chat drives this local indicator.
+  const activityRows = state.conversationPage ? state.conversations.filter(conversation => conversation.id === state.selected) : state.conversations;
+  const running = state.sending || state.runs.some(run => active(run.status)) || activityRows.some(conversation => active(conversation.status));
   return <nav className="contextual-navigation" aria-label="View navigation">{contextualDestinations(activeView).map(item => {
     const openChat = item.id === "chat" && (activeView === "terminal" || activeView === "history");
     const label = openChat ? "Open Chat" : item.label;
