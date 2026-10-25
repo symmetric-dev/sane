@@ -1,0 +1,15 @@
+MOCK ONLY — isolated engine-path demonstration
+Fixture root: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-sync.lCZZTE/final/fixture
+PASS activation: accepted; mock sends=1; context loads=11
+PASS ordinary: accepted; mock sends=1; context loads=0
+PASS update: accepted; mock sends=1; context loads=4
+PASS stale-source: no-evidence; mock sends=0; context loads=6
+PASS owner-refusal: withheld; mock sends=0; context loads=11
+PASS persistence-failure: unknown; mock sends=0; context loads=11
+PASS attempt-unresolved: attempt-unresolved; mock sends=1; context loads=11
+PASS replay-torn: unknown (partial)
+PASS replay-missing: unknown (partial)
+Fresh replay left fixture files unchanged: true
+Report: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-sync.lCZZTE/final/fixture/REPORT.md
+HTML: /private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-sync.lCZZTE/final/fixture/REPORT.html
+No App, native harness, or model provider was invoked.

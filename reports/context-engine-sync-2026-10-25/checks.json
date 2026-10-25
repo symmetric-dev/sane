@@ -1,0 +1,100 @@
+{
+  "tests": {
+    "command": [
+      "/Users/beto/.bun/bin/bun",
+      "test",
+      "--tsconfig-override",
+      "experiments/context-engine-demo/tsconfig.json",
+      "./experiments/context-engine-demo/cli.test.ts",
+      "./experiments/context-engine-demo/demo.test.ts",
+      "./experiments/context-engine-demo/journal.test.ts",
+      "./experiments/context-engine-demo/paths.test.ts",
+      "./experiments/context-engine-demo/replay.test.ts",
+      "./experiments/context-engine-demo/report.test.ts",
+      "./packages/sane-app/src/context-message.test.ts",
+      "./packages/sane-app/src/context-message-engine.test.ts",
+      "./packages/sane-app/src/context-message-evidence.test.ts",
+      "./packages/sane-app/src/canonical-activation-validation.test.ts",
+      "--timeout",
+      "10000",
+      "--reporter=junit",
+      "--reporter-outfile",
+      "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-sync.lCZZTE/final/tests.junit.xml"
+    ],
+    "exitCode": 0,
+    "signal": null,
+    "error": null
+  },
+  "types": {
+    "command": [
+      "/Users/beto/.bun/bin/bun",
+      "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-tests.lc8peR/typecheck.ts",
+      "experiments/context-engine-demo/cli.test.ts",
+      "experiments/context-engine-demo/cli.ts",
+      "experiments/context-engine-demo/contract.ts",
+      "experiments/context-engine-demo/demo.test.ts",
+      "experiments/context-engine-demo/fixture.ts",
+      "experiments/context-engine-demo/journal.test.ts",
+      "experiments/context-engine-demo/journal.ts",
+      "experiments/context-engine-demo/paths.test.ts",
+      "experiments/context-engine-demo/paths.ts",
+      "experiments/context-engine-demo/replay.test.ts",
+      "experiments/context-engine-demo/replay.ts",
+      "experiments/context-engine-demo/report.test.ts",
+      "experiments/context-engine-demo/report.ts",
+      "experiments/context-engine-demo/scenarios.ts",
+      "packages/sane-app/src/context-message.ts",
+      "packages/sane-app/src/context-message-engine.ts",
+      "packages/sane-app/src/context-message-evidence.ts",
+      "packages/sane-app/src/canonical-activation-validation.ts",
+      "packages/sane-app/src/user-input-preparation.ts",
+      "packages/sane-app/src/context-message.test.ts",
+      "packages/sane-app/src/context-message-engine.test.ts",
+      "packages/sane-app/src/context-message-evidence.test.ts",
+      "packages/sane-app/src/canonical-activation-validation.test.ts"
+    ],
+    "exitCode": 0,
+    "signal": null,
+    "error": null
+  },
+  "demoRun": {
+    "command": [
+      "/Users/beto/.bun/bin/bun",
+      "--tsconfig-override",
+      "experiments/context-engine-demo/tsconfig.json",
+      "experiments/context-engine-demo/cli.ts",
+      "run",
+      "--output",
+      "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/context-engine-sync.lCZZTE/final/fixture"
+    ],
+    "exitCode": 0,
+    "signal": null,
+    "error": null
+  },
+  "protectedFiles": 456,
+  "changedProtectedFiles": [
+    "experiments/context-engine-demo/fixture.ts"
+  ],
+  "sourceSha256": {
+    "experiments/context-engine-demo/cli.test.ts": "c1fa44f6694aabd3ecd95ae4c7afb054ee8f9e522da97bb02cf88681a4522b18",
+    "experiments/context-engine-demo/cli.ts": "97a3c5c748503a40d341ff233168b4e996dd534c8b55597c1944799bc4a534a0",
+    "experiments/context-engine-demo/contract.ts": "347d81d3729ebd85fd2944d3d2490eda9d1aef546f9d79df7a68669796bb6ed9",
+    "experiments/context-engine-demo/demo.test.ts": "441fe1bd60c4eb6eeeb39d2c6b9c1808709abb5ee045c892e67e4aa0858a1fb5",
+    "experiments/context-engine-demo/fixture.ts": "132f27d8d8d42ba86746b5d4bff9d7460c147d74ead2c850f2df96352d64469e",
+    "experiments/context-engine-demo/journal.test.ts": "31c4bf198e5a64899b4a65497cd164d39a3123f633aabb00de41714dc4335074",
+    "experiments/context-engine-demo/journal.ts": "3745d0012a3ebad48a30b109bd64364a11587b963d79ad5380401763e5aa84ff",
+    "experiments/context-engine-demo/paths.test.ts": "db34fc51d9be62fb3139fb4e3cd5a3682405744464d6966695472c369d543268",
+    "experiments/context-engine-demo/paths.ts": "b80bfc7e73c1274ce351751bc9f3f7042e2e53e072e52e7c149e3646cb568f89",
+    "experiments/context-engine-demo/replay.test.ts": "7d96def299d49b9fc5c14638937cd4187b433a71e270115c537e5df21f5640b1",
+    "experiments/context-engine-demo/replay.ts": "ff2250b3cf2455c9389f6934682659729fbac16452d1801aa53f2a0c2223107e",
+    "experiments/context-engine-demo/report.test.ts": "6db3c6a96e543c1ec41a144df2882aab010d2275a5ac79bd01a01f11ba89cbf2",
+    "experiments/context-engine-demo/report.ts": "5af97610c1b998d00b7972aee2a70570bf34ad558eebd42fec83b4ab482b77fb",
+    "experiments/context-engine-demo/scenarios.ts": "dd467b14ae3f8d122c2a014d8d84ea91414722682451efb163e5b37d9914b6e7",
+    "packages/sane-app/src/context-message.ts": "2855764f9c06d32f7770c12852a944d6e2394ece1ed24e4852381724382b528c",
+    "packages/sane-app/src/context-message-engine.ts": "1090ac2a6c7b3ed45b4f92e80b0177b5285e948a39abf6e45f8d70792003bc6c",
+    "packages/sane-app/src/context-message-evidence.ts": "55edafe3a32be24f3c757d3115f714b5fd6ddad427bc3f46b3b1f7a18d22f208",
+    "packages/sane-app/src/canonical-activation-validation.ts": "9b1eecb7cefa505e597a8523a98f44cb2784d28e4468bb374175484f72bc657c",
+    "packages/sane-app/src/user-input-preparation.ts": "70b8a90286ef7ea964dde36ddffe84a8d8f821f69670bfa259bc263c87bb5ccc"
+  },
+  "passed": true
+}

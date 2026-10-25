@@ -1,0 +1,22 @@
+[96mexperiments/context-engine-demo/scenarios.ts[0m:[93m69[0m:[93m37[0m - [91merror[0m[90m TS2322: [0mType 'StoredAssistantAgentId | "implementer" | "fixer" | "tester" | "grounder" | "researcher" | "reviewer" | "scout" | "scout-crew" | "critic" | "verification-crew" | "session-namer"' is not assignable to type 'StoredAssistantAgentId | "implementer" | "fixer" | "tester" | "grounder" | "researcher" | "reviewer" | "scout" | "scout-crew" | "critic" | "verification-crew" | undefined'.
+  Type '"session-namer"' is not assignable to type 'StoredAssistantAgentId | "implementer" | "fixer" | "tester" | "grounder" | "researcher" | "reviewer" | "scout" | "scout-crew" | "critic" | "verification-crew" | undefined'.
+
+[7m69[0m         nativeCommandId: messageId, agent: fixture.agent.role, agentKind: fixture.agent.kind, saneExecution: { ...fixture.activation.saneExecution }, saneContextVersion: fixture.activation.saneContext.version };
+[7m  [0m [91m                                    ~~~~~[0m
+
+  [96mpackages/sane-app/src/history.ts[0m:[93m11[0m:[93m31[0m
+    [7m11[0m export type AgentSnapshot = { agent?: StoredAssistantAgentId | WorkerAgentId; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; saneExecution?: import("./canonical-execution-store").CanonicalExecutionRef };
+    [7m  [0m [96m                              ~~~~~[0m
+    The expected type comes from property 'agent' which is declared here on type 'Run'
+[96mexperiments/context-engine-demo/scenarios.ts[0m:[93m69[0m:[93m64[0m - [91merror[0m[90m TS2322: [0mType '"worker" | "assistant" | "utility"' is not assignable to type '"worker" | "assistant" | undefined'.
+  Type '"utility"' is not assignable to type '"worker" | "assistant" | undefined'.
+
+[7m69[0m         nativeCommandId: messageId, agent: fixture.agent.role, agentKind: fixture.agent.kind, saneExecution: { ...fixture.activation.saneExecution }, saneContextVersion: fixture.activation.saneContext.version };
+[7m  [0m [91m                                                               ~~~~~~~~~[0m
+
+  [96mpackages/sane-app/src/history.ts[0m:[93m11[0m:[93m79[0m
+    [7m11[0m export type AgentSnapshot = { agent?: StoredAssistantAgentId | WorkerAgentId; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; saneExecution?: import("./canonical-execution-store").CanonicalExecutionRef };
+    [7m  [0m [96m                                                                              ~~~~~~~~~[0m
+    The expected type comes from property 'agentKind' which is declared here on type 'Run'
+
+Scoped static check: 2 diagnostics across 23 entry files; cached external declarations, worktree workspace sources.
