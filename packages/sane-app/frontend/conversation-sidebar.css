@@ -318,3 +318,26 @@
 .view-chat>.sidebar .conversation-sidebar-row>button:focus-visible {
   outline:none;
 }
+
+/* Connect is a separate action beside the existing conversation menu, never
+   nested in the row's open-chat button. Keep both clear of the status metadata. */
+.conversation-sidebar-row.has-browser-connect .history-line.conversation-sidebar-footer { padding-right:62px; }
+.history-list .conversation-sidebar-row>.conversation-connect {
+  position:absolute;
+  right:34px;
+  bottom:5px;
+  display:grid;
+  place-items:center;
+  width:32px;
+  height:32px;
+  padding:0;
+  border:1px solid transparent;
+  border-radius:7px;
+  background:transparent;
+  color:var(--muted-foreground);
+  transform:none;
+}
+.history-list .conversation-sidebar-row>.conversation-connect:hover:not(:disabled) { background:var(--accent); color:var(--primary); }
+.history-list .conversation-sidebar-row>.conversation-connect:disabled { opacity:.45; }
+.history-list .conversation-sidebar-row>.conversation-connect:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
+.view-chat>.sidebar .conversation-sidebar-row:has(>button.selected)>.conversation-connect { right:46px; }

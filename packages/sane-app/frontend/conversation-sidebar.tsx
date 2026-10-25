@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { FiBell, FiChevronDown, FiChevronRight, FiGitBranch, FiUsers } from "react-icons/fi";
+import { FiBell, FiChevronDown, FiChevronRight, FiGitBranch, FiLink, FiUsers } from "react-icons/fi";
 import { store, type State } from "./store";
 import { AgentAvatar } from "./agent-visuals";
 import { formatTitle } from "./conversation-filter";
@@ -11,6 +11,7 @@ import { notificationStore } from "./notifications";
 import type { ConversationSidebarMode, ConversationSidebarModel } from "./conversation-sidebar-model";
 import { conversationSidebarGroups, type WorktreeBucket } from "./conversation-sidebar-buckets";
 import { CHAT_WORKTREE_SHORTCUTS, shortcutHint } from "./shortcut-definitions";
+import type { Conversation } from "./types";
 import "./conversation-sidebar.css";
 
 export { useConversationSidebarModel } from "./conversation-sidebar-model";
@@ -26,12 +27,14 @@ export type ConversationSidebarProps = {
   onChoose: (id: string) => void;
   onPreview: (id: string) => void;
   onHistory: () => void;
+  onConnect?: (id: string) => void;
+  canConnect?: (conversation: Conversation) => boolean;
 };
 
 /** The shell renders its selector before this component. History selection is preview-only. */
-export function ConversationSidebar({ state, model, mode, selectedId, onChoose, onPreview, onHistory }: ConversationSidebarProps) {
+export function ConversationSidebar({ state, model, mode, selectedId, onChoose, onPreview, onHistory, onConnect, canConnect }: ConversationSidebarProps) {
   return <>
-    <ConversationSidebarList state={state} model={model} mode={mode} selectedId={selectedId} onSelect={mode === "history" ? onPreview : onChoose} />
+    <ConversationSidebarList state={state} model={model} mode={mode} selectedId={selectedId} onSelect={mode === "history" ? onPreview : onChoose} onConnect={onConnect} canConnect={canConnect} />
     <footer className="conversation-sidebar-actions" aria-label="Conversation shortcuts">
       <button type="button" className="new-chat" disabled={state.sending || !model.nav.worktreeId} onClick={() => onChoose("")}><Icon name="plus" />New Conversation</button>
       <button type="button" className="history-sidebar-button" aria-pressed={mode === "history"} onClick={onHistory}>History</button>
@@ -40,8 +43,10 @@ export function ConversationSidebar({ state, model, mode, selectedId, onChoose, 
 }
 
 /** Shared list presentation also supports legacy callers without another data hook. */
-export function ConversationSidebarList({ state, model, mode, selectedId, onSelect }: {
+export function ConversationSidebarList({ state, model, mode, selectedId, onSelect, onConnect, canConnect }: {
   state: State; model: ConversationSidebarModel; mode: ConversationSidebarMode; selectedId: string | null; onSelect: (id: string) => void;
+  onConnect?: (id: string) => void;
+  canConnect?: (conversation: Conversation) => boolean;
 }) {
   const { repository, nav, filter, setFilter, workspaceSelection, worktreeSelectionVersion, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, messageHitsLoading, messageHitsError, page, workerCounts, scoped, activeFilterCount } = model;
   // Dialog visibility is presentation-local: opening the drawer must not create two modal dialogs.
@@ -164,7 +169,10 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
                 const phases = membership?.phases ?? [];
                 const workerCount = workerCounts.get(c.id) ?? 0;
                 const profile = store.profileFor(c);
-                return <div className="history-row conversation-sidebar-row" key={c.id}>
+                const showConnect = !history && !!onConnect && !c.replacedBy && !c.worker && c.agentKind !== "worker" && !knownWorker(c.id);
+                const connectDisabled = state.sending || state.actionBusy || canConnect?.(c) === false;
+                const title = formatTitle(c.title, basename(c.cwd));
+                return <div className={`history-row conversation-sidebar-row${showConnect ? " has-browser-connect" : ""}`} key={c.id}>
                   <button type="button" className={selected ? "selected" : ""} aria-current={selected ? "page" : undefined} disabled={!history && state.sending} onClick={() => onSelect(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}>
                     <span className="history-line conversation-sidebar-heading">
                       {profile && <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span>}
@@ -183,6 +191,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
                       <StatusIcon status={c.status} protocol={c.workerProtocol} />
                     </span>
                   </button>
+                  {showConnect && <button type="button" className="conversation-connect" aria-label={`Connect ${title} to browser view`} aria-haspopup="dialog" title={connectDisabled ? "Pairing is unavailable while this conversation or workspace is unavailable or busy" : "Pair conversation with browser view"} disabled={connectDisabled} onClick={event => { event.stopPropagation(); onConnect?.(c.id); }}><FiLink size={15} aria-hidden="true" /></button>}
                   <ConversationMenu conversationId={c.id} hidden={c.hidden} disabled={state.actionBusy || !!c.replacedBy} />
                 </div>;
               })}

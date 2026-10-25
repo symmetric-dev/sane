@@ -7,12 +7,17 @@ import { NotificationCenter } from "./notification-center";
 import { isMacPlatform } from "./application-commands";
 import { SIDEBAR_TOGGLE_SHORTCUT, shortcutHint } from "./shortcut-definitions";
 import { ChatFlowSidebarDismissContext, useChatFlowSidebarSlot } from "./chat-flow-layout";
+import { BROWSER_PAIR_COMPACT_MEDIA } from "./browser-pair";
 
 type ShellProps = {
   view: ActiveView;
   sidebar: ReactNode;
   navigation?: ReactNode;
   header: ReactNode;
+  beforeHeader?: ReactNode;
+  /** Never copied into the navigation drawer: live portals have only one home. */
+  desktopSidebar?: ReactNode;
+  paired?: boolean;
   notices?: ReactNode;
   children: ReactNode;
   retryCatalog: () => void;
@@ -35,25 +40,28 @@ export function ShellSidebar({ children, navigation, retryCatalog, workspaceSele
 }
 
 /** Feature providers and their state owners remain above these layout regions. */
-export function WorkspaceShell({ view, sidebar, navigation, header, notices, children, retryCatalog, workspaceSelection, sidebarOpen, sidebarHidden = false, toggleSidebar, openSidebar, closeSidebar, onOpenNotification = () => false }: ShellProps) {
+export function WorkspaceShell({ view, sidebar, desktopSidebar, paired = false, navigation, header, beforeHeader, notices, children, retryCatalog, workspaceSelection, sidebarOpen, sidebarHidden = false, toggleSidebar, openSidebar, closeSidebar, onOpenNotification = () => false }: ShellProps) {
   const group = viewGroup(view);
   const flowSidebar = useChatFlowSidebarSlot();
   const sidebarContent = flowSidebar ? flowSidebar.content : sidebar;
-  const sidebarTitle = flowSidebar?.title ?? (group === "files" ? "Files" : group === "settings" ? "Settings" : group === "browser" ? "Browser tabs" : "Conversations");
+  const sidebarTitle = paired || group === "browser" ? "Conversations" : flowSidebar?.title ?? (group === "files" ? "Files" : group === "settings" ? "Settings" : "Conversations");
   const sidebarId = useId(), drawerId = useId();
-  const [mobile, setMobile] = useState(() => window.matchMedia("(max-width:700px)").matches);
+  const media = paired ? BROWSER_PAIR_COMPACT_MEDIA : "(max-width:700px)";
+  const [mobile, setMobile] = useState(() => window.matchMedia(media).matches);
   useEffect(() => {
-    const query = window.matchMedia("(max-width:700px)");
+    const query = window.matchMedia(media);
     const update = () => setMobile(query.matches);
+    update();
     query.addEventListener("change", update);
     return () => query.removeEventListener("change", update);
-  }, []);
+  }, [media]);
   useEffect(() => { if (!mobile && sidebarOpen) closeSidebar(); }, [mobile, sidebarOpen, closeSidebar]);
   const expanded = mobile ? sidebarOpen : !sidebarHidden;
   const toggleLabel = mobile ? "Open workspace navigation" : sidebarHidden ? "Show sidebar" : "Hide sidebar";
-  return <div className={`app-shell view-${view} group-${group}`}>
-    <aside id={sidebarId} className="sidebar" aria-label={flowSidebar?.title ?? "Workspace sidebar"} hidden={sidebarHidden} inert={sidebarHidden}><ShellSidebar navigation={navigation} retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar}>{flowSidebar && mobile ? null : sidebarContent}</ShellSidebar></aside>
+  return <div className={`app-shell view-${view} group-${group}${paired ? " browser-pair" : ""}`}>
+    <aside id={sidebarId} className="sidebar" aria-label={paired ? "Paired conversation" : flowSidebar?.title ?? "Workspace sidebar"} hidden={sidebarHidden} inert={sidebarHidden}><ShellSidebar navigation={navigation} retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar}>{desktopSidebar !== undefined ? desktopSidebar : flowSidebar && mobile ? null : sidebarContent}</ShellSidebar></aside>
     <main className="main">
+      {beforeHeader}
       <header className="topbar"><button type="button" className="icon-button sidebar-toggle" aria-label={toggleLabel} aria-expanded={expanded} aria-controls={mobile ? sidebarOpen ? drawerId : undefined : sidebarId} aria-haspopup={mobile ? "dialog" : undefined} aria-keyshortcuts={`${isMacPlatform() ? "Meta" : "Control"}+b`} title={`${toggleLabel} (${shortcutHint(SIDEBAR_TOGGLE_SHORTCUT)})`} onClick={toggleSidebar ?? (sidebarOpen ? closeSidebar : openSidebar)}><Icon name="menu" /></button><NotificationCenter size={24} className="mobile-shell-logo" onOpen={onOpenNotification} />{header}</header>
       {notices}
       {children}

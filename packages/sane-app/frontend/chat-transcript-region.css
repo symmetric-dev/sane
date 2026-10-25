@@ -1,0 +1,12 @@
+.chat-transcript-placeholder { display:contents; }
+.chat-transcript-region { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; }
+.chat-transcript-region[hidden] { display:none; }
+.chat-transcript-region.is-replaced { flex:none; }
+.chat-transcript-region.is-external { width:100%; height:100%; overflow:hidden; }
+.chat-transcript-region.is-external .viewport { padding-inline:12px; }
+.chat-transcript-region.is-external .transcript { min-width:0; max-width:none; margin:0; padding:16px 0 12px; }
+.chat-transcript-region.is-external .session-search { flex-wrap:wrap; gap:4px; padding:6px 8px; }
+.chat-transcript-controls { position:relative; flex:none; }
+.chat-transcript-controls:empty { display:none; }
+.thread.is-browser-paired { flex:0 0 auto; }
+.thread.is-browser-paired > .composer-dock { max-width:none; margin:0; }

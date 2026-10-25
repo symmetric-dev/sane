@@ -26,12 +26,13 @@ type ExpectedFileScope = { workspaceId: string; worktreeId: string; bindingRevis
 const ChatFileNavigation = createContext<((sessionId: string, path: string, expected?: ExpectedFileScope) => string | undefined) | null>(null);
 
 /** Shell-owned navigation keeps standalone/read-only transcript renderers independent of Files. */
-export function ChatFileNavigationProvider({ children, navigate }: { children: ReactNode; navigate: (view: ActiveView) => void }) {
+export function ChatFileNavigationProvider({ children, navigate, pairedSessionId }: { children: ReactNode; navigate: (view: ActiveView) => void; pairedSessionId?: string }) {
   const controller = useWorkspace();
   const open = (sessionId: string, path: string, expected?: ExpectedFileScope) => {
     const state = store.snapshot(), repository = catalog.snapshot();
     const conversation = state.conversations.find(item => item.id === sessionId);
-    if (state.phase !== "ready" || state.selected !== sessionId || repository.navigation.view !== "chat") return "Open this conversation in Chat before opening its files.";
+    const conversationVisible = repository.navigation.view === "chat" || repository.navigation.view === "browser" && pairedSessionId === sessionId;
+    if (state.phase !== "ready" || state.selected !== sessionId || !conversationVisible) return "Open this conversation in Chat before opening its files.";
     if (!conversation?.workspaceId || !conversation.worktreeId || conversation.association !== "resolved") return "This conversation's execution worktree is unavailable.";
     const { workspaceId, worktreeId } = conversation;
     const worktree = repository.workspaces.find(item => item.workspaceId === workspaceId)?.worktrees.find(item => item.worktreeId === worktreeId);

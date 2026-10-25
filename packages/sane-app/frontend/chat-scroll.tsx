@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { FiArrowDown } from "react-icons/fi";
 import { useSendNavigation, type SendNavigationState } from "./send-navigation";
+import "./chat-transcript-region.css";
 
 /** Gesture intent wins over concurrent content growth, independent of layout. */
 export class FollowLatest {
@@ -17,13 +19,18 @@ export class FollowLatest {
   }
 }
 
-export function ChatScroll({ children, footer, resetKey, replacement, active = true, sendNavigation, history }: { children: ReactNode; footer: ReactNode; resetKey?: string; replacement?: ReactNode; active?: boolean; sendNavigation?: Omit<SendNavigationState, "active">; history?: { key: string; canLoad: boolean; load: () => void } }) {
+export function ChatScroll({ children, footer, beforeViewport, resetKey, replacement, active = true, transcriptTarget, transcriptVisible = true, sendNavigation, history }: { children: ReactNode; footer: ReactNode; beforeViewport?: ReactNode; resetKey?: string; replacement?: ReactNode; active?: boolean; transcriptTarget?: HTMLElement | null; transcriptVisible?: boolean; sendNavigation?: Omit<SendNavigationState, "active">; history?: { key: string; canLoad: boolean; load: () => void } }) {
+  // Never change the React portal target: only its physical placement changes.
+  // This retains message/input DOM, runtime contexts, and viewport subscriptions.
+  const [transcriptHost] = useState(() => document.createElement("div"));
+  const inlineTranscript = useRef<HTMLDivElement>(null);
   const viewport = useRef<HTMLDivElement>(null), content = useRef<HTMLDivElement>(null);
   const replaced = useRef(!!replacement); replaced.current = !!replacement;
   const transcriptTop = useRef(0);
   const wasReplaced = useRef(false);
-  const activity = useRef(active); activity.current = active;
-  const wasActive = useRef(active);
+  const transcriptActive = active && transcriptVisible;
+  const activity = useRef(transcriptActive); activity.current = transcriptActive;
+  const wasActive = useRef(transcriptActive);
   const policy = useRef(new FollowLatest());
   const historyRef = useRef(history); historyRef.current = history;
   const navigationRef = useRef(sendNavigation); navigationRef.current = sendNavigation;
@@ -40,14 +47,14 @@ export function ChatScroll({ children, footer, resetKey, replacement, active = t
   const [following, setFollowing] = useState(true);
   const captureAnchor = () => {
     const root = viewport.current;
-    if (!root || replaced.current || !activity.current || targetedPause.current && targeting.current) return;
+    if (!root || !root.clientHeight || replaced.current || !activity.current || targetedPause.current && targeting.current) return;
     const bounds = root.getBoundingClientRect();
     const message = [...root.querySelectorAll<HTMLElement>("[data-transcript-message]")].find(element => { const rect = element.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom; });
     anchor.current = message ? { id: message.dataset.transcriptMessage!, offset: message.getBoundingClientRect().top - bounds.top } : null;
   };
   const pause = () => { policy.current.pause(); setFollowing(false); captureAnchor(); };
   const targetPause = () => { targetedPause.current = true; targeting.current = true; anchor.current = null; upwardIntent.current = false; gesture.current = { direction: 0, until: 0 }; pause(); };
-  const target = useSendNavigation(viewport, { sessionId: resetKey ?? "", loading: true, connected: false, connectionError: "", handoffLoading: true, ...sendNavigation, active: active && !replacement && !!sendNavigation }, targetPause);
+  const target = useSendNavigation(viewport, { sessionId: resetKey ?? "", loading: true, connected: false, connectionError: "", handoffLoading: true, ...sendNavigation, active: transcriptActive && !replacement && !!sendNavigation }, targetPause);
   targeting.current = target.targeting;
   useLayoutEffect(() => { if (targetedPause.current && !target.targeting) captureAnchor(); }, [target.targeting]);
   const placeLatest = () => {
@@ -64,7 +71,7 @@ export function ChatScroll({ children, footer, resetKey, replacement, active = t
   };
   const restore = () => {
     const root = viewport.current;
-    if (!root || !activity.current || replaced.current || targetedPause.current && targeting.current) return;
+    if (!root || !root.clientHeight || !activity.current || replaced.current || targetedPause.current && targeting.current) return;
     if (policy.current.following) { placeLatest(); return; }
     const saved = anchor.current;
     if (!saved) { captureAnchor(); return; }
@@ -120,9 +127,32 @@ export function ChatScroll({ children, footer, resetKey, replacement, active = t
     wasReplaced.current = !!replacement;
   }, [!!replacement]);
   useLayoutEffect(() => {
-    if (active && !wasActive.current && !replacement && viewport.current) { viewport.current.scrollTop = transcriptTop.current; programmedTop.current = viewport.current.scrollTop; policy.current.position(viewport.current.scrollTop); restore(); }
-    wasActive.current = active;
-  }, [active, !!replacement]);
+    if (transcriptActive && !wasActive.current && !replacement && viewport.current) { viewport.current.scrollTop = transcriptTop.current; programmedTop.current = viewport.current.scrollTop; policy.current.position(viewport.current.scrollTop); restore(); }
+    wasActive.current = transcriptActive;
+  }, [transcriptActive, !!replacement]);
+  useLayoutEffect(() => {
+    const destination = transcriptTarget ?? inlineTranscript.current;
+    const moving = !!destination && transcriptHost.parentElement !== destination;
+    if (moving) captureAnchor();
+    // A hidden sidebar must not leave focusable or searchable transcript controls
+    // behind. Visibility does not deactivate the independently mounted composer.
+    transcriptHost.className = `chat-transcript-region${transcriptTarget ? " is-external" : ""}${replacement ? " is-replaced" : ""}`;
+    transcriptHost.hidden = !transcriptVisible;
+    transcriptHost.inert = !transcriptActive;
+    if (moving && destination) {
+      const focused = transcriptHost.ownerDocument.activeElement;
+      const restoreFocus = focused instanceof HTMLElement && transcriptHost.contains(focused) && transcriptActive;
+      destination.appendChild(transcriptHost);
+      if (restoreFocus) focused.focus({ preventScroll: true });
+    }
+    if (transcriptActive && !replacement && viewport.current) {
+      viewport.current.scrollTop = transcriptTop.current;
+      programmedTop.current = viewport.current.scrollTop;
+      policy.current.position(viewport.current.scrollTop);
+      restore(); scheduleRestore();
+    }
+  }, [transcriptHost, transcriptTarget, transcriptVisible, transcriptActive, !!replacement]);
+  useLayoutEffect(() => () => { transcriptHost.remove(); }, [transcriptHost]);
   const interrupt = () => { target.cancel(); targetedPause.current = false; };
   const readGesture = (direction: number) => {
     interrupt(); programmedTop.current = null;
@@ -133,7 +163,8 @@ export function ChatScroll({ children, footer, resetKey, replacement, active = t
     if (!upwardIntent.current || !activity.current || replaced.current || targetedPause.current || !historyRef.current?.canLoad || (viewport.current?.scrollTop ?? Infinity) > 160) return;
     upwardIntent.current = false; captureAnchor(); historyRef.current.load();
   };
-  return <><div ref={viewport} className="viewport" hidden={!!replacement} style={{ overflowAnchor: "none", ...(replacement ? { display: "none" } : {}) }} onWheel={event => { if (event.deltaY) readGesture(Math.sign(event.deltaY)); }} onTouchStart={event => { interrupt(); touchY.current = event.touches[0]?.clientY ?? null; }}
+  const transcriptControls = <>{target.notice && <p className="notice send-navigation-notice" role="status">{target.notice}</p>}{!replacement && !following && <button type="button" className="scroll-bottom" aria-label="Scroll to latest message" onClick={latest}><FiArrowDown size={15} aria-hidden="true" /></button>}</>;
+  return <><div ref={inlineTranscript} className="chat-transcript-placeholder" />{createPortal(<>{beforeViewport}<div ref={viewport} className="viewport" hidden={!!replacement} inert={!!replacement} style={{ overflowAnchor: "none", ...(replacement ? { display: "none" } : {}) }} onWheel={event => { if (event.deltaY) readGesture(Math.sign(event.deltaY)); }} onTouchStart={event => { interrupt(); touchY.current = event.touches[0]?.clientY ?? null; }}
     onTouchMove={event => { const y = event.touches[0]?.clientY; if (y !== undefined && touchY.current !== null && y !== touchY.current) readGesture(Math.sign(touchY.current - y)); touchY.current = y ?? null; }} onTouchEnd={() => { touchY.current = null; }} onTouchCancel={() => { touchY.current = null; }}
     onPointerDown={event => {
       interrupt();
@@ -188,5 +219,5 @@ export function ChatScroll({ children, footer, resetKey, replacement, active = t
       loadNearTop();
     }}>
     <div ref={content}>{children}</div>
-  </div>{replacement}<div className="composer-dock">{target.notice && <p className="notice send-navigation-notice" role="status">{target.notice}</p>}{!replacement && !following && <button type="button" className="scroll-bottom" aria-label="Scroll to latest message" onClick={latest}><FiArrowDown size={15} aria-hidden="true" /></button>}{footer}</div></>;
+  </div>{transcriptTarget && <div className="chat-transcript-controls">{transcriptControls}</div>}</>, transcriptHost)}{replacement}<div className="composer-dock">{!transcriptTarget && transcriptControls}{footer}</div></>;
 }

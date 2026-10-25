@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { FiExternalLink, FiGlobe, FiGrid, FiInfo, FiPlus, FiRefreshCw, FiX } from "react-icons/fi";
 import { browserTabs, browserTabLabel, browserUrl, MAX_BROWSER_TABS, type BrowserTab, type BrowserTabs } from "./browser-tabs";
 import { ShellDialog } from "./shell-dialog";
@@ -21,28 +21,75 @@ export function BrowserProvider({ workspaceId, children }: { workspaceId: string
   return <BrowserContext.Provider value={{ workspaceId, state, reloads, reload }}>{children}</BrowserContext.Provider>;
 }
 
+/** Render above BrowserHeader inside the shell's browser top region, not in BrowserView. */
+export function BrowserTabStrip({ onSelect }: { onSelect?: () => void }) {
+  const { workspaceId, state } = useBrowser();
+  const atLimit = state.tabs.length >= MAX_BROWSER_TABS;
+  const newTabLabel = !workspaceId ? "Select a workspace to open a tab" : atLimit ? `Tab limit reached (${MAX_BROWSER_TABS}). Close a tab to open another.` : "New tab";
+  const layoutLabel = state.showAll ? "Show selected tab" : "View all tabs";
+  return <section className="browser-tab-strip" aria-label="Browser tabs">
+    <BrowserTabList orientation="horizontal" onSelect={onSelect} />
+    <div className="browser-tab-actions">
+      <button type="button" className="browser-new-tab" aria-label={newTabLabel} title={newTabLabel} disabled={!workspaceId || atLimit} onClick={() => {
+        if (workspaceId) browserTabs.add(workspaceId);
+        onSelect?.();
+      }}><FiPlus size={16} aria-hidden="true" /><span className="browser-tab-action-label">New tab</span></button>
+      <button type="button" className="browser-layout-toggle" aria-label={layoutLabel} title={layoutLabel} aria-pressed={state.showAll} disabled={!workspaceId || state.tabs.length < 2} onClick={() => {
+        if (workspaceId) browserTabs.update(workspaceId, current => ({ ...current, showAll: !current.showAll }));
+        onSelect?.();
+      }}><FiGrid size={16} aria-hidden="true" /><span className="browser-tab-action-label">{layoutLabel}</span></button>
+      <small className="browser-tab-count" aria-label={`${state.tabs.length} of ${MAX_BROWSER_TABS} browser tabs open`} title={atLimit ? newTabLabel : `Up to ${MAX_BROWSER_TABS} tabs`}>{state.tabs.length} / {MAX_BROWSER_TABS}</small>
+    </div>
+    {atLimit && <span className="sr-only" role="status">Close a tab to open another.</span>}
+  </section>;
+}
+
+function BrowserTabList({ orientation, onSelect }: { orientation: "horizontal" | "vertical"; onSelect?: () => void }) {
+  const { workspaceId, state } = useBrowser();
+  const list = useRef<HTMLDivElement>(null);
+  const restoreFocus = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!restoreFocus.current) return;
+    const focusWorkspace = restoreFocus.current;
+    restoreFocus.current = null;
+    if (focusWorkspace !== workspaceId) return;
+    const target = state.activeId ? list.current?.querySelector<HTMLButtonElement>(`[data-browser-tab="${state.activeId}"]`) : list.current?.closest(".browser-tab-strip, .browser-sidebar")?.querySelector<HTMLButtonElement>(".browser-new-tab");
+    target?.focus({ preventScroll: true });
+  }, [workspaceId, state.tabs, state.activeId]);
+  useEffect(() => {
+    list.current?.querySelector<HTMLButtonElement>(`[data-browser-tab="${state.activeId}"]`)?.parentElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [workspaceId, state.activeId, state.tabs]);
+  return <div ref={list} className="browser-tab-list" role="tablist" aria-label="Open browser tabs" aria-orientation={orientation}>{state.tabs.map((tab, index) => {
+    const label = browserTabLabel(tab, index);
+    const previousKey = orientation === "horizontal" ? "ArrowLeft" : "ArrowUp";
+    const nextKey = orientation === "horizontal" ? "ArrowRight" : "ArrowDown";
+    return <div className={`browser-tab-row${state.activeId === tab.id ? " selected" : ""}`} role="presentation" key={tab.id}>
+      <button type="button" role="tab" aria-selected={state.activeId === tab.id} aria-controls={`browser-panel-${tab.id}`} title={tab.url || label} onClick={() => {
+        if (workspaceId) browserTabs.update(workspaceId, current => ({ ...current, activeId: tab.id }));
+        onSelect?.();
+      }} onKeyDown={event => {
+        // Keep navigation on the tab itself: sibling close buttons are ordinary buttons.
+        if (![previousKey, nextKey, "Home", "End"].includes(event.key) || !workspaceId || event.altKey || event.ctrlKey || event.metaKey) return;
+        event.preventDefault();
+        const next = state.tabs[event.key === "Home" ? 0 : event.key === "End" ? state.tabs.length - 1 : (index + (event.key === nextKey ? 1 : -1) + state.tabs.length) % state.tabs.length]!;
+        browserTabs.update(workspaceId, current => ({ ...current, activeId: next.id }));
+        list.current?.querySelector<HTMLButtonElement>(`[data-browser-tab="${next.id}"]`)?.focus({ preventScroll: true });
+      }} data-browser-tab={tab.id} tabIndex={state.activeId === tab.id ? 0 : -1}><FiGlobe size={15} aria-hidden="true" /><span>{label}</span></button>
+      <button type="button" className="icon-button" aria-label={`Close ${label}`} title={`Close ${label}`} onClick={() => {
+        if (!workspaceId) return;
+        restoreFocus.current = workspaceId;
+        browserTabs.close(workspaceId, tab.id);
+      }}><FiX size={14} aria-hidden="true" /></button>
+    </div>;
+  })}</div>;
+}
+
 export function BrowserSidebar({ onSelect }: { onSelect: () => void }) {
   const { workspaceId, state } = useBrowser();
   return <section className="browser-sidebar" aria-label="Browser tabs">
     <header><h2>Browser tabs</h2><small>{state.tabs.length} / {MAX_BROWSER_TABS}</small></header>
     <p className="muted">URLs saved on this device, per workspace.</p>
-    <div className="browser-tab-list" role="tablist" aria-label="Open browser tabs" aria-orientation="vertical">{state.tabs.map((tab, index) => {
-      const label = browserTabLabel(tab, index);
-      return <div className={`browser-tab-row${state.activeId === tab.id ? " selected" : ""}`} key={tab.id}>
-        <button type="button" role="tab" aria-selected={state.activeId === tab.id} aria-controls={`browser-panel-${tab.id}`} title={tab.url || label} onClick={() => {
-          if (workspaceId) browserTabs.update(workspaceId, current => ({ ...current, activeId: tab.id }));
-          onSelect();
-        }} onKeyDown={event => {
-          if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) || !workspaceId) return;
-          event.preventDefault();
-          const next = state.tabs[event.key === "Home" ? 0 : event.key === "End" ? state.tabs.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + state.tabs.length) % state.tabs.length]!;
-          browserTabs.update(workspaceId, current => ({ ...current, activeId: next.id }));
-          const list = event.currentTarget.closest('[role="tablist"]');
-          list?.querySelector<HTMLButtonElement>(`[data-browser-tab="${next.id}"]`)?.focus();
-        }} data-browser-tab={tab.id} tabIndex={state.activeId === tab.id ? 0 : -1}><FiGlobe size={15} aria-hidden="true" /><span>{label}</span></button>
-        <button type="button" className="icon-button" aria-label={`Close ${label}`} onClick={() => { if (workspaceId) browserTabs.close(workspaceId, tab.id); }}><FiX size={14} aria-hidden="true" /></button>
-      </div>;
-    })}</div>
+    <BrowserTabList orientation="vertical" onSelect={onSelect} />
     <button type="button" className="browser-new-tab" disabled={!workspaceId || state.tabs.length >= MAX_BROWSER_TABS} onClick={() => {
       if (workspaceId) browserTabs.add(workspaceId);
       onSelect();
@@ -62,10 +109,16 @@ export function BrowserHeader() {
 }
 
 export function BrowserFooter({ navigation }: { navigation: ReactNode }) {
-  const [limitationsOpen, setLimitationsOpen] = useState(false);
   return <footer className="shell-content-footer browser-footer">
-    <button type="button" className="browser-help-button" aria-haspopup="dialog" onClick={() => setLimitationsOpen(true)}><FiInfo size={16} aria-hidden="true" />Preview limitations</button>
+    <BrowserPreviewHelp />
     {navigation}
+  </footer>;
+}
+
+export function BrowserPreviewHelp() {
+  const [limitationsOpen, setLimitationsOpen] = useState(false);
+  return <>
+    <button type="button" className="icon-button browser-help-button" aria-label="Preview limitations" title="Preview limitations" aria-haspopup="dialog" onClick={() => setLimitationsOpen(true)}><FiInfo size={16} aria-hidden="true" /></button>
     {limitationsOpen && <ShellDialog title="Preview limitations" close={() => setLimitationsOpen(false)}>
       <ul className="browser-limitations">
         <li>Preview trusted workspace apps only.</li>
@@ -74,7 +127,7 @@ export function BrowserFooter({ navigation }: { navigation: ReactNode }) {
         <li>The address shows the URL you entered, not navigation inside the page.</li>
       </ul>
     </ShellDialog>}
-  </footer>;
+  </>;
 }
 
 export function BrowserView({ active }: { active: boolean }) {
@@ -97,7 +150,11 @@ export function BrowserView({ active }: { active: boolean }) {
 function BrowserAddress({ workspaceId, tab, reload }: { workspaceId: string; tab: BrowserTab; reload: () => void }) {
   const [draft, setDraft] = useState(tab.url), [error, setError] = useState("");
   const input = useRef<HTMLInputElement>(null);
-  useEffect(() => { setDraft(tab.url); setError(""); if (!tab.url) input.current?.focus(); }, [tab.url]);
+  useEffect(() => {
+    setDraft(tab.url); setError("");
+    // Selecting a blank tab with the keyboard must not steal the roving tab focus.
+    if (!tab.url && !document.activeElement?.hasAttribute("data-browser-tab")) input.current?.focus();
+  }, [tab.url]);
   return <form className="browser-address" onSubmit={event => {
     event.preventDefault();
     try {

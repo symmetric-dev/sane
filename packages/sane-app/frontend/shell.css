@@ -139,6 +139,46 @@
   font-variant-numeric:tabular-nums;
 }
 .chat-surface[hidden] { display:none; }
+.browser-preview-region { display:flex; flex:1; min-width:0; min-height:0; overflow:hidden; }
+.browser-preview-region[hidden],.browser-pair-inline[hidden] { display:none; }
+.browser-pair>.sidebar { width:380px; }
+.browser-pair>.sidebar>.sidebar-body { padding:0; gap:0; }
+.browser-pair-sidebar,.browser-pair-transcript,.browser-pair-inline { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; overflow:hidden; }
+.browser-pair>.main { position:relative; }
+/* Overlay the stable Thread owner, not a footer row: preview content continues
+   behind it. Transparent padding and wrappers must not intercept iframe input. */
+.browser-pair>.main>.chat-surface {
+  position:absolute;
+  z-index:2;
+  inset:auto 0 0;
+  width:100%;
+  max-width:828px;
+  max-height:min(60%, calc(var(--browser-pair-content-height, 100dvh) * .65));
+  margin-inline:auto;
+  padding:12px max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
+  overflow:auto;
+  overscroll-behavior:contain;
+  background:transparent;
+  pointer-events:none;
+}
+.browser-pair .composer-dock { position:static; max-width:none; margin:0; padding:0; background:transparent; }
+.browser-pair :is(.thread,.thread-footer,.thread-composer,.composer-surface,.composer-status-slot,.composer-flow-slot) { background:transparent; }
+.browser-pair .composer-status-slot:empty { display:none; }
+.browser-pair :is(.composer-frame,.composer-status-lid,.composer-surface>.composer,.composer-flow-slot>*,.thread-safety>*,.thread-composer>.notice) { pointer-events:auto; }
+/* Native top-layer dialogs still inherit from their composer owner. */
+.browser-pair>.main>.chat-surface dialog,.browser-pair>.main>.chat-surface dialog::backdrop { pointer-events:auto; }
+.browser-pair-toolbar { display:flex; flex-wrap:wrap; align-items:center; flex-shrink:0; gap:8px 16px; padding:9px 12px; border-bottom:1px solid var(--border); background:var(--background); }
+.browser-pair-sidebar>.browser-pair-toolbar { align-items:stretch; flex-direction:column; }
+.browser-pair-sidebar .browser-pair-heading { flex:0 0 auto; }
+.browser-pair-heading { display:flex; flex:1 1 220px; flex-direction:column; gap:3px; min-width:0; font-size:11px; color:var(--muted-foreground); }
+.browser-pair-heading>strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:var(--foreground); }
+.browser-pair-heading>span { overflow-wrap:anywhere; }
+.browser-pair-heading>.browser-pair-mismatch { color:var(--foreground); }
+.browser-pair-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.browser-pair-button { flex-shrink:0; padding:6px 8px; border:1px solid var(--border); border-radius:7px; font-size:12px; white-space:nowrap; }
+.browser-pair-button:hover:not(:disabled) { background:var(--accent); }
+.browser-pair-button:disabled { opacity:.5; }
+.browser-pair-pane-toggle { display:none; }
 .shell-content {
   display:flex;
   flex-direction:column;
@@ -269,12 +309,21 @@
 @media(max-width:1000px) {
   .sidebar { width:260px; }
   .topbar>.harness-badge { display:none; }
+  .browser-pair>.sidebar { display:none; }
+  .browser-pair .topbar .mobile-shell-logo { display:inline-flex; }
+  /* Reserve the measured floating surface only in Conversation, never Preview. */
+  .browser-pair .browser-pair-inline { padding-bottom:var(--browser-pair-composer-height, 0px); }
+  .browser-pair>.main>.browser-pair-toolbar { max-height:35%; overflow:auto; }
+  .browser-pair-pane-toggle { display:flex; flex-basis:100%; gap:4px; }
+  .browser-pair-pane-toggle>button { flex:1; min-height:36px; padding:6px 12px; border:1px solid var(--border); border-radius:7px; font-size:12px; }
+  .browser-pair-pane-toggle>button[aria-pressed="true"] { background:var(--accent); color:var(--primary); border-color:var(--primary); }
 }
 @media(max-width:700px) {
   .app-shell { --shell-header-height:44px; }
   .sidebar { display:none; }
   .app-shell .topbar { height:calc(var(--shell-header-height) + env(safe-area-inset-top)); min-height:calc(var(--shell-header-height) + env(safe-area-inset-top)); padding:env(safe-area-inset-top) max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left)); gap:6px; }
   .topbar .mobile-shell-logo { display:inline-flex; }
+  .view-chat .topbar>.browser-pair-button { max-width:92px; white-space:normal; padding:4px 6px; font-size:11px; }
   .drawer-content:has(>.shell-sidebar-header) { padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left)); }
   .drawer-content>.shell-sidebar-header { min-height:52px; }
   .drawer-content>.shell-sidebar-header>.icon-button { min-width:40px; min-height:40px; padding:8px; }

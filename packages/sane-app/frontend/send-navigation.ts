@@ -38,11 +38,14 @@ export function useSendNavigation(viewport: RefObject<HTMLDivElement | null>, st
       // Pause synchronously, before choose/resetKey or any content resize.
       current.current.pause(); pending.current = request; setJump(request);
       if (live.selected !== target.sessionId) store.openConversation(target.sessionId);
-      if (store.snapshot().selected !== target.sessionId || catalog.snapshot().navigation.view !== "chat") { cancel(); return false; }
+      // An active paired Browser owns the same live transcript as full Chat.
+      // Browser-only never activates this navigator through ChatScroll.
+      const destination = catalog.snapshot().navigation;
+      if (store.snapshot().selected !== target.sessionId || (destination.view !== "chat" && destination.view !== "browser")) { cancel(); return false; }
       const navigation = catalog.snapshot().navigation;
       const fence = () => {
         const next = catalog.snapshot().navigation, chat = store.snapshot();
-        if (chat.selected !== target.sessionId || chat.sending || chat.phase !== "ready" || next.view !== "chat" || next.conversationId !== navigation.conversationId || next.workspaceId !== navigation.workspaceId || next.worktreeId !== navigation.worktreeId) { cancel(); setNotice(null); }
+        if (!current.current.state.active || chat.selected !== target.sessionId || chat.sending || chat.phase !== "ready" || next.view !== navigation.view || next.conversationId !== navigation.conversationId || next.workspaceId !== navigation.workspaceId || next.worktreeId !== navigation.worktreeId) { cancel(); setNotice(null); }
       };
       const unstore = store.subscribe(fence), uncatalog = catalog.subscribe(fence);
       const controller = new AbortController();

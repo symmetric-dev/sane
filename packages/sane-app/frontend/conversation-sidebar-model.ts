@@ -81,7 +81,7 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   const [selectionError, setSelectionError] = useState("");
   const setOpen = useCallback((open: boolean) => { selectorOpenRef.current = open; setSelectorOpen(open); if (open) setSelectionError(""); }, []);
   const isOpen = useCallback(() => selectorOpenRef.current, []);
-  const sidebarActive = nav.view === "chat" || nav.view === "history" || nav.view === "terminal";
+  const sidebarActive = nav.view === "chat" || nav.view === "history" || nav.view === "terminal" || nav.view === "browser";
   const workspace = repository.workspaces.find(w => w.workspaceId === nav.workspaceId);
   const overviewState = useWorkstreamOverviewState(nav.workspaceId, workspace?.kind === "repository" && (sidebarActive || selectorOpen || !!context.workstreamId));
   const { overview } = overviewState;
