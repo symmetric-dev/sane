@@ -10,8 +10,9 @@ import type { CanonicalExecutionStore } from "./canonical-execution-store";
 import type { ContextPackageStore } from "./context-package-store";
 import { saneSessionContext } from "./agent-launch";
 import { frameworkContext } from "sane-core/sane-context";
+import { validateCanonicalActivation as validatePairedCanonicalActivation, type CanonicalActivation } from "./canonical-activation-validation";
 
-export type CanonicalActivation = { saneExecution: NonNullable<Session["saneExecution"]>; saneContext: NonNullable<Session["saneContext"]> };
+export type { CanonicalActivation } from "./canonical-activation-validation";
 export type ActivationSnapshot = { saneExecution?: Session["saneExecution"]; saneContext?: Session["saneContext"] };
 export type ActivationReservation = { schema: 2; identity: StoredSaneAgentIdentity; activation: ActivationSnapshot };
 function isActivationReservation(value: unknown): value is ActivationReservation {
@@ -49,11 +50,7 @@ export async function reserveActivation(identity: StoredSaneAgentIdentity, deps:
 }
 type ActivationStores = { execution: Pick<CanonicalExecutionStore, "create" | "load">; context: Pick<ContextPackageStore, "create" | "load"> };
 export async function validateCanonicalActivation(pair: CanonicalActivation, identity: StoredSaneAgentIdentity, stores: ActivationStores) {
-  if (!pair.saneContext?.package || !pair.saneExecution || pair.saneExecution.schema !== 1) throw new Error("Canonical activation requires paired context and execution references");
-  const [execution, context] = await Promise.all([stores.execution.load(pair.saneExecution), stores.context.load(pair.saneContext.package)]);
-  const role = context.bundle.assets.find(asset => asset.kind === "role");
-  if (context.bundle.identity.kind !== identity.kind || context.bundle.identity.role !== identity.role || execution.policy.spec.name !== `sane/${identity.kind}/${identity.role}` || !role || execution.policy.spec.body !== role.text) throw new Error("Canonical activation context and execution role bytes differ");
-  return execution;
+  return validatePairedCanonicalActivation(pair, identity, stores);
 }
 export async function createCanonicalActivation(identity: StoredSaneAgentIdentity, stores: ActivationStores): Promise<CanonicalActivation> {
   const saneExecution = await stores.execution.create(identity);
