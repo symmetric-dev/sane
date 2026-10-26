@@ -1,4 +1,4 @@
-import { readFile, writeFile, rename, appendFile, stat, readdir, realpath, open, mkdir } from "node:fs/promises";
+import { readFile, writeFile, appendFile, stat, readdir, realpath, open, mkdir } from "node:fs/promises";
 import { constants, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve, dirname, join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +59,9 @@ import type { DispatchOrigin, DispatchSource, DispatchIdentity, DispatchEvidence
 import type { PreparedAdmissionContext, PreparedAdmissionOptions, PreparedInputAdmission } from "./prepared-input-admission";
 import { synchronousDispatchHook } from "./dispatch-evidence";
 import { RunJournalWriter } from "./run-journal";
+import { MetadataPublisher, captureMetadataDispatchBinding, type CommittedMetadataReceipt } from "./metadata-publication";
+import { PendingActivationJournals, type PendingActivationPreparation } from "./pending-activation-journal";
+import { prepareActivationWhileAdmitted, prepareRunJournalInstallation } from "./run-journal-installation";
 import { PendingInputService, pendingInputRoute, type PendingInputPreflight } from "./pending-input-service";
 import { createPendingInputRecovery, createOriginalRecoveryJournal, type PendingInputRecovery } from "./pending-input-recovery";
 import { PendingInputDomainError, PendingInputStorageError, type PendingInputPins, type PendingInputStoredItem } from "./pending-input-contract";
@@ -216,7 +219,10 @@ export async function start(options: Options) {
     if (!options.noBuild) { try { assets = validateAssets({ packageDir: paths.packageDir }); } catch (error) { if (!(error instanceof AssetBuildError)) throw error; } }
     assets ??= options.noBuild ? validateAssets({ packageDir: paths.packageDir }) : await buildAssets({ packageDir: paths.packageDir, ownership: installation });
     installation.update("starting");
-    bridge = await startOwned(options, assets.assetsDir, paths.packageDir, retain, () => storageOwnershipHeld && !retentionRequired);
+    bridge = await startOwned(options, assets.assetsDir, paths.packageDir, retain, () => storageOwnershipHeld && !retentionRequired, () => {
+      if (!storageOwnershipHeld || retentionRequired || !data) throw new Error("App storage ownership unavailable");
+      installation.assertOwned(); data.assertOwned();
+    });
     const listener = { host: options.host, port: bridge.port! };
     publishOwnership("serving", listener);
     // Trusted activation only after classification, dependencies, timers and BOTH
@@ -243,7 +249,7 @@ export async function start(options: Options) {
     release(); throw error;
   }
 }
-async function startOwned(options: Options, assetsDir: string, packageDir: string, retainOwnership: () => void, ownsStorage: () => boolean) {
+async function startOwned(options: Options, assetsDir: string, packageDir: string, retainOwnership: () => void, ownsStorage: () => boolean, assertStorageOwned: () => void) {
   const assetManifest = JSON.parse(await readFile(join(assetsDir, "manifest.json"), "utf8")) as ReturnType<typeof validateAssets>["manifest"];
   const maxConcurrentRuns = options.maxConcurrentRuns ?? 24;
   if (!Number.isSafeInteger(maxConcurrentRuns) || maxConcurrentRuns < 1 || maxConcurrentRuns > 256) throw new Error("max-concurrent-runs must be an integer from 1 to 256");
@@ -345,7 +351,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (retainOwner) retainOwnership();
   }
   try {
-  const metadataPath = join(options.dataDir, "metadata.json");
   const meta: Metadata = store.metadata;
   const retirements = new SessionRetirements({ dataDir: options.dataDir, storeId: store.manifest.storeId, claudeRoot, nativeControlPaths: [options.nativeSources.oc.registrationFile],
     sessions: () => meta.sessions, runs: () => meta.runs, oc,
@@ -595,10 +600,23 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   });
   gitOperations = new GitOperationsService(catalog, worktrees, options.dataDir, () => domainProtectedPaths);
   const events = new Map<string, Event[]>();
+  const runJournalDirectory = options.dataDir;
   const runJournals = new RunJournalWriter(options.dataDir, {
-    assertStorage: () => { if (!ownsStorage() || storageFailed) throw new Error("Run journal storage ownership unavailable"); },
+    assertStorage: () => { assertStorageOwned(); if (storageFailed) throw new Error("Run journal storage ownership unavailable"); },
     failClosed: error => failClosed(error, "run-journal"),
   });
+  const metadataPublisher = new MetadataPublisher(options.dataDir, store.manifest.storeId, {
+    assertStorage: () => { assertStorageOwned(); if (storageFailed) throw new Error("Metadata storage ownership unavailable"); },
+    failClosed: error => failClosed(error, "metadata-publication"),
+  });
+  let committedMetadata: CommittedMetadataReceipt | undefined;
+  const pendingActivations = new PendingActivationJournals(options.dataDir, store.manifest.storeId, runJournals, {
+    assertStorage: () => { assertStorageOwned(); if (storageFailed) throw new Error("Activation storage ownership unavailable"); },
+    failClosed: error => failClosed(error, "pending-activation-journal"),
+  });
+  // Discover original anchors before any generic log repair. Discovery never
+  // installs a Run or replays a prompt; pending preparation is explicit-only.
+  const anchoredActivationRuns = pendingActivations.anchoredRunIds();
   const deferredJournals = new Set<string>();
   let materializeDeferred: ((runId: string) => Event[]) | undefined;
   function journalEvents(id: string): Event[] {
@@ -1094,7 +1112,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Capture at enqueue time. A later concurrent admission must not leak into
     // an earlier metadata write before its first log record reaches the queue.
     const snapshot = JSON.stringify(meta);
-    return enqueue(async () => { await writeFile(`${metadataPath}.tmp`, snapshot, { mode: 0o600 }); await rename(`${metadataPath}.tmp`, metadataPath); }).then(() => {
+    return enqueue(async () => { committedMetadata = metadataPublisher.commitSerialized(snapshot); }).then(() => {
       try { replyIntegration?.metadataPublished(snapshot); } catch { /* Optional capture never delays or fails primary publication. */ }
     });
   }
@@ -1269,6 +1287,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const decoded = decodeLog(raw, run);
       if (decoded.repaired !== undefined) {
         if (retiredId(run.sessionId)) throw new Error("Archived journal requires explicit repair; no history was modified");
+        if (anchoredActivationRuns.has(runId)) throw new Error("Anchored activation journal requires explicit reconciliation; no history was modified");
         runJournals.assertUnclaimed(runId);
         writeFileSync(logPath, decoded.repaired, { mode: 0o600 });
       }
@@ -1319,6 +1338,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     try { raw = await readFile(logPath, "utf8"); } catch (e: any) { throw new Error(`Cannot load historical event log for ${run.runId}: ${e.code === "ENOENT" ? "missing file" : "read failed"}`); }
     const decoded = decodeLog(raw, run); const list = decoded.events;
     if (decoded.repaired !== undefined) await enqueue(async () => {
+      if (anchoredActivationRuns.has(run.runId)) throw new Error("Anchored activation journal requires explicit reconciliation; no history was modified");
       runJournals.assertUnclaimed(run.runId);
       writeFileSync(logPath, decoded.repaired!, { mode: 0o600 });
     });
@@ -1539,6 +1559,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const descriptor = getHarnessDescriptor(session.harness);
     if (!descriptor) return "Compaction requires a known native harness";
     if (!descriptor.operations.compact.supported) return descriptor.operations.compact.reason;
+    if (!meta.runs.some(row => row.sessionId === session.sessionId) && pendingActivations.hasPending(session.sessionId)) return "Send the original pending activation before compacting; its preparation journal cannot be replaced";
     if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId)) return "Worker conversations cannot be compacted manually";
     if (workers.hasBlockingDescendants(session.sessionId) || workerStore.hasActiveDelivery(session.sessionId) || workerStore.hasActiveExchange(session.sessionId)) return "Finish outstanding workers and worker report deliveries before compacting";
     if (!session.nativeSessionId || !session.harness) return "Compaction requires an existing native conversation";
@@ -1632,7 +1653,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
       const finished = Promise.withResolvers<void>();
       const owner: Owner = { run, native: session.harness === "opencode", nativeDispatched: false, done: finished.promise, settled: false };
-      installOwner(lease, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
+      const initialEvents = prepareRunJournalInstallation({ directory: runJournalDirectory, run, runs: meta.runs,
+        hasEvents: id => events.has(id), isDeferred: id => deferredJournals.has(id), hasPendingActivation: id => pendingActivations.hasPending(id), claimNew: target => runJournals.claimNew(target) });
+      installOwner(lease, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, initialEvents);
       // Stable App and native request IDs reach disk before any native mutation.
       try {
         await emit(run, "status", { status: "running", operation: "compact", compactionLifecycle: "requested" });
@@ -1739,7 +1762,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     nativeReadiness: pinnedNativeReadiness,
   }));
   function executePrompt(lease: ConversationAdmissionLease, session: Session, run: Run, prompt: string, resume: boolean, origin: DispatchOrigin,
-    options: { requestId?: string; coordinatorIntent?: ConversationOperationIntent["kind"]; validate?: () => void; link?: () => void; configure?: () => void; evidence?: DispatchEvidenceHooks; delivery?: PreparedAdmissionContext["delivery"]; nativeQueuedHandoff?: DispatchIdentity; publish?: PreparedAdmissionOptions["publish"]; workerDeliveryId?: string; beforeSend?: () => void; reconciliation?: Omit<NonNullable<DispatchLifecycleHooks<Owner>["reconciliation"]>, "begin"> } = {}) {
+    options: { requestId?: string; coordinatorIntent?: ConversationOperationIntent["kind"]; validate?: () => void; link?: () => void; configure?: () => void; evidence?: DispatchEvidenceHooks; delivery?: PreparedAdmissionContext["delivery"]; nativeQueuedHandoff?: DispatchIdentity; publish?: PreparedAdmissionOptions["publish"]; workerDeliveryId?: string; beforeSend?: () => void; activationPreparation?: { preparation: PendingActivationPreparation; assertCurrent: () => void }; reconciliation?: Omit<NonNullable<DispatchLifecycleHooks<Owner>["reconciliation"]>, "begin"> } = {}) {
     let snapshot = dispatchSnapshot(session);
     requireOperation(sessionHarness(session), "prompt");
     let published = false;
@@ -1747,6 +1770,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       install: done => {
         assertStartupReady();
         synchronousDispatchHook(() => options.validate?.());
+        const preparation = options.activationPreparation?.preparation;
+        const initialEvents = prepareRunJournalInstallation({ directory: runJournalDirectory, run, runs: meta.runs,
+          hasEvents: id => events.has(id), isDeferred: id => deferredJournals.has(id), hasPendingActivation: id => pendingActivations.hasPending(id),
+          claimNew: target => runJournals.claimNew(target),
+          preparation, assertPreparation: options.activationPreparation?.assertCurrent });
         synchronousDispatchHook(() => options.link?.());
         assertDispatchSnapshot(session.sessionId, snapshot);
         const claim = options.nativeQueuedHandoff;
@@ -1754,15 +1782,33 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const owner: Owner = { run, native: session.harness === "opencode", nativeDispatched: false, done, settled: false,
           ...(options.delivery ? { nativeDeliveryPolicy: options.delivery } : {}),
           ...(claim ? { nativeQueuedHandoff: Object.freeze({ runId: run.runId, nativeCommandId: run.nativeCommandId!, requestId: claim.requestId!, origin: "queued-user" as const, source: dispatchSource(session) }) } : {}),
-          ...(options.workerDeliveryId ? { workerDeliveryId: options.workerDeliveryId } : {}), beforeSend: () => {
+          ...(options.workerDeliveryId ? { workerDeliveryId: options.workerDeliveryId } : {}),
+          assertMetadataCommitted: () => {
+            // Representation proof is separate from execution eligibility. Stop
+            // and shutdown cannot suppress original accepted/unknown evidence;
+            // live coordinator/cancellation gates still control native admission.
+            if (storageFailed) throw new Error("Original metadata storage is unavailable");
+            assertDispatchSnapshot(session.sessionId, snapshot);
+            if (!committedMetadata) throw new Error("Original Run metadata has not been durably published");
+            metadataPublisher.assertCommitted(committedMetadata, captureMetadataDispatchBinding(session, run, {
+              source: dispatchSource(session), runId: run.runId, nativeCommandId: run.nativeCommandId ?? null,
+              ...(options.requestId !== undefined ? { requestId: options.requestId } : {}),
+            }));
+          }, beforeSend: () => {
             assertStartupReady();
             if (closing || storageFailed || retainOwner || meta.reconciliationRequired) throw new WorkstreamAdapterError(409, "dispatch-unavailable", "Execution unavailable before dispatch");
             assertDispatchSnapshot(session.sessionId, snapshot); synchronousDispatchHook(() => options.beforeSend?.());
           } };
+        synchronousDispatchHook(() => options.activationPreparation?.assertCurrent());
         installOwner(lease, owner);
         published = true;
         options.configure?.(); snapshot = dispatchSnapshot(session);
-        session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
+        session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run);
+        events.set(run.runId, initialEvents);
+        if (preparation) {
+          replyJournalThrough.set(run.runId, initialEvents.at(-1)!.seq);
+          transcripts.ingest(run, initialEvents);
+        }
         return owner;
       },
       evidence: pendingInputControls.evidence(options.evidence),
@@ -1911,8 +1957,39 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const intent = context?.intent ?? { kind: "user-prompt" as const };
     const origin = context?.origin ?? (queuedFollowupId ? "queued-user" : "user");
     const delivery = context?.delivery ?? (origin === "user" ? "idle-only" : undefined);
-    const runId = context?.runId ?? crypto.randomUUID();
-    const nativeCommandId = harness === "opencode" ? context?.nativeCommandId ?? `msg_${crypto.randomUUID().replaceAll("-", "")}` : null;
+    const priorSession = meta.sessions.find(row => row.sessionId === conversationId);
+    const noPriorRun = !meta.runs.some(row => row.sessionId === conversationId);
+    const anchored = noPriorRun && pendingActivations.hasPending(conversationId);
+    const prepareActivationJournal = !context && !options.scienceSubmission && !queuedFollowupId && !prepared.stagedUpgrade && origin === "user"
+      && ((!prepared.resume && prepared.canonicalActivation !== undefined) || anchored);
+    if (anchored && !prepareActivationJournal) throw new UserInputPreparationError("Pending activation requires explicit original-journal adoption; this delivery path cannot replace it", 409);
+    let activationPreparation: PendingActivationPreparation | undefined;
+    const activationInput = prepareActivationJournal && isAssistantAgentId(agent) && prepared.configuration.saneExecution && prepared.configuration.saneContext ? {
+      sessionId: conversationId, identity: { kind: "assistant" as const, role: agent },
+      activation: { saneExecution: prepared.configuration.saneExecution, saneContext: prepared.configuration.saneContext },
+      source: { harnessId: harness, authorityId: prepared.binding.authorityId, cwd },
+    } : undefined;
+    const assertPreparationAdmission = () => {
+      if (!coordinator.holdsAdmission(lease, conversationId) || closing || storageFailed || retainOwner || meta.reconciliationRequired
+        || meta.runs.some(row => row.sessionId === conversationId) || coordinator.hasOwner(conversationId) || coordinator.hasReconciliation(conversationId)) throw new UserInputPreparationError("Activation preparation no longer owns its original first-Run admission", 409);
+      assertPreparedUserInputCurrent(prepared, preparationState());
+      if (nativeSource(harness) !== prepared.binding.authorityId) throw new UserInputPreparationError("Activation native authority changed", 409);
+    };
+    if (prepareActivationJournal) {
+      if (!activationInput || priorSession?.lastRunId) throw new UserInputPreparationError("Pending activation lacks its original canonical configuration", 409);
+      assertPreparationAdmission();
+      await revalidatePreparedUserInput(prepared, { ...preparationState(), ensureDirectory, validateBinding: assertPreparationAdmission });
+      let preparationResult: ReturnType<typeof prepareActivationWhileAdmitted<PendingActivationPreparation>> | undefined;
+      await enqueue(async () => { preparationResult = prepareActivationWhileAdmitted(assertPreparationAdmission, () => pendingActivations.prepare(activationInput), error => error instanceof UserInputPreparationError || error instanceof WorkstreamAdapterError); });
+      if (!preparationResult) throw new Error("Activation preparation queue did not complete");
+      if ("refused" in preparationResult) throw preparationResult.refused;
+      activationPreparation = preparationResult.prepared;
+      assertPreparationAdmission();
+    }
+    // Resolve the original preparation identity BEFORE constructing dispatch or
+    // linking any consumer. No replacement attempt is allocated on adoption.
+    const runId = activationPreparation?.runId ?? context?.runId ?? crypto.randomUUID();
+    const nativeCommandId = harness === "opencode" ? activationPreparation?.nativeCommandId ?? context?.nativeCommandId ?? `msg_${crypto.randomUUID().replaceAll("-", "")}` : null;
     const identity: DispatchIdentity = Object.freeze({ runId, nativeCommandId, ...(intent.requestId !== undefined ? { requestId: intent.requestId } : {}), source: Object.freeze({ harnessId: harness, sessionId: conversationId,
       authorityId: prepared.binding.authorityId, nativeSessionId: prepared.binding.nativeSessionId ?? null, cwd }) });
     if (context && (!prepared.resume || !prepared.binding.nativeSessionId || typeof context.runId !== "string" || !uuid(context.runId)
@@ -1956,8 +2033,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
     if (!session) {
       if (association.association !== "resolved") throw new WorkstreamAdapterError(409, "association-unresolved", "Execution association unavailable");
-      const sane = input.agent !== undefined ? await executionReservation(conversationId, { kind: "assistant", role: input.agent }, async () => prepared.configuration.saneExecution
-        ? structuredClone({ saneContext: prepared.configuration.saneContext, saneExecution: prepared.configuration.saneExecution }) : saneSessionContext({ kind: "assistant", role: input.agent! })) : {};
+      const sane = activationPreparation?.activation ?? (input.agent !== undefined ? await executionReservation(conversationId, { kind: "assistant", role: input.agent }, async () => prepared.configuration.saneExecution
+        ? structuredClone({ saneContext: prepared.configuration.saneContext, saneExecution: prepared.configuration.saneExecution }) : saneSessionContext({ kind: "assistant", role: input.agent! })) : {});
       if (prepared.configuration.saneExecution && (sane.saneExecution?.revision !== prepared.configuration.saneExecution.revision || sane.saneContext?.package?.revision !== prepared.configuration.saneContext?.package?.revision)) throw new Error("Prepared activation differs from its durable reservation");
       assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
       await admissions.begin({ sessionId: conversationId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd,
@@ -2030,12 +2107,24 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const effectivePrompt = !options.scienceSubmission && isStoredAssistantAgentId(agent) && harness === "opencode" && !session.nativeAgentSelected && !configured.saneContext?.package
       ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n${prepared.prompt}` : prepared.prompt;
     const installedSnapshot = structuredClone(configured);
+    const assertActivationPreparation = () => {
+      if (!activationPreparation || !activationInput) throw new Error("Activation preparation capability unavailable");
+      assertDispatch(); assertContext();
+      const a = admissions.get(conversationId);
+      if (!a || a.state !== "ready" || a.nativeId !== session!.nativeSessionId || a.source.authorityId !== session!.authorityId
+        || a.source.descriptor.harness !== (harness === "opencode" ? "oc" : "cc") || a.binding.executionCheckout !== cwd
+        || session!.authorityId !== activationInput.source.authorityId || sessionHarness(session!) !== harness
+        || session!.cwd !== cwd || session!.lastRunId !== null || meta.runs.some(row => row.sessionId === conversationId)
+        || canonicalJSON({ saneExecution: session!.saneExecution, saneContext: session!.saneContext }) !== canonicalJSON(activationInput.activation)) throw new UserInputPreparationError("Activation journal has no exact ready original native admission and pinned pair", 409);
+      pendingActivations.assertCurrent(activationPreparation, activationInput);
+    };
     const lifecycle = executePrompt(lease, session, run, effectivePrompt, prepared.resume, origin, {
       requestId: intent.requestId,
       coordinatorIntent: intent.kind,
       validate: () => { assertDispatch(); assertContext(); assertPreparedUserInputCurrent(prepared, preparationState(), createdSnapshot); },
       link: context?.link && (() => context.link!(identity)), evidence: context?.evidence, delivery,
       ...(nativeHandoff ? { nativeQueuedHandoff: identity } : {}), publish,
+      ...(activationPreparation ? { activationPreparation: { preparation: activationPreparation, assertCurrent: assertActivationPreparation } } : {}),
       configure: () => {
         // A prepared dispatch owns execution configuration, not title metadata.
         // Never restore its earlier revision over a concurrent edit/generation.
@@ -5082,7 +5171,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (stored.status === "running") { stored.status = status; stored.endedAt = new Date().toISOString(); }
       const session = candidate.sessions.find(row => row.sessionId === identity.source.sessionId)!;
       if (session.lastRunId === identity.runId) session.lastStatus = status;
-      atomicAppRecord(options.dataDir, "metadata.json", candidate);
+      committedMetadata = metadataPublisher.commitSerialized(JSON.stringify(candidate));
       run.status = stored.status; run.endedAt = stored.endedAt;
       if (session.lastRunId === identity.runId) meta.sessions.find(row => row.sessionId === session.sessionId)!.lastStatus = status;
       try { replyIntegration?.metadataPublished(JSON.stringify(candidate)); } catch {}

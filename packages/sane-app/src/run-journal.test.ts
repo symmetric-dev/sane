@@ -186,4 +186,78 @@ describe("one bridge-owned run journal", () => {
     const next = f.reserve(); f.writer.flushThrough(next);
     expect(f.writer.progress(next).durable).toBe(2);
   });
+
+  test("must-exist baselines retain original live events and reservations without appending", () => {
+    const f = fixture(), token = f.reserve("context", { type: "preparation" });
+    f.writer.commit(token); f.writer.flushThrough(token);
+    const bytes = fs.readFileSync(f.path), baseline = f.writer.adoptExisting(f.run);
+    expect(baseline.events[0]).toBe(token.event);
+    expect(f.writer.reservation(baseline.events[0]!)).toBe(token);
+    f.writer.assertCurrentBaseline(baseline);
+    expect(fs.readFileSync(f.path)).toEqual(bytes);
+    const status = f.reserve("status", { status: "running" });
+    f.writer.commit(status);
+    expect(f.read().map(event => event.seq)).toEqual([1, 2]);
+    expect(() => f.writer.assertCurrentBaseline(baseline)).toThrow("advanced");
+  });
+
+  test("restart baseline events never acquire live reservation branding", () => {
+    const f = fixture(), token = f.reserve(); f.writer.commit(token); f.writer.flushThrough(token);
+    const writer = new RunJournalWriter(f.root, { assertStorage() {}, failClosed() {} });
+    const baseline = writer.adoptExisting({ runId: f.run.runId, sessionId: f.run.sessionId });
+    expect(baseline.events).toEqual(f.events);
+    expect(baseline.events[0]).not.toBe(token.event);
+    writer.assertCurrentBaseline(baseline);
+    expect(() => writer.reservation(baseline.events[0]!)).toThrow("original");
+  });
+
+  for (const kind of ["missing", "empty", "torn", "unterminated"] as const) test(`must-exist adoption refuses ${kind} bytes without repair`, () => {
+    const f = fixture();
+    const event = { seq: 1, time: f.run.createdAt, runId: f.run.runId, sessionId: f.run.sessionId, kind: "context", data: {} };
+    if (kind !== "missing") fs.writeFileSync(f.path, kind === "empty" ? "" : JSON.stringify(event) + (kind === "torn" ? '\n{"seq":2' : ""));
+    const before = fs.existsSync(f.path) ? fs.readFileSync(f.path) : null;
+    expect(() => f.writer.adoptExisting(f.run)).toThrow();
+    expect(fs.existsSync(f.path) ? fs.readFileSync(f.path) : null).toEqual(before);
+    expect(f.failures.length).toBeGreaterThan(0);
+  });
+
+  test("must-exist adoption cannot ignore queued commit callbacks or reopen excluded originals", () => {
+    const f = fixture(), reservation = f.reserve(); f.writer.flushThrough(reservation);
+    expect(() => f.writer.adoptExisting(f.run)).toThrow("queued callbacks");
+    const other = fixture(), token = other.reserve(); other.writer.commit(token); other.writer.flushThrough(token);
+    other.writer.excludeOriginal(other.run.runId);
+    expect(() => other.writer.adoptExisting(other.run)).toThrow("cannot be adopted");
+  });
+
+  test("baseline current assertion rehashes the complete protected file and is sticky", () => {
+    const f = fixture(), token = f.reserve(); f.writer.commit(token); f.writer.flushThrough(token);
+    const baseline = f.writer.adoptExisting(f.run), bytes = fs.readFileSync(f.path);
+    bytes[bytes.indexOf("record")] = 88; fs.writeFileSync(f.path, bytes);
+    expect(() => f.writer.assertCurrentBaseline(baseline)).toThrow("changed");
+    expect(() => f.writer.adoptExisting(f.run)).toThrow("reconciliation");
+  });
+
+  test("new namespace reservation refuses preexisting empty files", () => {
+    const f = fixture(); fs.writeFileSync(f.path, "");
+    expect(() => f.writer.reserveNew(f.run, "context", {})).toThrow("already exists");
+    expect(fs.readFileSync(f.path, "utf8")).toBe("");
+  });
+
+  test("new namespace stays exclusive if a file appears in a later mandatory guard", () => {
+    const root = fs.realpathSync(fs.mkdtempSync(join(temporary, "run-journal-race-test-"))); roots.push(root);
+    const target = { runId: crypto.randomUUID(), sessionId: crypto.randomUUID() }, path = join(root, `${target.runId}.jsonl`);
+    let guards = 0;
+    const writer = new RunJournalWriter(root, { assertStorage() { if (++guards === 2) fs.writeFileSync(path, ""); }, failClosed() {} });
+    const token = writer.reserveNew(target, "context", {});
+    expect(() => writer.commit(token)).toThrow();
+    expect(fs.readFileSync(path, "utf8")).toBe("");
+  });
+
+  test("adoption cannot expose mutable historical events different from protected bytes", () => {
+    const f = fixture(), event: Event = { seq: 1, time: f.run.createdAt, runId: f.run.runId, sessionId: f.run.sessionId, kind: "context", data: { original: true } };
+    fs.writeFileSync(f.path, JSON.stringify(event) + "\n"); f.events.push(event);
+    const token = f.reserve(); f.writer.commit(token); f.writer.flushThrough(token);
+    event.data = { changed: true };
+    expect(() => f.writer.adoptExisting(f.run)).toThrow("events changed");
+  });
 });

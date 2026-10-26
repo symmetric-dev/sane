@@ -176,7 +176,7 @@ export function lastJournalSeq(path: string): number | undefined {
   } catch { return undefined; }
   finally { if (fd !== undefined) closeSync(fd); }
 }
-export function decodeLog(raw: string, run: Run): { events: Event[]; repaired?: string } {
+export function decodeLog(raw: string, run: Pick<Run, "runId" | "sessionId">): { events: Event[]; repaired?: string } {
   const events: Event[] = [];
   const lines = raw.split("\n");
   let repaired = false;

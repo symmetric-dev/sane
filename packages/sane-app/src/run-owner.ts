@@ -11,6 +11,9 @@ export type RunOwner = {
   streamsDrained?: boolean;
   /** Immutable installed configuration/source gate, invoked after discovery. */
   beforeSend?: () => void;
+  /** Independent owner-scoped proof of exact durable metadata representation.
+   * Not activation delivery, native acceptance, or permission to replay. */
+  assertMetadataCommitted?: () => void;
   /** Services explicitly mark the earliest possible native boundary. */
   dispatchEvidence?: {
     beforeNative: () => void;

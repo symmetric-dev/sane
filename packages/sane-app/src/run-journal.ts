@@ -8,10 +8,13 @@ import { synchronousDispatchHook } from "./dispatch-evidence";
  * activation, ownership or restart-coverage claim. Copying its fields grants no
  * capability. Serialized bytes are captured once, before queued work can run. */
 export type RunJournalReservation = Readonly<{ event: Event }>;
+export type RunJournalTarget = Pick<Run, "runId" | "sessionId">;
+declare const baselineBrand: unique symbol;
+export type RunJournalBaseline = Readonly<{ events: readonly Event[]; [baselineBrand]: true }>;
 type Pin = { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number };
 type Entry = { reservation: RunJournalReservation; state: State; bytes?: Buffer; published: boolean; queueConsumed: boolean; committed?: (event: Event) => void };
 type State = { runId: string; sessionId: string; path: string; pin: Pin | null; hash: Hash;
-  reserved: number; appended: number; durable: number; queued: number; pending: Entry[] };
+  reserved: number; appended: number; durable: number; queued: number; pending: Entry[]; events: Event[] };
 const freeze = <T>(value: T): T => {
   if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); }
   return value;
@@ -34,6 +37,7 @@ export class RunJournalWriter {
   private readonly excluded = new Set<string>();
   private readonly entries = new WeakMap<RunJournalReservation, Entry>();
   private readonly byEvent = new WeakMap<Event, RunJournalReservation>();
+  private readonly baselines = new WeakMap<RunJournalBaseline, { state: State; pin: Pin; hash: string; reserved: number }>();
   private failed = false;
   private busy = false;
   private publishing = false;
@@ -79,28 +83,30 @@ export class RunJournalWriter {
   private samePin(a: Pin, b: Pin): boolean {
     return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
   }
-  private capture(run: Run, previous: readonly Event[]): State {
+  private capture(run: RunJournalTarget, previous?: readonly Event[], mustExist = false, mustBeNew = false): State {
     if (!uuid(run.runId) || !uuid(run.sessionId) || this.excluded.has(run.runId)) throw new Error("Run journal namespace unavailable");
     const state: State = { runId: run.runId, sessionId: run.sessionId, path: join(this.directory, `${run.runId}.jsonl`), pin: null,
-      hash: createHash("sha256"), reserved: previous.at(-1)?.seq ?? 0, appended: previous.at(-1)?.seq ?? 0, durable: 0, queued: 0, pending: [] };
+      hash: createHash("sha256"), reserved: previous?.at(-1)?.seq ?? 0, appended: previous?.at(-1)?.seq ?? 0, durable: 0, queued: 0, pending: [], events: [...previous ?? []] };
     let exists = true;
     try { lstatSync(state.path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; exists = false; }
+    if (exists && mustBeNew) throw new Error("New run journal namespace already exists");
     if (exists) {
-      const fd = openSync(state.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const fd = openSync(state.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       try {
         const before = this.pin(fd, state.path), bytes = readFileSync(fd);
         const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
         const decoded = raw ? decodeLog(raw, run) : { events: [] as Event[] };
-        if (decoded.repaired !== undefined || JSON.stringify(decoded.events) !== JSON.stringify(previous)
+        if (decoded.repaired !== undefined || mustExist && !decoded.events.length || previous !== undefined && JSON.stringify(decoded.events) !== JSON.stringify(previous)
           || !this.samePin(before, this.pin(fd, state.path))) throw new Error("Run journal baseline is missing, changed or incomplete");
+        if (previous === undefined) { state.events = decoded.events.map(event => freeze(event)); state.reserved = state.appended = state.events.at(-1)?.seq ?? 0; }
         state.pin = before; state.hash.update(bytes);
       } finally { closeSync(fd); }
-    } else if (previous.length) throw new Error("Run journal with historical events is missing");
+    } else if (mustExist || previous?.length) throw new Error("Run journal with historical events is missing");
     this.states.set(run.runId, state);
     return state;
   }
 
-  reserve(run: Run, previous: readonly Event[], kind: Event["kind"], data: unknown, committed?: (event: Event) => void): RunJournalReservation {
+  reserve(run: RunJournalTarget, previous: readonly Event[], kind: Event["kind"], data: unknown, committed?: (event: Event) => void): RunJournalReservation {
     return this.operation(() => {
       if (this.excluded.has(run.runId)) throw new Error("Original-recovery journal cannot borrow live append authority");
       const state = this.states.get(run.runId) ?? this.capture(run, previous);
@@ -111,9 +117,64 @@ export class RunJournalWriter {
       if (!Number.isSafeInteger(event.seq)) throw new Error("Run journal sequence exhausted");
       const reservation = Object.freeze({ event: freeze(event) });
       const entry: Entry = { reservation, state, bytes: Buffer.from(JSON.stringify(event) + "\n"), published: false, queueConsumed: false, committed };
-      state.reserved = event.seq; state.pending.push(entry); state.queued++;
+      state.reserved = event.seq; state.pending.push(entry); state.queued++; state.events.push(event);
       this.entries.set(reservation, entry); this.byEvent.set(event, reservation);
       return reservation;
+    });
+  }
+
+  /** Retain a positively absent namespace before installation/link callbacks or
+   * asynchronous native preflight. Its first drain MUST create with O_EXCL. */
+  claimNew(run: RunJournalTarget): void {
+    this.operation(() => {
+      if (!uuid(run.runId) || !uuid(run.sessionId) || this.states.has(run.runId) || this.excluded.has(run.runId)) throw new Error("Run journal namespace unavailable");
+      // Retain an absent-file state before any subsequent guard/callback. A file
+      // appearing later can only fail O_EXCL, never be captured as an empty log.
+      this.capture(run, [], false, true);
+    });
+  }
+  /** Positively absent namespace only. The normal drain still uses O_EXCL. */
+  reserveNew(run: RunJournalTarget, kind: Event["kind"], data: unknown): RunJournalReservation {
+    this.claimNew(run);
+    return this.reserve(run, [], kind, data);
+  }
+
+  private assertBytes(state: State): Pin {
+    if (!state.pin || state.pending.length || state.queued || state.reserved !== state.appended) throw new Error("Run journal baseline has pending writes/queued callbacks or no file");
+    const fd = openSync(state.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const before = this.pin(fd, state.path);
+      const bytes = readFileSync(fd);
+      if (!this.samePin(state.pin, before) || createHash("sha256").update(bytes).digest("hex") !== state.hash.copy().digest("hex")
+        || !this.samePin(before, this.pin(fd, state.path))) throw new Error("Run journal protected baseline changed");
+      const decoded = decodeLog(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes), state);
+      if (decoded.repaired !== undefined || JSON.stringify(decoded.events) !== JSON.stringify(state.events)) throw new Error("Run journal baseline events changed");
+      return before;
+    } finally { closeSync(fd); }
+  }
+
+  /** Must already exist, with complete exact bytes. Decoded history is never
+   * entered into the live reservation map. Same-process events retain identity. */
+  adoptExisting(run: RunJournalTarget): RunJournalBaseline {
+    return this.operation(() => {
+      if (this.excluded.has(run.runId)) throw new Error("Original-recovery journal cannot be adopted");
+      const state = this.states.get(run.runId) ?? this.capture(run, undefined, true);
+      if (state.sessionId !== run.sessionId) throw new Error("Run journal baseline session changed");
+      const pin = this.assertBytes(state);
+      state.events.forEach(freeze);
+      const token = Object.freeze({ events: Object.freeze([...state.events]) }) as RunJournalBaseline;
+      this.baselines.set(token, { state, pin, hash: state.hash.copy().digest("hex"), reserved: state.reserved });
+      return token;
+    });
+  }
+
+  /** Read-only final fence; no append, repair, queue draining or authority transfer. */
+  assertCurrentBaseline(token: RunJournalBaseline): void {
+    this.operation(() => {
+      const baseline = this.baselines.get(token);
+      if (!baseline || this.states.get(baseline.state.runId) !== baseline.state || this.excluded.has(baseline.state.runId)) throw new Error("Foreign or relinquished run journal baseline");
+      const pin = this.assertBytes(baseline.state);
+      if (!this.samePin(pin, baseline.pin) || baseline.reserved !== baseline.state.reserved || baseline.hash !== baseline.state.hash.copy().digest("hex")) throw new Error("Run journal baseline advanced");
     });
   }
 
