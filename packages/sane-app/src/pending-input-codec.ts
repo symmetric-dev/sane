@@ -102,7 +102,7 @@ export function decodePendingInputPins(v: unknown): PendingInputPins {
 export function decodePendingInputSnapshot(v: unknown): PendingInputLaunchSnapshot {
   shape(v, ["prepared", "pins"]);
   const prepared = decodePreparedUserInput(v.prepared), b = prepared.binding;
-  requireRecord(prepared.resume && prepared.expectedPrior && b.nativeSessionId && !prepared.stagedUpgrade && !prepared.nativeLaunch, "Queue requires an established resume without a staged upgrade");
+  requireRecord(prepared.resume && prepared.expectedPrior && b.nativeSessionId && !prepared.stagedUpgrade && !prepared.nativeLaunch && !prepared.canonicalActivation, "Queue requires an established resume without a staged upgrade");
   const pins = decodePendingInputPins(v.pins), a = pins.admission;
   requireRecord(b.conversationId === a.sessionId && b.nativeSessionId === a.nativeId && b.authorityId === a.source.authorityId && b.harness === (a.source.descriptor.harness === "cc" ? "claude-code" : "opencode") && b.cwd === a.binding.executionCheckout, "Prepared/admission source mismatch");
   requireRecord(equal(prepared.expectedPrior.configuration, pins.configuration) && equal(prepared.configuration, pins.launch), "Prepared configuration/chain pin mismatch");

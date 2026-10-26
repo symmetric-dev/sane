@@ -13,6 +13,9 @@ import { frameworkContext } from "sane-core/sane-context";
 import { validateCanonicalActivation as validatePairedCanonicalActivation, type CanonicalActivation } from "./canonical-activation-validation";
 
 export type { CanonicalActivation } from "./canonical-activation-validation";
+/** Optional policy defaults use a qualified provider/model and its variant, not
+ * a harness alias or an independent effort selection. */
+export type PreparedCanonicalActivation = CanonicalActivation & { model?: string; effort?: string };
 export type ActivationSnapshot = { saneExecution?: Session["saneExecution"]; saneContext?: Session["saneContext"] };
 export type ActivationReservation = { schema: 2; identity: StoredSaneAgentIdentity; activation: ActivationSnapshot };
 function isActivationReservation(value: unknown): value is ActivationReservation {
@@ -81,6 +84,10 @@ export type PreparedUserInput = Readonly<{
   requested: Readonly<RequestedSettings>;
   normalized: Readonly<NormalizedSettings>;
   configuration: Immutable<Configuration>;
+  /** Captured resolver output for a NEW assistant activation only. Reconstruct
+   * effective settings from these pins/defaults, never from today's policy or the
+   * candidate configuration. Admission must still validate the actual stores. */
+  canonicalActivation?: Immutable<PreparedCanonicalActivation>;
   expectedPrior?: Immutable<{ binding: Binding; configuration: Configuration }>;
   selectedProfile?: Immutable<AgentProfile>;
   stagedUpgrade?: Immutable<AgentProfile>;
@@ -103,7 +110,7 @@ export type UserInputPreparationDependencies = {
   ensureDirectory: (cwd: string) => Promise<void>;
   validateOpenCodeModel: (model: string, effort?: string) => unknown;
   resolveOpenCodeLaunch: (cwd: string, settings: { model?: string; effort?: string; agent?: string }) => Promise<OpenCodeLaunch>;
-  prepareCanonicalExecution?: (role: AssistantAgentId) => Promise<CanonicalActivation & { model?: string; effort?: string }>;
+  prepareCanonicalExecution?: (role: AssistantAgentId) => Promise<PreparedCanonicalActivation>;
 };
 
 export type UserInputRevalidationDependencies = {
@@ -194,7 +201,9 @@ export async function prepareUserInput(value: unknown, deps: UserInputPreparatio
   let effort = upgrade ? upgrade.effort || undefined : input.effort as string | undefined ?? session?.effort;
   if (upgrade && (upgrade.kind !== "assistant" || !isAssistantAgentId(upgrade.role))) throw new UserInputPreparationError("Only assistant profiles can upgrade conversations", 400);
   const agent = upgrade && isAssistantAgentId(upgrade.role) ? upgrade.role : input.agent as AssistantAgentId | undefined ?? session?.agent;
-  const canonical = (!session || !session.agent) && isAssistantAgentId(agent) ? await deps.prepareCanonicalExecution?.(agent) : undefined;
+  const resolvedCanonical = (!session || !session.agent) && isAssistantAgentId(agent) ? await deps.prepareCanonicalExecution?.(agent) : undefined;
+  const canonical = resolvedCanonical && copy(resolvedCanonical);
+  if (canonical && session && canonical.saneContext.package) canonical.saneContext.package.activation = "upgrade";
   if (canonical && harness === "opencode" && !model) { model = canonical.model; effort ??= canonical.effort; }
   if (harness === "opencode" && input.model === undefined && model !== undefined) deps.validateOpenCodeModel(model, effort);
   const selectedCwd = !session && input.cwd === undefined && typeof input.workspaceId === "string" && typeof input.worktreeId === "string" ? await deps.selectedDirectory(input.workspaceId, input.worktreeId) : undefined;
@@ -210,11 +219,12 @@ export async function prepareUserInput(value: unknown, deps: UserInputPreparatio
   const binding = session ? sessionBinding(session, authorityId) : { conversationId: deps.conversationId(), harness, authorityId, cwd };
   const normalized = copy({ harness: input.harness, model: input.model, effort: input.effort, agent: input.agent, profileId: input.profileId }) as NormalizedSettings;
   const configuration: Configuration = copy({ ...(session ? snapshot(session) : {}), profileId: upgrade?.id ?? (session ? profileId(session) : profile?.id ?? legacyProfileId(harness, agent)), model, effort, agent,
-    ...(!session && agent !== undefined ? { agentKind: "assistant", nativeAgentSelected: !canonical || harness !== "opencode" } : {}), ...(canonical ? { saneExecution: canonical.saneExecution, saneContext: canonical.saneContext } : {}) });
+    ...((!session && agent !== undefined || canonical) ? { agentKind: "assistant", nativeAgentSelected: !canonical || harness !== "opencode" } : {}), ...(canonical ? { saneExecution: canonical.saneExecution, saneContext: canonical.saneContext } : {}) });
   // An upgrade clearing model/effort must not retain inherited defaults.
   if (model === undefined) delete configuration.model;
   if (effort === undefined) delete configuration.effort;
   return freeze(copy({ version: 1, prompt: input.prompt, binding, resume: !!session, requested, normalized, configuration,
+    ...(canonical ? { canonicalActivation: canonical } : {}),
     ...(session ? { expectedPrior: { binding: sessionBinding(session, authorityId), configuration: snapshot(session) } } : {}),
     ...(profile ? { selectedProfile: profile } : {}), ...(upgrade ? { stagedUpgrade: upgrade } : {}), ...(nativeLaunch ? { nativeLaunch } : {}),
     associationSelection: { workspaceId: input.workspaceId, worktreeId: input.worktreeId }, nativeStopped: input.nativeStopped === true })) as unknown as PreparedUserInput;
