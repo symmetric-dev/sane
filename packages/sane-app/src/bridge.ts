@@ -58,6 +58,7 @@ import { HarnessDispatchRegistry, HarnessDispatchError, DispatchProofUnavailable
 import type { DispatchOrigin, DispatchSource, DispatchIdentity, DispatchEvidenceHooks } from "../shared/conversation/dispatch-contract";
 import type { PreparedAdmissionContext, PreparedAdmissionOptions, PreparedInputAdmission } from "./prepared-input-admission";
 import { synchronousDispatchHook } from "./dispatch-evidence";
+import { RunJournalWriter } from "./run-journal";
 import { PendingInputService, pendingInputRoute, type PendingInputPreflight } from "./pending-input-service";
 import { createPendingInputRecovery, createOriginalRecoveryJournal, type PendingInputRecovery } from "./pending-input-recovery";
 import { PendingInputDomainError, PendingInputStorageError, type PendingInputPins, type PendingInputStoredItem } from "./pending-input-contract";
@@ -594,6 +595,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   });
   gitOperations = new GitOperationsService(catalog, worktrees, options.dataDir, () => domainProtectedPaths);
   const events = new Map<string, Event[]>();
+  const runJournals = new RunJournalWriter(options.dataDir, {
+    assertStorage: () => { if (!ownsStorage() || storageFailed) throw new Error("Run journal storage ownership unavailable"); },
+    failClosed: error => failClosed(error, "run-journal"),
+  });
   const deferredJournals = new Set<string>();
   let materializeDeferred: ((runId: string) => Event[]) | undefined;
   function journalEvents(id: string): Event[] {
@@ -643,7 +648,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     shouldRun: () => presentationReadsEnabled() && (Date.now() < nativeConnectionDemandUntil || Date.now() < nativeActivityDemandUntil),
   });
   stopPresentationReads = () => { presentationPoller.stop(); nativeConnectionSnapshot.close(); nativeActivitySnapshot.close(); };
-  const nativeSubagentRecorder = new OpenCodeSubagentRecorder(oc, id => events.get(id) ?? [], emit, () => closing || storageFailed, session => !retirementPaused(session.sessionId));
+  const nativeSubagentRecorder = new OpenCodeSubagentRecorder(oc, id => events.get(id) ?? [], emit, () => closing || storageFailed,
+    session => !retirementPaused(session.sessionId), run => runJournals.canAppend(run.runId));
   // An explicit archived-history read may observe native history if no persisted
   // snapshot exists. This does not restart routine/background polling, and keeps
   // native-only messages accessible without changing or deleting native history.
@@ -1179,27 +1185,41 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   function terminate(owner: Owner): Promise<boolean> {
     return claudeRuns.terminate(owner);
   }
-  function emit(run: Run, kind: Event["kind"], data: unknown) {
+  function reserveJournalEvent(run: Run, kind: Event["kind"], data: unknown) {
     if (!events.has(run.runId) && deferredJournals.has(run.runId)) journalEvents(run.runId);
     const list = events.get(run.runId)!;
-    const event: Event = { seq: (list.at(-1)?.seq ?? 0) + 1, time: new Date().toISOString(), runId: run.runId, sessionId: run.sessionId, kind, data };
-    list.push(event);
-    transcripts.ingest(run, [event]);
     const session = meta.sessions.find(session => session.sessionId === run.sessionId);
     let captured: { session: Session; run: Run; event: Event } | undefined;
+    const reservation = runJournals.reserve(run, list, kind, data, event => {
+      replyJournalThrough.set(run.runId, event.seq);
+      // Projection callbacks run outside the writer's synchronous I/O/publication
+      // section. A recorder may itself reserve a later event, never reenter a
+      // flush or delay its durable native-boundary return.
+      queueMicrotask(() => {
+        if (captured) { try {
+          updates.primaryJournalCommitted(captured.session, captured.run, captured.event);
+          replyIntegration?.correlateCommitted(captured.session, captured.run, captured.event);
+        } catch { /* optional update coverage */ } }
+        if (captured) { try { chromePush?.journalCommitted(captured.session, captured.run, captured.event); } catch { /* optional device delivery */ } }
+        if (session && kind === "message" && !retirementPaused(session.sessionId)) {
+          try { nativeSubagentRecorder.refresh(session, run); }
+          catch (error) { failClosed(error, "native-subagent-journal-projection"); }
+        }
+      });
+    });
+    const event = reservation.event;
+    list.push(event);
+    transcripts.ingest(run, [event]);
     try { if (session && updateEligible(session, run)) captured = structuredClone({ session, run, event }); }
     catch { /* Optional evidence indexing cannot interfere with journal ownership. */ }
-    const committed = enqueue(async () => {
-      await appendFile(join(options.dataDir, `${run.runId}.jsonl`), JSON.stringify(event) + "\n", { mode: 0o600 });
-      replyJournalThrough.set(run.runId, event.seq);
-      // Derived storage/projection must never escape into execution failClosed.
-      if (captured) { try {
-        updates.primaryJournalCommitted(captured.session, captured.run, captured.event);
-        replyIntegration?.correlateCommitted(captured.session, captured.run, captured.event);
-      } catch { /* optional update coverage */ } }
-      if (captured) { try { chromePush?.journalCommitted(captured.session, captured.run, captured.event); } catch { /* optional device delivery */ } }
-      if (session && kind === "message" && !retirementPaused(session.sessionId)) nativeSubagentRecorder.refresh(session, run);
-    });
+    return reservation;
+  }
+  function emit(run: Run, kind: Event["kind"], data: unknown) {
+    const reservation = reserveJournalEvent(run, kind, data);
+    // Preserve the global metadata/write queue. Only the physical run-log append
+    // changes implementation; there is no asynchronous append left in flight for
+    // this live writer. A future synchronous fence consumes the same reservations.
+    const committed = enqueue(async () => { runJournals.commit(reservation); });
     if (kind === "status" && (data as { status?: string } | null)?.status === "completed" && run.operation !== "compact") {
       // Generation runs on a later turn, never inside emit/finalization's queue.
       void committed.then(() => { setTimeout(() => sessionNaming?.completed(run.sessionId, run, events.get(run.runId) ?? []), 0); }).catch(() => {});
@@ -1249,6 +1269,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const decoded = decodeLog(raw, run);
       if (decoded.repaired !== undefined) {
         if (retiredId(run.sessionId)) throw new Error("Archived journal requires explicit repair; no history was modified");
+        runJournals.assertUnclaimed(runId);
         writeFileSync(logPath, decoded.repaired, { mode: 0o600 });
       }
       events.set(run.runId, decoded.events);
@@ -1297,7 +1318,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     let raw: string;
     try { raw = await readFile(logPath, "utf8"); } catch (e: any) { throw new Error(`Cannot load historical event log for ${run.runId}: ${e.code === "ENOENT" ? "missing file" : "read failed"}`); }
     const decoded = decodeLog(raw, run); const list = decoded.events;
-    if (decoded.repaired !== undefined) await enqueue(() => writeFile(logPath, decoded.repaired!, { mode: 0o600 }));
+    if (decoded.repaired !== undefined) await enqueue(async () => {
+      runJournals.assertUnclaimed(run.runId);
+      writeFileSync(logPath, decoded.repaired!, { mode: 0o600 });
+    });
     events.set(run.runId, list);
     replyJournalThrough.set(run.runId, list.at(-1)?.seq ?? 0);
     transcripts.ingest(run, list);
@@ -4939,10 +4963,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   recoveredInputClaims = classifyPendingInputMutation(() => pendingInputs!.recover());
   // Capture EVERY original synchronously before the first source/context await,
   // including journals whose Run metadata is missing. Reads never lazily repin.
-  try { for (const item of recoveredInputClaims) originalJournals.capture(item); }
+  try { for (const item of recoveredInputClaims) {
+    const identity = item.claim!.identity;
+    if (coordinator.hasOwner(identity.source.sessionId) || coordinator.hasAdmission(identity.source.sessionId)
+      || coordinator.hasReconciliation(identity.source.sessionId)) throw new Error("Original journal recovery cannot replace a live owner/admission");
+    // The existing serialized queue must have consumed any startup-only writes
+    // before this explicit, one-way transfer to original-recovery authority.
+    runJournals.excludeOriginal(identity.runId);
+    originalJournals.capture(item);
+  } }
   catch (error) { failClosed(error, "pending-input-initialization"); throw error; }
   const originalJournal = (original: PendingInputStoredItem) => {
-    try { return originalJournals.read(original); }
+    try { runJournals.assertOriginal(original.claim!.identity.runId); return originalJournals.read(original); }
     catch (error) { failClosed(error, "original-journal-authority"); throw error instanceof PendingInputStorageError ? error : new PendingInputStorageError("Original App journal authority lost", error); }
   };
   for (const item of recoveredInputClaims) recoveredInputConversations.add(item.claim!.identity.source.sessionId);
