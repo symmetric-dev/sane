@@ -40,7 +40,7 @@ import { PushNavigation, usePushInbox, type PushInbox } from "./push-navigation"
 import { notificationStore } from "./notifications";
 import { notificationContextKey } from "./notification-source";
 import { ChatFileNavigationProvider } from "./chat-file-link";
-import { BrowserFooter, BrowserHeader, BrowserProvider, BrowserTabStrip, BrowserView } from "./browser-view";
+import { BrowserHeader, BrowserProvider, BrowserTabStrip, BrowserView } from "./browser-view";
 import { BROWSER_PAIR_COMPACT_MEDIA, canPairBrowserConversation, captureBrowserPairIntent, useBrowserPair, useBrowserPairCompact, type BrowserPairIntent } from "./browser-pair";
 import { useBrowserPairMenu } from "./browser-pair-menu";
 import type { BrowserPairMode } from "../shared/browser-pair-contract";
@@ -408,7 +408,6 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
       <BrowserView key={workspaceId ?? "no-workspace"} active={view === "browser"} />
     </div>
     <div className="browser-pair-inline" ref={inlineTranscriptRef} hidden={!paired || !compactPair || pairPane !== "conversation"} inert={!paired || !compactPair || pairPane !== "conversation"} />
-    {view === "browser" && !paired && <BrowserFooter navigation={navigation} />}
     {/* Keep the mounted owners in a fixed DOM order that also matches keyboard navigation. */}
     <div className="chat-surface" ref={chatSurface} hidden={(view !== "chat" && !paired) || !!child} inert={(view !== "chat" && !paired) || !!child}><Thread state={state} active={(view === "chat" || paired) && !child} paired={paired} transcriptTarget={transcriptTarget} transcriptVisible={transcriptVisible} onOpenChatFlow={openChat} navigation={navigation} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} /></div>
   </>;

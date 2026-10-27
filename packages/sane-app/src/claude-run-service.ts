@@ -60,6 +60,7 @@ export type ClaudeRunDependencies = {
   canonicalExecution?: CanonicalExecutionProvider;
   /** Recorded worker pin only. Absent must not upgrade an unpinned resume. */
   explicitProtocol?: (sessionId: string) => WorkerProtocolPin | undefined;
+  browserMcp?: (sessionId: string, runId: string) => Promise<{ mcpConfigPath: string; allowedTools: string[] } | null>;
 };
 
 type SpawnOptions = {
@@ -582,6 +583,8 @@ export class ClaudeRunService {
       // Base sessions carry no role policy; grant the parent messaging tool so
       // explicit-protocol workers they launch can consult them.
       const ccAgent = privateExecution?.agent ?? installed?.agent, permissions = privateExecution?.permissions ?? installed?.permissions ?? (identity ? undefined : { allow: ["mcp__sane__sane_worker_message"] });
+      const browserMcp = operation !== "compact" && this.deps.browserMcp ? await prepare(() => this.deps.browserMcp!(sessionId, runId)) : null;
+      const launchPermissions = browserMcp && permissions ? { ...permissions, allow: [...(Array.isArray(permissions.allow) ? permissions.allow : []), ...browserMcp.allowedTools] } : permissions;
       // Canonical static context stays pinned across resumes; mutable membership
       // travels through UserPromptSubmit rather than Claude's prompt snapshot.
       const saneSession = canonical && operation !== "compact" ? canonical.dynamic : !resume ? await prepare(() => deps.saneSession(sessionId)) : null;
@@ -593,11 +596,12 @@ export class ClaudeRunService {
         hooks.UserPromptSubmit!.push({ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/session-context.ts"))} ${quote(sessionPath)}`, timeout: 10 }] });
       }
       const settingsPath = join(this.options.dataDir, `${runId}.settings.json`);
-      const settings = JSON.stringify({ hooks, ...(permissions ? { permissions } : {}) });
+      const settings = JSON.stringify({ hooks, ...(launchPermissions ? { permissions: launchPermissions } : {}) });
       await prepare(() => deps.enqueue(() => runtime.writeSettings(settingsPath, settings)));
       if (deps.closing() || deps.storageFailed() || owner.stopRequested) throw new Error("Closing before launch");
       const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", nativeSessionId!, "--settings", settingsPath];
       if (operation !== "compact") args.push("--input-format", "stream-json");
+      if (browserMcp) args.push("--mcp-config", browserMcp.mcpConfigPath);
       if (canonical) args.push("--include-hook-events");
       if (privateExecution) args.push(...privateExecution.args);
       else if (ccAgent !== undefined) args.push("--agent", ccAgent);

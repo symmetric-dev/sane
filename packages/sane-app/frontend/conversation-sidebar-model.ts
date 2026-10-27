@@ -5,6 +5,7 @@ import { defaultFilterFor, filterConversations, type ConversationFilterState, ty
 import { buildWorkstreamMap } from "./conversation-filter-dialog";
 import { useMessageHitsState, useWorkstreamOverviewState } from "./conversation-hooks";
 import { conversationQueryKey } from "./conversation-listing";
+import { conversationGroupPageSize } from "./conversation-group-listing";
 import type { Conversation, SessionCatalogQuery } from "./types";
 import { workerReference as knownWorker, useWorkerDiscovery, directWorkerCounts } from "./worker-client";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
@@ -191,7 +192,7 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     phase: deferred.phase,
     showDeleted: !!deferred.showDeleted,
     query: deferred.query,
-    limit: grouped ? 5 : 50,
+    limit: grouped ? conversationGroupPageSize(mode) : 50,
   }), [mode, deferred, grouped]);
   const queryKey = conversationQueryKey(query);
   const directory = state.conversationGroupDirectory;
@@ -200,7 +201,7 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   const bucketDirectory = useMemo(() => conversationSidebarBucketDirectory(repository.workspaces, nav.workspaceId, deferred,
     directoryCurrent ? directory?.groups ?? [] : [], directoryReady), [repository.workspaces, nav.workspaceId, deferred, directoryCurrent, directory?.groups, directoryReady]);
   const groupQuery = useCallback((bucket: Pick<WorktreeBucket, "workspaceId" | "worktreeId">): SessionCatalogQuery => ({ ...query,
-    workspaceId: bucket.workspaceId ?? "unavailable", worktreeId: bucket.worktreeId ?? "unavailable", limit: 5 }), [query]);
+    workspaceId: bucket.workspaceId ?? "unavailable", worktreeId: bucket.worktreeId ?? "unavailable", limit: conversationGroupPageSize(query.mode) }), [query]);
   const groupPage = useCallback((bucket: Pick<WorktreeBucket, "workspaceId" | "worktreeId">) => state.conversationGroups?.[conversationQueryKey(groupQuery(bucket))], [state.conversationGroups, groupQuery]);
   // Key the effect by value: directory loading and page publications must not
   // repeatedly reschedule the same expanded heads.

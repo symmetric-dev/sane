@@ -9,6 +9,7 @@ import { codeShareInputSnippets, isInlineCodeShareSnippet, nativeShareCodeDescri
 import { shareCodeNativeCaller } from "../../../packages/sane-cli/src/native-share-code.ts"
 import { nativeUserQuestionsDescription, nativeUserQuestionsSchema, parsePresentQuestionsInput } from "../../../packages/sane-cli/src/native-user-questions-contract.ts"
 import { presentQuestionsNativeCaller } from "../../../packages/sane-cli/src/native-user-questions.ts"
+import { browserNativeCaller, nativeBrowserDescriptions, nativeBrowserSchemas, nativeBrowserToolNames } from "../../../packages/sane-cli/src/native-browser.ts"
 import { registerExecutionOperations } from "./execution.ts"
 import { createSaneVisibility } from "./visibility.ts"
 
@@ -79,6 +80,17 @@ export const SanePlugin = Plugin.define({
           // Inline content needs share permission, but has no filesystem read.
           if (snippets.some(isInlineCodeShareSnippet)) await assertOpenCodeCodeSharePermissions(ctx, { ...tool, signal }, "inline", client, "inline")
           return { content: JSON.stringify(await shareCodeNativeCaller(caller, args, ctx.options.appConnectionFile as string, invocation, signal)) }
+        },
+      })
+      for (const toolName of nativeBrowserToolNames) addSaneTool({
+        name: toolName,
+        description: nativeBrowserDescriptions[toolName],
+        input: nativeBrowserSchemas[toolName],
+        execute: async (input, tool) => {
+          if (typeof registration !== "string" || !registration.startsWith("/")) throw new Error("NATIVE_CONTEXT_UNAVAILABLE: configure an explicit absolute registrationFile plugin option.")
+          const { caller } = await qualifyOpenCodeAppCaller(registration, ctx, tool)
+          const signal = (tool as typeof tool & { signal?: AbortSignal }).signal
+          return { content: JSON.stringify(await browserNativeCaller(caller, toolName, input, ctx.options.appConnectionFile as string, signal)) }
         },
       })
       for (const operation of nativeWorkerOperations) addSaneTool({

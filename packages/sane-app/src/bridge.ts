@@ -76,6 +76,9 @@ import { GitOperationsService } from "./git-operations";
 import { CatalogService } from "./catalog";
 import { WorkspaceCreationService } from "./workspace-creation";
 import { TerminalService, type TerminalSocketData } from "./terminal";
+import { BrowserService, type BrowserSocketData } from "./browser/browser-service";
+import { BrowserGrantError } from "./browser/browser-grant-registry";
+import { BROWSER_MCP_TOOLS } from "../shared/browser-host-contract";
 import { ScienceService, scienceRoute } from "./science";
 import { ScienceChatService, scienceChatRoute } from "./science-chat-service";
 import { ScienceStore } from "./science-store";
@@ -896,6 +899,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     failClosed, emit, persist, enqueue, execution, executionContext, compactExecution,
     refreshCompactHistory, assertWorkerDeliverySubmission, saneSession, canonicalContext, canonicalExecution,
     explicitProtocol: sessionId => workerStore.getBySession(sessionId)?.protocol,
+    browserMcp: async (sessionId, runId) => {
+      const session = meta.sessions.find(s => s.sessionId === sessionId), admission = admissions.get(sessionId);
+      if (!session || !admission || admission.state !== "ready" || session.agentKind === "worker" || !session.nativeSessionId || !session.authorityId) return null;
+      const token = browsers.issueSessionCredential({ sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId, nativeSessionId: session.nativeSessionId });
+      const credPath = join(options.dataDir, `${runId}.browser-credential.json`);
+      await writeFile(credPath, JSON.stringify({ version: 1, url: `http://127.0.0.1:${hookServer.port}/native/browser`, token, pid: process.pid, sessionId: session.sessionId }), { mode: 0o600 });
+      const mcpConfigPath = join(options.dataDir, `${runId}.browser-mcp.json`);
+      await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: { "sane-browser": { type: "stdio", command: process.execPath, args: [join(root, "src/browser/browser-mcp-server.ts"), credPath] } } }), { mode: 0o600 });
+      return { mcpConfigPath, allowedTools: BROWSER_MCP_TOOLS.map(name => `mcp__sane-browser__${name}`) };
+    },
   });
   const handoffs = new HandoffService(admissions, catalog, router, store.sources, () => meta.sessions, () => {
     if (closing || storageFailed || meta.reconciliationRequired) throw new WorkstreamAdapterError(503, "handoff-owner-unavailable", "App execution owner is unavailable");
@@ -1336,13 +1349,35 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   if (journalByteNotes.length && !await updates.noteJournalBytes(journalByteNotes)) throw new Error("Conversation update journal length note failed; reconciliation required");
   if (options.reconcileInterrupted) meta.reconciliationRequired = false;
   await persist();
-  let origin = "";
+  let origin = "", browserLoopbackOrigin = "";
   const auth = new BridgeAuth(authOptions, {
-    getOrigin: () => origin, revokeTerminal: token => { terminals.revoke(token); chromePush?.revokeOwner(token); },
+    getOrigin: () => origin, revokeTerminal: token => { terminals.revoke(token); browsers.revoke(token); chromePush?.revokeOwner(token); },
   });
   const terminalLog = join(options.dataDir, "terminal-performance.log");
   const terminals = new TerminalService(catalog, token => auth.validTerminalToken(token), line => {
     void appendFile(terminalLog, `${line}\n`, { mode: 0o600 }).catch(() => {});
+  });
+  const browsers = new BrowserService({ dataDir: options.dataDir, validToken: token => auth.validTerminalToken(token),
+    getOrigins: () => ({ publicOrigin: origin, loopbackOrigin: browserLoopbackOrigin }),
+    onError: error => {
+      void appendFile(join(options.dataDir, "browser-errors.log"), `${new Date().toISOString()} ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`, { mode: 0o600 }).catch(() => {});
+    },
+    validateSession: (target, identity) => {
+      const session = meta.sessions.find(session => session.sessionId === identity.sessionId), admission = admissions.get(identity.sessionId);
+      if (!session || !admission || admission.state !== "ready" || admission.binding.workspaceId !== target.workspaceId
+        || identity.harness !== sessionHarness(session) || identity.authorityId !== session.authorityId || identity.nativeSessionId !== session.nativeSessionId) throw new BrowserGrantError(409, "browser-grant-identity", "Conversation identity or workspace changed; reconnect before granting browser access");
+      const association = catalog.association(session.sessionId);
+      if (association.association !== "resolved" || association.workspaceId !== target.workspaceId || association.worktreeId !== admission.binding.worktreeId
+        || admission.nativeId !== session.nativeSessionId || admission.source.authorityId !== session.authorityId
+        || (admission.source.descriptor.harness === "cc" ? "claude-code" : "opencode") !== sessionHarness(session)
+        || admission.binding.executionCheckout !== session.cwd) throw new BrowserGrantError(409, "browser-grant-identity", "Conversation admission or workspace changed; reconnect before granting browser access");
+      assertCatalogActive(session);
+      if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || session.attachment?.state === "pending"
+        || branches.replaced(session.sessionId) || branches.pending(session.sessionId)
+        || session.authorityId !== nativeSource(session.harness)) throw new BrowserGrantError(409, "browser-grant-unavailable", "This conversation is unavailable for browser access");
+      catalog.assertBinding(admission.binding.workspaceId, admission.binding.worktreeId, admission.binding.executionCheckout, admission.binding.bindingRevision);
+      return undefined;
+    },
   });
   const branchContext = (id: string) => ({ actor: { kind: "system" as const }, correlationId: id });
   const branchFingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -3513,7 +3548,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     snapshot.observedAt = new Date().toISOString();
     return snapshot;
   }
-  async function handle(req: Request, srv: Pick<Bun.Server<undefined>, "requestIP" | "port">, upgrade?: (req: Request, data: TerminalSocketData) => boolean): Promise<Response | undefined> {
+  type BridgeSocketData = ({ kind: "terminal" } & TerminalSocketData) | ({ kind: "browser" } & BrowserSocketData);
+  async function handle(req: Request, srv: Pick<Bun.Server<undefined>, "requestIP" | "port">, upgrade?: (req: Request, data: BridgeSocketData) => boolean): Promise<Response | undefined> {
     try {
       const url = new URL(req.url); const path = url.pathname;
       if (path.startsWith("/hooks/")) {
@@ -3536,7 +3572,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         const connection = signedIn ? nativeConnectionSnapshot.read() : undefined;
         const nativeConnection = connection?.value ?? { available: false, connected: false, state: "unavailable", reason: connection?.error };
-        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { storeId: store.manifest.storeId, conversationUpdates: true, ...(pendingInputAutomationHealthy() ? { pendingInputCapability: { protocol: "pending-input", version: 1, supported: true, maxWaiting: 3, removal: true, resume: true } } : {}), capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [
+        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { storeId: store.manifest.storeId, conversationUpdates: true, ...(pendingInputAutomationHealthy() ? { pendingInputCapability: { protocol: "pending-input", version: 1, supported: true, maxWaiting: 3, removal: true, resume: true } } : {}), capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability, browser: browsers.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [
           { id: "claude-code", name: getHarnessDescriptor("claude-code")!.label, available: true, connected: true, state: "available", capabilities: capabilitiesFor("claude-code") },
           { id: "opencode", name: getHarnessDescriptor("opencode")!.label, ...nativeConnection, capabilities: capabilitiesFor("opencode") },
         ] } : {}) });
@@ -3832,7 +3868,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (!token) return json({ error: "Authentication required" }, 401);
           const data = await terminals.prepare(workspaceId, worktreeId, token);
           if (closing || auth.terminalToken(req) !== token) { terminals.cancelUpgrade(data); return json({ error: "Attachment authorization changed" }, 401); }
-          try { if (upgrade(req, data)) return undefined; } catch { terminals.cancelUpgrade(data); return json({ error: "WebSocket upgrade failed" }, 400); }
+          try { if (upgrade(req, { kind: "terminal", ...data })) return undefined; } catch { terminals.cancelUpgrade(data); return json({ error: "WebSocket upgrade failed" }, 400); }
           terminals.cancelUpgrade(data); return json({ error: "WebSocket upgrade failed" }, 400);
         }
         if (!operation && req.method === "GET") {
@@ -3845,6 +3881,27 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json(await terminals.change(workspaceId, worktreeId, operation === "close" ? "close" : operation === "restart" ? "restart" : "start", input, () => !closing && !!token && auth.terminalToken(req) === token));
         }
         return json({ error: "Method not allowed" }, 405);
+      }
+      const browserMatch = /^\/api\/workspaces\/([^/]+)\/browser\/(.+)$/.exec(path);
+      if (browserMatch) {
+        const workspaceId = decodeURIComponent(browserMatch[1]!), suffix = browserMatch[2]!, token = auth.terminalToken(req);
+        if (!token) return json({ error: "Authentication required" }, 401);
+        if (!catalog.workspaceName(workspaceId)) return json({ error: "Unknown workspace" }, 404);
+        if ((suffix.endsWith("/socket") || !["GET", "HEAD"].includes(req.method)) && req.headers.get("origin") !== origin) return json({ error: "Origin rejected" }, 403);
+        const authorized = () => !closing && !storageFailed && !!catalog.workspaceName(workspaceId) && auth.terminalToken(req) === token;
+        const socketMatch = /^tabs\/([^/]+)\/socket$/.exec(suffix);
+        if (socketMatch) {
+          if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
+          if (url.search) return json({ error: "Browser sockets do not accept query parameters", code: "browser-query" }, 400);
+          if (!upgrade || req.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "WebSocket upgrade required" }, 426);
+          try {
+            const data = await browsers.prepare(workspaceId, decodeURIComponent(socketMatch[1]!), token);
+            if (!authorized()) { browsers.cancelUpgrade(data); return json({ error: "Attachment authorization changed" }, 401); }
+            try { if (upgrade(req, { kind: "browser", ...data })) return undefined; } catch { browsers.cancelUpgrade(data); return json({ error: "WebSocket upgrade failed" }, 400); }
+            browsers.cancelUpgrade(data); return json({ error: "WebSocket upgrade failed" }, 400);
+          } catch (error) { return browsers.errorResponse(error); }
+        }
+        return browsers.route(req, workspaceId, suffix, authorized, token);
       }
       if (path === "/api/navigation") {
         if (req.method === "GET") return json(catalog.getNavigation());
@@ -4929,7 +4986,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await coordinator.close();
     await userQuestionsDelivery.close();
     await workers.drainLaunches();
-    await terminals.close();
+    await Promise.all([terminals.close(), browsers.close()]);
     await Promise.all([...owners.values()].map(async owner => {
       if (!owner.native && owner.child && !await terminate(owner)) retainOwner = true;
       await Promise.all([owner.done, owner.submission?.catch(() => {}), owner.cancel?.catch(() => {})]);
@@ -4941,7 +4998,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   };
   // Finite inactivity headroom above the clients' 25s/30s deadlines and 15s
   // backend reads. Do not let Bun's short default terminate valid requests.
-  const server = Bun.serve<TerminalSocketData>({ hostname: options.host, port: options.port, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, websocket: terminals.websocket,
+  const terminalSocket = (socket: Bun.ServerWebSocket<BridgeSocketData>) => socket as Bun.ServerWebSocket<TerminalSocketData>;
+  const browserSocket = (socket: Bun.ServerWebSocket<BridgeSocketData>) => socket as Bun.ServerWebSocket<BrowserSocketData>;
+  const server = Bun.serve<BridgeSocketData>({ hostname: options.host, port: options.port, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, websocket: {
+    maxPayloadLength: 65536, backpressureLimit: 10 * 1024 * 1024, closeOnBackpressureLimit: true, perMessageDeflate: false, idleTimeout: 60, sendPings: true,
+    open: socket => socket.data.kind === "terminal" ? terminals.websocket.open?.(terminalSocket(socket)) : browsers.websocket.open?.(browserSocket(socket)),
+    message: (socket, message) => socket.data.kind === "terminal" ? terminals.websocket.message(terminalSocket(socket), message) : browsers.websocket.message(browserSocket(socket), message),
+    close: (socket, code, reason) => socket.data.kind === "terminal" ? terminals.websocket.close?.(terminalSocket(socket), code, reason) : browsers.websocket.close?.(browserSocket(socket), code, reason),
+    drain: socket => socket.data.kind === "terminal" ? terminals.websocket.drain?.(terminalSocket(socket)) : browsers.websocket.drain?.(browserSocket(socket)),
+  },
     fetch: (req, srv) => withApiCompression(req, () => handle(req, srv, (request, data) => srv.upgrade(request, { data })), {
       // This POST only reprojects stored/native transcript evidence; it never
       // submits input. Other mutation acknowledgements keep the safer default.
@@ -4949,10 +5014,26 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }),
   });
   boundListenerStops.push(async () => { await server.stop(true); });
-  const hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/user-questions" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeUserQuestions(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
+  const hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/browser" ? (loopback(srv.requestIP(req)?.address ?? "") ? browsers.handleNativeBroker(req, handoffToken, caller => {
+    try {
+      const source = normalizeNativeSource(caller.source as Parameters<typeof normalizeNativeSource>[0]);
+      if (source.authorityId !== caller.authorityId) throw new Error();
+      const admission = admissions.getByNative({ harness: source.descriptor.harness, authorityId: caller.authorityId, nativeId: caller.nativeId });
+      const session = admission && meta.sessions.find(s => s.sessionId === admission.sessionId);
+      if (!admission || admission.state !== "ready" || !session || retirementPaused(session.sessionId) || session.hidden
+        || session.nativeSessionId !== caller.nativeId || session.authorityId !== caller.authorityId
+        || session.harness !== (source.descriptor.harness === "cc" ? "claude-code" : "opencode")
+        || session.cwd !== caller.cwd || admission.binding.executionCheckout !== caller.cwd
+        || canonicalJSON(admission.source) !== canonicalJSON(source)) throw new Error();
+      return { sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId, nativeSessionId: session.nativeSessionId };
+    } catch { throw new BrowserGrantError(403, "browser-session-unverified", "This conversation is not an admitted SANE session"); }
+  }) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/user-questions" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeUserQuestions(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
   boundListenerStops.push(async () => { await hookServer.stop(true); });
   presentationPoller.start();
   origin = options.publicOrigin ?? `http://${options.host.includes(":") ? `[${options.host}]` : options.host}:${server.port}`;
+  browserLoopbackOrigin = `http://127.0.0.1:${server.port}`;
+  browsers.setHookEndpoint(`http://127.0.0.1:${hookServer.port}/native/browser`, handoffToken);
+  atomicAppRecord(options.dataDir, "browser-mcp.json", { version: 1, url: `http://127.0.0.1:${hookServer.port}/native/browser`, token: handoffToken, pid: process.pid });
   atomicAppRecord(options.dataDir, "native-handoff.json", { version: 1, url: `http://127.0.0.1:${hookServer.port}/native/handoffs`, token: handoffToken, pid: process.pid });
   // Start recovery only after both listeners are acquired. A port-bind failure
   // must not leave observers writing after startup releases the ownership lock.
@@ -5275,7 +5356,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await workerOutboxTask;
     await handoffTask;
     await Promise.all(handoffDispatches.values());
-    await terminals.close();
+    await Promise.all([terminals.close(), browsers.close()]);
     if (attachmentTasks.size) {
       let timeout: ReturnType<typeof setTimeout> | undefined;
       const attachmentsDrained = await Promise.race([Promise.all([...attachmentTasks]).then(() => true), new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), 12000); })]);

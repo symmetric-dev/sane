@@ -17,7 +17,7 @@ import type { CompactRequest, CompactState, CompactionRecord } from "../src/oc-c
 import { compactCommand, compactionsFor } from "./compaction";
 import { ConversationCache, cloneRunForConsume, conversationKey } from "./conversation-cache";
 import { ConversationListing, conversationQueryKey } from "./conversation-listing";
-import { ConversationGroupListing, type ConversationGroupPage, type ConversationGroupDirectory } from "./conversation-group-listing";
+import { ConversationGroupListing, conversationGroupPageSize, type ConversationGroupPage, type ConversationGroupDirectory } from "./conversation-group-listing";
 export type { ConversationGroupPage, ConversationGroupDirectory } from "./conversation-group-listing";
 import type { SessionCatalogQuery } from "./types";
 import { canonicalCount, equalValue, mergePage, pageMessages, pagedUsage, refreshPages, sameRunMetadata, TranscriptCoverageError, type PagedTranscript, type PageRequest } from "./transcript-pages";
@@ -678,7 +678,7 @@ export class ChatStore {
       this.catalogHead = undefined; this.catalogCursor = null; this.catalogSnapshotPinned = false;
       this.catalogMoreSerial++; this.catalogMoreError = "";
     }
-    this.conversationQuery = { ...baseQuery, limit: 5, cursor: undefined };
+    this.conversationQuery = { ...baseQuery, limit: conversationGroupPageSize(baseQuery.mode), cursor: undefined };
     this.groupListing.configure(this.conversationQuery, expandedQueries);
   };
   loadMoreConversationGroup = (query: SessionCatalogQuery): Promise<void> => this.groupListing.more(query);
@@ -1070,7 +1070,7 @@ export class ChatStore {
       },
     });
     this.state = { ...this.state, transcriptPaged: this.paged }; onWorkspaceAuthExpired(() => this.loginRequired());
-    if (client.conversationGroups) this.setConversationGroups({ mode: "chat", limit: 5 }, []);
+    if (client.conversationGroups) this.setConversationGroups({ mode: "chat", limit: conversationGroupPageSize("chat") }, []);
     else if (client.conversationSummaries) this.resetConversationPages();
     if (typeof window !== "undefined") window.addEventListener("storage", event => {
       if (event.key === this.pendingInputKey()) { this.loadPendingInputLedger(); if (this.pendingInputVisible) void this.refreshPendingInputs(); }

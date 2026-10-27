@@ -19,13 +19,14 @@ type Options = {
   publish(groups: Record<string, ConversationGroupPage>, directory: ConversationGroupDirectory, ids: string[]): void;
 };
 const emptyPage = (): ConversationGroupPage => ({ ids: [], hasMore: false, loading: false, loadingMore: false, error: "" });
-const normalize = (query: SessionCatalogQuery): SessionCatalogQuery => ({ ...query, limit: 5, cursor: undefined });
+export const conversationGroupPageSize = (mode: SessionCatalogQuery["mode"]) => mode === "history" ? 5 : 3;
+const normalize = (query: SessionCatalogQuery): SessionCatalogQuery => ({ ...query, limit: conversationGroupPageSize(query.mode), cursor: undefined });
 
 /** Query/auth-owned sidebar state. Selected-chat generations never own these
  * requests. Only directory + expanded HEADS poll; frozen tails are read on demand. */
 export class ConversationGroupListing {
   enabled = false;
-  private base: SessionCatalogQuery = { mode: "chat", limit: 5 };
+  private base: SessionCatalogQuery = normalize({ mode: "chat" });
   private baseKey = conversationQueryKey(this.base);
   private expanded = new Map<string, SessionCatalogQuery>();
   private entries = new Map<string, Entry>();
@@ -61,7 +62,7 @@ export class ConversationGroupListing {
     // filters, expanded queries, or cached rows may survive an auth boundary.
     this.enabled = false;
     this.pause(); this.entries.clear(); this.directories.clear(); this.expanded.clear();
-    this.base = { mode: "chat", limit: 5 }; this.baseKey = conversationQueryKey(this.base);
+    this.base = normalize({ mode: "chat" }); this.baseKey = conversationQueryKey(this.base);
     this.enabled = this.options.nativeDirectory;
     if (this.enabled) this.publish();
   }
@@ -271,7 +272,7 @@ export class ConversationGroupListing {
             if (!more && !entry.pinned) entry.legacyIds = all.conversations.map(row => row.id);
             const ids = more ? entry.legacyIds ?? [] : all.conversations.map(row => row.id);
             const byId = new Map(all.conversations.map(row => [row.id, row]));
-            const end = offset + 5, nextCursor = end < ids.length ? `legacy:${end}` : null;
+            const end = offset + conversationGroupPageSize(entry.query.mode), nextCursor = end < ids.length ? `legacy:${end}` : null;
             return { serial, data: { conversations: ids.slice(offset, end).flatMap(id => byId.get(id) ?? []), availability: all.availability,
               page: { kind: "partial" as const, nextCursor, hasMore: nextCursor !== null } } };
           }

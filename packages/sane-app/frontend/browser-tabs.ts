@@ -1,6 +1,6 @@
 export const MAX_BROWSER_TABS = 8;
 const STORAGE_PREFIX = "sane.browser.tabs.v1.";
-export type BrowserTab = { id: string; url: string; alias?: string };
+export type BrowserTab = { id: string; url: string; alias?: string; mode?: "device" | "host" };
 export type BrowserTabs = { tabs: BrowserTab[]; activeId: string | null; showAll: boolean; storageError: string };
 const empty = (): BrowserTabs => ({ tabs: [], activeId: null, showAll: false, storageError: "" });
 
@@ -24,7 +24,7 @@ function load(workspaceId: string): BrowserTabs {
       if (!tab || typeof tab.id !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(tab.id) || ids.has(tab.id) || typeof tab.url !== "string") throw new Error("Invalid saved browser tab");
       ids.add(tab.id);
       const alias = typeof tab.alias === "string" ? tab.alias.trim().slice(0, 80) : "";
-      return { id: tab.id, url: tab.url ? browserUrl(tab.url) : "", ...(alias ? { alias } : {}) };
+      return { id: tab.id, url: tab.url ? browserUrl(tab.url) : "", ...(alias ? { alias } : {}), ...(tab.mode === "host" ? { mode: "host" as const } : {}) };
     });
     return { tabs, activeId: tabs.some(tab => tab.id === saved.activeId) ? saved.activeId : tabs[0]?.id ?? null, showAll: saved.showAll === true, storageError: "" };
   } catch { return empty(); }

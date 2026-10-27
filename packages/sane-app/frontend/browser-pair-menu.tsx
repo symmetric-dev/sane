@@ -4,6 +4,8 @@ import { FiCheck, FiLink, FiPlus, FiTrash2, FiX } from "react-icons/fi";
 import { browserPairCache, clearBrowserPairs, readBrowserPairs, writeBrowserPairs } from "./browser-pair-client";
 import { browserPairIntentMatches, canPairBrowserConversation, captureBrowserPairIntent, type BrowserPairIntent } from "./browser-pair";
 import { browserTabLabel, browserTabs } from "./browser-tabs";
+import { getHostBrowserTab, hostBrowserTabs, revokeHostBrowserGrant, setHostBrowserGrant } from "./browser-host-client";
+import type { BrowserGrantScope, BrowserSessionGrant } from "../shared/browser-host-contract";
 import { catalog } from "./catalog";
 import { ConversationSidebarList, type ConversationSidebarModel } from "./conversation-sidebar";
 import { ShellDialog } from "./shell-dialog";
@@ -18,6 +20,7 @@ type Props = {
   addSession: (id: string) => void; removed: (id: string | null) => void;
 };
 const sessionRef = (link: BrowserPairSession): BrowserPairSession => ({ sessionId: link.sessionId, harness: link.harness, authorityId: link.authorityId, nativeSessionId: link.nativeSessionId });
+const grantMatchesSession = (grant: BrowserSessionGrant, session: BrowserPairSession) => grant.sessionId === session.sessionId && grant.harness === session.harness && grant.authorityId === session.authorityId && grant.nativeSessionId === session.nativeSessionId;
 
 /** One shell-owned controller, shared by the sidebar and unpaired Browser header. */
 export function useBrowserPairMenu(props: Props) {
@@ -29,9 +32,11 @@ export function useBrowserPairMenu(props: Props) {
   const target = { workspaceId: workspaceId ?? "", tabId: tab?.id ?? "" };
   const storeId = state.config?.storeId ?? "";
   const tree = repository.workspaces.find(item => item.workspaceId === workspaceId)?.worktrees.find(item => item.worktreeId === repository.navigation.worktreeId);
-  const scope = JSON.stringify([workspaceEpoch(), storeId, state.config?.authenticated, repository.navigation.view, workspaceId, tree?.worktreeId, tree?.bindingRevision, target.tabId]);
+  const scope = JSON.stringify([workspaceEpoch(), storeId, state.config?.authenticated, repository.navigation.view, workspaceId, tree?.worktreeId, tree?.bindingRevision, target.tabId, tab?.mode ?? "device"]);
   const enabled = state.phase === "ready" && state.config?.authenticated && repository.ready && repository.navigation.view === "browser" && !!storeId && !!tab;
   const snapshot = useSyncExternalStore(browserPairCache.subscribe, () => enabled ? browserPairCache.snapshot(storeId, target) : null);
+  const host = useSyncExternalStore(hostBrowserTabs.subscribe, () => hostBrowserTabs.snapshot(target.workspaceId, target.tabId));
+  const hostMode = tab?.mode === "host";
   const [opened, setOpened] = useState<string | null>(null);
   const [picker, setPicker] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{ scope: string; snapshot: BrowserPairSnapshot } | null>(null);
@@ -60,6 +65,15 @@ export function useBrowserPairMenu(props: Props) {
     if (enabled) void refresh(false);
     return () => { load.current?.abort(); operation.current?.abort(); };
   }, [scope, !!enabled, state.config]);
+  useEffect(() => {
+    if (!enabled || !hostMode || !visible) return;
+    const controller = new AbortController();
+    const refreshHost = () => { void getHostBrowserTab(target.workspaceId, target.tabId, controller.signal).catch(failure => {
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "Could not load host browser grants.");
+    }); };
+    refreshHost(); const timer = setInterval(refreshHost, 10000);
+    return () => { controller.abort(); clearInterval(timer); };
+  }, [scope, !!enabled, hostMode, visible]);
 
   async function refresh(summaries: boolean) {
     load.current?.abort();
@@ -122,6 +136,12 @@ export function useBrowserPairMenu(props: Props) {
     if (!current()) return;
     setConfirmation(null); currentProps.current.props.removed(null); close();
   }, confirmation?.scope === scope ? confirmation.snapshot : null);
+  const changeGrant = (link: BrowserPairLink, grantScope: BrowserGrantScope) => void run(async (_before, signal, current) => {
+    if (!hostMode || host.state?.status !== "running" || !current()) return;
+    const existing = host.grants.find(grant => grantMatchesSession(grant, link));
+    if (existing?.scope === grantScope) await revokeHostBrowserGrant(target.workspaceId, target.tabId, link.sessionId, signal);
+    else await setHostBrowserGrant(target.workspaceId, target.tabId, sessionRef(link), grantScope, signal);
+  });
   const titleFor = (link: BrowserPairLink) => state.conversations.find(item => item.id === link.sessionId && item.harness === link.harness && item.authorityId === link.authorityId && item.nativeSessionId === link.nativeSessionId)?.title || `Conversation · ${link.sessionId.slice(0, 8)}`;
   const locked = busy || blocked || loading || state.sending || state.actionBusy;
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -140,7 +160,7 @@ export function useBrowserPairMenu(props: Props) {
     const height = Math.min(480, menu.current.scrollHeight), upwards = height > below && above > below;
     const maxHeight = Math.min(height, upwards ? above : below);
     setPosition({ top: upwards ? rect.top - 4 - maxHeight : rect.bottom + 4, left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)), maxHeight });
-  }, [visible, snapshot, loading, error]);
+  }, [visible, snapshot, host, loading, error]);
   useEffect(() => {
     if (!visible) return;
     menu.current?.focus();
@@ -160,10 +180,14 @@ export function useBrowserPairMenu(props: Props) {
     {visible && createPortal(<div id={menuId} ref={menu} className="browser-pair-menu" role="menu" aria-label={`Paired sessions for ${tabName}`} tabIndex={-1} onKeyDown={onKey} style={position ?? { visibility: "hidden" }}>
       <header><strong>Paired sessions</strong><span title={tabName}>{tabName}</span></header>
       {(loading || busy) && <p className="muted" role="status">{busy ? "Updating paired sessions…" : "Loading paired sessions…"}</p>}
-      {snapshot?.sessions.map(link => <div className="browser-pair-menu-row" role="none" key={link.sessionId}>
+      {hostMode && <p className="muted">Host access is separate from pairing. Observe is read-only; Control permits agent changes. Select an active grant again to revoke it.{host.state?.status !== "running" ? " Start the host tab to enable grants." : ""}</p>}
+      {snapshot?.sessions.map(link => <div className="browser-pair-menu-session" role="none" key={link.sessionId}><div className="browser-pair-menu-row" role="none">
         <button type="button" role="menuitemradio" aria-checked={pairedSessionId === link.sessionId} disabled={locked} onClick={() => switchSession(link)} title={titleFor(link)}><span className="browser-pair-menu-check">{pairedSessionId === link.sessionId && <FiCheck size={15} aria-hidden="true" />}</span><span>{titleFor(link)}</span></button>
         <button type="button" role="menuitem" className="browser-pair-menu-remove" aria-label={`Remove ${titleFor(link)} from paired sessions`} title="Remove link" disabled={locked} onClick={() => removeSession(link)}><FiX size={15} aria-hidden="true" /></button>
-      </div>)}
+      </div>{hostMode && <div className="browser-pair-grants" role="group" aria-label={`Host browser access for ${titleFor(link)}`}>
+        <span>Host: {host.grants.find(grant => grantMatchesSession(grant, link))?.scope === "control" ? "Control" : host.grants.find(grant => grantMatchesSession(grant, link))?.scope === "observe" ? "Observe" : "None"}</span>
+        {(["observe", "control"] as const).map(grantScope => <button type="button" role="menuitemcheckbox" key={grantScope} aria-checked={host.grants.some(grant => grantMatchesSession(grant, link) && grant.scope === grantScope)} disabled={locked || host.state?.status !== "running"} onClick={() => changeGrant(link, grantScope)}>{grantScope === "observe" ? "Observe" : "Control"}</button>)}
+      </div>}</div>)}
       {!loading && snapshot && !snapshot.sessions.length && <p className="muted">No sessions are linked to this tab.</p>}
       {error && <p className="notice error" role="alert">{error}</p>}
       {(error || blocked) && <button type="button" role="menuitem" disabled={busy || loading} onClick={() => void refresh(true)}>Refresh paired sessions</button>}
