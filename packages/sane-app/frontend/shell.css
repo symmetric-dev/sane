@@ -66,6 +66,7 @@
   padding:12px;
   overflow:hidden;
 }
+.sidebar-body:has(>.sidebar-mode-control) { padding:0; gap:0; }
 /* Chat panel connection: iPad Safari showed a hairline at the selected row's
    right edge in the longer, unfiltered list. Layering the divider behind the
    rows alone was insufficient; the scrollport must extend 1px into the panel.
@@ -139,10 +140,9 @@
   font-variant-numeric:tabular-nums;
 }
 .chat-surface[hidden] { display:none; }
-.browser-preview-region { display:flex; flex:1; min-width:0; min-height:0; overflow:hidden; }
-.browser-preview-region[hidden],.browser-pair-inline[hidden] { display:none; }
-.browser-pair>.sidebar { width:380px; }
-.browser-pair>.sidebar>.sidebar-body { padding:0; gap:0; }
+.paired-preview-region { display:flex; flex:1; min-width:0; min-height:0; overflow:hidden; }
+.paired-preview-region[hidden],.browser-pair-inline[hidden] { display:none; }
+.has-resource-sidebar>.sidebar>.sidebar-body { padding:0; gap:0; }
 .browser-pair-sidebar,.browser-pair-transcript,.browser-pair-inline { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; overflow:hidden; }
 .browser-pair>.main { position:relative; }
 /* Overlay the stable Thread owner, not a footer row: preview content continues
@@ -288,18 +288,16 @@
 @media(max-width:1000px) {
   .sidebar { width:260px; }
   .topbar>.harness-badge { display:none; }
-  .browser-pair>.sidebar { display:none; }
-  .browser-pair .topbar .mobile-shell-logo { display:inline-flex; }
-  /* Reserve the measured floating surface only in Conversation, never Preview. */
+}
+@media(max-width:700px) {
+  .app-shell { --shell-header-height:44px; }
+  .sidebar { display:none; }
+  /* Pairing uses the same sidebar width and compact breakpoint as every view. */
   .browser-pair .browser-pair-inline { padding-bottom:var(--browser-pair-composer-height, 0px); }
   .browser-pair>.main>.browser-pair-toolbar { max-height:35%; overflow:auto; }
   .browser-pair-pane-toggle { display:flex; flex-basis:100%; gap:4px; }
   .browser-pair-pane-toggle>button { flex:1; min-height:36px; padding:6px 12px; border:1px solid var(--border); border-radius:7px; font-size:12px; }
   .browser-pair-pane-toggle>button[aria-pressed="true"] { background:var(--accent); color:var(--primary); border-color:var(--primary); }
-}
-@media(max-width:700px) {
-  .app-shell { --shell-header-height:44px; }
-  .sidebar { display:none; }
   .app-shell .topbar { height:calc(var(--shell-header-height) + env(safe-area-inset-top)); min-height:calc(var(--shell-header-height) + env(safe-area-inset-top)); padding:env(safe-area-inset-top) max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left)); gap:6px; }
   .topbar .mobile-shell-logo { display:inline-flex; }
   .drawer-content:has(>.shell-sidebar-header) { padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left)); }

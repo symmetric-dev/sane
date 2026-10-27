@@ -1,7 +1,7 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { atomicAppRecord, exact } from "./app-store";
-import { isBrowserPairSnapshot, isBrowserPairWrite, MAX_BROWSER_PAIR_SESSIONS, sameBrowserPairSession, type BrowserPairLink, type BrowserPairSnapshot, type BrowserPairTarget, type BrowserPairWrite } from "../shared/browser-pair-contract";
+import { isBrowserPairSession, isBrowserPairSnapshot, isBrowserPairTarget, isBrowserPairWrite, MAX_BROWSER_PAIR_SESSIONS, sameBrowserPairSession, type BrowserPairLink, type BrowserPairSession, type BrowserPairSnapshot, type BrowserPairTarget, type BrowserPairWrite } from "../shared/browser-pair-contract";
 
 export class BrowserPairError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); }
@@ -46,6 +46,14 @@ export class BrowserPairStore {
   read(target: BrowserPairTarget): BrowserPairSnapshot {
     if (this.failed) throw new BrowserPairError(503, "browser-pair-storage", "Browser pairing storage is unavailable");
     return structuredClone(this.targets.get(key(target)) ?? { version: 1, storeId: this.storeId, workspaceId: target.workspaceId, tabId: target.tabId, revision: 0, sessions: [] });
+  }
+  /** Passive bounded discovery from the same authoritative rows as read/write.
+   * Tab existence is device-local; callers must not probe URLs to validate it. */
+  listForSession(workspaceId: string, session: BrowserPairSession): BrowserPairSnapshot[] {
+    if (this.failed) throw new BrowserPairError(503, "browser-pair-storage", "Browser pairing storage is unavailable");
+    if (!isBrowserPairTarget({ workspaceId, tabId: "linked" }) || !isBrowserPairSession(session)) throw new BrowserPairError(400, "browser-pair-input", "Invalid browser pairing discovery identity");
+    return structuredClone([...this.targets.values()].filter(snapshot => snapshot.workspaceId === workspaceId
+      && snapshot.sessions.some(link => sameBrowserPairSession(link, session))));
   }
   write(input: BrowserPairWrite, assertCurrent: () => void): BrowserPairSnapshot {
     if (!isBrowserPairWrite(input)) throw new BrowserPairError(400, "browser-pair-input", "Invalid browser pairing operation");

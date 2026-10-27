@@ -1803,7 +1803,10 @@ export class ChatStore {
     this.choose(id);
     if (auth !== this.authEpoch || this.state.phase !== "ready" || this.state.config !== config || this.state.selected !== id
       || source !== identity(this.state.conversations.find(c => c.id === id))) return false;
-    catalog.navigate({ conversationId: id || null, view: "chat", ...(conversation ? { workspaceId: conversation.workspaceId ?? null, worktreeId: conversation.worktreeId ?? null, filePath: null, comparison: null } : {}) });
+    const previousNavigation = catalog.snapshot().navigation;
+    const sameCheckout = conversation && conversation.workspaceId === previousNavigation.workspaceId && conversation.worktreeId === previousNavigation.worktreeId;
+    catalog.navigate({ conversationId: id || null, view: "chat", ...(conversation ? { workspaceId: conversation.workspaceId ?? null, worktreeId: conversation.worktreeId ?? null,
+      filePath: sameCheckout ? previousNavigation.filePath : null, comparison: sameCheckout ? previousNavigation.comparison : null } : {}) });
     const navigation = catalog.snapshot().navigation;
     if (auth !== this.authEpoch || this.state.phase !== "ready" || this.state.config !== config || this.state.selected !== id
       || navigation.view !== "chat" || navigation.conversationId !== (id || null)

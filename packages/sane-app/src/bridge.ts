@@ -1,6 +1,6 @@
 import { readFile, writeFile, rename, appendFile, stat, readdir, realpath, open, mkdir } from "node:fs/promises";
-import { constants, readFileSync, statSync, writeFileSync } from "node:fs";
-import { resolve, dirname, join, isAbsolute } from "node:path";
+import { constants, readFileSync, statSync, writeFileSync, lstatSync, realpathSync } from "node:fs";
+import { resolve, dirname, join, isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { BridgeAuth, validateBridgeAuthOptions } from "./bridge-auth";
@@ -10,6 +10,8 @@ import { requireNativeBearer, requireStartupReady } from "./bridge-native-auth";
 import { CodeShareStore, CodeShareError } from "./code-share-store";
 import { BrowserPairStore, BrowserPairError } from "./browser-pair-store";
 import { isBrowserPairTarget, isBrowserPairWrite, sameBrowserPairSession } from "../shared/browser-pair-contract";
+import { ResourcePairStore, ResourcePairError } from "./resource-pair-store";
+import { isPairLinkedSnapshot, isPairTarget, isPairWrite, type PairSession, type PairTarget } from "../shared/resource-pair-contract";
 import { CodeShareService } from "./code-share-service";
 import { denyCodeShareIdentity, matchesCodeShareTool, matchesCodeSharePart, readCodeShareContinuation } from "./code-share-evidence";
 import type { NativeCodeShareRequest } from "../shared/code-share-contract";
@@ -2103,6 +2105,56 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const qualifiedWorkerInvocations = new WeakMap<NativeWorkerInvocation, { admission: Admission; session: Session; starting: boolean; continuation?: WorkerContinuationAuthorization }>();
   const codeShares = new CodeShareStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "code-share-storage"));
   const browserPairs = new BrowserPairStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "browser-pair-storage"));
+  const resourcePairs = new ResourcePairStore(options.dataDir, store.manifest.storeId, browserPairs, error => failClosed(error, "resource-pair-storage"));
+  // Shared admission fence for both APIs. Removal never requires the linked
+  // conversation to remain active, so stale links can still be removed.
+  function assertPairConversation(input: { operation: "clear" } | { operation: "add" | "replace" | "remove"; session: PairSession }, PairError: typeof ResourcePairError | typeof BrowserPairError) {
+    if (input.operation === "remove" || input.operation === "clear") return;
+    const prefix = PairError === BrowserPairError ? "browser-pair" : "resource-pair";
+    const expected = input.session, session = meta.sessions.find(session => session.sessionId === expected.sessionId);
+    if (!session || !sameBrowserPairSession(expected, { sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId ?? "", nativeSessionId: session.nativeSessionId ?? "" })) throw new PairError(409, `${prefix}-identity`, "Conversation identity changed; reconnect before pairing");
+    assertCatalogActive(session);
+    if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || session.attachment?.state === "pending"
+      || branches.replaced(session.sessionId) || branches.pending(session.sessionId) || catalog.association(session.sessionId).association !== "resolved"
+      || session.authorityId !== nativeSource(session.harness)) throw new PairError(409, `${prefix}-unavailable`, `This conversation is unavailable for ${PairError === BrowserPairError ? "browser" : "resource"} pairing`);
+  }
+  async function resourcePairTargetFence(target: PairTarget, requireFile: boolean): Promise<() => void> {
+    if (target.kind === "browser") return () => {
+      if (!catalog.workspaceName(target.workspaceId)) throw new ResourcePairError(404, "resource-pair-workspace", "Unknown browser workspace");
+    };
+    // Selection metadata plus synchronous catalog inode pins: unlike binding(),
+    // this passive operation does not run Git discovery or read file contents.
+    const workspace = await catalog.registered(target.workspaceId);
+    return resourcePairFileTargetFence(target, workspace, requireFile);
+  }
+  function resourcePairFileTargetFence(target: Extract<PairTarget, { kind: "file" }>, workspace: Awaited<ReturnType<CatalogService["registered"]>>, requireFile: boolean): () => void {
+    const tree = workspace.worktrees.find(tree => tree.worktreeId === target.worktreeId);
+    if (!tree) throw new ResourcePairError(404, "resource-pair-worktree", "Unknown file worktree");
+    const { root, bindingRevision } = tree;
+    const inside = (parent: string, child: string) => { const path = relative(parent, child); return !isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`); };
+    const check = () => {
+      catalog.assertBinding(target.workspaceId, target.worktreeId, root, bindingRevision);
+      const data = realpathSync(options.dataDir), path = join(root, target.path);
+      const protectedPaths = [data, workspace.commonDir, tree.gitDir, ...domainProtectedPaths].filter((path): path is string => !!path);
+      if (root.split(sep).some(part => [".git", ".sane"].includes(part.toLowerCase())) || !inside(root, path)
+        || protectedPaths.some(protectedPath => inside(protectedPath, root) || inside(protectedPath, path))) throw new ResourcePairError(403, "resource-pair-path", "File path is not accessible");
+      if (!requireFile) return;
+      let cursor = root;
+      try {
+        const parts = target.path.split("/");
+        for (let i = 0; i < parts.length; i++) {
+          cursor = join(cursor, parts[i]!);
+          const info = lstatSync(cursor);
+          if (info.isSymbolicLink() || realpathSync(cursor) !== cursor || (i < parts.length - 1 ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) throw new ResourcePairError(403, "resource-pair-file", "Pair an existing regular worktree file without symlink or hardlink traversal");
+        }
+      } catch (error) {
+        if (error instanceof ResourcePairError) throw error;
+        throw new ResourcePairError(409, "resource-pair-file", "File is unavailable; reopen it before pairing");
+      }
+    };
+    check();
+    return check;
+  }
   function codeShareSession(request: Pick<NativeCodeShareRequest, "caller">) {
     let source;
     try { source = normalizeNativeSource(request.caller.source); } catch { return denyCodeShareIdentity(); }
@@ -3598,7 +3650,103 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!meta.sessions.some(session => session.sessionId === sessionId)) return json({ error: "Unknown conversation" }, 404);
         return json({ forms: userQuestions.list(sessionId) });
       }
+      if (path === "/api/resource-pairs/linked") {
+        if (req.method !== "GET") return json({ error: "Method not allowed" }, 405, { allow: "GET" });
+        const names = ["storeId", "workspaceId", "worktreeId", "kind", "session"];
+        if ([...url.searchParams.keys()].some(key => !names.includes(key)) || names.some(key => url.searchParams.getAll(key).length !== 1)) throw new ResourcePairError(400, "resource-pair-input", "Provide storeId, workspaceId, worktreeId, kind and a JSON session only");
+        const encodedSession = url.searchParams.get("session")!;
+        if (encodedSession.length > 2048) throw new ResourcePairError(400, "resource-pair-input", "Invalid conversation identity");
+        let session: unknown;
+        try { session = JSON.parse(encodedSession); } catch { throw new ResourcePairError(400, "resource-pair-input", "Invalid JSON conversation identity"); }
+        const lookup = { version: 1, storeId: url.searchParams.get("storeId"), workspaceId: url.searchParams.get("workspaceId"),
+          worktreeId: url.searchParams.get("worktreeId"), kind: url.searchParams.get("kind"), session, targets: [] };
+        if (!isPairLinkedSnapshot(lookup)) throw new ResourcePairError(400, "resource-pair-input", "Invalid resource pairing discovery identity");
+        const { version: _version, targets: _targets, ...scope } = lookup;
+        const admissionPin = JSON.stringify(admissions.get(scope.session.sessionId));
+        const assertCurrent = () => {
+          if (req.signal.aborted || !auth.authenticated(req)) throw new ResourcePairError(409, "resource-pair-interrupted", "Pairing request is no longer current");
+          if (!startupReady || closing || storageFailed) throw new ResourcePairError(503, "resource-pair-unavailable", "Resource pairing discovery is unavailable");
+          if (scope.storeId !== store.manifest.storeId) throw new ResourcePairError(409, "resource-pair-store", "The App store changed; reconnect before pairing");
+          assertPairConversation({ operation: "add", session: scope.session }, ResourcePairError);
+          const current = meta.sessions.find(item => item.sessionId === scope.session.sessionId)!, admission = admissions.get(scope.session.sessionId);
+          const association = catalog.association(scope.session.sessionId);
+          if (current.hidden || !admission || admission.state !== "ready" || JSON.stringify(admission) !== admissionPin
+            || admission.nativeId !== scope.session.nativeSessionId || admission.source.authorityId !== scope.session.authorityId
+            || admission.source.descriptor.harness !== (scope.session.harness === "opencode" ? "oc" : "cc")
+            || association.workspaceId !== admission.binding.workspaceId || association.worktreeId !== admission.binding.worktreeId
+            || current.cwd !== admission.binding.executionCheckout) throw new ResourcePairError(409, "resource-pair-identity", "Conversation admission changed; reconnect before restoring links");
+          // Cached authority IDs do not attest that their configured/admitted
+          // locators still resolve to that authority after an async boundary.
+          try {
+            const source = store.sources[admission.source.descriptor.harness];
+            if (source.authorityId !== scope.session.authorityId
+              || normalizeNativeSource(source.descriptor).authorityId !== scope.session.authorityId
+              || normalizeNativeSource(admission.source.descriptor).authorityId !== scope.session.authorityId) throw new Error("Native source changed");
+          } catch {
+            throw new ResourcePairError(409, "resource-pair-identity", "Native authority changed or is unavailable; reconnect before restoring links");
+          }
+          catalog.assertBinding(admission.binding.workspaceId, admission.binding.worktreeId, admission.binding.executionCheckout, admission.binding.bindingRevision);
+        };
+        assertCurrent();
+        // Navigation is independent of the conversation's execution checkout.
+        // Browser targets need only their workspace; files need the exact live
+        // browsing worktree. Execution binding checks remain in assertCurrent.
+        const workspace = await catalog.registered(scope.workspaceId);
+        assertCurrent();
+        let assertBrowsing: () => void;
+        if (scope.kind === "browser") {
+          assertBrowsing = () => {
+            if (!catalog.workspaceName(scope.workspaceId)) throw new ResourcePairError(404, "resource-pair-workspace", "Unknown browser workspace");
+          };
+        } else {
+          const tree = workspace.worktrees.find(item => item.worktreeId === scope.worktreeId);
+          if (!tree) throw new ResourcePairError(404, "resource-pair-worktree", "Unknown resource worktree");
+          assertBrowsing = () => catalog.assertBinding(scope.workspaceId, scope.worktreeId, tree.root, tree.bindingRevision);
+        }
+        assertBrowsing();
+        const snapshot = resourcePairs.listForSession(scope);
+        // From this point through publication everything is synchronous: a
+        // concurrent unlink cannot be crossed by an async per-file preflight.
+        snapshot.targets = snapshot.targets.filter(item => {
+          if (item.target.kind === "browser") return true;
+          try { resourcePairFileTargetFence(item.target, workspace, true); return true; }
+          catch (error) {
+            if (error instanceof ResourcePairError && ["resource-pair-path", "resource-pair-file"].includes(error.code)) return false;
+            throw error;
+          }
+        });
+        assertCurrent();
+        assertBrowsing();
+        if (!isPairLinkedSnapshot(snapshot)) throw new ResourcePairError(503, "resource-pair-storage", "Invalid resource pairing discovery snapshot");
+        return json(snapshot);
+      }
       if (!startupReady && path.startsWith("/api/") && !["GET", "HEAD"].includes(req.method)) return json({ error: "Startup execution classification is incomplete", code: "startup-classifying" }, 503);
+      if (path === "/api/resource-pairs") {
+        if (req.method === "GET") {
+          if ([...url.searchParams.keys()].some(key => !["storeId", "target"].includes(key))
+            || ["storeId", "target"].some(key => url.searchParams.getAll(key).length !== 1)) throw new ResourcePairError(400, "resource-pair-input", "Provide storeId and a JSON target only");
+          if (url.searchParams.get("storeId") !== store.manifest.storeId) throw new ResourcePairError(409, "resource-pair-store", "The App store changed; reconnect before pairing");
+          let target: unknown;
+          try { target = JSON.parse(url.searchParams.get("target")!); } catch { throw new ResourcePairError(400, "resource-pair-input", "Invalid JSON resource target"); }
+          if (!isPairTarget(target)) throw new ResourcePairError(400, "resource-pair-input", "Invalid resource identity");
+          const assertTarget = await resourcePairTargetFence(target, false);
+          if (req.signal.aborted || !auth.authenticated(req)) throw new ResourcePairError(409, "resource-pair-interrupted", "Pairing request is no longer current");
+          assertTarget();
+          return json(resourcePairs.read(target));
+        }
+        if (req.method !== "PUT") return json({ error: "Method not allowed" }, 405, { allow: "GET, PUT" });
+        if (url.searchParams.size) throw new ResourcePairError(400, "resource-pair-input", "Pairing writes do not accept query parameters");
+        const input = await body(req);
+        if (!isPairWrite(input)) throw new ResourcePairError(400, "resource-pair-input", "Provide an exact resource target, operation, expected revision, and conversation identity for session-level changes");
+        const assertTarget = await resourcePairTargetFence(input.target, input.operation === "add" || input.operation === "replace");
+        const assertCurrent = () => {
+          assertDomainMutationOpen();
+          if (req.signal.aborted || !auth.authenticated(req)) throw new ResourcePairError(409, "resource-pair-interrupted", "Pairing request is no longer current");
+          assertTarget();
+          assertPairConversation(input, ResourcePairError);
+        };
+        return json(resourcePairs.write(input, assertCurrent));
+      }
       if (path === "/api/browser-pairs") {
         if (req.method === "GET") {
           if ([...url.searchParams.keys()].some(key => !["storeId", "workspaceId", "tabId"].includes(key))
@@ -3619,15 +3767,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           assertDomainMutationOpen();
           if (req.signal.aborted || !auth.authenticated(req)) throw new BrowserPairError(409, "browser-pair-interrupted", "Pairing request is no longer current");
           if (!catalog.workspaceName(input.workspaceId)) throw new BrowserPairError(404, "browser-pair-workspace", "Unknown browser workspace");
-          // Removing a stale link must remain possible after retirement/replacement.
-          if (input.operation === "remove" || input.operation === "clear") return;
-          const expected = input.session;
-          const session = meta.sessions.find(session => session.sessionId === expected.sessionId);
-          if (!session || !sameBrowserPairSession(input.session, { sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId ?? "", nativeSessionId: session.nativeSessionId ?? "" })) throw new BrowserPairError(409, "browser-pair-identity", "Conversation identity changed; reconnect before pairing");
-          assertCatalogActive(session);
-          if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || session.attachment?.state === "pending"
-            || branches.replaced(session.sessionId) || branches.pending(session.sessionId) || catalog.association(session.sessionId).association !== "resolved"
-            || session.authorityId !== nativeSource(session.harness)) throw new BrowserPairError(409, "browser-pair-unavailable", "This conversation is unavailable for browser pairing");
+          assertPairConversation(input, BrowserPairError);
         };
         return json(browserPairs.write(input, assertCurrent));
       }
@@ -4972,7 +5112,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         ...(encoding ? { "content-encoding": encoding.name } : {}), ...(path === "/push-worker.js" ? { "service-worker-allowed": "/" } : {}),
       } });
     } catch (error) {
-      if (error instanceof BrowserPairError) return json({ error: error.message, code: error.code }, error.status);
+      if (error instanceof BrowserPairError || error instanceof ResourcePairError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof SessionRetirementError || error instanceof SessionCatalogError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof UserQuestionsError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof ScienceSubmissionStorageError) { failClosed(); return json({ error: error.message, code: "science-submission-unknown" }, 503); }

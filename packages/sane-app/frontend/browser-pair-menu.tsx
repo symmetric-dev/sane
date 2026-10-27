@@ -3,7 +3,8 @@ import { createPortal } from "react-dom";
 import { FiCheck, FiLink, FiPlus, FiTrash2, FiX } from "react-icons/fi";
 import { browserPairCache, clearBrowserPairs, readBrowserPairs, writeBrowserPairs } from "./browser-pair-client";
 import { browserPairIntentMatches, canPairBrowserConversation, captureBrowserPairIntent, type BrowserPairIntent } from "./browser-pair";
-import { browserTabLabel, browserTabs } from "./browser-tabs";
+import { browserTabs } from "./browser-tabs";
+import { pairWorktreeIdentity, previewPairTarget, previewPairTargetLabel } from "./preview-pair-target";
 import { getHostBrowserTab, hostBrowserTabs, revokeHostBrowserGrant, setHostBrowserGrant } from "./browser-host-client";
 import type { BrowserGrantScope, BrowserSessionGrant } from "../shared/browser-host-contract";
 import { catalog } from "./catalog";
@@ -11,7 +12,7 @@ import { ConversationSidebarList, type ConversationSidebarModel } from "./conver
 import { ShellDialog } from "./shell-dialog";
 import { store, type State } from "./store";
 import { workspaceEpoch } from "./workspace-store";
-import { sameBrowserPairSession, type BrowserPairLink, type BrowserPairSession, type BrowserPairSnapshot } from "../shared/browser-pair-contract";
+import { pairTargetKey, samePairTarget, samePairSession as sameBrowserPairSession, type PairLink as BrowserPairLink, type PairSession as BrowserPairSession, type PairSnapshot as BrowserPairSnapshot } from "../shared/resource-pair-contract";
 import "./browser-pair-menu.css";
 
 type Props = {
@@ -22,21 +23,24 @@ type Props = {
 const sessionRef = (link: BrowserPairSession): BrowserPairSession => ({ sessionId: link.sessionId, harness: link.harness, authorityId: link.authorityId, nativeSessionId: link.nativeSessionId });
 const grantMatchesSession = (grant: BrowserSessionGrant, session: BrowserPairSession) => grant.sessionId === session.sessionId && grant.harness === session.harness && grant.authorityId === session.authorityId && grant.nativeSessionId === session.nativeSessionId;
 
-/** One shell-owned controller, shared by the sidebar and unpaired Browser header. */
+/** One shell-owned controller, scoped to the current browser tab or exact file. */
 export function useBrowserPairMenu(props: Props) {
   const { state, model, pairedSessionId } = props;
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const workspaceId = repository.navigation.workspaceId;
   const tabs = useSyncExternalStore(browserTabs.subscribe, () => browserTabs.snapshot(workspaceId));
   const tab = tabs.tabs.find(tab => tab.id === tabs.activeId);
-  const target = { workspaceId: workspaceId ?? "", tabId: tab?.id ?? "" };
+  const target = previewPairTarget(repository, tabs);
+  const browserTarget = target?.kind === "browser" ? { workspaceId: target.workspaceId, tabId: target.tabId } : null;
   const storeId = state.config?.storeId ?? "";
-  const tree = repository.workspaces.find(item => item.workspaceId === workspaceId)?.worktrees.find(item => item.worktreeId === repository.navigation.worktreeId);
-  const scope = JSON.stringify([workspaceEpoch(), storeId, state.config?.authenticated, repository.navigation.view, workspaceId, tree?.worktreeId, tree?.bindingRevision, target.tabId, tab?.mode ?? "device"]);
-  const enabled = state.phase === "ready" && state.config?.authenticated && repository.ready && repository.navigation.view === "browser" && !!storeId && !!tab;
-  const snapshot = useSyncExternalStore(browserPairCache.subscribe, () => enabled ? browserPairCache.snapshot(storeId, target) : null);
-  const host = useSyncExternalStore(hostBrowserTabs.subscribe, () => hostBrowserTabs.snapshot(target.workspaceId, target.tabId));
-  const hostMode = tab?.mode === "host";
+  const auth = workspaceEpoch();
+  const browsing = pairWorktreeIdentity(repository, workspaceId, repository.navigation.worktreeId);
+  const scope = JSON.stringify([auth, storeId, state.config?.authenticated, repository.navigation.view, browsing, target && pairTargetKey(target), browserTarget ? tab?.mode ?? "device" : null]);
+  const enabled = state.phase === "ready" && state.config?.authenticated === true && repository.ready && !!storeId && !!target;
+  const snapshot = useSyncExternalStore(browserPairCache.subscribe, () => enabled && target ? browserPairCache.snapshot(storeId, target) : null);
+  const host = useSyncExternalStore(hostBrowserTabs.subscribe, () => hostBrowserTabs.snapshot(browserTarget?.workspaceId ?? "", browserTarget?.tabId ?? ""));
+  // Notebook iframe previews are never host-browser targets and receive no grants.
+  const hostMode = !!browserTarget && tab?.mode === "host";
   const [opened, setOpened] = useState<string | null>(null);
   const [picker, setPicker] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{ scope: string; snapshot: BrowserPairSnapshot } | null>(null);
@@ -51,6 +55,13 @@ export function useBrowserPairMenu(props: Props) {
   const currentProps = useRef({ props, scope }); currentProps.current = { props, scope };
   const menuId = useId();
   const visible = opened === scope && !!enabled;
+  const targetCurrent = () => {
+    const current = catalog.snapshot();
+    const selectedTarget = previewPairTarget(current, browserTabs.snapshot(current.navigation.workspaceId));
+    return workspaceEpoch() === auth && store.snapshot().config === state.config && current.navigation.view === repository.navigation.view
+      && pairWorktreeIdentity(current, current.navigation.workspaceId, current.navigation.worktreeId) === browsing
+      && !!target && !!selectedTarget && samePairTarget(target, selectedTarget);
+  };
   const restoreFocus = () => [anchor.current, ...document.querySelectorAll<HTMLButtonElement>(".browser-pair-menu-trigger")]
     .find(button => button?.isConnected && button.getClientRects().length > 0 && !button.disabled) ?? null;
   const close = (focus = true) => { setOpened(null); if (focus) focusPending.current = true; };
@@ -66,9 +77,9 @@ export function useBrowserPairMenu(props: Props) {
     return () => { load.current?.abort(); operation.current?.abort(); };
   }, [scope, !!enabled, state.config]);
   useEffect(() => {
-    if (!enabled || !hostMode || !visible) return;
+    if (!enabled || !hostMode || !visible || !browserTarget) return;
     const controller = new AbortController();
-    const refreshHost = () => { void getHostBrowserTab(target.workspaceId, target.tabId, controller.signal).catch(failure => {
+    const refreshHost = () => { void getHostBrowserTab(browserTarget.workspaceId, browserTarget.tabId, controller.signal).catch(failure => {
       if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "Could not load host browser grants.");
     }); };
     refreshHost(); const timer = setInterval(refreshHost, 10000);
@@ -76,6 +87,7 @@ export function useBrowserPairMenu(props: Props) {
   }, [scope, !!enabled, hostMode, visible]);
 
   async function refresh(summaries: boolean) {
+    if (!enabled || !target) return;
     load.current?.abort();
     const controller = new AbortController(); load.current = controller;
     const config = store.snapshot().config;
@@ -92,15 +104,21 @@ export function useBrowserPairMenu(props: Props) {
   }
 
   async function run(action: (before: BrowserPairSnapshot, signal: AbortSignal, current: () => boolean) => Promise<void>, before = snapshot) {
-    if (!enabled || !before || before.storeId !== storeId || before.workspaceId !== target.workspaceId || before.tabId !== target.tabId || inFlight.current || blocked || loading) return;
+    if (!enabled || !target || !before || before.storeId !== storeId || !samePairTarget(before.target, target) || inFlight.current || blocked || loading) return;
     const initial = store.snapshot(), navigation = catalog.snapshot().navigation, initialTabs = browserTabs.snapshot(workspaceId), auth = workspaceEpoch();
     const controller = new AbortController(); operation.current = controller;
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]);
     const current = () => alive.current && !signal.aborted && currentProps.current.scope === scope && workspaceEpoch() === auth && store.snapshot().phase === "ready" && store.snapshot().config?.authenticated === true
       && store.snapshot().config === initial.config && store.snapshot().selected === initial.selected && store.snapshot().drafts === initial.drafts
-      && !store.snapshot().sending && !store.snapshot().actionBusy && catalog.snapshot().navigation === navigation && browserTabs.snapshot(workspaceId) === initialTabs;
+      && !store.snapshot().sending && !store.snapshot().actionBusy && catalog.snapshot().navigation === navigation
+      && pairWorktreeIdentity(catalog.snapshot(), workspaceId, navigation.worktreeId) === browsing
+      && (target.kind !== "browser" || browserTabs.snapshot(workspaceId) === initialTabs);
     if (!current()) { controller.abort(); if (operation.current === controller) operation.current = null; return; }
     currentProps.current.props.interact();
+    // A manual selection invalidates this operation permanently, even if the
+    // user returns to the same conversation before a network receipt arrives.
+    const check = () => { if (!current()) controller.abort(); };
+    const stopStore = store.subscribe(check), stopCatalog = catalog.subscribe(check), stopTabs = browserTabs.subscribe(check);
     inFlight.current = true; setBusy(true); setError("");
     try { await action(before, signal, current); }
     catch (failure) {
@@ -109,6 +127,7 @@ export function useBrowserPairMenu(props: Props) {
         setError(`${failure instanceof Error ? failure.message : "The change was not confirmed."} Refresh the menu before trying again. No automatic retry will occur.`);
       }
     } finally {
+      stopStore(); stopCatalog(); stopTabs();
       inFlight.current = false;
       if (operation.current === controller) operation.current = null;
       if (alive.current) setBusy(false);
@@ -137,10 +156,10 @@ export function useBrowserPairMenu(props: Props) {
     setConfirmation(null); currentProps.current.props.removed(null); close();
   }, confirmation?.scope === scope ? confirmation.snapshot : null);
   const changeGrant = (link: BrowserPairLink, grantScope: BrowserGrantScope) => void run(async (_before, signal, current) => {
-    if (!hostMode || host.state?.status !== "running" || !current()) return;
+    if (!hostMode || !browserTarget || host.state?.status !== "running" || !current()) return;
     const existing = host.grants.find(grant => grantMatchesSession(grant, link));
-    if (existing?.scope === grantScope) await revokeHostBrowserGrant(target.workspaceId, target.tabId, link.sessionId, signal);
-    else await setHostBrowserGrant(target.workspaceId, target.tabId, sessionRef(link), grantScope, signal);
+    if (existing?.scope === grantScope) await revokeHostBrowserGrant(browserTarget.workspaceId, browserTarget.tabId, link.sessionId, signal);
+    else await setHostBrowserGrant(browserTarget.workspaceId, browserTarget.tabId, sessionRef(link), grantScope, signal);
   });
   const titleFor = (link: BrowserPairLink) => state.conversations.find(item => item.id === link.sessionId && item.harness === link.harness && item.authorityId === link.authorityId && item.nativeSessionId === link.nativeSessionId)?.title || `Conversation · ${link.sessionId.slice(0, 8)}`;
   const locked = busy || blocked || loading || state.sending || state.actionBusy;
@@ -175,7 +194,11 @@ export function useBrowserPairMenu(props: Props) {
     if (visible) { close(); return; }
     currentProps.current.props.interact(); anchor.current = event.currentTarget; setPosition(null); setOpened(scope); void refresh(true);
   }}><FiLink size={16} aria-hidden="true" /><span aria-hidden="true">{snapshot ? snapshot.sessions.length : "—"}</span></button>;
-  const tabName = tab ? browserTabLabel(tab, tabs.tabs.indexOf(tab)) : "Browser tab";
+  const tabName = previewPairTargetLabel(target, tabs);
+  const openPicker = () => {
+    if (!enabled || !targetCurrent() || inFlight.current || state.sending || state.actionBusy) return;
+    close(false); setPicker(scope); setError(""); currentProps.current.props.interact();
+  };
   const overlays = <>
     {visible && createPortal(<div id={menuId} ref={menu} className="browser-pair-menu" role="menu" aria-label={`Paired sessions for ${tabName}`} tabIndex={-1} onKeyDown={onKey} style={position ?? { visibility: "hidden" }}>
       <header><strong>Paired sessions</strong><span title={tabName}>{tabName}</span></header>
@@ -188,26 +211,26 @@ export function useBrowserPairMenu(props: Props) {
         <span>Host: {host.grants.find(grant => grantMatchesSession(grant, link))?.scope === "control" ? "Control" : host.grants.find(grant => grantMatchesSession(grant, link))?.scope === "observe" ? "Observe" : "None"}</span>
         {(["observe", "control"] as const).map(grantScope => <button type="button" role="menuitemcheckbox" key={grantScope} aria-checked={host.grants.some(grant => grantMatchesSession(grant, link) && grant.scope === grantScope)} disabled={locked || host.state?.status !== "running"} onClick={() => changeGrant(link, grantScope)}>{grantScope === "observe" ? "Observe" : "Control"}</button>)}
       </div>}</div>)}
-      {!loading && snapshot && !snapshot.sessions.length && <p className="muted">No sessions are linked to this tab.</p>}
+      {!loading && snapshot && !snapshot.sessions.length && <p className="muted">No sessions are linked to this resource.</p>}
       {error && <p className="notice error" role="alert">{error}</p>}
       {(error || blocked) && <button type="button" role="menuitem" disabled={busy || loading} onClick={() => void refresh(true)}>Refresh paired sessions</button>}
       <div role="separator" className="browser-pair-menu-separator" />
-      <button type="button" role="menuitem" aria-haspopup="dialog" disabled={busy || state.sending} onClick={() => { close(false); setPicker(scope); setError(""); currentProps.current.props.interact(); }}><FiPlus size={15} aria-hidden="true" />Add a conversation…</button>
+      <button type="button" role="menuitem" aria-haspopup="dialog" disabled={busy || state.sending || state.actionBusy} onClick={openPicker}><FiPlus size={15} aria-hidden="true" />Add a conversation…</button>
       <div role="separator" className="browser-pair-menu-separator" />
-      <button type="button" role="menuitem" className="browser-pair-menu-danger" aria-haspopup="dialog" disabled={locked || !snapshot?.sessions.length} onClick={() => { if (snapshot) setConfirmation({ scope, snapshot }); close(false); }}><FiTrash2 size={15} aria-hidden="true" />Clear all links for this tab…</button>
+      <button type="button" role="menuitem" className="browser-pair-menu-danger" aria-haspopup="dialog" disabled={locked || !snapshot?.sessions.length} onClick={() => { if (snapshot) setConfirmation({ scope, snapshot }); close(false); }}><FiTrash2 size={15} aria-hidden="true" />Clear all links for this resource…</button>
     </div>, document.body)}
     {picker === scope && enabled && <ShellDialog title="Add paired conversation" subtitle={`Choose a conversation to add to ${tabName}. Existing links will be kept.`} close={() => setPicker(null)} restoreFocus={restoreFocus} className="browser-pair-picker">
       <ConversationSidebarList state={state} model={model} mode="chat" selectedId={pairedSessionId ?? null} onSelect={id => {
-        if (!canPairBrowserConversation(store.snapshot(), catalog.snapshot(), id)) { setError("Select an available conversation and workspace before pairing."); return; }
+        if (currentProps.current.scope !== scope || !targetCurrent() || !canPairBrowserConversation(store.snapshot(), catalog.snapshot(), id)) { setError("The resource or conversation changed. Close the picker and select an available conversation again."); return; }
         setPicker(null); currentProps.current.props.addSession(id);
       }} />
       {error && <p className="notice error" role="alert">{error}</p>}
     </ShellDialog>}
-    {confirmation?.scope === scope && enabled && <ShellDialog title="Clear paired sessions for this tab?" close={() => { if (!inFlight.current) setConfirmation(null); }} closeDisabled={busy} restoreFocus={restoreFocus}>
-      <p>Remove all {confirmation.snapshot.sessions.length} links from <strong>{tabName}</strong>? Conversations and links to other tabs are unchanged.</p>
+    {confirmation?.scope === scope && enabled && <ShellDialog title="Clear paired sessions for this resource?" close={() => { if (!inFlight.current) setConfirmation(null); }} closeDisabled={busy} restoreFocus={restoreFocus}>
+      <p>Remove all {confirmation.snapshot.sessions.length} links from <strong>{tabName}</strong>? Conversations and links to other resources are unchanged.</p>
       {error && <p className="notice error" role="alert">{error}</p>}
       <div className="browser-pair-menu-confirm"><button type="button" disabled={busy} onClick={() => setConfirmation(null)}>Cancel</button><button type="button" className="primary-button" disabled={locked} onClick={clearAll}>{busy ? "Clearing…" : "Clear links"}</button></div>
     </ShellDialog>}
   </>;
-  return { button, overlays };
+  return { button, overlays, openPicker, enabled, target, targetLabel: tabName };
 }

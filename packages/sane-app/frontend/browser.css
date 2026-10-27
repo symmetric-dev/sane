@@ -1,4 +1,4 @@
-.browser-sidebar { display:flex; flex-direction:column; gap:10px; min-height:0; }
+.browser-sidebar { display:flex; flex:1; flex-direction:column; gap:10px; min-height:0; }
 .browser-sidebar>header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .browser-sidebar h2 { font-size:14px; margin:0; }
 .browser-sidebar p { margin:0; font-size:12px; }
@@ -63,7 +63,7 @@
 .browser-pair-icon-button svg { flex-shrink:0; }
 .browser-pair-icon-button:hover { background:var(--accent); color:var(--foreground); }
 .browser-notice { flex-shrink:0; margin:0; padding:6px 16px; font-size:12px; color:var(--warning); }
-.browser-mode-address { display:flex; align-items:center; flex:0 1 65%; gap:6px; min-width:0; flex-wrap:wrap; }
+.browser-mode-address { display:flex; align-items:center; flex:1; gap:6px; min-width:0; flex-wrap:wrap; }
 .browser-mode-address .browser-address { flex:1 1 220px!important; max-width:none; min-width:0; }
 .browser-mode-switch { max-width:150px; min-height:32px; font:inherit; font-size:12px; color:var(--foreground); background:var(--background); border:1px solid var(--border); border-radius:6px; }
 .browser-open-host { min-height:32px; padding:4px 8px; font-size:12px; }
