@@ -23,7 +23,7 @@ type PublicCompatibility = [
   Check<Equal<SourceRecords, { version: 1; cc: SourceRecord; oc: SourceRecord }>>,
   Check<Equal<typeof store.validateSources, (value: unknown) => SourceRecords>>,
   Check<Equal<typeof store.resolveSources, (config: SourceConfiguration) => SourceRecords>>,
-  Check<Equal<typeof store.assertSourceConfiguration, (stored: SourceRecords, config: SourceConfiguration) => void>>,
+  Check<Equal<typeof store.assertSourceConfiguration, (stored: { cc: SourceRecord; oc: SourceRecord }, config: SourceConfiguration) => void>>,
 ];
 const publicCompatibility: PublicCompatibility = [true, true, true, true, true, true, true, true, true];
 
@@ -79,10 +79,10 @@ describe("extracted App source public contract", () => {
     expect(store.exact).toBe(exact);
     expect(new AppStoreError("APP_SOURCE_MISMATCH", "pin")).toBeInstanceOf(store.AppStoreError);
     expect(new store.AppStoreError("APP_STORE_CORRUPT", "shape")).toBeInstanceOf(AppStoreError);
-    expect(Object.keys(sources).sort()).toEqual(["assertQualifiedReference", "assertSourceConfiguration", "assertSourceDescriptor", "resolveSources", "validateSources"]);
+    expect(Object.keys(sources).sort()).toEqual(["assertQualifiedReference", "assertSourceConfiguration", "assertSourceDescriptor", "grokSourceRecord", "resolveSources", "validateSources", "validateStoredSources"]);
     expect(Object.keys(store).sort()).toEqual([
       "AppStoreError", "assertSourceConfiguration", "atomicAppRecord", "atomicNativeHistory", "exact", "initializeAppStore",
-      "loadAgentProfiles", "resolveSources", "validateAdmissions", "validateAgentProfiles", "validateAppStore", "validateSources",
+      "loadAgentProfiles", "publishGrokSourcePin", "resolveSources", "validateAdmissions", "validateAgentProfiles", "validateAppStore", "validateSources", "validateStoredAdmissions", "validateStoredSources",
     ]);
   });
 

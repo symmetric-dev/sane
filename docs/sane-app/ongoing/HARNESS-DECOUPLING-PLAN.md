@@ -2,7 +2,8 @@
 
 Status: Phases 1–3 remain implemented. Local main `6d5d9f0` is merged as
 `bdafad7` and the incoming browser/notebook/verification integrations are
-adapted to the existing boundaries. Grok remains unimplemented.
+adapted to the existing boundaries. Grok storage v6 is implemented. The
+adapter and profile are not.
 Baseline: `bdafad7`, after checkpoint `7a3f25a` and the local-main integration.
 
 **Near scope: targeted decoupling, then Grok integration. Gemini follows Grok
@@ -17,13 +18,16 @@ merge-base `dd87753`) is merged into `experiment/user-context-delivery` as
 `bdafad7`. The main checkout `/Users/beto/sane` was not fetched, reset, or
 modified. This remains a local-main observation, not a remote freshness claim.
 
-The next concrete Grok step is the bounded source/evidence contract and explicit
-storage-extension review below. Do not start the Base adapter, enable a profile,
-or implement the proposed source-record v2 / repository schema v6 during that
-review. Native trials, migrations, provisioning and service changes retain their
-separate authorization gates. Remaining CC/OC authorization fallthroughs, and
-what must stay native-specific, are inventoried in
-[Harness decoupling status](HARNESS-DECOUPLING-STATUS.md).
+The source/evidence contract is in
+[Grok source, evidence, and storage review](GROK-SOURCE-EVIDENCE-REVIEW.md).
+Storage v6 is implemented in this tree. Open does not migrate, and a v5
+repository stays closed until explicit `sane upgrade`. Focused offline tests
+are `packages/sane-core/tests/grok-storage.test.ts` and
+`packages/sane-app/src/grok-storage.test.ts`. Do not start the Base adapter,
+enable a profile, or bump receipts. Native trials, provisioning, and service
+changes retain their separate authorization gates. Remaining CC/OC
+authorization fallthroughs, and what must stay native-specific, are inventoried
+in [Harness decoupling status](HARNESS-DECOUPLING-STATUS.md).
 
 ### Reconciliation
 
@@ -223,7 +227,13 @@ Agree the persistence extension before writing it:
 decision for the new source, including upgrade/refusal and recovery expectations.
 Storage changes require their own implementation review and authorization.
 
-### Proposed Grok storage extension — not yet approved or implemented
+### Grok storage extension — implemented
+
+The decisions are in
+[Grok source, evidence, and storage review](GROK-SOURCE-EVIDENCE-REVIEW.md).
+Storage is implemented without a backwards-compatibility requirement: schema v6
+is current, and `sane upgrade` is explicit. The notes below are the earlier
+proposal. They do not authorize the adapter.
 
 - Keep source-record v1 unchanged for CC/OC-only stores. Introduce a source-record
   v2 only through explicit extension, preserving the existing CC/OC pins and adding

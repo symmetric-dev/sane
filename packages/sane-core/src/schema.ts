@@ -1,5 +1,7 @@
 /** Relational domain. Upgrades are explicit; adapters use RepositoryDomain. */
-export const SCHEMA_VERSION = 5 as const
+export const SCHEMA_VERSION = 6 as const
+/** Upgrade can read these. Open still requires SCHEMA_VERSION. */
+export const RECOGNIZED_SCHEMA_VERSIONS = [1, 2, 3, 4, 5, 6] as const
 // BEFORE INSERT runs even when REPLACE's implicit DELETE triggers are disabled.
 // Cover every identity/unique conflict, including the partial active indexes.
 const protectedInsertConflicts: Record<string, string> = {
@@ -170,4 +172,10 @@ export const SCHEMA_V5 = SCHEMA_V4
   .replace("CHECK(version=4)", "CHECK(version=5)")
   .replace("planning_approval_id TEXT NOT NULL, approval_phase TEXT NOT NULL DEFAULT 'planning' CHECK(approval_phase='planning'),", "planning_approval_id TEXT, approval_phase TEXT DEFAULT 'planning' CHECK(approval_phase IS NULL OR approval_phase='planning'),")
   .replace("OR NEW.planning_approval_id!=OLD.planning_approval_id;", "OR NEW.planning_approval_id IS NOT OLD.planning_approval_id;")
-export const SCHEMA = SCHEMA_V5
+/** v6 admits a Grok local-home authority. Frozen v1–v5 SQL is not edited.
+ * Conversations are not given a harness CHECK; a gk row still needs a matching authority. */
+export const SCHEMA_V6 = SCHEMA_V5
+  .replace("CHECK(version=5)", "CHECK(version=6)")
+  .replace("CHECK(harness IN ('cc','oc'))", "CHECK(harness IN ('cc','oc','gk'))")
+  .replace("CHECK((harness='cc' AND kind='local-profile') OR (harness='oc' AND kind='local-registration'))", "CHECK((harness='cc' AND kind='local-profile') OR (harness='oc' AND kind='local-registration') OR (harness='gk' AND kind='local-home'))")
+export const SCHEMA = SCHEMA_V6

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { lstatSync, realpathSync } from "node:fs"
 import { basename, dirname, isAbsolute, resolve } from "node:path"
-import type { NativeAuthority, NativeSourceDescriptor } from "./contracts.ts"
+import type { GrokSourceDescriptor, NativeAuthority, NativeSourceDescriptor } from "./contracts.ts"
 import { DomainError, fail } from "./errors.ts"
 import { nativeSourceFormat } from "./native-source-contract.ts"
 
@@ -15,6 +15,14 @@ function normalizeClaudeProfile(path: string): Extract<NativeSourceDescriptor, {
   return { version: 1, harness: "cc", kind: "local-profile", profileRoot: canonical }
 }
 
+function normalizeGrokHome(path: string): GrokSourceDescriptor {
+  const normalized = resolve(path)
+  const stat = lstatSync(normalized)
+  if (stat.isSymbolicLink() || !stat.isDirectory()) fail("INVALID_INPUT", "Native source leaf must not be a symlink or an unexpected file type.")
+  const canonical = realpathSync(normalized)
+  return { version: 1, harness: "gk", kind: "local-home", homeRoot: canonical }
+}
+
 function normalizeOpenCodeRegistration(path: string): Extract<NativeSourceDescriptor, { harness: "oc" }> {
   const normalized = resolve(path)
   let stat
@@ -26,15 +34,21 @@ function normalizeOpenCodeRegistration(path: string): Extract<NativeSourceDescri
 }
 
 /** Configured source identity, deliberately not a native-store attestation. */
-export function normalizeNativeSource(input: NativeSourceDescriptor): NativeAuthority {
+export function normalizeNativeSource(input: NativeSourceDescriptor): NativeAuthority
+export function normalizeNativeSource(input: GrokSourceDescriptor): { descriptor: GrokSourceDescriptor; authorityId: string }
+export function normalizeNativeSource(input: NativeSourceDescriptor | GrokSourceDescriptor): NativeAuthority | { descriptor: GrokSourceDescriptor; authorityId: string } {
   if (!input || input.version !== 1) fail("INVALID_INPUT", "Expected native source descriptor version 1.")
   const format = nativeSourceFormat(input.harness)
   if (!format || input.kind !== format.kind) fail("FEATURE_UNAVAILABLE", "Only local Claude profiles and managed-local OpenCode registration files are supported.")
   const field = format.locatorKey
   if (Object.keys(input).sort().join() !== ["version", "harness", "kind", field].sort().join()) fail("INVALID_INPUT", "Unknown native descriptor fields.")
-  const path = input.harness === "cc" ? input.profileRoot : input.registrationFile
+  const path = input.harness === "cc" ? input.profileRoot : input.harness === "oc" ? input.registrationFile : input.homeRoot
   if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0")) fail("INVALID_INPUT", "Native source locator must be an absolute path.")
   try {
+    if (input.harness === "gk") {
+      const descriptor = normalizeGrokHome(path)
+      return { descriptor, authorityId: `sane-native-v1:gk:${createHash("sha256").update(JSON.stringify(descriptor), "utf8").digest("hex")}` }
+    }
     const descriptor = input.harness === "cc" ? normalizeClaudeProfile(path) : normalizeOpenCodeRegistration(path)
     return { descriptor, authorityId: `sane-native-v1:${descriptor.harness}:${createHash("sha256").update(JSON.stringify(descriptor), "utf8").digest("hex")}` }
   } catch (error) {

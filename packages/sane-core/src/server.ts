@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite"
 import { createHash, randomUUID } from "node:crypto"
 import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs"
 import { basename, isAbsolute, join } from "node:path"
-import type { AuditEvent, CheckoutPin, Conversation, ConversationRef, CreateWorkstreamInput, InvocationContext, MutationContext, NativeSourceDescriptor, Phase, PhaseAssignment, RegisterConversationInput, RepositoryContext, Workstream, WorkstreamStatus, WorkstreamDocumentCatalog } from "./contracts.ts"
+import type { AuditEvent, CheckoutPin, Conversation, ConversationRef, CreateWorkstreamInput, GrokSourceDescriptor, InvocationContext, MutationContext, NativeSourceDescriptor, Phase, PhaseAssignment, RegisterConversationInput, RepositoryContext, Workstream, WorkstreamStatus, WorkstreamDocumentCatalog } from "./contracts.ts"
 import { DomainError, fail, storageError, text } from "./errors.ts"
 import { checkDiscovery, inspectRepositoryStore, pinCheckout, repositoryEvidence, revalidateCheckout, safeStoreFiles, samePin } from "./repository.ts"
 import { normalizeNativeSource } from "./native-source.ts"
@@ -254,6 +254,18 @@ export class RepositoryDomain {
       const old = this.row("SELECT * FROM native_authorities WHERE harness=? AND authority_id=?", d.harness, normalized.authorityId)
       if (old) { if (old.kind !== d.kind || old.locator !== locator) fail("CONFLICT", "Native authority is immutable."); return }
       this.run("INSERT INTO native_authorities VALUES(?,?,?,?)", d.harness, normalized.authorityId, d.kind, locator)
+      this.event(context, "native_authority_declared", null, normalized.authorityId, { descriptor: d })
+    })
+    return normalized
+  }
+  /** Inserts a gk authority on schema v6. Does not register a conversation. */
+  declareGrokAuthority(source: GrokSourceDescriptor, context: MutationContext) {
+    if (this.context.schemaVersion !== 6) fail("UNSUPPORTED_SCHEMA", "Grok authority requires schema v6.")
+    const normalized = normalizeNativeSource(source), d = normalized.descriptor
+    this.transaction(context, () => {
+      const old = this.row("SELECT * FROM native_authorities WHERE harness=? AND authority_id=?", d.harness, normalized.authorityId)
+      if (old) { if (old.kind !== d.kind || old.locator !== d.homeRoot) fail("CONFLICT", "Native authority is immutable."); return }
+      this.run("INSERT INTO native_authorities VALUES(?,?,?,?)", d.harness, normalized.authorityId, d.kind, d.homeRoot)
       this.event(context, "native_authority_declared", null, normalized.authorityId, { descriptor: d })
     })
     return normalized

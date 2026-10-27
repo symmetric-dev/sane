@@ -4,7 +4,10 @@ For this checkout, see [Harness decoupling and Grok integration](HARNESS-DECOUPL
 Grok is in near scope; Gemini remains research-first work after Grok. The plan
 preserves existing CC/OC behavior and data, with explicit capability limits.
 The post-merge inventory of what landed and which CC/OC fallthroughs remain is
-in [Harness decoupling status](HARNESS-DECOUPLING-STATUS.md).
+in [Harness decoupling status](HARNESS-DECOUPLING-STATUS.md). The Grok source and storage contract is in
+[Grok source, evidence, and storage review](GROK-SOURCE-EVIDENCE-REVIEW.md).
+Storage v6 is implemented in this tree. The adapter, profile, and receipt bump
+are not authorized.
 
 Current checkpoint: [C10 human verification and foundation acceptance](C10-PLAN.md),
 ending with a full workstream.

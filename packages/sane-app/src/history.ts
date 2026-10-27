@@ -151,6 +151,30 @@ export function validateMetadata(value: unknown): Metadata {
   return value as Metadata;
 }
 
+/** v1 delegates to validateMetadata. v2 may contain grok sessions and is returned unchanged. */
+export function validateStoredMetadata(value: unknown): Metadata {
+  if (!object(value) || (value.version !== 1 && value.version !== 2)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
+  if (value.version !== 2) return validateMetadata(value);
+  if (!Array.isArray(value.sessions) || !Array.isArray(value.runs) || typeof value.reconciliationRequired !== "boolean") throw new Error("Corrupt metadata: invalid schema or session/run relationship");
+  const grok = value.sessions.filter((s: { harness?: unknown }) => s?.harness === "grok");
+  const grokIds = new Set(grok.map((s: { sessionId?: string }) => s.sessionId));
+  const rest = { ...value, version: 1, sessions: value.sessions.filter((s: { harness?: unknown }) => s?.harness !== "grok"), runs: value.runs.filter((r: { sessionId?: string }) => !grokIds.has(r.sessionId)) };
+  validateMetadata(rest);
+  const seen = new Set(rest.sessions.map((s: { sessionId: string }) => s.sessionId));
+  const nativeIds = new Set(rest.sessions.map((s: { harness: string; authorityId: string; nativeSessionId: string }) => JSON.stringify([s.harness, s.authorityId, s.nativeSessionId])));
+  for (const s of grok) {
+    if (!object(s) || !uuid(s.sessionId) || seen.has(s.sessionId) || !cwd(s.cwd) || s.lastRunId !== null || s.lastStatus !== "unknown") throw new Error("Corrupt metadata: invalid schema or session/run relationship");
+    if (!uuid(s.nativeSessionId) || typeof s.authorityId !== "string" || !/^sane-native-v1:gk:[a-f0-9]{64}$/.test(s.authorityId)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
+    if (s.effort !== undefined && (typeof s.effort !== "string" || !s.effort.trim() || s.effort.includes("\n") || s.effort.length > 64)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
+    if (s.model !== undefined && !validModel(s.model)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
+    const key = JSON.stringify([s.harness, s.authorityId, s.nativeSessionId]);
+    if (nativeIds.has(key)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
+    seen.add(s.sessionId); nativeIds.add(key);
+  }
+  if (value.runs.some((r: { sessionId?: string }) => grokIds.has(r.sessionId))) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
+  return value as Metadata;
+}
+
 /** Last complete record's seq. Undefined when the tail is torn, missing, or larger than the read window. */
 export function lastJournalSeq(path: string): number | undefined {
   let fd: number | undefined;

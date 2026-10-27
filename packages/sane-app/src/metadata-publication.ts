@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { DispatchIdentity } from "../shared/conversation/dispatch-contract";
 import { synchronousDispatchHook } from "./dispatch-evidence";
-import { uuid, validateMetadata, type Metadata, type Run, type Session } from "./history";
+import { uuid, validateStoredMetadata, type Metadata, type Run, type Session } from "./history";
 
 declare const receiptBrand: unique symbol;
 /** Process-private publication evidence. There are deliberately no public fields,
@@ -66,8 +66,8 @@ const samePin = (a: Pin, b: Pin) => sameIdentity(a, b) && a.size === b.size && a
 const unsafe = (message: string): never => { throw new Error(`Metadata publication: ${message}`); };
 function decode(bytes: Buffer): Metadata {
   const value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes));
-  if (value?.version !== 1) unsafe("unsupported metadata version");
-  return validateMetadata(value);
+  if (value?.version !== 1 && value?.version !== 2) unsafe("unsupported metadata version");
+  return validateStoredMetadata(value);
 }
 
 /** Sole physical metadata writer after construction, including recovery writes.

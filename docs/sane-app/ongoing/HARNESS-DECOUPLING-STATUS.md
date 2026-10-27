@@ -1,8 +1,9 @@
 # Harness decoupling status after the local-main merge
 
 Status date: 2026-10-27. Branch: `experiment/user-context-delivery`.
-This is a working status report, not a new plan and not authorization to
-implement Grok, migrate stores, or run native trials.
+This is a working status report, not a new plan and not authorization to start
+the Grok adapter, enable a profile, bump receipts, or run native trials.
+Storage v6 is implemented in this tree and is not yet merged to main.
 
 The decisions and the Grok sequence stay in
 [HARNESS-DECOUPLING-PLAN.md](HARNESS-DECOUPLING-PLAN.md). This note records what
@@ -240,17 +241,15 @@ branches.
 
 ## Suggested next slice
 
-Not the Grok adapter. The shared admission path no longer labels an unknown
-harness as Claude or OpenCode, but Grok still has no source, evidence, hash,
-or storage extension.
+Not the Grok adapter. Storage v6 is implemented. Open does not migrate, and a
+v5 repository stays closed until explicit `sane upgrade`. Focused offline tests
+cover unchanged Claude Code and OpenCode descriptor bytes, v1 app files, the
+upgrade gate, an aborted copy, unresolved versus unconfigured pins, and receipt
+refusal of a Grok session UUID and `msg_0`. The adapter, profile, and receipt
+bump are still not authorized.
 
-Write and review the bounded source/evidence contract and the explicit storage
-extension in the plan. Do not implement source-record v2, schema v6, a profile,
-or the Base adapter during that review.
-
-The remaining bucket-2 sites are not a reason to delay that review. Retirement,
+The remaining bucket-2 sites are not a reason to start the adapter. Retirement,
 native handoff enqueue, code-share, and user questions are outside the first
 Grok slice. Codec and history validators that already reject an unknown harness
-before the ternary are closed-format encoding; change them only when the
-storage extension says what a Grok record is. Do not copy those ternaries into
-new Grok code.
+before the ternary stay closed until an adapter needs a Grok record there. Do
+not copy those ternaries into new Grok code.

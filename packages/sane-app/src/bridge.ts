@@ -121,7 +121,7 @@ import { beginConversationCreation, completeConversationCreation, type NativeCon
 import { claudeConversationCreation, openCodeConversationCreation } from "./native-conversation-creation";
 import { HandoffService, handoffRecipientTitle, nextSlotSessionIndex, projectHandoffEnqueue, projectHandoffStatus, slotSessionIndex } from "./handoff";
 import { DomainError, canonicalSlot, equivalentSlots, normalizeNativeSource, revalidateCheckout, discoverRepository, inspectRepositoryStore } from "sane-core/server";
-import type { Handoff } from "sane-core/contracts";
+import type { Handoff, NativeSourceDescriptor } from "sane-core/contracts";
 import { WorkerStorageError, WorkerStore } from "./worker-store";
 import { WorkerService, type WorkerParent } from "./workers";
 import type { ExplicitWorkerOperations } from "./native-workers";
@@ -443,6 +443,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     healthy: () => startupStorageHealthy(), flush: () => serial,
     busy: id => retirementBusy(id), coordinationActivity: id => retirementCoordinationActivity(id),
     authorityCurrent: session => {
+      if ((session.harness as string | undefined) === "grok") return false;
       try { const source = store.sources[session.harness === "opencode" ? "oc" : "cc"]; return source.authorityId === session.authorityId && normalizeNativeSource(source.descriptor).authorityId === session.authorityId; }
       catch { return false; }
     },
@@ -959,7 +960,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const input = await body(req);
       if (input?.operation === "enqueue") {
         const caller = input.caller;
-        const sender = meta.sessions.find(s => s.authorityId === caller?.authorityId && s.nativeSessionId === caller?.nativeId && (s.harness === "opencode" ? "oc" : "cc") === caller?.source?.harness);
+        const sender = meta.sessions.find(s => (s.harness as string | undefined) !== "grok" && s.authorityId === caller?.authorityId && s.nativeSessionId === caller?.nativeId && (s.harness === "opencode" ? "oc" : "cc") === caller?.source?.harness);
         assertCatalogActive(sender);
       }
       if (input?.operation === "enqueue") return json({ handoff: projectHandoffEnqueue(await handoffs.enqueue(input.caller, input.input)) }, 202);
@@ -5172,7 +5173,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   boundListenerStops.push(async () => { await server.stop(true); });
   const hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/browser" ? (loopback(srv.requestIP(req)?.address ?? "") ? browsers.handleNativeBroker(req, handoffToken, caller => {
     try {
-      const source = normalizeNativeSource(caller.source as Parameters<typeof normalizeNativeSource>[0]);
+      const source = normalizeNativeSource(caller.source as NativeSourceDescriptor);
       if (source.authorityId !== caller.authorityId) throw new Error();
       const admission = admissions.getByNative({ harness: source.descriptor.harness, authorityId: caller.authorityId, nativeId: caller.nativeId });
       const session = admission && meta.sessions.find(s => s.sessionId === admission.sessionId);

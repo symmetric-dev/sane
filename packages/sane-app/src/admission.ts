@@ -1,21 +1,21 @@
 import { normalizeNativeSource, discoverRepository, revalidateCheckout } from "sane-core/server";
 import type { ConversationRef } from "sane-core/contracts";
-import { atomicAppRecord, validateAdmissions, type Admission, type AdmissionRecords, type SourceRecords } from "./app-store";
+import { atomicAppRecord, validateStoredAdmissions, type Admission, type StoredAdmissions, type StoredSourceRecords } from "./app-store";
 import type { CatalogService } from "./catalog";
 import { RepositoryRouter, WorkstreamAdapterError } from "./workstreams";
 import { toSessionHarness } from "./harness-names";
 
 /** Serialized by the bridge admission gate. All writes are synchronous durable publication. */
 export class AdmissionService {
-  private records: AdmissionRecords;
-  constructor(private dataDir: string, initial: AdmissionRecords, private sources: SourceRecords, private catalog: CatalogService, private router: RepositoryRouter, private save = atomicAppRecord) { this.records = structuredClone(validateAdmissions(initial)); }
+  private records: StoredAdmissions;
+  constructor(private dataDir: string, initial: StoredAdmissions, private sources: StoredSourceRecords, private catalog: CatalogService, private router: RepositoryRouter, private save = atomicAppRecord) { this.records = structuredClone(validateStoredAdmissions(initial)); }
   get(sessionId: string): Admission | undefined { const a = this.records.admissions.find(a => a.sessionId === sessionId); return a && structuredClone(a); }
   getByNative(ref: ConversationRef): Admission | undefined {
     const a = this.records.admissions.find(a => a.source.descriptor.harness === ref.harness && a.source.authorityId === ref.authorityId && a.nativeId === ref.nativeId);
     return a && structuredClone(a);
   }
   list(): Admission[] { return structuredClone(this.records.admissions); }
-  private persist(next: AdmissionRecords) { validateAdmissions(next); this.save(this.dataDir, "admissions.json", next); this.records = next; }
+  private persist(next: StoredAdmissions) { validateStoredAdmissions(next); this.save(this.dataDir, "admissions.json", next); this.records = next; }
   private update(sessionId: string, change: Partial<Admission>) {
     const next = structuredClone(this.records), a = next.admissions.find(a => a.sessionId === sessionId);
     if (!a) throw new WorkstreamAdapterError(404, "admission-missing", "Unknown admission");
@@ -37,7 +37,7 @@ export class AdmissionService {
     }
     if (input.parent && domain.mode !== "repository") throw new WorkstreamAdapterError(409, "parent-domain-required", "Parents require repository registration");
     const a: Admission = { version: 1, requestId: crypto.randomUUID(), sessionId: input.sessionId, operation: input.operation, state: input.nativeId === null ? "intent" : "identity_known", source, binding: { workspaceId: input.workspaceId, worktreeId: input.worktreeId, bindingRevision: binding.bindingRevision, executionCheckout: input.cwd, checkoutPin, domain }, nativeId: input.nativeId, parent: input.parent ?? null, createdAt: new Date().toISOString(), error: null };
-    this.persist({ version: 1, admissions: [...this.records.admissions, a] }); return structuredClone(a);
+    this.persist({ version: this.records.version, admissions: [...this.records.admissions, a] }); return structuredClone(a);
   }
   async createNative(sessionId: string, create: () => Promise<string>) {
     const a = this.get(sessionId);

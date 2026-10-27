@@ -65,7 +65,7 @@ function synchronousMutationHook(action: () => unknown, failed?: (error: unknown
 }
 /** Repository-scoped synchronous adapter. No ambient or singleton domain selection. */
 export class WorkstreamAdapter {
-  constructor(readonly domain: RepositoryDomain, private readonly sources: SourceRecords, private readonly hooks: WorkstreamMutationHooks = {}) {}
+  constructor(readonly domain: RepositoryDomain, private readonly sources: { cc: SourceRecords["cc"]; oc: SourceRecords["oc"] }, private readonly hooks: WorkstreamMutationHooks = {}) {}
   private mutate<T>(input: WorkstreamMutation, action: () => T): T {
     // Read-only target proof failures are scoped refusals, not failed writes.
     synchronousMutationHook(() => this.hooks.beforeMutation?.(this.domain, input), this.hooks.mutationFailed);
@@ -156,7 +156,7 @@ export class RepositoryRouter {
   private cache = new Map<string, WorkstreamAdapter>();
   /** Read-only reuse of a fully opened adapter; filesystem evidence is checked on every access. */
   private polls = new Map<string, { root: string; commonDir: string; worktreeId: string; bindingRevision: string; adapter: WorkstreamAdapter }>();
-  constructor(private catalog: CatalogService, private sources: SourceRecords, private readonly hooks: WorkstreamMutationHooks = {}) {}
+  constructor(private catalog: CatalogService, private sources: { cc: SourceRecords["cc"]; oc: SourceRecords["oc"] }, private readonly hooks: WorkstreamMutationHooks = {}) {}
   private async checkout(workspaceId: string, timing?: ResolutionTiming) {
     if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
     const get = () => this.catalog.get(workspaceId);

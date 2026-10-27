@@ -76,7 +76,7 @@ export function slotSessionIndex(assignments: readonly SlotAssignment[], phase: 
 }
 
 export class HandoffService {
-  constructor(private admissions: AdmissionService, private catalog: CatalogService, private router: RepositoryRouter, private sources: SourceRecords, private sessions: () => Session[], private assertAvailable: () => void, private ownerId: string, private resolveRecipient: (to: string, checkout: string) => Promise<{ harness: HandoffRecipient["harness"]; executionConfig: HandoffExecutionConfig }>, private catalogActive: (sessionId: string) => boolean = () => true) {}
+  constructor(private admissions: AdmissionService, private catalog: CatalogService, private router: RepositoryRouter, private sources: { cc: SourceRecords["cc"]; oc: SourceRecords["oc"] }, private sessions: () => Session[], private assertAvailable: () => void, private ownerId: string, private resolveRecipient: (to: string, checkout: string) => Promise<{ harness: HandoffRecipient["harness"]; executionConfig: HandoffExecutionConfig }>, private catalogActive: (sessionId: string) => boolean = () => true) {}
   /**
    * Qualify the native sender. A kickoff from an unenrolled sender carries an
    * `enroll` request (trusted hook checkout + nearest enrolled ancestor); it is

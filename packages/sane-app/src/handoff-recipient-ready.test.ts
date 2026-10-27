@@ -122,7 +122,7 @@ describe.serial("assertRecipientReady session harness", () => {
     const ref = { harness: "gx", authorityId, nativeId } as ConversationRef;
     // Same unknown value on the forged descriptor lets same() pass. The codec
     // itself rejects "gx", so return that authority and prove the comparison refuses it.
-    const spy = spyOn(server, "normalizeNativeSource").mockImplementation(() => source);
+    const spy = spyOn(server, "normalizeNativeSource").mockImplementation(() => source as never);
     let error: unknown;
     try {
       assertReady(ref, source, checkout, "claude-code");

@@ -50,7 +50,9 @@ export function validateAuthorization(v: unknown): asserts v is PendingInputAuth
 export function decodePendingInputPins(v: unknown): PendingInputPins {
   canonicalJSON(v); shape(v, ["admission", "catalog", "configuration", "launch", "context"]);
   try { validateAdmissions({ version: 1, admissions: [v.admission] }); } catch { throw new PendingInputCodecError("Invalid pending admission pin"); }
-  const a = v.admission, b = a.binding, harness = a.source.descriptor.harness === "cc" ? "claude-code" : "opencode";
+  const a = v.admission, b = a.binding;
+  if (a.source.descriptor.harness !== "cc" && a.source.descriptor.harness !== "oc") throw new PendingInputCodecError("Pending input does not accept this harness");
+  const harness = a.source.descriptor.harness === "cc" ? "claude-code" : "opencode";
   requireRecord(a.state === "ready" && a.nativeId !== null && canonicalPath(b.executionCheckout));
   if (a.parent !== null) ref(a.parent);
   requireRecord(canonicalPath(a.source.descriptor.harness === "cc" ? a.source.descriptor.profileRoot : a.source.descriptor.registrationFile));

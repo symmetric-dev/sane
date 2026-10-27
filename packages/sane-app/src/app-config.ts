@@ -1,21 +1,21 @@
-import { readFileSync, lstatSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { DomainError, normalizeNativeSource } from "sane-core/server";
-import type { NativeAuthority, NativeSourceDescriptor } from "sane-core/contracts";
+import type { GrokSourceDescriptor, NativeAuthority, NativeSourceDescriptor } from "sane-core/contracts";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT } from "./worker-contract";
 import type { NativeRuntimeSelection } from "../../sane-cli/src/install-sane-agent-context-packages";
 
 export class AppConfigError extends Error { readonly code = "INVALID_APP_CONFIG"; }
 export type AppConfig = {
-  format: "sane-app-config"; version: 1; dataDir: string; defaultExecutionCwd: string;
+  format: "sane-app-config"; version: 1 | 2; dataDir: string; defaultExecutionCwd: string;
   server: { host: string; port: number; publicOrigin: string | null; allowRemote: boolean };
   maxConcurrentRuns: number;
   maxWorkersPerCheckout?: number;
   contextDelivery?: "startup" | "canonical";
   agentModelConfig?: string;
   nativeRuntime?: NativeRuntimeSelection;
-  native: { claude: { executable: string; profileRoot: string }; opencode: { mode: "managed"; registrationFile: string } };
+  native: { claude: { executable: string; profileRoot: string }; opencode: { mode: "managed"; registrationFile: string }; grok?: { homeRoot: string } };
 };
 export type SourceCapability = { state: "available" | "unavailable"; locator: string; authority?: NativeAuthority };
 const invalid = (message: string): never => { throw new AppConfigError(message); };
@@ -86,9 +86,11 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   let raw: Record<string, any> = {}, configExists = false;
   try { raw = parseConfigJson(readFileSync(configPath, "utf8")); configExists = true; }
   catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT" || flags.has("config") && !context.allowMissingConfig) throw e; }
-  if (configExists && (raw.format !== "sane-app-config" || raw.version !== 1)) invalid("Expected sane-app-config version 1");
+  if (configExists && (raw.format !== "sane-app-config" || (raw.version !== 1 && raw.version !== 2))) invalid("Expected sane-app-config version 1 or 2");
   const server = raw.server === undefined ? {} : object(raw.server, ["host", "port", "publicOrigin", "allowRemote"], "server");
-  const native = raw.native === undefined ? {} : object(raw.native, ["claude", "opencode"], "native");
+  const native = raw.native === undefined ? {} : object(raw.native, raw.version === 2 ? ["claude", "opencode", "grok"] : ["claude", "opencode"], "native");
+  const gk = raw.version === 2 && native.grok !== undefined ? object(native.grok, ["homeRoot"], "grok") : undefined;
+  if (gk && !isAbsolute(text(gk.homeRoot, "grok.homeRoot"))) invalid("Grok home must be an absolute path");
   const cc = native.claude === undefined ? {} : object(native.claude, ["executable", "profileRoot"], "claude");
   const oc = native.opencode === undefined ? {} : object(native.opencode, ["mode", "registrationFile"], "opencode");
   if (oc.mode !== undefined && oc.mode !== "managed") invalid("Only managed OpenCode is supported");
@@ -109,7 +111,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   if (server.publicOrigin !== undefined && server.publicOrigin !== null) text(server.publicOrigin, "publicOrigin");
   const executable = text(choose("executable", cc.executable, "claude"), "executable");
   const config: AppConfig = {
-    format: "sane-app-config", version: 1,
+    format: "sane-app-config", version: raw.version === 2 ? 2 : 1,
     dataDir: path("data", raw.dataDir, join(packageDir, ".data")),
     defaultExecutionCwd: path("cwd", raw.defaultExecutionCwd, invocation),
     server: { host: text(choose("host", server.host, "127.0.0.1"), "host"), port: integer(flags.has("port") ? Number(flags.get("port")) : server.port ?? 8787, 0, 65535, "port"), publicOrigin: choose("origin", server.publicOrigin, null) as string | null, allowRemote: choose("remote", server.allowRemote, false) as boolean },
@@ -118,7 +120,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
     contextDelivery: contextDelivery as "startup" | "canonical",
     ...(raw.agentModelConfig !== undefined ? { agentModelConfig: resolve(base, text(raw.agentModelConfig, "agentModelConfig")) } : {}),
     ...(nativeRuntime ? { nativeRuntime } : {}),
-    native: { claude: { executable: executable.includes("/") ? resolve(flags.has("executable") ? invocation : base, executable) : executable, profileRoot: path("profile", cc.profileRoot, resolve(invocation, env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"))) }, opencode: { mode: "managed", registrationFile: path("registration", oc.registrationFile, resolve(invocation, env.XDG_STATE_HOME ?? join(home, ".local/state"), "opencode/service.json")) } },
+    native: { claude: { executable: executable.includes("/") ? resolve(flags.has("executable") ? invocation : base, executable) : executable, profileRoot: path("profile", cc.profileRoot, resolve(invocation, env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"))) }, opencode: { mode: "managed", registrationFile: path("registration", oc.registrationFile, resolve(invocation, env.XDG_STATE_HOME ?? join(home, ".local/state"), "opencode/service.json")) }, ...(gk ? { grok: { homeRoot: resolve(base, gk.homeRoot) } } : {}) },
   };
   const contradiction = (name: string) => invalid(`Native selector contradicts configuration: ${name}`);
   const sameSource = (harness: "cc" | "oc", a: string, b: string) => {
@@ -136,7 +138,13 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   if (sources.opencode.authority?.descriptor.harness === "oc") config.native.opencode.registrationFile = sources.opencode.authority.descriptor.registrationFile;
   return { config, configPath, configExists, sources, operational: { noBuild: flags.has("noBuild"), reconcileInterrupted: flags.has("reconcile"), initializeAppAdmissions: flags.has("initializeAppAdmissions"), help: flags.has("help") } };
 }
-export function sourceCapability(descriptor: NativeSourceDescriptor): SourceCapability {
+export function sourceCapability(descriptor: NativeSourceDescriptor | GrokSourceDescriptor): SourceCapability {
+  if (descriptor.harness === "gk") {
+    try {
+      const authority = normalizeNativeSource(descriptor);
+      return { state: "available", locator: authority.descriptor.homeRoot };
+    } catch (e) { if (e instanceof DomainError && e.code === "SOURCE_UNAVAILABLE") return { state: "unavailable", locator: descriptor.homeRoot }; throw e; }
+  }
   const locator = descriptor.harness === "cc" ? descriptor.profileRoot : descriptor.registrationFile;
   try {
     const authority = normalizeNativeSource(descriptor);
@@ -153,4 +161,21 @@ export function validateAppOrigin(config: AppConfig, password?: string): void {
     if (u.origin !== config.server.publicOrigin || u.username || u.password || (u.protocol !== "https:" && !(u.protocol === "http:" && loopback(u.hostname) && !remote))) invalid("publicOrigin must be an exact HTTPS origin or local HTTP origin");
     if (!loopback(u.hostname) && !password) invalid("Remote publicOrigin requires SANE_APP_PASSWORD");
   }
+}
+/** Explicit config publication. Does not run from startup and does not rewrite Claude or OpenCode fields. */
+export function publishGrokConfig(configPath: string, homeRoot: string): void {
+  if (!isAbsolute(homeRoot) || homeRoot.includes("\0")) invalid("Grok home must be an absolute path");
+  const raw = parseConfigJson(readFileSync(configPath, "utf8"));
+  if (raw.format !== "sane-app-config" || (raw.version !== 1 && raw.version !== 2)) invalid("Expected sane-app-config version 1 or 2");
+  const native = raw.native && typeof raw.native === "object" && !Array.isArray(raw.native) ? { ...raw.native } : {};
+  if (raw.version === 1 && Object.keys(native).some(key => key !== "claude" && key !== "opencode")) invalid("Unknown native key");
+  const next = { ...raw, version: 2, native: { ...native, grok: { homeRoot } } };
+  const temporary = `${configPath}.${crypto.randomUUID()}.tmp`;
+  const fd = openSync(temporary, "wx", 0o600);
+  try { writeFileSync(fd, JSON.stringify(next, null, 2) + "\n"); fsyncSync(fd); }
+  catch (error) { try { unlinkSync(temporary); } catch { /* The failed temp is left if unlink also fails. */ } throw error; }
+  finally { closeSync(fd); }
+  renameSync(temporary, configPath);
+  const directory = openSync(dirname(configPath), "r");
+  try { fsyncSync(directory); } finally { closeSync(directory); }
 }

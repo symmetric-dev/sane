@@ -19,7 +19,7 @@ export const USAGE = `Usage: sane <command> [--repo PATH] [--workstream ID] [--j
     Merge opencode output into opencode.json; Claude uses both MCP and settings outputs.
   init [--dry-run] | upgrade [--dry-run] | inspect | list
     upgrade is local/human only: back up the store and stop other SANE processes first.
-    Upgrades sane-domain stores to v5 explicitly; rerun locally to finish an interrupted upgrade.
+    Upgrades sane-domain stores to v6 explicitly; rerun locally to finish an interrupted upgrade.
   create --name ID --type feature|foundation|issue|maintenance [--title TEXT] [--dry-run]
   select --workstream ID [--dry-run]
   view|detail|status [ID] | audit | sessions [--slot SLOT]
