@@ -5,11 +5,13 @@ export type { ReconciledHistory } from "../shared/conversation/native-history-co
 import type { Run, Session } from "./history";
 import { uuid } from "./history";
 import { open, realpath } from "node:fs/promises";
-import { constants } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { assertClaudeSource, claudeSourceRoot } from "./claude-source";
 import { normalizeClaudeCompactionBoundary } from "./compaction";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
+import { ClaudeHistorySnapshotChangedError } from "./claude-history-snapshot-error";
 
 export function coveredNativeRuns(session: Session, runs: Run[], messages: MessageSnapshot[]) {
   if (session.harness !== "opencode") return [];
@@ -82,7 +84,9 @@ async function claudeCwdEvidence(id: string, cwd: string, root: string, fork?: {
     }
     if (!found) throw new Error("Native transcript has no genuine native cwd evidence; SDK project-path fallback is insufficient");
     if (fork && !forkFound) throw new Error("Native fork provenance does not contain the selected source boundary");
-    return { size: before.size, mtime: before.mtimeMs, ctime: before.ctimeMs, ino: before.ino, dev: before.dev, directories: [...directories], boundaries: [...boundaries.values()], summaries: [...summaries.values()], order };
+    return { size: before.size, mtime: before.mtimeMs, ctime: before.ctimeMs, ino: before.ino, dev: before.dev,
+      sha256: createHash("sha256").update(bytes.subarray(0, length)).digest("hex"),
+      directories: [...directories], boundaries: [...boundaries.values()], summaries: [...summaries.values()], order };
   } finally { await file.close(); }
 }
 
@@ -101,6 +105,10 @@ export async function verifyClaudeFork(id: string, cwd: string, source: string, 
 
 /** SDK read-only transcript helpers plus raw local cwd evidence. Never invoke a native run. */
 export async function readClaudeHistory(id: string, cwd: string, sourceRoot = claudeSourceRoot()) {
+  return (await importClaudeHistory(id, cwd, sourceRoot)).messages;
+}
+
+async function importClaudeHistory(id: string, cwd: string, sourceRoot: string) {
   assertClaudeSource(sourceRoot);
   const evidence = await claudeCwdEvidence(id, cwd, sourceRoot);
   const before = await getSessionInfo(id, { dir: cwd });
@@ -125,7 +133,73 @@ export async function readClaudeHistory(id: string, cwd: string, sourceRoot = cl
   // transcript. Keeping order matters for context resets and usage projection.
   if (byId.size) throw new Error("SDK history contains messages absent from the verified native transcript");
   if (ordered.length > 10000) throw new Error("Native transcript exceeds 10,000-message import budget");
-  return ordered;
+  return { messages: ordered, evidence: finalEvidence };
+}
+
+/** One preparation's immutable native evidence, NOT a native-session lease.
+ * Reuse only with assertCurrent after awaits and at the synchronous send gate.
+ * Every check rereads/hashes the complete bounded file: timestamps alone never
+ * authorize reuse. Even append-only growth refuses this snapshot; the caller
+ * must prepare anew, not extend a possibly reset/compacted native prefix. */
+export async function readClaudeHistorySnapshot(id: string, cwd: string, sourceRoot: string): Promise<Readonly<{
+  messages: readonly MessageSnapshot[];
+  assertCurrent(): void;
+}>> {
+  const { messages, evidence } = await importClaudeHistory(id, cwd, sourceRoot);
+  const path = join(sourceRoot, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${id}.jsonl`);
+  const fail = (): never => { throw new Error("Native transcript source or exact snapshot changed during context preparation"); };
+  const directory = (path: string) => {
+    const stat = lstatSync(path, { bigint: true });
+    if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(path) !== path) fail();
+    return `${stat.dev}:${stat.ino}`;
+  };
+  const capture = () => {
+    assertClaudeSource(sourceRoot);
+    const root = directory(sourceRoot), checkout = directory(cwd);
+    // Raw cwd evidence also depends on historical within-checkout directories
+    // remaining canonical, not just on the transcript bytes remaining identical.
+    const directories = evidence.directories.map(directory);
+    const file = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const pin = () => {
+        const opened = fstatSync(file, { bigint: true }), current = lstatSync(path, { bigint: true });
+        const key = (stat: typeof opened) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+        if (!opened.isFile() || !current.isFile() || current.isSymbolicLink() || realpathSync(path) !== path
+          || key(opened) !== key(current) || opened.size < 0n || opened.size > 16n * 1024n * 1024n) fail();
+        return { key: key(opened), size: Number(opened.size) };
+      };
+      const before = pin(), metadata = fstatSync(file), bytes = Buffer.alloc(before.size);
+      let position = 0;
+      while (position < bytes.length) {
+        const count = readSync(file, bytes, position, Math.min(64 * 1024, bytes.length - position), position);
+        if (count <= 0) fail();
+        position += count;
+      }
+      if (before.key !== pin().key || root !== directory(sourceRoot) || checkout !== directory(cwd)) fail();
+      if (evidence.directories.some((path, index) => directory(path) !== directories[index])) fail();
+      assertClaudeSource(sourceRoot);
+      return { root, checkout, directories, pin: before.key, size: metadata.size, mtime: metadata.mtimeMs, ctime: metadata.ctimeMs,
+        ino: metadata.ino, dev: metadata.dev, sha256: createHash("sha256").update(bytes).digest("hex") };
+    } finally { closeSync(file); }
+  };
+  const captured = capture();
+  // Bind the synchronous proof to the SAME bytes and native file imported by the
+  // SDK/raw continuity reader, not a fresh unrelated capture after its awaits.
+  for (const key of ["size", "mtime", "ctime", "ino", "dev", "sha256"] as const) {
+    if (captured[key] !== evidence[key]) fail();
+  }
+  const expected = JSON.stringify(captured);
+  // The evidence is preparation-local, with no mutable decoded messages exposed.
+  const pending: object[] = [messages];
+  while (pending.length) {
+    const value = pending.pop()!;
+    for (const child of Object.values(value)) if (child && typeof child === "object") pending.push(child);
+    Object.freeze(value);
+  }
+  return Object.freeze({ messages, assertCurrent: () => {
+    try { if (JSON.stringify(capture()) !== expected) fail(); }
+    catch (error) { throw new ClaudeHistorySnapshotChangedError(error); }
+  } });
 }
 
 export function normalizeClaudeHistory(id: string, records: SessionMessage[]): MessageSnapshot[] {

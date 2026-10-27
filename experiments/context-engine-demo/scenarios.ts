@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { validateCanonicalActivation } from "../../packages/sane-app/src/canonical-activation-validation";
+import { validateCanonicalActivation, validateCanonicalExecution } from "../../packages/sane-app/src/canonical-activation-validation";
 import type { CanonicalExecutionSnapshot } from "../../packages/sane-app/src/canonical-execution-store";
 import { contextMessageBody, type ContextMessage, type ContextMessageBinding, type ContextMessageFragment, type ContextMessageInput } from "../../packages/sane-app/src/context-message";
-import { assertContextMessageCurrent, canonicalContextMessageExecutionValidator, prepareContextMessage, type ContextMessageGuards, type ContextMessagePreparation, type SelectedContextMessageInput } from "../../packages/sane-app/src/context-message-engine";
+import { assertContextMessageCurrent, prepareContextMessage, type ContextMessageGuards, type ContextMessagePreparation, type SelectedContextMessageInput } from "../../packages/sane-app/src/context-message-engine";
 import { decorateContextMessageEvidence, projectContextMessageRestart, recordContextMessageSubmission } from "../../packages/sane-app/src/context-message-evidence";
 import { DispatchPreNativeRefusal } from "../../packages/sane-app/src/dispatch-evidence";
 import { HarnessDispatchRegistry, sameDispatchSource, terminalDispatchReadiness } from "../../packages/sane-app/src/harness-dispatch";
@@ -25,12 +25,6 @@ const titles: Record<DemoScenarioId, string> = {
   "attempt-unresolved": "One simulated effect / deliberately unknown outcome (not a process kill)",
 };
 const body = "\uFEFF  Fixture-authored body 😀\r\n[SANE CONTEXT MESSAGE v1]\n[/SANE CONTEXT SEGMENT]\n# Session\nThese are literal authored markers, not metadata.\n";
-function same(a: unknown, b: unknown): boolean {
-  const stable = (value: unknown): string => Array.isArray(value) ? `[${value.map(stable).join(",")}]`
-    : value && typeof value === "object" ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}`
-      : JSON.stringify(value) ?? "undefined";
-  return stable(a) === stable(b);
-}
 function requireFact(condition: unknown, reason: string): asserts condition { if (!condition) throw new Error(reason); }
 function errorText(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
@@ -56,8 +50,8 @@ export async function runDemoScenarios(fixture: DemoFixture): Promise<DemoRunRes
     let contextLoads = 0, executionLoads = 0, pairingChecks = 0, mockSends = 0;
     let pinnedExecution: CanonicalExecutionSnapshot | undefined;
     const loadContext = fixture.context.load.bind(fixture.context), loadExecution = fixture.execution.load.bind(fixture.execution);
-    // Instrument the real methods, not predicted counts: paired validation and
-    // nested callbacks call these same wrappers too. Restored even on failure.
+    // Instrument real methods, not predicted counts: explicit qualification and
+    // simulated execution setup use these wrappers. Restored even on failure.
     fixture.context.load = async ref => { contextLoads++; trace.push("load:context"); return loadContext(ref); };
     fixture.execution.load = async ref => { executionLoads++; trace.push("load:execution"); pinnedExecution = await loadExecution(ref); return pinnedExecution; };
     try {
@@ -93,21 +87,6 @@ export async function runDemoScenarios(fixture: DemoFixture): Promise<DemoRunRes
         assertSource: () => requireFact(sameDispatchSource(source, liveSource), "Fixture source changed during controlled await"),
         assertNotCancelled: () => { if (installed) requireFact(!installed.cancelling && !installed.stopRequested, "Fixture owner cancelled"); },
       };
-      const assertPairing = () => {
-        pairingChecks++; trace.push("pairing:read-same-owner-journal");
-        requireFact(bootstrap, "No accepted bootstrap journal available");
-        const durable = readDemoJournal(bootstrap.directory);
-        requireFact(durable.owner, "Bootstrap owner metadata unavailable");
-        const projection = projectContextMessageRestart({ identity: bootstrap.identity, messageId: bootstrap.messageId }, durable.snapshot);
-        requireFact(projection.fact === "accepted" && projection.composition?.transport.sha256 === bootstrap.transportSha256, "Bootstrap exact accepted evidence unavailable");
-        requireFact(same(durable.owner.dispatch.source, source) && same(durable.owner.agent, fixture.agent)
-          && same(durable.owner.activation, fixture.activation), "Durable bootstrap source/role/context/execution pins differ");
-        const paired = durable.snapshot.events.find(event => event.kind === "context" && (event.data as { type?: string })?.type === "demo-activation-pairing");
-        const value = paired?.data as { source?: unknown; agent?: unknown; activation?: unknown; accepted?: unknown } | undefined;
-        requireFact(value && same(value.source, source) && same(value.agent, fixture.agent) && same(value.activation, fixture.activation)
-          && same(value.accepted, bootstrap), "Exact owner-journal activation pairing association unavailable");
-        syncGate();
-      };
       const fullPair = async () => {
         pairingChecks++; trace.push("pairing:real-full-validator");
         return validateCanonicalActivation(fixture.activation, fixture.agent, fixture, { assertCurrent: syncGate });
@@ -118,22 +97,29 @@ export async function runDemoScenarios(fixture: DemoFixture): Promise<DemoRunRes
       const preparation: ContextMessagePreparation = id === "ordinary" ? {
         kind: "ordinary", guards,
         readCurrentOrdinary: () => ({ body, binding: { ...liveSource }, origin: "user", placement: { kind: "body-only" } }),
-        policy: { kind: "sane", assertDurableActivationPairing: assertPairing,
-          validateExecution: canonicalContextMessageExecutionValidator({ execution: fixture.execution,
-            readTrustedExecution: () => ({ ref: { ...fixture.activation.saneExecution }, identity: { ...fixture.agent } }) }) },
       } : {
-        kind: "context", guards, readCurrentContext: readSelected,
-        validateSelectedContext: async () => { await fullPair(); if (id === "update") assertPairing(); },
+        kind: "context", guards, assertSelectionCurrent: syncGate,
       };
+      if (id === "ordinary" || id === "update") {
+        // Lifecycle qualification uses the existing in-memory accepted reference.
+        // Independent read-only replay, not ordinary preparation, inspects history.
+        requireFact(bootstrap && sameDispatchSource(bootstrap.identity.source, source), "No accepted bootstrap reference for this fixture source");
+        syncGate();
+      } else await fullPair(); // Explicit bootstrap qualification, once before composition.
       const input: ContextMessageInput = id === "ordinary"
         ? { body, binding: source, origin: "user", placement: { kind: "body-only" } } : await readSelected();
       trace.push("prepare:start");
       const message = await prepareContextMessage(input, preparation);
       trace.push("prepare:complete");
+      // Native configuration still needs its pinned execution policy. This is a
+      // simulated setup boundary outside generic message preparation/freshness.
+      trace.push("setup:simulated-native-execution:start");
+      pinnedExecution = await validateCanonicalExecution(fixture.activation.saneExecution, fixture.agent, fixture.execution, { assertCurrent: syncGate });
+      trace.push("setup:simulated-native-execution:complete");
       // This is a prepared comparison candidate. The evidence reader below must
       // still bind it to independently captured adapter-owned pending bytes.
       const submission = recordContextMessageSubmission(message, { messageId, text: message.transport.text }, identity);
-      requireFact(pinnedExecution, "Preparation did not load the real execution policy");
+      requireFact(pinnedExecution, "Simulated native execution setup did not load the real execution policy");
       journal.append("context", { schema: 1, type: "demo-owner-pinned-execution", source, agent: fixture.agent, activation: fixture.activation,
         execution: pinnedExecution, installedIntoNativeHarness: false });
       journal.append("context", { schema: 1, type: "demo-lifecycle-intent", placement: input.placement, simulation: true,
@@ -242,13 +228,13 @@ export async function runDemoScenarios(fixture: DemoFixture): Promise<DemoRunRes
       check("mock-send-count", mockSends === expectedMockSends, `${mockSends}; expected ${expectedMockSends}; simulated effects only`);
       check("authored-body-preserved", contextMessageBody(message) === body, "UTF-8 body including BOM/CRLF/emoji/SANE-looking markers is preserved");
       check("one-owner-installation", trace.filter(item => item === "owner:installed-once").length === 1, "Real registry.start installs exactly one fixture RunOwner");
-      check("measured-load-calls", executionLoads > 0 && (id === "ordinary" ? contextLoads === 0 : contextLoads > 0), `Actual instrumented methods: context=${contextLoads}; execution=${executionLoads}; pairing=${pairingChecks}`);
+      check("measured-load-calls", executionLoads > 0 && (id === "ordinary" || id === "update" ? contextLoads === 0 : contextLoads > 0), `Actual instrumented methods: context=${contextLoads}; execution=${executionLoads}; pairing=${pairingChecks}`);
       if (mockSends) check("durable-before-effect", trace.indexOf("original:intent-durable") < trace.indexOf("persist:before-native:attempted")
         && trace.indexOf("persist:before-native:attempted") < trace.indexOf("mock:effect"), "Original owner intent → synchronous composition persistence → single mock effect");
       if (id === "activation") checkBootstrap(message, check);
       if (id === "ordinary") {
         check("exact-body-only", message.transport.text === body && !message.segments.length && message.packageRevision === null, "No context prefix, role, framework, index, Pickup or Session selected");
-        check("real-execution-and-durable-pairing", executionLoads > 0 && pairingChecks > 0 && contextLoads === 0, "Execution-only real validator plus accepted exact owner-journal source/role/context/execution pairing; zero context loads including callbacks");
+        check("policy-free-preparation-and-explicit-execution-setup", executionLoads > 0 && pairingChecks === 0 && contextLoads === 0, "Execution policy loaded at explicit simulated native setup; ordinary body-only preparation/freshness performs no policy or historical pairing reads and zero context loads");
       }
       if (id === "update") check("only-selected-session", message.segments.length === 1 && message.segments[0]?.category === "session"
         && message.segments[0]?.text === session(fixture, "B").text, "Only fixture Session root B; no role/framework/index/Pickup resend");

@@ -1,7 +1,8 @@
-import { start, startupSummary, type Options } from "./src/bridge.ts";
+import type { Options } from "./src/bridge.ts";
 import { startAppProfile } from "./src/app-profile.ts";
 
 export async function runServer(options: Options) {
+  const { start, startupSummary } = await import("./src/bridge.ts");
   console.log(startupSummary(options));
   const bridge = await start(options);
   console.log(`SANE App listening on ${bridge.origin}`);

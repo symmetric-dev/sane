@@ -17,5 +17,5 @@ shared domain operations in [`packages/sane-core`](../../packages/sane-core/).
 ## Read next
 
 - [Ongoing work and next actions](ongoing/README.md) — current priorities.
-- [Operator guide](../../packages/sane-app/HUMAN-OPERATOR-GUIDE.md#root-launch-and-current-storage-model)
+- [Operator guide](../../packages/sane-app/HUMAN-OPERATOR-GUIDE.md#setup-and-launch)
   — root launch, current storage model, restart and origin configuration.

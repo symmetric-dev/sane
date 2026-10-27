@@ -51,6 +51,9 @@ export type ContextMessageInput = MessageInputBase & (
     /** Assignment bytes EXCLUDE the procedure: never split by user-like tags.
      * Worker bootstrap requires this; assistant bootstrap forbids it. */
     assignment?: ContextMessageFragment;
+    /** Explicit worker protocol only, in caller order after procedure/assignment
+     * and before Session. Never selected automatically from the package. */
+    runtimeSelections?: readonly ContextMessageSelection[];
   }>
   | Readonly<{
     placement: Extract<ContextMessagePlacement, { kind: "selected" }>;
@@ -276,10 +279,22 @@ function indexSegment(context: PinnedMessageContext, reason: string): SegmentCon
   return segment({ id: "procedure-index", category: "procedure-index", text: content, sha256: contextHash(content), reason,
     provenance: { kind: "procedure-index", packageRevision: context.bundle.revision, assets: references } });
 }
+function selectionSegment(selected: ContextMessageSelection, context?: PinnedMessageContext): SegmentContent {
+  const selection = record(selected);
+  if (selected.kind === "fragment") keys(selection, ["kind", "fragment"]);
+  else if (selected.kind === "asset") keys(selection, ["kind", "assetId", "reason"]);
+  else keys(selection, ["kind", "reason"]);
+  if (selected.kind === "fragment") return fragmentSegment(selected.fragment);
+  if (!context) fail("package selection requires pinned context");
+  if (selected.kind === "asset") return assetSegment(context, selected.assetId, selected.reason);
+  if (selected.kind === "procedure-index") return indexSegment(context, selected.reason);
+  return fail("unknown selection");
+}
 
 /** Pure selective composer. Ordinary input does not accept or load a package.
  * Bootstrap order is role ONCE, required standing framework, pinned index,
- * initial Pickup, applicable worker procedure/assignment, Session. Selection
+ * initial Pickup, applicable worker procedure/assignment, explicit runtime
+ * protocol selections, Session. Selection
  * order for explicit updates/sharing is exactly the caller's order. No resource
  * bodies are included merely because the index references them. */
 export function composeContextMessage(input: ContextMessageInput): ContextMessage {
@@ -293,24 +308,14 @@ export function composeContextMessage(input: ContextMessageInput): ContextMessag
     return encode(input.binding, input.origin, selectedPlacement, null, input.body, []);
   }
   if (input.placement.kind === "selected") keys(fields, ["body", "binding", "origin", "placement", "selections"], ["context"]);
-  else keys(fields, ["body", "binding", "origin", "placement", "context", "session"], ["assignment"]);
+  else keys(fields, ["body", "binding", "origin", "placement", "context", "session"], ["assignment", "runtimeSelections"]);
   const contents: SegmentContent[] = [];
   // Nested discriminants do not narrow the enclosing union in TypeScript.
   if ("selections" in input) {
     if (!Array.isArray(input.selections)) fail("selections must be ordered");
     if (input.context) validateContextPackage(input.context.bundle);
     for (const selected of input.selections) {
-      const selection = record(selected);
-      if (selected.kind === "fragment") keys(selection, ["kind", "fragment"]);
-      else if (selected.kind === "asset") keys(selection, ["kind", "assetId", "reason"]);
-      else keys(selection, ["kind", "reason"]);
-      if (selected.kind === "fragment") contents.push(fragmentSegment(selected.fragment));
-      else {
-        if (!input.context) fail("package selection requires pinned context");
-        if (selected.kind === "asset") contents.push(assetSegment(input.context, selected.assetId, selected.reason));
-        else if (selected.kind === "procedure-index") contents.push(indexSegment(input.context, selected.reason));
-        else fail("unknown selection");
-      }
+      contents.push(selectionSegment(selected, input.context));
     }
     // A package is recorded only when a package-derived segment is selected.
     const revision = contents.some(content => content.provenance.kind !== "fragment") ? input.context!.bundle.revision : null;
@@ -339,6 +344,16 @@ export function composeContextMessage(input: ContextMessageInput): ContextMessag
       if (identity.role !== "implementer") fail("free-mode assignment requires an implementer");
     } else contents.push(assetSegment(context, `worker-procedure.${identity.role}`, "Applicable worker procedure"));
     contents.push(fragmentSegment(input.assignment));
+  }
+  if (input.runtimeSelections !== undefined) {
+    if (!Array.isArray(input.runtimeSelections)) fail("runtime selections must be ordered");
+    if (input.runtimeSelections.length && identity.kind !== "worker") fail("bootstrap runtime protocol requires a worker identity");
+    for (const selected of input.runtimeSelections) {
+      const content = selectionSegment(selected, context);
+      if (!(selected.kind === "asset" && content.id === "framework.worker-protocol" && content.category === "framework")
+        && !(selected.kind === "fragment" && content.category === "protocol")) fail("bootstrap runtime selection must be worker protocol");
+      contents.push(content);
+    }
   }
   if (input.session.id !== "session" || input.session.category !== "session") fail("bootstrap needs an explicit Session fragment");
   contents.push(fragmentSegment(input.session));

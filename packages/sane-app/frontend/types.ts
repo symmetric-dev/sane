@@ -20,6 +20,7 @@ import type { SessionCatalogQuery, SessionCatalogPageInfo, SessionCatalogGroup, 
 export type { SessionCatalogQuery, SessionCatalogPageInfo, SessionCatalogGroup, SessionCatalogGroupsResponse } from "../shared/conversation/session-catalog";
 import type { PendingInputCapability, PendingInputRemovalRequest, PendingInputRemovalResult, PendingInputRequest, PendingInputResumeRequest, PendingInputSubmissionResult } from "../shared/conversation/pending-input-contract";
 import type { PendingInputResumeResult, PendingInputStatus, PendingInputView } from "./pending-input-presentation";
+import type { AppAdmissionEnvelope, AppAdmissionKey, AppAdmissionLookup, AppAdmissionReceipt } from "../shared/conversation/app-admission-contract";
 export type { ConversationUpdateCursor, ConversationUpdateFeedRequest, ConversationUpdatePage, ConversationUpdateSource } from "../shared/conversation/conversation-updates";
 export type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agent-profiles-contract";
 export type { Interaction, InteractionReply, FormField, HandoffApprovalReply } from "../shared/conversation/native-contract";
@@ -35,9 +36,9 @@ export type Capabilities = {
   attachments: boolean; modelSelection: boolean; effortValues: string[];
 };
 /** Local submission, retained after acknowledgement only until its recorded user turn arrives. */
-export type PendingTurn = { id: string; conversationId: string; runId?: string; messageId?: string; text: string; time: string };
+export type PendingTurn = { id: string; conversationId: string; runId?: string; messageId?: string; nativeMessageId?: string; text: string; time: string };
 export type HarnessInfo = { id: Harness; available: boolean; connected: boolean; state: string; reason?: string; capabilities: Partial<HarnessCapabilities> };
-export type Config = { authRequired: boolean; authenticated: boolean; storeId?: string; conversationUpdates?: boolean; pendingInputCapability?: PendingInputCapability; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
+export type Config = { authRequired: boolean; authenticated: boolean; storeId?: string; appAdmissionCapability?: { protocol: "app-admission"; version: 1; state: "enabled" | "requires-initialization" }; conversationUpdates?: boolean; pendingInputCapability?: PendingInputCapability; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
 export type Availability = { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string; nativeQueue?: boolean; liveInputRunId?: string };
 export function liveInputReady(conversation: Conversation | undefined, availability: Availability): boolean {
   return availability.canSend && conversation?.harness === "claude-code" && !!availability.liveInputRunId
@@ -49,6 +50,8 @@ export type ConversationGroupDirectory = { queryKey: string; groups: SessionCata
 export type CompletionVerificationTarget = { sessionId: string; runId: string; nativeSessionId: string; nativeCommandId: string };
 export type CompletionVerificationRequest = { requestId: string; nativeSessionId: string; nativeCommandId: string; confirm: true; reason: string };
 export interface ConversationClient {
+  submitAdmission?(envelope: AppAdmissionEnvelope, signal?: AbortSignal): Promise<AppAdmissionReceipt>;
+  lookupAdmission?(key: AppAdmissionKey, signal?: AbortSignal): Promise<AppAdmissionLookup>;
   scienceSubmissions?(id: string, signal?: AbortSignal): Promise<ScienceSubmissionView[]>;
   scienceSubmission?(id: string, requestId: string, signal?: AbortSignal): Promise<ScienceSubmissionDetail>;
   verifyCompletion?(id: string, runId: string, input: CompletionVerificationRequest): Promise<{ status: RunStatus; evidence?: unknown }>;

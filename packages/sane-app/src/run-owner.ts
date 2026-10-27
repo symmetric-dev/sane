@@ -1,5 +1,6 @@
 import type { Run } from "./history";
 import type { DispatchSubmission, DispatchNativeAcceptance, DispatchIdentity } from "../shared/conversation/dispatch-contract";
+import type { OwnedContextMessages, OwnedSubmissionPublication } from "./context-message-transport";
 
 /** Shared execution ownership. The bridge coordinator retains the single registry;
  * harness services must not release or replace owners independently. */
@@ -14,6 +15,13 @@ export type RunOwner = {
   /** Independent owner-scoped proof of exact durable metadata representation.
    * Not activation delivery, native acceptance, or permission to replay. */
   assertMetadataCommitted?: () => void;
+  /** Immutable bridge-installed shared message selection/evidence capability. */
+  contextMessages?: OwnedContextMessages;
+  /** Initial run submission only. CC live input receives a distinct per-send
+   * capability; it must never replace or reuse this installed capability. */
+  submissionPublication?: OwnedSubmissionPublication;
+  /** Exact immutable identity shared with the existing dispatch lifecycle. */
+  contextIdentity?: DispatchIdentity;
   /** Services explicitly mark the earliest possible native boundary. */
   dispatchEvidence?: {
     beforeNative: () => void;

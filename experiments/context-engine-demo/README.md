@@ -40,8 +40,8 @@ that the fixture file contents/modes are unchanged before writing report outputs
 
 ## Real versus simulated
 
-**Real:** pinned package/execution stores, selective composition, guarded trusted
-validation, execution-only policy checks, the existing dispatch registry/owner
+**Real:** pinned package/execution stores, selective composition, explicit bootstrap
+validation, execution-policy loading, the existing dispatch registry/owner
 lifecycle, strict submission/evidence codecs, synchronous durable local journal
 writes, restart projections, and fresh-process decoding.
 
@@ -56,8 +56,9 @@ retry scheduler, or runtime mode. No App imports this directory.
 ## Walkthrough
 
 1. Bootstrap activation sends role/framework/index/Pickup/Session once.
-2. Ordinary continuation preserves the authored body exactly and performs zero
-   context-package loads while retaining execution and durable pairing checks.
+2. Ordinary preparation preserves the authored body exactly without context-package
+   loads or historical pairing checks. Simulated execution setup separately loads
+   the pinned policy; read-only replay separately inspects historical pairing.
 3. A selected Session/root update does not repeat standing context.
 4. Source drift rejects preparation without a mock send.
 5. A genuine original-hook refusal is withheld without poisoning health.
@@ -94,8 +95,11 @@ The local fixture is a controlled trust root, not an attacker-resistant provenan
 service. File/directory fsync and integrity checkpoints exercise the real disk
 path, but no power-loss/native-crash guarantee is established. The unknown-outcome
 scenario is scripted, not a killed real native process. Instrumentation counters
-describe this engine path, not the still-active App dispatch path's performance.
+describe this mock engine path, not production App dispatch performance.
 
-App wiring, queue codecs, old injector/ack removal, actual native branch proof,
-compaction preservation, Grok/Gemini adapters, and real tool/model workflows remain
-separate work. See [the demo plan](../../reports/context-engine-foundation-2026-10-25/DEMO_PLAN.md).
+App wiring, queue integration and old injector/ack retirement have since moved to
+the [production cutover](../../reports/context-message-cutover-2026-10-26/README.md);
+this demo does not qualify them. Actual native branch/compaction retention and
+real tool/model workflows remain outside this demonstration's coverage. The
+[demo plan](../../reports/context-engine-foundation-2026-10-25/DEMO_PLAN.md) records
+its original stage, not the current production backlog.

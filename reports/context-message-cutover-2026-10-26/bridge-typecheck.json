@@ -1,0 +1,50 @@
+{
+  "method": "All changed tracked App source files substituted from committed HEAD through compiler host; no working files changed.",
+  "substituted": [
+    "packages/sane-app/src/agent-launch.ts",
+    "packages/sane-app/src/bridge.ts",
+    "packages/sane-app/src/canonical-activation-validation.ts",
+    "packages/sane-app/src/claude-run-service.ts",
+    "packages/sane-app/src/context-message-engine.ts",
+    "packages/sane-app/src/context-message-journal.test.ts",
+    "packages/sane-app/src/context-message-journal.ts",
+    "packages/sane-app/src/context-message.test.ts",
+    "packages/sane-app/src/context-message.ts",
+    "packages/sane-app/src/harness-dispatch.ts",
+    "packages/sane-app/src/metadata-publication.test.ts",
+    "packages/sane-app/src/metadata-publication.ts",
+    "packages/sane-app/src/opencode-run-service.ts",
+    "packages/sane-app/src/opencode.ts",
+    "packages/sane-app/src/run-owner.ts",
+    "packages/sane-app/src/science-submission-store.ts"
+  ],
+  "baseline": [
+    {
+      "file": "packages/sane-app/src/user-questions-service.ts",
+      "start": 1956,
+      "code": 2739,
+      "message": "Type 'Record<string, any>' is missing the following properties from type '{ source: NativeSourceDescriptor; authorityId: string; nativeId: string; cwd: string; }': source, authorityId, nativeId, cwd"
+    },
+    {
+      "file": "packages/sane-app/src/user-questions-service.ts",
+      "start": 1978,
+      "code": 2739,
+      "message": "Type 'Record<string, any>' is missing the following properties from type '{ toolCallId: string; messageId?: string | undefined; invocationId: string; wrapper?: \"execute\" | undefined; }': toolCallId, invocationId"
+    }
+  ],
+  "current": [
+    {
+      "file": "packages/sane-app/src/user-questions-service.ts",
+      "start": 1956,
+      "code": 2739,
+      "message": "Type 'Record<string, any>' is missing the following properties from type '{ source: NativeSourceDescriptor; authorityId: string; nativeId: string; cwd: string; }': source, authorityId, nativeId, cwd"
+    },
+    {
+      "file": "packages/sane-app/src/user-questions-service.ts",
+      "start": 1978,
+      "code": 2739,
+      "message": "Type 'Record<string, any>' is missing the following properties from type '{ toolCallId: string; messageId?: string | undefined; invocationId: string; wrapper?: \"execute\" | undefined; }': toolCallId, invocationId"
+    }
+  ],
+  "unchangedDiagnostics": true
+}

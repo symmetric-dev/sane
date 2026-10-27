@@ -1,15 +1,18 @@
 import type { Event, Run, Session, Status } from "./history";
-import { OpenCodeCommandProtocolError, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeQueuedHandoffProtocolError, OpenCodeUnavailableError, isQueuedHandoffAdmission, normalizeMessage, type NativeCommandObservation, type NativeCommandSnapshot, type OpenCodeAdapter } from "./opencode";
+import { OpenCodeCommandProtocolError, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeQueuedHandoffProtocolError, OpenCodeUnavailableError, isQueuedHandoffAdmission, normalizeMessage, prepareOpenCodePrompt, type NativeCommandObservation, type NativeCommandSnapshot, type OpenCodeAdapter, type OpenCodePreparedPrompt, type OpenCodePromptPacket } from "./opencode";
 import type { RunOwner } from "./run-owner";
 import type { ExecutionContext } from "./workstreams";
-import { saneSessionMessageId, snapshotIdentity } from "./agent-launch";
+import { snapshotIdentity } from "./agent-launch";
 import { nativeAgentId } from "sane-core/agent-catalog";
 import type { DispatchIdentity } from "../shared/conversation/dispatch-contract";
 import { verifyOpenCodeCompletion, type OperatorCompletionEvidence } from "./opencode-completion-recovery";
-import { prepareContextDelivery, assertContextCurrent, contextReceipt, type ContextProvider } from "./context-delivery";
 import { openCodeExecutionConfiguration } from "./canonical-agent-operations";
 import type { CanonicalExecutionProvider } from "./canonical-execution-store";
 import type { WorkerProtocolPin } from "./worker-contract";
+import { synchronousDispatchHook } from "./dispatch-evidence";
+import { coordinateRunSubmission, type RunSubmissionPreparationSteps } from "./run-submission-preparation";
+import { createRunSubmissionTiming, type RunSubmissionTimingSnapshot } from "./run-submission-timing";
+import type { ActualContextSubmission } from "./context-message-transport";
 
 /** Private App recovery capability; no Run synthesis or submission hooks. */
 export type OpenCodeRecoveryObservation = Readonly<{
@@ -24,11 +27,13 @@ export type OpenCodeRecoveryObservation = Readonly<{
 }>;
 
 /** Native transport only; owner arbitration and durable writes remain in the bridge. */
-export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel"> & Partial<Pick<OpenCodeAdapter, "history" | "observeCommand" | "promptQueuedHandoff" | "preflightNativeSession" | "deliverSaneSession" | "deliverContextEntry" | "configureCanonicalExecution" | "bindSaneSession" | "boundSaneSession" | "cancelInput">>;
+export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel"> & Partial<Pick<OpenCodeAdapter, "history" | "observeCommand" | "promptQueuedHandoff" | "preparePromptSubmission" | "preflightNativeSession" | "configureCanonicalExecution" | "cancelInput">>;
 export type OpenCodeRunDependencies = {
   oc: OpenCodeRunAdapter;
   closing: () => boolean;
   storageFailed: () => boolean;
+  /** Existing bridge storage/reconciliation latch; never a second owner registry. */
+  failClosed: (error: unknown) => void;
   currentOwner: (sessionId: string) => RunOwner | undefined;
   session: (sessionId: string) => Session;
   events: (runId: string) => readonly Event[];
@@ -37,24 +42,18 @@ export type OpenCodeRunDependencies = {
   execution: (sessionId: string) => Promise<string>;
   /** Workstream membership and roots recorded in launch evidence. */
   executionContext: (sessionId: string) => Promise<ExecutionContext>;
-  /** The acknowledged creation-time framework delivery not yet journaled; removed on read. */
-  takeFrameworkDelivery: (sessionId: string) => FrameworkDelivery | undefined;
   compactExecution: (session: Session) => Promise<string>;
   refreshCompactHistory: (owner: RunOwner) => Promise<void>;
   assertWorkerDeliverySubmission: (owner: RunOwner) => void;
   workerHasRun: (runId: string) => boolean;
   /** Operator verification requires literal inbox emptiness, including startup synthetics. */
   completionInboxEmpty?: (nativeSessionId: string) => Promise<boolean>;
-  /** The startup SANE Session block from current membership, or null. */
-  saneSession: (sessionId: string) => Promise<string | null>;
-  canonicalContext?: ContextProvider;
   canonicalExecution?: CanonicalExecutionProvider;
   /** Recorded worker pin only. Absent must not upgrade an unpinned resume. */
   explicitProtocol?: (sessionId: string) => WorkerProtocolPin | undefined;
   sleep: (ms: number) => Promise<unknown>;
 };
 
-export type FrameworkDelivery = { messageId: string; sha256: string; chars: number };
 export type VerifyCompletionRequest = { requestId: string; nativeSessionId: string; nativeCommandId: string; confirm: true; reason: string };
 export type CompletionReconciliationEvidence = VerifyCompletionRequest & {
   type: "completion-reconciliation"; proofKind: "operator-verified"; sessionId: string; runId: string;
@@ -80,22 +79,32 @@ export class OpenCodeRunService {
   private readonly handoffPins = new WeakMap<RunOwner, HandoffPins>();
   private readonly completionChecks = new Set<string>();
   private readonly executionAgents = new WeakMap<RunOwner, string>();
+  /** Diagnostics only: one bounded snapshot per owner, never an evidence write. */
+  private readonly submissionTimings = new WeakMap<RunOwner, Readonly<{ initial?: RunSubmissionTimingSnapshot }>>();
   constructor(private readonly deps: OpenCodeRunDependencies) {}
-  private async configureExecution(owner: RunOwner, guard: () => void) {
+  readSubmissionTiming(owner: RunOwner): Readonly<{ initial?: RunSubmissionTimingSnapshot }> | undefined {
+    return this.submissionTimings.get(owner);
+  }
+  private retainSubmissionTiming(owner: RunOwner, timing: ReturnType<typeof createRunSubmissionTiming>): void {
+    try { this.submissionTimings.set(owner, Object.freeze({ initial: timing.snapshot() })); }
+    catch { /* Optional diagnostics cannot gate response, observation or settlement. */ }
+  }
+  private async configureExecution(owner: RunOwner, guard: () => void, steps?: RunSubmissionPreparationSteps) {
     const run = owner.run, session = this.deps.session(run.sessionId);
+    const step = <T>(work: () => Promise<T>) => steps ? steps.step("execution.configure", work) : work();
     guard();
-    const snapshot = await this.deps.canonicalExecution?.(run.sessionId);
+    const snapshot = await step(async () => this.deps.canonicalExecution?.(run.sessionId));
     guard();
     if (!snapshot) return;
     if (!this.deps.oc.configureCanonicalExecution) throw new Error("Canonical execution integration is unavailable");
     if (snapshot.policy.spec.name !== `sane/${session.agentKind}/${session.agent}`) throw new Error("Canonical execution role mismatch");
     const configuration = openCodeExecutionConfiguration({ policy: snapshot.policy, children: snapshot.children, sessionID: session.nativeSessionId!, directory: session.cwd, model: run.model, effort: run.effort, protocol: this.deps.explicitProtocol?.(run.sessionId) });
-    await this.deps.emit(run, "context", { type: "canonical-execution", stage: "prepared", revision: snapshot.revision, configuration });
+    await step(() => this.deps.emit(run, "context", { type: "canonical-execution", stage: "prepared", revision: snapshot.revision, configuration }));
     guard();
     const readOnly = run.nativeDelivery === "queue";
-    await this.deps.oc.configureCanonicalExecution(configuration, guard, readOnly);
+    await step(() => this.deps.oc.configureCanonicalExecution!(configuration, guard, readOnly));
     this.executionAgents.set(owner, configuration.agent);
-    await this.deps.emit(run, "context", { type: "canonical-execution", stage: readOnly ? "verified" : "configured", revision: snapshot.revision, sessionId: session.sessionId, nativeSessionId: session.nativeSessionId });
+    await step(() => this.deps.emit(run, "context", { type: "canonical-execution", stage: readOnly ? "verified" : "configured", revision: snapshot.revision, sessionId: session.sessionId, nativeSessionId: session.nativeSessionId }));
     guard();
   }
   /** Explicit operator repair only. This evidence never certifies automatic continuation. */
@@ -291,11 +300,18 @@ export class OpenCodeRunService {
   private handoffUnsafe(owner: RunOwner) {
     return owner.nativeHandoffProtocolUnsafe || this.deps.events(owner.run.runId).some(event => event.runId === owner.run.runId && event.kind === "status" && record(event.data) && event.data.nativeQueuedHandoffProtocolMismatch === true);
   }
-  private async reportHandoffMismatch(owner: RunOwner, reason: string) {
+  private async reportHandoffMismatch(owner: RunOwner, reason: string, assertAssociation: () => void = () => {}) {
+    assertAssociation();
     if (this.handoffUnsafe(owner)) return;
     owner.nativeHandoffProtocolUnsafe = true;
+    // Retain the contradiction in memory even if storage has already failed.
+    // Cancellation/shutdown do not turn an observed protocol error into absence.
+    if (this.deps.storageFailed()) return;
     await this.deps.emit(owner.run, "status", { status: "running", connection: "unconfirmed", nativeQueuedHandoffProtocolMismatch: true, reason });
+    assertAssociation();
+    if (this.deps.storageFailed()) return;
     await this.deps.persist();
+    assertAssociation();
   }
   async finishNative(owner: RunOwner, status: Status, reason?: string) {
     if (owner.run.nativeDelivery === "queue" && (owner.run.status !== "running" || this.deps.currentOwner(owner.run.sessionId) !== owner)) return;
@@ -304,14 +320,11 @@ export class OpenCodeRunService {
     await this.deps.emit(owner.run, "status", { status, ...(reason ? { reason } : {}) });
     await this.deps.persist();
   }
-  /** Launch inputs as journal evidence, after selection and startup context delivery, before native submission. */
-  private async launchEvidence(owner: RunOwner, resume: boolean) {
+  /** Launch inputs as journal evidence, after selection, before native submission. */
+  private async launchEvidence(owner: RunOwner, resume: boolean, setupContext?: ExecutionContext) {
     this.assertHandoff(owner);
     const run = owner.run, session = this.deps.session(run.sessionId), compact = run.operation === "compact";
-    const delivery = this.deps.takeFrameworkDelivery(session.sessionId);
-    if (delivery) await this.deps.emit(run, "context", { type: "framework-delivered", ...delivery });
-    this.assertHandoff(owner);
-    const context = await this.deps.executionContext(session.sessionId), identity = snapshotIdentity(run);
+    const context = setupContext ?? await this.deps.executionContext(session.sessionId), identity = snapshotIdentity(run);
     this.assertHandoff(owner);
     if (run.nativeDelivery === "queue" && (!this.currentNative(owner) || owner.stopRequested)) throw new Error("Queued prompt withheld before launch evidence");
     await this.deps.emit(run, "launch", {
@@ -323,6 +336,11 @@ export class OpenCodeRunService {
   }
   async monitorNative(owner: RunOwner) {
     const run = owner.run;
+    const originalRunId = run.runId, originalSessionId = run.sessionId, originalCommandId = run.nativeCommandId;
+    const assertObservationAssociation = () => {
+      if (owner.run !== run || run.runId !== originalRunId || run.sessionId !== originalSessionId || run.nativeCommandId !== originalCommandId)
+        throw new OpenCodeSourceMismatchError("Original native observation association changed");
+    };
     const session = this.deps.session(run.sessionId);
     const handoff = owner.nativeDeliveryPolicy === "native-queued-handoff" || owner.nativeQueuedHandoff !== undefined || this.handoffPins.has(owner);
     const current = () => {
@@ -347,12 +365,15 @@ export class OpenCodeRunService {
         const pins = this.handoffPins.get(owner);
         const nativeSessionId = pins?.nativeSessionId ?? session.nativeSessionId!, commandId = pins?.commandId ?? run.nativeCommandId!;
         const snapshot = await this.readCommand(nativeSessionId, commandId, pins?.cwd ?? session.cwd, handoff);
+        // A returned contradiction is an original-command fact, even while Stop
+        // defers settlement. Latch it before cancellation or follow-on gates can
+        // discard this snapshot and let a later terminal erase the unsafe proof.
+        if (handoff && snapshot.observation.kind === "protocol-contradiction") await this.reportHandoffMismatch(owner, snapshot.observation.reason, assertObservationAssociation);
         if (!current()) break;
         if (snapshot.observation.kind === "unavailable") throw new OpenCodeUnavailableError(snapshot.observation.reason);
         if (run.nativeDelivery === "queue" && (owner.cancelling || handoff && owner.stopping)) { await this.deps.sleep(1000); continue; }
         const exactUser = snapshot.messages.some(m => m.id === commandId && m.type === "user");
         const pending = snapshot.pendingInput;
-        if (handoff && snapshot.observation.kind === "protocol-contradiction") await this.reportHandoffMismatch(owner, snapshot.observation.reason);
         if (!current()) break;
         const accepted = handoff ? !this.handoffUnsafe(owner) && snapshot.observation.kind === "pending" && isQueuedHandoffAdmission(pending, nativeSessionId, commandId) : exactUser;
         if (!acceptanceReported && accepted) {
@@ -481,13 +502,6 @@ export class OpenCodeRunService {
       await this.deps.compactExecution(session);
       await this.deps.oc.assertIdle(session.nativeSessionId!, session.cwd);
       await this.configureExecution(owner, guard);
-      const canonical = await prepareContextDelivery(session, run, this.deps.canonicalContext, this.deps.emit, guard);
-      if (canonical) {
-        if (!this.deps.oc.deliverContextEntry) throw new Error("OpenCode canonical context delivery is unavailable");
-        await this.deps.oc.deliverContextEntry(session.nativeSessionId!, `${canonical.standing}\n\n${canonical.dynamic}`, true, guard);
-        guard();
-        await this.deps.emit(run, "context", contextReceipt(canonical, "stored-readback", "instruction-entry:sane.context"));
-      }
       await this.launchEvidence(owner, true);
       if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested) throw new Error("Bridge unavailable before native compaction submission");
       run.nativePhase = "sending"; await this.deps.persist();
@@ -495,7 +509,6 @@ export class OpenCodeRunService {
       // Recheck idle immediately before dispatch. No agent/model selection,
       // synthetic user message or ordinary prompt endpoint participates.
       await this.deps.oc.assertIdle(session.nativeSessionId!, session.cwd);
-      await assertContextCurrent(canonical, this.deps.canonicalContext, guard);
       const submission = this.deps.oc.compact(session.nativeSessionId!, run.compact!.nativeRequestId!, () => {
         guard();
         if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested || this.deps.currentOwner(session.sessionId) !== owner) throw new Error("Compaction withheld before native dispatch");
@@ -539,131 +552,190 @@ export class OpenCodeRunService {
   async executeNative(owner: RunOwner, prompt: string, resume: boolean, ready: (accepted: boolean) => void) {
     const run = owner.run; const session = this.deps.session(run.sessionId), queued = run.nativeDelivery === "queue";
     const handoff = owner.nativeDeliveryPolicy === "native-queued-handoff" || owner.nativeQueuedHandoff !== undefined || this.handoffPins.has(owner);
-    const expectedConfiguration = configuration(session), nativeSessionId = session.nativeSessionId!;
+    const expectedConfiguration = configuration(session), expectedRunConfiguration = runConfiguration(run), nativeSessionId = session.nativeSessionId!;
     const expectedPolicy = owner.nativeDeliveryPolicy, commandId = run.nativeCommandId!;
+    // This is the bridge's exact lifecycle identity (including requestId), not a
+    // reconstruction from mutable Session/Run fields or queue defaults.
+    const contextIdentity = owner.contextIdentity, contextMessages = owner.contextMessages, dispatchEvidence = owner.dispatchEvidence;
+    const submissionPublication = owner.submissionPublication;
+    const contextSource = contextIdentity?.source, contextSourceSnapshot = JSON.stringify(contextSource);
     const assertDelivery = () => {
       if (owner.nativeDeliveryPolicy !== expectedPolicy) throw new Error("Native delivery policy changed before native dispatch");
       return this.assertHandoff(owner);
     };
     const assertDispatchState = () => {
       if (!this.currentNative(owner) || owner.settled || owner.stopRequested || owner.cancelling || owner.stopping
-        || owner.nativeDeliveryPolicy !== expectedPolicy || configuration(this.deps.session(run.sessionId)) !== expectedConfiguration) throw new Error("Prompt withheld before native dispatch: ownership, cancellation, or conversation configuration changed");
+        || owner.run !== run || this.deps.session(run.sessionId) !== session || runConfiguration(run) !== expectedRunConfiguration
+        || owner.nativeDeliveryPolicy !== expectedPolicy || configuration(this.deps.session(run.sessionId)) !== expectedConfiguration
+        || run.nativeCommandId !== commandId || session.nativeSessionId !== nativeSessionId
+         || !dispatchEvidence || owner.dispatchEvidence !== dispatchEvidence
+         || owner.submissionPublication !== submissionPublication
+        || !contextIdentity || owner.contextIdentity !== contextIdentity || !contextMessages || owner.contextMessages !== contextMessages
+        || contextIdentity.runId !== run.runId || contextIdentity.nativeCommandId !== commandId
+        || contextIdentity.source.harnessId !== "opencode" || contextIdentity.source.sessionId !== run.sessionId
+        || contextIdentity.source.nativeSessionId !== nativeSessionId || contextIdentity.source.authorityId !== (session.authorityId ?? null)
+        || contextIdentity.source.cwd !== session.cwd || run.cwd !== contextIdentity.source.cwd) throw new Error("Prompt withheld before native dispatch: ownership, cancellation, context identity, or conversation configuration changed");
     };
     const assertBeforeSend = () => {
       assertDispatchState();
-      owner.beforeSend?.();
+      synchronousDispatchHook(() => owner.beforeSend?.());
       assertDelivery();
       this.deps.assertWorkerDeliverySubmission(owner);
-      if (handoff) { assertDispatchState(); assertDelivery(); }
+      assertDispatchState(); assertDelivery();
     };
     let promptAttempted = handoff && (owner.nativeDispatched === true || run.nativePhase === "sending" || run.nativePhase === "accepted");
+    // Admission/mutations above require assertDispatchState. Original-command
+    // observation must instead survive Stop while native termination is uncertain.
+    const observationCurrent = () => this.currentNative(owner) && !owner.settled;
+    const assertObservationAssociation = () => {
+      if (owner.run !== run || !contextIdentity || owner.contextIdentity !== contextIdentity
+        || owner.contextMessages !== contextMessages || run.runId !== contextIdentity.runId
+        || run.sessionId !== contextSource?.sessionId || run.nativeCommandId !== commandId
+        || contextIdentity.nativeCommandId !== commandId || contextIdentity.source !== contextSource
+        || JSON.stringify(contextSource) !== contextSourceSnapshot) throw new OpenCodeSourceMismatchError("Original native submission association changed");
+    };
+    const current = () => { assertDispatchState(); assertDelivery(); };
+    const mode = handoff ? "queued-handoff" : expectedPolicy === "idle-only" ? "idle-only" : queued ? "queued" : "initial";
+    const timing = createRunSubmissionTiming({ harness: "opencode", mode });
+    let pipelineStarted = false;
+    let timingRecorded = false;
+    const recordTiming = () => {
+      if (!pipelineStarted || timingRecorded) return;
+      timingRecorded = true;
+      this.retainSubmissionTiming(owner, timing);
+    };
     try {
       assertDelivery();
       // Read-only recovery, never a second submission of an unresolved head.
       if (handoff && promptAttempted) { await this.monitorNative(owner); return; }
+      if (!dispatchEvidence || !contextMessages) throw new Error("Native prompt requires the original owner's dispatch evidence and context capabilities");
+      const preparePromptSubmission = this.deps.oc.preparePromptSubmission;
+      if (!preparePromptSubmission) throw new Error("Prepared OpenCode prompt transport is unavailable; submission withheld");
       if (compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
       if (queued && (run.operation === "compact" || owner.workerDeliveryId)) throw new Error("Queued native delivery requires a user prompt run");
-      await this.deps.emit(run, "status", { status: "running", ...(queued ? { reason: "Queued prompt waiting for native continuation to consume the exact input" } : {}) });
-      assertDelivery();
-      await this.deps.emit(run, "submission", { messageId: run.nativeCommandId, text: prompt });
-      assertDelivery();
-      await this.deps.persist();
-      assertDelivery();
-      if (queued && (run.status !== "running" || this.deps.currentOwner(run.sessionId) !== owner)) return;
-      if (this.deps.closing() || owner.stopRequested) { await this.finishNative(owner, "interrupted", "Stopped before native submission"); ready(false); return; }
-      const cwd = await this.deps.execution(session.sessionId);
-      assertDelivery();
-      if (queued && (run.status !== "running" || this.deps.currentOwner(run.sessionId) !== owner)) return;
-      run.cwd = cwd;
-      if (queued) {
-        if (!this.currentNative(owner)) throw new Error("Queued prompt ownership changed before launch evidence");
-      } else {
-        await this.deps.oc.assertIdle(session.nativeSessionId!, run.cwd);
-        assertDelivery();
-        await this.deps.oc.select(session.nativeSessionId!, run.model, run.effort);
-        assertDelivery();
-        if (!resume && !session.saneContext?.package) {
-          const block = await this.deps.saneSession(session.sessionId);
-          assertDelivery();
-          if (block !== null) {
-            if (!this.deps.oc.deliverSaneSession) throw new Error("Native startup requires SANE Session context delivery");
-            await this.deps.oc.deliverSaneSession(session.nativeSessionId!, saneSessionMessageId(session.sessionId), block);
-            assertDelivery();
-            await this.deps.emit(run, "context", { type: "session-block", changed: true, text: block });
-          }
-        }
-      }
-      await this.configureExecution(owner, assertDispatchState);
-      const canonical = await prepareContextDelivery(session, run, this.deps.canonicalContext, this.deps.emit, assertDispatchState);
-      if (canonical) {
-        if (!this.deps.oc.deliverContextEntry) throw new Error("OpenCode canonical context delivery is unavailable");
-        await this.deps.oc.deliverContextEntry(nativeSessionId, `${canonical.standing}\n\n${canonical.dynamic}`, !queued, assertDispatchState);
-        assertDispatchState();
-        await this.deps.emit(run, "context", contextReceipt(canonical, "stored-readback", "instruction-entry:sane.context"));
-      }
-      await this.launchEvidence(owner, resume);
-      assertDelivery();
-      if (queued && (run.status !== "running" || this.deps.currentOwner(run.sessionId) !== owner)) return;
-      if (this.deps.closing() || owner.stopRequested) { await this.finishNative(owner, "interrupted", "Stopped before native submission"); ready(false); return; }
-      run.nativePhase = "sending"; await this.deps.persist();
-      assertDelivery();
-      if (queued && (run.status !== "running" || this.deps.currentOwner(run.sessionId) !== owner)) return;
-      if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested) throw new Error("Bridge unavailable before native submission");
-      const submissionCwd = await this.deps.execution(session.sessionId);
-      assertDelivery();
-      if (queued && !this.currentNative(owner)) return;
-      run.cwd = submissionCwd;
-      // Idle-only automation preserves its fresh proof. A durable native handoff
-      // instead rechecks binding without refusing a post-claim foreign busy race.
-      if (owner.nativeDeliveryPolicy === "idle-only") {
-        if (queued) throw new Error("Idle-only delivery cannot use the native inbox");
-        await this.deps.oc.assertIdle(nativeSessionId, submissionCwd);
-        assertDelivery();
-      }
-      if (handoff) await this.deps.oc.preflightNativeSession!(nativeSessionId, submissionCwd);
-      assertDelivery();
-      await assertContextCurrent(canonical, this.deps.canonicalContext, assertDispatchState);
-      // Native command ID is durable before the request. A timeout is ambiguous:
-      // keep this conversation's slot and reconcile, never replay automatically.
-      this.deps.assertWorkerDeliverySubmission(owner);
-      ready(true);
+      if (mode === "idle-only" && queued) throw new Error("Idle-only delivery cannot use the native inbox");
       try {
-        const beforeSubmit = () => {
-          assertBeforeSend();
-          owner.dispatchEvidence?.beforeNative();
-          if (handoff) { assertDispatchState(); assertDelivery(); }
-          promptAttempted = true; owner.nativeDispatched = true;
-        };
-        const submission = handoff ? this.deps.oc.promptQueuedHandoff!(nativeSessionId, commandId, prompt, beforeSubmit) : queued ? this.deps.oc.prompt(nativeSessionId, run.nativeCommandId!, prompt, beforeSubmit, "queue") : this.deps.oc.prompt(nativeSessionId, run.nativeCommandId!, prompt, beforeSubmit);
-        owner.submission = submission;
-        const admitted = await submission;
-        if (queued && !this.currentNative(owner)) return;
+        pipelineStarted = true;
+        let readActualSubmission: (() => ActualContextSubmission) | undefined;
+        const admitted = await coordinateRunSubmission<OpenCodePromptPacket, { context: ExecutionContext; transport?: OpenCodePreparedPrompt }, Awaited<ReturnType<OpenCodePreparedPrompt["send"]>>, string>({
+          mode, request: { messageId: commandId, body: prompt, boundary: "run-initial",
+            ...(owner.nativeQueuedHandoff ? { queuedFollowupId: owner.nativeQueuedHandoff.requestId } : {}) },
+          contextMessages, assertCurrent: current, assertObservationCurrent: assertObservationAssociation,
+          failClosed: error => this.deps.failClosed(error),
+          evidence: dispatchEvidence,
+          publication: submissionPublication,
+          journal: {
+            status: () => this.deps.emit(run, "status", { status: "running", ...(queued ? { reason: "Queued prompt waiting for native continuation to consume the exact input" } : {}) }),
+            submission: submission => this.deps.emit(run, "submission", submission),
+            launch: (_packet, setup) => this.launchEvidence(owner, resume, setup.context),
+          },
+          publishMetadata: async phase => { if (phase === "launch") run.nativePhase = "sending"; await this.deps.persist(); },
+          native: {
+            capabilities: { initial: { supported: true }, queued: { supported: true }, "queued-handoff": { supported: true }, "idle-only": { supported: true }, "live-input": { supported: false, reason: "OpenCode does not support live prompt input" } },
+            encode: text => {
+              const packet = prepareOpenCodePrompt(nativeSessionId, commandId, text, queued ? "queue" : undefined);
+              const readActual = () => {
+                // Original bytes remain observable after Stop/configuration drift.
+                assertObservationAssociation();
+                const actual = JSON.parse(packet.body);
+                return { identity: contextIdentity!, messageId: actual.id, text: actual.text };
+              };
+              readActualSubmission = readActual;
+              return { payload: packet, readActual, assertWire: body => {
+                if (body !== packet.body) throw new OpenCodeSourceMismatchError("Actual native wire body differs from the bound prompt packet");
+              } };
+            },
+            setup: async (_packet, steps) => {
+              // Snapshot setup roots for launch diagnostics only; preflight still resolves fresh.
+              const context = { ...await steps.step("execution.resolve", () => this.deps.executionContext(session.sessionId)) };
+              const cwd = context.executionCheckout;
+              if (cwd !== contextIdentity!.source.cwd) throw new OpenCodeSourceMismatchError("Execution directory differs from the context identity");
+              run.cwd = cwd;
+              if (!queued) {
+                await steps.step("native.inspect", () => this.deps.oc.assertIdle(nativeSessionId, cwd));
+                await steps.step("execution.configure", () => this.deps.oc.select(nativeSessionId, run.model, run.effort));
+              }
+              await this.configureExecution(owner, steps.assertCurrent, steps);
+              return { context };
+            },
+            preflight: async (packet, setup, steps) => {
+              const cwd = await steps.step("execution.resolve", () => this.deps.execution(session.sessionId));
+              if (cwd !== contextIdentity!.source.cwd) throw new OpenCodeSourceMismatchError("Submission directory differs from the context identity");
+              run.cwd = cwd;
+              // Handoffs recheck binding, never introduce a post-claim idle lease.
+              if (mode === "idle-only") await steps.step("native.inspect", () => this.deps.oc.assertIdle(nativeSessionId, cwd));
+              if (handoff) await steps.step("native.preflight", () => this.deps.oc.preflightNativeSession!(nativeSessionId, cwd));
+              const text = JSON.parse(packet.body).text as string;
+              setup.transport = await steps.step("transport.setup", () => preparePromptSubmission.call(this.deps.oc, nativeSessionId, commandId, text, queued ? "queue" : undefined, packet, handoff));
+            },
+            beforeNative: () => {
+              assertBeforeSend();
+              ready(true);
+              current();
+            },
+            onIntentRecorded: () => {
+              // Bookkeeping only: preserve successful original intent even when
+              // the core's trailing admission gate subsequently refuses fetch.
+              promptAttempted = true; owner.nativeDispatched = true;
+            },
+            send: (_packet, setup, boundary) => {
+              if (!setup.transport) throw new Error("Prepared native prompt transport is missing");
+              // The handle enters boundary synchronously and issues one fetch
+              // without discovery or another await after final context proof.
+              const submission = setup.transport.send(body => boundary.beforeNative(body)).then(receipt => {
+                const exact = handoff ? isQueuedHandoffAdmission(receipt, nativeSessionId, commandId) : receipt?.id === commandId && Number.isFinite(receipt.time?.created);
+                if (!exact) throw handoff ? new OpenCodeQueuedHandoffProtocolError("Native queue acknowledgement protocol mismatch; retain ownership; do not resend") : new Error("Native prompt acknowledgement identity is unconfirmed");
+                return receipt;
+              }).catch(async error => {
+                // Latch a received contradiction BEFORE shared outcome observers
+                // can replace its error. This catch covers only native receipt
+                // decoding/validation, never errors from boundary.outcome below.
+                if (handoff && error instanceof OpenCodeQueuedHandoffProtocolError) {
+                  await this.reportHandoffMismatch(owner, error.message, () => {
+                    if (!readActualSubmission) throw new OpenCodeSourceMismatchError("Original native submission association is unavailable");
+                    readActualSubmission();
+                  });
+                }
+                throw error;
+              }).then(receipt => {
+                boundary.outcome("submitted", "accepted");
+                return receipt;
+              });
+              owner.submission = submission;
+              return submission;
+            },
+          }, timing,
+        });
+        if (!observationCurrent()) return;
         assertDelivery();
-        // An acknowledgement for another command (or malformed response) is not
-        // acceptance proof for our exact immutable command ID.
-        const exact = handoff ? isQueuedHandoffAdmission(admitted, nativeSessionId, commandId) : admitted?.id === run.nativeCommandId && typeof admitted.time?.created === "number";
-        owner.dispatchEvidence?.outcome(exact ? "submitted" : "unknown", exact ? "accepted" : "unknown");
-        if (handoff) assertDelivery();
-        if (!exact) throw handoff && admitted !== undefined ? new OpenCodeQueuedHandoffProtocolError("Native queue acknowledgement protocol mismatch; retain ownership; do not resend") : new Error("Native prompt acknowledgement identity is unconfirmed");
         run.nativePhase = "accepted"; run.nativeAcceptedAt = admitted.time.created; await this.deps.persist();
       } catch (error) {
-        if (queued && !this.currentNative(owner)) return;
         if (!promptAttempted) throw error; // Delivery was withheld before HTTP submission, including discovery failure.
-        owner.dispatchEvidence?.outcome("unknown");
-        if (handoff && error instanceof OpenCodeQueuedHandoffProtocolError) await this.reportHandoffMismatch(owner, error.message);
+        try { dispatchEvidence.outcome("unknown"); }
+        finally {
+          // Preserve the exact received protocol contradiction even if the
+          // original outcome hook refuses follow-on launch policy. Never let a
+          // cancellation/current-owner gate hide it or permit a queue wake.
+          if (handoff && error instanceof OpenCodeQueuedHandoffProtocolError) await this.reportHandoffMismatch(owner, error.message, assertObservationAssociation);
+        }
+        if (!observationCurrent()) return;
+        assertDelivery();
         if (!handoff && error instanceof OpenCodeError && [400, 401, 403, 404, 409].includes(error.status)) {
           await this.finishNative(owner, "failed", error.message); return;
         }
         await this.deps.emit(run, "status", { status: "running", connection: "unconfirmed", reason: error instanceof Error ? error.message : "Native submission unconfirmed" });
       }
-      await this.monitorNative(owner);
+      recordTiming();
+      if (observationCurrent()) await this.monitorNative(owner);
     } catch (error) {
       ready(false);
       if (this.deps.storageFailed()) return;
        if (!promptAttempted) await this.finishNative(owner, owner.stopRequested || owner.cancelling || this.deps.closing() ? "interrupted" : "failed", error instanceof Error ? error.message : "Native preparation failed");
       else throw error;
     } finally {
-      if (!promptAttempted) owner.dispatchEvidence?.withheld();
+      if (!promptAttempted) dispatchEvidence?.withheld();
+      // In-memory finalization only; no journal, persistence or async callback.
+      recordTiming();
       if (owner.workerDeliveryId && !promptAttempted && !this.deps.storageFailed()) await this.deps.emit(run, "status", { status: run.status, workerDeliveryNotSubmitted: owner.workerDeliveryId }); ready(false);
     }
   }

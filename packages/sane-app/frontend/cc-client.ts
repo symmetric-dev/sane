@@ -6,6 +6,7 @@ import { nativeNotificationSource } from "./notification-source";
 import { SESSION_REFRESH_ERROR } from "./notification-presentation";
 import { pendingInputClient } from "./pending-input-client";
 import { normalizeSessionTitle, SESSION_TITLE_SOURCES } from "../shared/conversation/session-title";
+import { decodeAppAdmissionEnvelope, decodeAppAdmissionKey, decodeAppAdmissionReceipt, decodeAppAdmissionReceiptForIntent, type AppAdmissionEnvelope, type AppAdmissionKey, type AppAdmissionLookup } from "../shared/conversation/app-admission-contract";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
@@ -52,6 +53,40 @@ async function updateSessionTitle(id: string, input: { title?: string; expectedR
   return { title: result.title, titleSource: result.titleSource, titleRevision: result.titleRevision };
 }
 export const conversationClient: ConversationClient = {
+  async submitAdmission(envelope: AppAdmissionEnvelope, signal?: AbortSignal) {
+    const frozen = decodeAppAdmissionEnvelope(envelope);
+    // Exactly one POST. Neither transport failure nor an absent GET permits a retry.
+    const response = await fetch("/api/submissions", { method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(frozen), signal: signal ?? AbortSignal.timeout(25000) });
+    const value: unknown = await response.json();
+    if (!response.ok) {
+      // A failure body is not a rejection receipt and never authorizes resending.
+      throw new ApiError(`App admission could not be confirmed (${response.status}). Check its exact request status.`, response.status);
+    }
+    const receipt = decodeAppAdmissionReceiptForIntent(value, frozen);
+    if (receipt.storeId !== frozen.storeId || receipt.clientRequestId !== frozen.clientRequestId || receipt.payloadSha256 !== frozen.payloadSha256) throw new Error("App admission receipt identity mismatch");
+    return receipt;
+  },
+  async lookupAdmission(input: AppAdmissionKey, signal?: AbortSignal): Promise<AppAdmissionLookup> {
+    const key = decodeAppAdmissionKey(input);
+    const response = await fetch(`/api/submissions/${encodeURIComponent(key.clientRequestId)}?${new URLSearchParams({ storeId: key.storeId, payloadSha256: key.payloadSha256 })}`,
+      { credentials: "same-origin", cache: "no-store", signal: signal ?? AbortSignal.timeout(25000) });
+    const value: unknown = await response.json();
+    if (!response.ok) throw new ApiError(`App admission status is unavailable (${response.status}); the original request remains unresolved.`, response.status);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid App admission lookup");
+    const result = value as Record<string, unknown>;
+    if (result.kind === "found" && Object.keys(result).length === 2 && Object.hasOwn(result, "receipt")) {
+      const receipt = decodeAppAdmissionReceipt(result.receipt);
+      if (receipt.storeId !== key.storeId || receipt.clientRequestId !== key.clientRequestId || receipt.payloadSha256 !== key.payloadSha256) throw new Error("App admission lookup identity mismatch");
+      return { kind: "found", receipt };
+    }
+    if (result.kind === "absent" && Object.keys(result).length === 2 && Object.hasOwn(result, "key")) {
+      const absent = decodeAppAdmissionKey(result.key);
+      if (absent.storeId !== key.storeId || absent.clientRequestId !== key.clientRequestId || absent.payloadSha256 !== key.payloadSha256) throw new Error("App admission lookup identity mismatch");
+      return { kind: "absent", key: absent };
+    }
+    throw new Error("Invalid App admission lookup");
+  },
   scienceSubmissions: async (id, signal) => (await request(`/api/sessions/${encodeURIComponent(id)}/science-submissions`, { signal })).submissions,
   scienceSubmission: async (id, requestId, signal) => (await request(`/api/sessions/${encodeURIComponent(id)}/science-submissions/${encodeURIComponent(requestId)}`, { signal })).submission,
   ...pendingInputClient,

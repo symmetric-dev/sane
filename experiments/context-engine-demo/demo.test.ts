@@ -22,9 +22,16 @@ test("isolated real engine/store/dispatch/journal path replays in a fresh read-o
     const ordinary = replay.scenarios.find(item => item.scenario.id === "ordinary")!;
     expect(ordinary.scenario.contextLoads).toBe(0);
     expect(ordinary.scenario.executionLoads).toBeGreaterThan(0);
-    expect(ordinary.scenario.pairingChecks).toBeGreaterThan(0);
+    expect(ordinary.scenario.pairingChecks).toBe(0);
+    const trace = ordinary.scenario.trace;
+    expect(trace.slice(trace.indexOf("prepare:start"), trace.indexOf("prepare:complete"))).not.toContain("load:execution");
+    expect(trace.slice(trace.indexOf("setup:simulated-native-execution:start"), trace.indexOf("setup:simulated-native-execution:complete"))).toContain("load:execution");
     expect(ordinary.message!.transport.text).toBe(ordinary.message!.body.text);
     expect(ordinary.message!.segments).toEqual([]);
+    expect(replay.scenarios.find(item => item.scenario.id === "activation")!.scenario.pairingChecks).toBe(1);
+    const update = replay.scenarios.find(item => item.scenario.id === "update")!;
+    expect(update.scenario.contextLoads).toBe(0);
+    expect(update.scenario.pairingChecks).toBe(0);
     const unresolved = replay.scenarios.find(item => item.scenario.id === "attempt-unresolved")!;
     expect(unresolved.projection.fact).toBe("attempt-unresolved");
     expect(unresolved.scenario.mockSends).toBe(1);

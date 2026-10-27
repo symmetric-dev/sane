@@ -1,13 +1,24 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { validateCanonicalActivation, validateCanonicalExecution, type CanonicalActivation } from "./canonical-activation-validation";
 import type { CanonicalAgentOperations } from "./canonical-agent-operations";
-import type { CanonicalExecutionRef, CanonicalExecutionSnapshot } from "./canonical-execution-store";
+import { CanonicalExecutionStore, type CanonicalExecutionRef, type CanonicalExecutionSnapshot } from "./canonical-execution-store";
 import type { StoredSaneAgentIdentity } from "sane-core/agent-catalog";
 import type { ContextPackage } from "./context-package";
 
-// Deliberately no store implementation/parser import: these fixtures exercise the
-// inactive validator without disk I/O, authored context, or harness dependencies.
+// Role/pair matching uses already-validated loader fixtures. Pinned-byte
+// corruption belongs to the real store boundary, not a second policy parser.
+const roots: string[] = [];
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true }); });
+function pinnedStore(execution: CanonicalExecutionSnapshot) {
+  const root = realpathSync(mkdtempSync("/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/canonical-validation-test-"));
+  roots.push(root);
+  const path = join(root, `${execution.revision}.json`);
+  writeFileSync(path, JSON.stringify(execution), { mode: 0o600 });
+  return { path, store: new CanonicalExecutionStore(root, root) };
+}
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const identity: StoredSaneAgentIdentity = { kind: "assistant", role: "engineering" };
 function policy(kind: "assistant" | "worker" = "assistant", role = "engineering"): CanonicalAgentOperations {
@@ -39,6 +50,8 @@ describe("canonical execution-only validation", () => {
     expect(result.policy.permissions).toEqual(before.policy.permissions);
     expect(result.children).toEqual(before.children);
     expect(result.children[0]!.model).toEqual(before.children[0]!.model);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledWith(ref(execution));
   });
 
   test("historical Knowledge and valid worker identities retain their own stored policies", async () => {
@@ -88,34 +101,22 @@ describe("canonical execution-only validation", () => {
     ["child bytes", execution => { execution.children[0]!.spec.body += "tampered"; }],
     ["child model", execution => { execution.children[0]!.model!.variant = "different"; }],
   ];
-  for (const [name, corrupt] of corruptions) test(`rejects changed pinned ${name}`, async () => {
-    const execution = snapshot(), pin = ref(execution); corrupt(execution);
-    await expect(validateCanonicalExecution(pin, identity, { load: async () => execution })).rejects.toThrow();
+  for (const [name, corrupt] of corruptions) test(`store rejects changed pinned ${name}`, async () => {
+    const execution = snapshot(), pin = ref(execution), { path, store } = pinnedStore(execution);
+    corrupt(execution);
+    writeFileSync(path, JSON.stringify(execution));
+    await expect(validateCanonicalExecution(pin, identity, store)).rejects.toThrow("Canonical execution snapshot changed");
   });
 
-  const invalidPolicies: [string, (value: CanonicalAgentOperations) => void][] = [
-    ["permission effect", value => { Object.assign(value.permissions[0]!, { effect: "maybe" }); }],
-    ["permission resource", value => { Object.assign(value.permissions[0]!, { resource: 7 }); }],
-    ["model provider", value => { value.model!.providerID = "bad/provider"; }],
-    ["model id", value => { value.model!.id = "bad model"; }],
-    ["model variant", value => { value.model!.variant = "bad#variant"; }],
-    ["model override", value => { Object.assign(value.source, { modelOverride: { model: 7 } }); }],
-    ["nonfinite temperature", value => { value.temperature = Infinity; }],
-    ["invalid CC permission", value => { Object.assign(value.spec.ccPermissions, { allow: [7] }); }],
-    ["spec identity mismatch", value => { value.spec.shortId = "planning"; }],
-  ];
-  for (const [name, invalidate] of invalidPolicies) test(`rejects invalid policy even with matching hash: ${name}`, async () => {
-    const main = policy(); invalidate(main); const execution = snapshot(main);
-    await expect(validateCanonicalExecution(ref(execution), identity, { load: async () => execution })).rejects.toThrow("Invalid canonical execution policy");
+  test("propagates store integrity refusal without retrying the load", async () => {
+    const execution = snapshot(), failure = new Error("Pinned policy unavailable"), load = mock(async () => { throw failure; });
+    await expect(validateCanonicalExecution(ref(execution), identity, { load })).rejects.toBe(failure);
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
   test("valid but wrong main role is not interchangeable", async () => {
     const execution = snapshot(policy("assistant", "planning"));
     await expect(validateCanonicalExecution(ref(execution), identity, { load: async () => execution })).rejects.toThrow("role differs from its trusted identity");
-  });
-  for (const children of [[policy(), policy("worker", "tester")], [policy("worker", "tester"), policy("worker", "tester")]]) test(`rejects non-worker or duplicate native child identities: ${children.map(item => item.spec.name).join(",")}`, async () => {
-    const execution = snapshot(policy(), children);
-    await expect(validateCanonicalExecution(ref(execution), identity, { load: async () => execution })).rejects.toThrow("Invalid canonical native child policy");
   });
 });
 

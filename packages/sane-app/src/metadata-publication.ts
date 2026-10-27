@@ -199,6 +199,27 @@ export class MetadataPublisher {
     });
   }
 
+  /** Metadata-representation association ONLY, for historical outcome facts.
+   * Checks physical storage health and this publisher's original receipt, not
+   * latest configuration, session head, execution eligibility, or coordinator
+   * state. The receipt's metadata was validated and frozen at publication.
+   * This is NOT pre-native configuration proof, activation delivery, acceptance,
+   * or authorization to dispatch; native admission still requires assertCommitted.
+   * Semantic refusal does not poison otherwise healthy storage. */
+  assertOriginalAssociation(receipt: CommittedMetadataReceipt, identity: DispatchIdentity): void {
+    const committed = this.#operation(() => this.#receipts.get(receipt));
+    if (!committed) throw new MetadataCommitProofError("No original committed metadata receipt (publication may still be queued)");
+    const session = committed.metadata.sessions.find(s => s.sessionId === identity.source.sessionId);
+    const run = committed.metadata.runs.find(r => r.runId === identity.runId);
+    if (!session || !run) throw new MetadataCommitProofError("Committed metadata source/run is missing");
+    if (!isDeepStrictEqual(source(session), identity.source) || run.runId !== identity.runId
+      || run.sessionId !== session.sessionId || run.cwd !== session.cwd
+      || (run.nativeCommandId ?? null) !== identity.nativeCommandId
+      || run.compact !== undefined && run.compact.requestId !== identity.requestId) {
+      throw new MetadataCommitProofError("Metadata dispatch source/run correlation changed");
+    }
+  }
+
   /** Checks physical ownership even for bad proof. Semantic refusal is NOT a
    * storage failure: no receipt, a copied/foreign receipt, or changed config must
    * withhold this boundary without poisoning otherwise healthy storage. Old real

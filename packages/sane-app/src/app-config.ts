@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { DomainError, normalizeNativeSource } from "sane-core/server";
 import type { NativeAuthority, NativeSourceDescriptor } from "sane-core/contracts";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT } from "./worker-contract";
+import type { NativeRuntimeSelection } from "../../sane-cli/src/install-sane-agent-context-packages";
 
 export class AppConfigError extends Error { readonly code = "INVALID_APP_CONFIG"; }
 export type AppConfig = {
@@ -13,6 +14,7 @@ export type AppConfig = {
   maxWorkersPerCheckout?: number;
   contextDelivery?: "startup" | "canonical";
   agentModelConfig?: string;
+  nativeRuntime?: NativeRuntimeSelection;
   native: { claude: { executable: string; profileRoot: string }; opencode: { mode: "managed"; registrationFile: string } };
 };
 export type SourceCapability = { state: "available" | "unavailable"; locator: string; authority?: NativeAuthority };
@@ -59,7 +61,7 @@ export function parseConfigJson(input: string): Record<string, any> {
     else { const m = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(input.slice(i)); if (!m) invalid("Malformed config JSON"); i += m![0].length; return; }
     invalid("Malformed config JSON");
   };
-   try { value(); whitespace(); if (i !== input.length) invalid("Malformed config JSON"); return object(JSON.parse(input), ["format", "version", "dataDir", "defaultExecutionCwd", "server", "maxConcurrentRuns", "maxWorkersPerCheckout", "native", "contextDelivery", "agentModelConfig"], "config"); }
+   try { value(); whitespace(); if (i !== input.length) invalid("Malformed config JSON"); return object(JSON.parse(input), ["format", "version", "dataDir", "defaultExecutionCwd", "server", "maxConcurrentRuns", "maxWorkersPerCheckout", "native", "contextDelivery", "agentModelConfig", "nativeRuntime"], "config"); }
   catch (e) { if (e instanceof AppConfigError) throw e; return invalid("Malformed config JSON"); }
 }
 
@@ -70,7 +72,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   const invocation = resolve(context.invocationCwd), packageDir = resolve(context.packageDir);
   const flags = new Map<string, string | boolean | null>();
   const valued: Record<string, string> = { "--config": "config", "--cwd": "cwd", "--data-dir": "data", "--host": "host", "--port": "port", "--public-origin": "origin", "--claude-bin": "executable", "--claude-profile": "profile", "--opencode-registration": "registration", "--max-concurrent-runs": "concurrency", "--context-delivery": "contextDelivery" };
-  const switches: Record<string, [string, boolean | null]> = { "--allow-remote": ["remote", true], "--no-allow-remote": ["remote", false], "--clear-public-origin": ["origin", null], "--no-build": ["noBuild", true], "--reconcile-interrupted": ["reconcile", true], "--help": ["help", true] };
+   const switches: Record<string, [string, boolean | null]> = { "--allow-remote": ["remote", true], "--no-allow-remote": ["remote", false], "--clear-public-origin": ["origin", null], "--no-build": ["noBuild", true], "--reconcile-interrupted": ["reconcile", true], "--initialize-app-admissions": ["initializeAppAdmissions", true], "--help": ["help", true] };
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]!; let key: string, value: string | boolean | null;
     if (Object.hasOwn(switches, flag)) [key, value] = switches[flag]!;
@@ -91,6 +93,9 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   const oc = native.opencode === undefined ? {} : object(native.opencode, ["mode", "registrationFile"], "opencode");
   if (oc.mode !== undefined && oc.mode !== "managed") invalid("Only managed OpenCode is supported");
   const base = dirname(configPath);
+  const runtimeKeys = ["pluginDirectory", "openCodeConfigFile", "claudeMcpConfigFile", "bindingRoot"] as const;
+  const runtime = raw.nativeRuntime === undefined ? undefined : object(raw.nativeRuntime, [...runtimeKeys], "nativeRuntime");
+  const nativeRuntime = runtime && Object.fromEntries(runtimeKeys.map(key => [key, resolve(base, text(runtime[key], `nativeRuntime.${key}`))])) as NativeRuntimeSelection | undefined;
   const path = (key: string, saved: unknown, fallback: string) => flags.has(key) ? resolve(invocation, text(flags.get(key), key)) : saved !== undefined ? resolve(base, text(saved, key)) : fallback;
   const choose = (key: string, saved: unknown, fallback: unknown) => flags.has(key) ? flags.get(key) : saved === undefined ? fallback : saved;
   // Validate saved settings even if a flag overrides them.
@@ -112,6 +117,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
     maxWorkersPerCheckout: integer(raw.maxWorkersPerCheckout ?? DEFAULT_MAX_WORKERS_PER_CHECKOUT, 1, 256, "workers per checkout"),
     contextDelivery: contextDelivery as "startup" | "canonical",
     ...(raw.agentModelConfig !== undefined ? { agentModelConfig: resolve(base, text(raw.agentModelConfig, "agentModelConfig")) } : {}),
+    ...(nativeRuntime ? { nativeRuntime } : {}),
     native: { claude: { executable: executable.includes("/") ? resolve(flags.has("executable") ? invocation : base, executable) : executable, profileRoot: path("profile", cc.profileRoot, resolve(invocation, env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"))) }, opencode: { mode: "managed", registrationFile: path("registration", oc.registrationFile, resolve(invocation, env.XDG_STATE_HOME ?? join(home, ".local/state"), "opencode/service.json")) } },
   };
   const contradiction = (name: string) => invalid(`Native selector contradicts configuration: ${name}`);
@@ -128,7 +134,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   const sources = { claude: sourceCapability({ version: 1, harness: "cc", kind: "local-profile", profileRoot: config.native.claude.profileRoot }), opencode: sourceCapability({ version: 1, harness: "oc", kind: "local-registration", registrationFile: config.native.opencode.registrationFile }) };
   if (sources.claude.authority?.descriptor.harness === "cc") config.native.claude.profileRoot = sources.claude.authority.descriptor.profileRoot;
   if (sources.opencode.authority?.descriptor.harness === "oc") config.native.opencode.registrationFile = sources.opencode.authority.descriptor.registrationFile;
-  return { config, configPath, configExists, sources, operational: { noBuild: flags.has("noBuild"), reconcileInterrupted: flags.has("reconcile"), help: flags.has("help") } };
+  return { config, configPath, configExists, sources, operational: { noBuild: flags.has("noBuild"), reconcileInterrupted: flags.has("reconcile"), initializeAppAdmissions: flags.has("initializeAppAdmissions"), help: flags.has("help") } };
 }
 export function sourceCapability(descriptor: NativeSourceDescriptor): SourceCapability {
   const locator = descriptor.harness === "cc" ? descriptor.profileRoot : descriptor.registrationFile;

@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, isAbsolute, join, resolve, sep } from "node:path"
@@ -669,10 +669,24 @@ function hookPathFromCommand(command: string): string | undefined {
  * when any required artifact is missing or stale.
  * Callers must reject explicit admission rather than treating source constants as deployment.
  */
-export async function proveInstalledExplicitWorkerRuntime(profileRoot: string, harness: "cc" | "oc"): Promise<readonly string[] | undefined> {
+export type NativeRuntimeSelection = {
+  pluginDirectory: string
+  openCodeConfigFile: string
+  claudeMcpConfigFile: string
+  bindingRoot: string
+}
+export type SelectedNativeRuntime = NativeRuntimeSelection & { registrationFile: string; appConnectionFile: string }
+
+export async function proveInstalledExplicitWorkerRuntime(profileRoot: string, harness: "cc" | "oc", selected?: SelectedNativeRuntime): Promise<readonly string[] | undefined> {
   try {
-    let pluginRoot = join(homedir(), ".config", "opencode", "plugins", "sane")
+    // Explicit deployments never fall back to the operator's global install.
+    // This is an installed-file check, not proof of the running OC plugin; the
+    // App separately checks its selected authenticated service's runtime RPC.
+    if (selected && Object.values(selected).some(path => typeof path !== "string" || !isAbsolute(path) || /[\u0000-\u001f\u007f]/.test(path))) return
+    if (selected && await realpath(selected.pluginDirectory) !== selected.pluginDirectory) return
+    let pluginRoot = selected?.pluginDirectory ?? join(homedir(), ".config", "opencode", "plugins", "sane")
     let hookPath: string | undefined
+    const installedHookCommands: string[] = []
     if (harness === "cc") {
       if (!isAbsolute(profileRoot)) return
       const settingsPath = join(profileRoot, "settings.json")
@@ -686,13 +700,14 @@ export async function proveInstalledExplicitWorkerRuntime(profileRoot: string, h
         for (const hook of entry.hooks) {
           if (!isPlainObject(hook) || hook.type !== "command" || typeof hook.command !== "string") continue
           const path = hookPathFromCommand(hook.command)
-          if (path) saneHooks.push({ path, matcher: entry.matcher })
+          if (path) { saneHooks.push({ path, matcher: entry.matcher }); installedHookCommands.push(hook.command) }
         }
       }
       hookPath = saneHooks[0]?.path
       if (!hookPath || !hookPath.endsWith(INSTALLED_HOOK_SUFFIX) || saneHooks.some(hook => hook.path !== hookPath || !matcherIncludesExplicitTools(hook.matcher))) return
       pluginRoot = resolve(dirname(hookPath), "../../../..")
       if (!pluginRoot.endsWith(`${sep}.config${sep}opencode${sep}plugins${sep}sane`)) return
+      if (selected && pluginRoot !== selected.pluginDirectory) return
     }
     const runtimeSrc = join(pluginRoot, "runtime", "packages", "sane-cli", "src")
     const readInstalled = async (path: string) => {
@@ -706,7 +721,7 @@ export async function proveInstalledExplicitWorkerRuntime(profileRoot: string, h
     if (harness === "oc") {
       const [plugin, opencode, config] = await Promise.all([
         readInstalled(join(pluginRoot, "index.ts")), readInstalled(join(runtimeSrc, "native-opencode.ts")),
-        readInstalled(join(home, ".config", "opencode", "opencode.json")),
+        readInstalled(selected?.openCodeConfigFile ?? join(home, ".config", "opencode", "opencode.json")),
       ])
       // Namespace + short registration name still exposes sane_worker_* IDs.
       if (!plugin.includes("nativeWorkerOperations") || !plugin.includes('namespace: "sane"') || !plugin.includes('name: `worker_${operation}`') || !plugin.includes("qualifyWorker(tool, operation)") || !plugin.includes("runtime/packages/sane-cli/src/native-worker-contract")) return
@@ -714,11 +729,16 @@ export async function proveInstalledExplicitWorkerRuntime(profileRoot: string, h
       const parsed = JSON.parse(config) as unknown
       if (!isPlainObject(parsed) || !Array.isArray(parsed.plugins)) return
       if (!parsed.plugins.some(value => value === pluginRoot || isPlainObject(value) && value.package === pluginRoot)) return
+      if (selected) {
+        const sane = parsed.plugins.filter(value => value === pluginRoot || isPlainObject(value) && value.package === pluginRoot)
+        if (sane.length !== 1 || !isPlainObject(sane[0]) || !isPlainObject(sane[0].options)
+          || sane[0].options.registrationFile !== selected.registrationFile || sane[0].options.appConnectionFile !== selected.appConnectionFile) return
+      }
     } else {
       const mcpPath = join(runtimeSrc, "native-claude-mcp.ts")
       const [claude, configuration, mcp, hook, config] = await Promise.all([
         readInstalled(join(runtimeSrc, "native-claude.ts")), readInstalled(join(runtimeSrc, "native-configuration.ts")),
-        readInstalled(mcpPath), readInstalled(hookPath!), readInstalled(join(home, ".claude.json")),
+        readInstalled(mcpPath), readInstalled(hookPath!), readInstalled(selected?.claudeMcpConfigFile ?? join(home, ".claude.json")),
       ])
       if (!EXPLICIT_WORKER_TOOLS.every(tool => quotedTool(tool, claude)) || !claude.includes("claudeNativeTools")) return
       if (!matcherIncludesExplicitTools(configuration.match(/CLAUDE_PRE_TOOL_USE_MATCHER\s*=\s*"([^"]+)"/)?.[1] ?? "")) return
@@ -727,6 +747,14 @@ export async function proveInstalledExplicitWorkerRuntime(profileRoot: string, h
       if (!isPlainObject(parsed) || !isPlainObject(parsed.mcpServers) || !isPlainObject(parsed.mcpServers.sane)) return
       const args = parsed.mcpServers.sane.args
       if (!Array.isArray(args) || !args.includes(mcpPath)) return
+      if (selected && (args.length !== 4 || args[0] !== mcpPath || args[1] !== profileRoot
+        || args[2] !== selected.bindingRoot || args[3] !== selected.appConnectionFile)) return
+      if (selected) {
+        if (typeof parsed.mcpServers.sane.command !== "string" || !isAbsolute(parsed.mcpServers.sane.command)) return
+        const expected = nativeIntegrationConfiguration({ ...selected, profileRoot, bunExecutable: parsed.mcpServers.sane.command })
+          .claudeSettings.hooks.PreToolUse[0]!.hooks[0]!.command
+        if (!installedHookCommands.length || installedHookCommands.some(command => command !== expected)) return
+      }
     }
     return [...EXPLICIT_WORKER_TOOLS]
   } catch {

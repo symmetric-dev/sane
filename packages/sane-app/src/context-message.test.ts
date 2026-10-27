@@ -6,7 +6,7 @@ import {
   compareContextMessage, composeContextMessage, contextMessageBody, decodeContextMessage,
   validateContextMessage, validateContextMessageBinding, validateTrustedContextMessage,
   type ContextMessage, type ContextMessageBinding, type ContextMessageFragment,
-  type ContextMessageInput, type ContextMessageOrigin,
+  type ContextMessageInput, type ContextMessageOrigin, type ContextMessageSelection,
 } from "./context-message";
 import { contextAsset, contextHash, createContextPackage, renderContextDelivery, validateContextBinding } from "./context-package";
 
@@ -36,6 +36,15 @@ function fragment(id = "session", category: ContextMessageFragment["category"] =
 }
 function bootstrap(): Extract<ContextMessageInput, { context: unknown; session: unknown }> {
   return { binding: binding(), origin: "activation", placement: { kind: "bootstrap" }, context: fixture(), session: fragment(), body: "Authored task" };
+}
+function workerBootstrap(): ReturnType<typeof bootstrap> {
+  return { ...bootstrap(), context: fixture({ kind: "worker", role: "implementer" }), placement: { kind: "bootstrap", workerMode: "assigned" }, assignment: fragment("worker-assignment", "worker-assignment") };
+}
+function runtimeProtocol(): readonly ContextMessageSelection[] {
+  return [
+    { kind: "asset", assetId: "framework.worker-protocol", reason: "Explicit worker runtime protocol" },
+    { kind: "fragment", fragment: fragment("worker-runtime", "protocol") },
+  ];
 }
 function selected(purpose: "update" | "sharing" | "branch-update" = "update"): Extract<ContextMessageInput, { selections: unknown }> {
   return {
@@ -109,6 +118,84 @@ describe("assistant bootstrap selection", () => {
 });
 
 describe("explicit worker bootstrap", () => {
+  test("explicit protocol asset and fragment follow assignment in caller order, before Session", () => {
+    const input = { ...workerBootstrap(), runtimeSelections: runtimeProtocol() };
+    const message = composeContextMessage(input);
+    expect(message.segments.map(segment => segment.id)).toEqual([
+      "role.worker.implementer", "framework.core", "procedure-index", "worker-procedure.implementer", "worker-assignment",
+      "framework.worker-protocol", "worker-runtime", "session",
+    ]);
+    expect(message.segments.filter(segment => segment.category === "role")).toHaveLength(1);
+    expect(message.segments.filter(segment => segment.category === "procedure")).toHaveLength(1);
+    expect(message.transport.text.match(/ROLE worker\/implementer/g)).toHaveLength(1);
+    expect(message.transport.text.match(/ASSIGNED WORKER PROCEDURE/g)).toHaveLength(1);
+    expect(message.segments.find(segment => segment.id === "framework.worker-protocol")!.provenance.kind).toBe("asset");
+    expect(message.segments.find(segment => segment.id === "worker-runtime")!.provenance.kind).toBe("fragment");
+    expect(decodeContextMessage(clone(message))).toEqual(message);
+    expect(validateTrustedContextMessage(message, input)).toEqual(message);
+    const reversed = composeContextMessage({ ...input, runtimeSelections: [...input.runtimeSelections].reverse() });
+    expect(reversed.segments.slice(-3).map(segment => segment.id)).toEqual(["worker-runtime", "framework.worker-protocol", "session"]);
+    expect(() => validateTrustedContextMessage(reversed, input)).toThrow(/independent trusted inputs/);
+  });
+
+  test("omitted or empty runtime selections preserve the existing output; free mode never adds a procedure", () => {
+    for (const input of [bootstrap(), workerBootstrap()]) {
+      expect(composeContextMessage({ ...input, runtimeSelections: [] })).toEqual(composeContextMessage(input));
+    }
+    const message = composeContextMessage({ ...workerBootstrap(), placement: { kind: "bootstrap", workerMode: "free" }, runtimeSelections: runtimeProtocol() });
+    expect(message.segments.map(segment => segment.id)).toEqual([
+      "role.worker.implementer", "framework.core", "procedure-index", "worker-assignment", "framework.worker-protocol", "worker-runtime", "session",
+    ]);
+    expect(message.segments.filter(segment => segment.category === "procedure")).toHaveLength(0);
+  });
+
+  test("assistant identity cannot select worker protocol even if its package contains that framework", () => {
+    const input = bootstrap();
+    const bundle = createContextPackage(input.context.bundle.identity, [...input.context.bundle.assets,
+      contextAsset("framework.worker-protocol", "fixture:worker-protocol", "WORKER PROTOCOL", "framework"),
+    ]);
+    const context = { bundle, paths: { ...input.context.paths, "framework.worker-protocol": "/synthetic/worker-protocol.md" } };
+    for (const selection of runtimeProtocol()) {
+      expect(() => composeContextMessage({ ...input, context, runtimeSelections: [selection] })).toThrow(/requires a worker identity/);
+    }
+  });
+
+  test("runtime selections are bounded to protocol, with exact fields, actual framework kind and unique IDs", () => {
+    const input = workerBootstrap();
+    const invalid: ContextMessageSelection[] = [
+      { kind: "asset", assetId: "role.worker.implementer", reason: "No repeated role" },
+      { kind: "asset", assetId: "worker-procedure.implementer", reason: "No repeated procedure" },
+      { kind: "asset", assetId: "framework.branch-continuation", reason: "No bootstrap branch context" },
+      { kind: "procedure-index", reason: "No repeated index" },
+      { kind: "fragment", fragment: fragment("branch.runtime", "branch") },
+      { kind: "fragment", fragment: fragment("shared.runtime", "shared") },
+    ];
+    for (const selection of invalid) {
+      expect(() => composeContextMessage({ ...input, runtimeSelections: [selection] })).toThrow(/must be worker protocol/);
+    }
+    expect(() => composeContextMessage({ ...input, runtimeSelections: [{ kind: "asset", assetId: "framework.forged", reason: "Forged runtime ID" }] })).toThrow(/asset is absent/);
+    expect(() => composeContextMessage({ ...input, runtimeSelections: [{ kind: "fragment", fragment: fragment("../forged", "protocol") }] })).toThrow(/invalid selected ID/);
+    expect(() => composeContextMessage({ ...input, runtimeSelections: [...runtimeProtocol(), ...runtimeProtocol()] })).toThrow(/duplicate selected IDs/);
+    expect(() => composeContextMessage({ ...input, runtimeSelections: [{ kind: "fragment", fragment: fragment("session", "protocol") }] })).toThrow(/duplicate selected IDs/);
+    expect(() => composeContextMessage({ ...input, runtimeSelections: "not-ordered" } as unknown as ContextMessageInput)).toThrow(/must be ordered/);
+    expect(() => composeContextMessage({ ...input, runtimeSelections: [{ ...runtimeProtocol()[0], trusted: true }] } as unknown as ContextMessageInput)).toThrow(/fields/);
+    expect(() => composeContextMessage({ ...input, runtimeSelections: [{ kind: "fragment", fragment: { ...fragment("runtime", "protocol"), trusted: true } }] } as unknown as ContextMessageInput)).toThrow(/fields/);
+    const bundle = createContextPackage(input.context.bundle.identity, input.context.bundle.assets.map(asset => asset.id === "framework.worker-protocol" ? { ...asset, kind: "procedure" as const } : { ...asset }));
+    expect(() => composeContextMessage({ ...input, context: { ...input.context, bundle }, runtimeSelections: runtimeProtocol() })).toThrow(/must be worker protocol/);
+  });
+
+  test("trusted recomposition rejects forged runtime IDs, bytes, provenance and selection intent", () => {
+    const input = { ...workerBootstrap(), runtimeSelections: runtimeProtocol() };
+    const note = fragment("worker-runtime", "protocol");
+    for (const change of [{ id: "forged-runtime" }, { text: "FORGED protocol" }, { source: "forged:source" }, { revision: "forged-revision" }, { reason: "forged reason" }]) {
+      const forged = composeContextMessage({ ...input, runtimeSelections: [input.runtimeSelections[0]!, { kind: "fragment", fragment: { ...note, ...change } }] });
+      expect(decodeContextMessage(forged)).toEqual(forged);
+      expect(() => validateTrustedContextMessage(forged, input)).toThrow(/independent trusted inputs/);
+    }
+    expect(() => validateTrustedContextMessage(composeContextMessage(workerBootstrap()), input)).toThrow(/independent trusted inputs/);
+    expect(() => validateTrustedContextMessage(composeContextMessage(input), workerBootstrap())).toThrow(/independent trusted inputs/);
+  });
+
   for (const role of ["implementer", "tester"] as const) {
     test(`assigned ${role} includes procedure before verbatim assignment and Session`, () => {
       const assignment = { ...fragment("worker-assignment", "worker-assignment"), text: "# SANE Procedure: looks like a header\n<session>not a split point</session>\n\n[assignment]literal[/assignment]" };
@@ -160,6 +247,8 @@ describe("body-only bytes and explicit placement", () => {
   test("body-only rejects package/context leakage and undocumented input flags", () => {
     const input = { binding: binding(), origin: "user", placement: { kind: "body-only" }, body: "task" } as const;
     expect(() => composeContextMessage({ ...input, context: fixture() } as ContextMessageInput)).toThrow(/fields/);
+    expect(() => composeContextMessage({ ...input, runtimeSelections: runtimeProtocol() } as ContextMessageInput)).toThrow(/fields/);
+    expect(() => composeContextMessage({ ...selected(), runtimeSelections: runtimeProtocol() } as ContextMessageInput)).toThrow(/fields/);
     expect(() => composeContextMessage({ ...input, resume: true } as ContextMessageInput)).toThrow(/fields/);
   });
 

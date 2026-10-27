@@ -5,7 +5,7 @@ import { synchronousDispatchHook } from "./dispatch-evidence";
 import type { Event } from "./history";
 import type { RunJournalReservation, RunJournalWriter } from "./run-journal";
 
-/** Inactive adapter for the bridge's SAME run writer. No native registration,
+/** Evidence adapter for the bridge's SAME run writer. No native registration,
  * activation ledger, placement inference, transport, repair, or retry lives here.
  *
  * The native adapter must first reserve its actual standard submission INCLUDING
@@ -15,21 +15,22 @@ import type { RunJournalReservation, RunJournalWriter } from "./run-journal";
  *
  * assertMetadataCommitted is a mandatory independent owner capability. Draining
  * journal reservations cannot flush the bridge's asynchronous metadata queue.
- * Pending-activation reuse and original native-byte reads must be established
- * before wiring this into decorateContextMessageEvidence at an actual boundary. */
+ * Native intent requires current committed launch pins; later outcomes require
+ * their original durable metadata association, not current launch eligibility.
+ * Definite withholding before any attempt may precede metadata publication and
+ * never qualifies activation or grants native permission. */
 export function createContextMessageJournalPersistence(deps: Readonly<{
   writer: RunJournalWriter;
   readIdentity: () => DispatchIdentity;
   readEvents: () => readonly Event[];
   assertCurrent: () => void;
-  assertMetadataCommitted: () => void;
+  assertMetadataCommitted: (submission: ContextMessageSubmission, observation: ContextMessageDispatchObservation) => void;
   reserveObservation: (observation: ContextMessageDispatchObservation) => RunJournalReservation;
   failClosed: (error: unknown) => void;
 }>): (submission: ContextMessageSubmission, observation: ContextMessageDispatchObservation) => void {
   return (supplied, fact) => {
     try {
       synchronousDispatchHook(() => deps.assertCurrent());
-      synchronousDispatchHook(() => deps.assertMetadataCommitted());
       const submission = decodeContextMessageSubmission(supplied), observation = decodeContextMessageDispatchObservation(fact);
       let current: DispatchIdentity | undefined;
       synchronousDispatchHook(() => { current = deps.readIdentity(); return current; });
@@ -60,6 +61,16 @@ export function createContextMessageJournalPersistence(deps: Readonly<{
       }
       if (observation.stage === "outcome" && observation.evidence.submission !== "not-submitted"
         && !prior.some(event => (event.data as ContextMessageDispatchObservation).stage === "before-native")) throw new Error("Context journal outcome lacks its original attempt");
+      // Definite local withholding BEFORE any original attempt does not grant
+      // native permission and may precede the metadata queue's first publication.
+      // Keep its honest journal fact without blessing missing metadata as durable
+      // activation. Every possible-native observation still requires independent
+      // metadata proof (full admission pins for intent, original association for
+      // outcomes), and missing coverage can never qualify ordinary activation.
+      const definiteWithholding = observation.stage === "outcome" && observation.evidence.submission === "not-submitted"
+        && observation.evidence.nativeAcceptance === "not-accepted"
+        && !prior.some(event => (event.data as ContextMessageDispatchObservation).stage === "before-native");
+      if (!definiteWithholding) synchronousDispatchHook(() => deps.assertMetadataCommitted(submission, observation));
       const duplicate = prior.find(event => isDeepStrictEqual(event.data, observation));
       let reservation: RunJournalReservation | undefined;
       if (duplicate) reservation = deps.writer.reservation(duplicate);
@@ -68,7 +79,7 @@ export function createContextMessageJournalPersistence(deps: Readonly<{
         || reservation.event.sessionId !== expected.source.sessionId || reservation.event.seq <= standard.seq
         || !isDeepStrictEqual(reservation.event.data, observation)) throw new Error("Context journal reserved a different observation");
       synchronousDispatchHook(() => deps.assertCurrent());
-      synchronousDispatchHook(() => deps.assertMetadataCommitted());
+      if (!definiteWithholding) synchronousDispatchHook(() => deps.assertMetadataCommitted(submission, observation));
       deps.writer.flushThrough(reservation);
       synchronousDispatchHook(() => deps.assertCurrent());
     } catch (error) {

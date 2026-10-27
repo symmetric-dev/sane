@@ -1,11 +1,17 @@
 # User-owned context delivery: discussion, audit, and implementation direction
 
-Status: proposal and discussion record, consolidated 2026-10-25.
+Status: historical proposal and discussion record, consolidated 2026-10-25.
 
 This document records the workstream-audit discussion, the corrections made while
 investigating context delivery, the alternatives considered, and the resulting
-implementation direction. It does not claim that the proposed runtime changes
-have been implemented.
+implementation direction. Its audited transports, target contract and sequence
+below describe that stage, not current operating instructions. Shared Claude
+Code/OpenCode prompt composition has since been implemented; use the
+[current contract and cutover report](../../reports/context-message-cutover-2026-10-26/README.md)
+and [operator guide](../../packages/sane-app/HUMAN-OPERATOR-GUIDE.md#sane-context-and-message-receipts)
+for current behavior. Ordinary preparation no longer reconstructs historical
+activation/native continuity or validates context packages/execution policy;
+execution configuration retains its separate policy loading and safeguards.
 
 The detailed requirement audits and implementation plan are in
 [`reports/hook-removal-audit-2026-10-14/`](../../reports/hook-removal-audit-2026-10-14/PLAN.md).
@@ -206,7 +212,7 @@ estimates mixed unavoidable adapter work with the marginal cost of Option B and
 are not a dependable implementation estimate. The defensible distinction is that
 A removes **context-specific** per-harness integration work, not all adapter work.
 
-## 7. Current target contract
+## 7. Target contract at proposal time
 
 The revised [shared context contract](../../reports/hook-removal-audit-2026-10-14/shared-context.md)
 is the implementation-facing source. It is more selective than the first draft:

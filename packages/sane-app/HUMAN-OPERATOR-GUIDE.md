@@ -42,6 +42,23 @@ do not install, start, or reconfigure native services. Contradictory native sele
 environment variables are rejected. Unavailable native sources do not require
 discarding App history.
 
+For an isolated native deployment, the saved App config can also specify
+`nativeRuntime` with four explicit paths: `pluginDirectory`,
+`openCodeConfigFile`, `claudeMcpConfigFile`, and `bindingRoot`. Relative paths
+resolve against that config file. All four are required when the object is
+present. This selects verification inputs, not a second delivery mode: a missing
+or mismatched selected runtime never falls back to the operator's global install.
+OC verification also queries the selected authenticated service's read-only
+`sane-execution/runtime` RPC to check its loaded plugin path, routing options,
+execution directory and effective worker tools. Older runtime bundles without
+that RPC cannot qualify an explicitly selected deployment.
+
+Separate ports alone do not isolate native state. A preview needs separate native
+profiles/configuration, OC registration and database, and its own App connection
+and binding files. Install the current runtime-only bundle into the private
+deployment; do not repoint a running normal installation. Authenticate the private
+profiles explicitly instead of copying credentials or provider databases.
+
 The listener defaults to `127.0.0.1:8787`. For an existing HTTPS reverse proxy, set
 `--public-origin https://YOUR-HOST` and `SANE_APP_PASSWORD`. A non-loopback listener
 additionally requires `--allow-remote`. These settings do not configure proxies.
@@ -49,8 +66,9 @@ Use `--no-allow-remote` or `--clear-public-origin` to override saved values.
 
 ## Assets and ownership
 
-Launch explicitly builds a complete versioned asset generation, then serves that
-selected generation. `bun run build:app` performs a standalone guarded build.
+Launch reuses a validated complete versioned asset generation, or performs a
+guarded build when needed, then serves that selected generation.
+`bun run build:app` performs a standalone guarded build.
 `--no-build` validates the current generation against source/build inputs and
 output hashes before serving; stale or missing assets require rebuilding.
 The server snapshots its HTML at startup. Builds cannot replace assets beneath a
@@ -155,7 +173,13 @@ shows the native lifecycle and retains a compaction marker. Compaction performed
 outside the App appears after **Refresh native history**; external sessions are
 not continuously monitored.
 
-For explicit manual compaction, open an existing idle conversation and use
+Manual compaction is currently supported for Base conversations only. SANE
+manual compaction and continuation with a known recorded reset/compaction refuse
+until retention/recovery is explicitly qualified; there is no automatic context
+resend. Ordinary sends do not continuously inspect native history, so an
+out-of-band native reset is not guaranteed to be detected.
+
+For explicit manual compaction of a Base conversation, open it while idle and use
 **Compact now** beside its context indicator, or send `/compact`. Claude Code
 also accepts `/compact <instructions>`; OpenCode does not accept custom
 compaction instructions. Compaction uses the same native conversation and
@@ -175,6 +199,30 @@ harness's auto-compaction threshold. A running compaction makes that reading
 stale; after confirmed completion, SANE waits for new usage rather than displaying
 an invented zero percent. Skipped or failed compaction does not prove a context
 reset.
+
+### SANE context and message receipts
+
+SANE activation composes selected context once. Ordinary Base and SANE follow-ups
+send the authored body only, without automatically repeating standing or Session
+context. Continuation checks lifecycle metadata and ready native admission, not
+proof that the model still retains prior context. Known unsupported legacy and
+SANE branch states refuse rather than silently adopting or bootstrapping them.
+
+In conversation details, use **View SANE context** to inspect retained run
+submissions, authored-body ranges and exact recorded outgoing text. This is
+read-only: it never resends, repairs logs or substitutes current files for missing
+evidence. Claude Code pipe flush means submitted with native acceptance unknown;
+OpenCode requires its exact command acknowledgment. Neither establishes model
+consumption. Explicit Session updates have a backend endpoint, but no dedicated
+update control is provided by this inspector.
+
+**Message receipts** track App recording/admission, not native delivery. Pending
+receipts are normal activity/help, not automatically errors. After a lost response,
+use **Check exact status** for the original request; status recovery is read-only
+and never replays it. **Restore to empty draft** restores text for review without
+sending. Inspect the original conversation and native outcome before choosing to
+send a new request; an App receipt alone cannot show whether native execution
+occurred.
 
 ### Git operations from chat
 

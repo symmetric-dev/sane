@@ -45,9 +45,12 @@ bun run test
 The package is private to prevent accidental package publication.
 ## Run SANE App from this repository
 
-Use `bun run start:app --port 6700` (`bun run start` is an alias). It builds the
-App assets and starts a foreground server with the repository root as the default
-execution cwd. `bun run start:app --help` lists options without building or starting.
-The short launch is App-only: regular `.sane` workstreams are not loaded.
-See the [operator guide](packages/sane-app/HUMAN-OPERATOR-GUIDE.md#root-launch-and-current-storage-model)
-for App initialization, existing-store restart and Tailscale origin setup.
+Initialize the installation with
+`bun run setup:app --cwd /path/to/project --port 6700`, then use
+`bun run start:app` (`bun run start` is an alias). Start uses saved configuration,
+preserves existing App state, and reuses valid versioned assets or builds them
+when needed before starting a foreground server. Project `.sane` initialization
+is a separate explicit action. `bun run start:app --help` lists options without
+building or starting.
+See the [operator guide](packages/sane-app/HUMAN-OPERATOR-GUIDE.md#setup-and-launch)
+for App initialization, existing-store restart and secure origin configuration.

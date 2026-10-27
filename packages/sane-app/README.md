@@ -165,10 +165,14 @@ or execution is triggered by reading these logs.
 
 Use [HUMAN-OPERATOR-GUIDE.md](HUMAN-OPERATOR-GUIDE.md) for exact commands.
 There is no app-local lockfile; dependency versions follow the workspace root.
-The launch contract is loopback binding, an explicit independent scratch
-repository cwd, and a fresh absolute data path. `start` builds package-local
-`public/assets/app.js` and `app.css` before launching source `server.ts`;
-`build` builds assets only; `typecheck` checks backend, hooks and frontend.
+Launch is config-driven: `setup:app` explicitly initializes fresh App state and
+saves configuration; repeating `start:app` preserves that state. The listener
+defaults to loopback. Remote access requires explicit origin/authentication
+configuration and `--allow-remote` for a non-loopback listener.
+Start reuses a validated complete versioned asset generation, or performs a
+guarded build when needed. `--no-build` only validates and serves existing assets;
+stale or missing generations are refused. `build:app` builds assets only;
+`typecheck` checks backend, hooks and frontend.
 
 ## Install the browser interface
 
@@ -199,8 +203,10 @@ the bridge and reload the installed app just as you would a browser tab.
 ## References
 
 [TERMINAL-RESEARCH.md](TERMINAL-RESEARCH.md) records the PTY design. Code saves
-retain optimistic revision checks and size/encoding/path limits; Git views remain
-read-only. Unsaved buffers are browser-memory-only. Terminals require explicit
+retain optimistic revision checks and size/encoding/path limits. Git review is
+read-only; staging, commits and pushes require explicit actions as described in
+the [operator guide](HUMAN-OPERATOR-GUIDE.md#git-operations-from-chat).
+Unsaved buffers are browser-memory-only. Terminals require explicit
 start/control, reconnect as viewers and do not survive bridge restart. Native
 continuation requires both App history and the same native storage. Ambiguous
 submissions are not automatically retried.

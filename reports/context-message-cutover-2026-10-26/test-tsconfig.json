@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "baseUrl": "/Users/beto/.local/share/opencode/worktree/74e3be/user-context-experiment",
+    "paths": {
+      "sane-core/*": [
+        "packages/sane-core/src/*"
+      ],
+      "sane-science": [
+        "packages/sane-science/src/index.ts"
+      ],
+      "@opencode/client": [
+        "/Users/beto/sane/packages/sane-app/node_modules/@opencode/client/dist/promise/index.js"
+      ],
+      "@opencode/client/service": [
+        "/Users/beto/sane/packages/sane-app/node_modules/@opencode/client/dist/promise/service.js"
+      ]
+    }
+  }
+}

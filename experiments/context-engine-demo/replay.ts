@@ -284,8 +284,11 @@ export function replayDemoRun(input: DemoRunResult): DemoReplayResult {
     if (scenario.id === "ordinary") {
       checks.push(check("ordinary is exact authored body", message?.placement.kind === "body-only" && message.segments.length === 0 && message.packageRevision === null && message.transport.text === message.body.text,
         "No marker stripping or implicit context; exact decoded authored bytes equal recorded transport."));
-      checks.push(check("recorded ordinary loader boundaries", scenario.contextLoads === 0 && scenario.executionLoads > 0 && scenario.pairingChecks > 0 && scenario.mockSends === 1,
-        "Recorded instrumentation only: zero context loads; execution and pairing checks present; exactly one mock send."));
+      checks.push(check("recorded ordinary loader boundaries", scenario.contextLoads === 0 && scenario.executionLoads > 0 && scenario.mockSends === 1
+        && scenario.contextLoads === scenario.trace.filter(item => item === "load:context").length
+        && scenario.executionLoads === scenario.trace.filter(item => item === "load:execution").length
+        && scenario.pairingChecks === scenario.trace.filter(item => item.startsWith("pairing:")).length,
+        "Recorded instrumentation only: zero context loads; execution/pairing counters match the recorded trace; exactly one mock send. Historical and current schema-1 counts are diagnostic, not native acceptance authority."));
       const bootstrapProjection = activation && bootstrap ? projectContextMessageRestart({ identity: activation.identity, messageId: activation.messageId }, bootstrap.snapshot) : null;
       checks.push(check("ordinary durable bootstrap pairing", !!owner && !!bootstrap?.owner && !!activation && same(bootstrap.owner.dispatch, activation.identity)
         && bootstrap.owner.messageId === activation.messageId && bootstrapProjection?.fact === "accepted" && bootstrapProjection.coverage.state === "complete"

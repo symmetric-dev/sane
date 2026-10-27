@@ -7,6 +7,7 @@ import type { Admission, SourceRecords } from "./app-store";
 
 export type AppConversation = Pick<Session, "sessionId" | "harness" | "nativeSessionId" | "authorityId" | "cwd">;
 export type ExecutionContext = Pick<InvocationContext, "executionCheckout" | "artifactsRoot"> & { workstreamId: string | null };
+export type ResolvedExecutionContext = Readonly<{ roots: ExecutionContext; domain: Pick<RepositoryDomain, "resolveContext"> | null }>;
 export class WorkstreamAdapterError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string, options?: ErrorOptions) { super(message, options); }
 }
@@ -261,6 +262,11 @@ export class RepositoryRouter {
   }
   /** Current execution pin and membership; App-only domains have no workstream. */
   async execution(admission: Admission, options?: RepositoryReadOptions): Promise<ExecutionContext> {
+    return (await this.resolveExecution(admission, options)).roots;
+  }
+  /** One fresh route supplies both roots and their synchronous revalidation
+   * authority. The domain is not a cached admission decision. */
+  async resolveExecution(admission: Admission, options?: RepositoryReadOptions): Promise<ResolvedExecutionContext> {
     if (admission.state !== "ready" || !admission.nativeId) throw new WorkstreamAdapterError(409, "admission-pending", "Conversation admission is not ready");
     if (normalizeNativeSource(admission.source.descriptor).authorityId !== admission.source.authorityId) throw new WorkstreamAdapterError(409, "source-mismatch", "Source pin changed");
     const b = admission.binding;
@@ -268,11 +274,11 @@ export class RepositoryRouter {
     if (adapter) {
       revalidateCheckout(adapter.domain.context, b.checkoutPin!);
       const context = adapter.domain.resolveContext({ harness: admission.source.descriptor.harness, authorityId: admission.source.authorityId, nativeId: admission.nativeId });
-      return { executionCheckout: context.executionCheckout, workstreamId: context.workstream?.id ?? null, artifactsRoot: context.artifactsRoot };
+      return { roots: { executionCheckout: context.executionCheckout, workstreamId: context.workstream?.id ?? null, artifactsRoot: context.artifactsRoot }, domain: adapter.domain };
     }
     const binding = await this.catalog.binding(b.workspaceId, b.worktreeId);
     if (binding.bindingRevision !== b.bindingRevision || binding.cwd !== b.executionCheckout) throw new WorkstreamAdapterError(409, "stale-binding", "Execution checkout binding changed");
-    return { executionCheckout: binding.cwd, workstreamId: null, artifactsRoot: null };
+    return { roots: { executionCheckout: binding.cwd, workstreamId: null, artifactsRoot: null }, domain: null };
   }
   stopReads() { return this.reader.close(); }
   close() { const drain = this.stopReads(); for (const adapter of this.cache.values()) adapter.close(); this.cache.clear(); this.polls.clear(); return drain; }

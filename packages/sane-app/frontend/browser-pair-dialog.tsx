@@ -128,9 +128,9 @@ export function BrowserPairDialog({ intent, name, pair, close }: Props) {
         callbacks.current.close();
         return;
       }
-      if (outcome.status === "unknown" || outcome.status === "accepted" || outcome.status === "queued") {
+      if (outcome.status === "recorded" || outcome.status === "unknown" || outcome.status === "accepted" || outcome.status === "queued") {
         setUnknown(true);
-        setError("Acceptance is unknown. Check this conversation’s history before sending again. Dismiss this dialog after checking; no automatic retry will occur.");
+        setError("App/native outcome is unresolved. Check the original request's exact status in App submission recovery. This dialog will not retry or redirect it.");
       } else {
         setError(store.snapshot().submissionError || "The message was not sent. The conversation remains paired and your optional message is preserved. Resolve the issue, then try OK again.");
       }

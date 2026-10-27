@@ -57,9 +57,11 @@ describe("bridge-owned synchronous metadata publication", () => {
     const second = f.publisher.commitSerialized(f.serialize());
     expect(second).not.toBe(first); expect(fs.statSync(f.path).ino).not.toBe(inode);
     f.publisher.assertCommitted(first, f.binding()); f.publisher.assertCommitted(second, f.binding());
+    f.publisher.assertOriginalAssociation(first, f.dispatch); f.publisher.assertOriginalAssociation(second, f.dispatch);
     const foreign = g.publisher.commitSerialized(g.serialize());
     for (const receipt of [absent, { ...first }, structuredClone(first), foreign, undefined, null]) {
       expect(() => f.publisher.assertCommitted(receipt as CommittedMetadataReceipt, f.binding())).toThrow(MetadataCommitProofError);
+      expect(() => f.publisher.assertOriginalAssociation(receipt as CommittedMetadataReceipt, f.dispatch)).toThrow(MetadataCommitProofError);
     }
     expect(f.failures).toEqual([]); f.publisher.assertCommitted(second, f.binding());
   });
@@ -69,8 +71,10 @@ describe("bridge-owned synchronous metadata publication", () => {
     let latest: CommittedMetadataReceipt | undefined;
     const captured = f.serialize(), queued = () => { latest = f.publisher.commitSerialized(captured); };
     expect(() => f.publisher.assertCommitted(latest!, f.binding())).toThrow("publication may still be queued");
+    expect(() => f.publisher.assertOriginalAssociation(latest!, f.dispatch)).toThrow(MetadataCommitProofError);
     expect(Object.keys(f.publisher)).toEqual([]);
     queued(); f.publisher.assertCommitted(latest!, f.binding());
+    f.publisher.assertOriginalAssociation(latest!, f.dispatch);
     expect(f.failures).toEqual([]);
   });
 
@@ -133,8 +137,14 @@ describe("bridge-owned synchronous metadata publication", () => {
   for (const [name, change] of configChanges) test(`latest committed ${name} change refuses old proof without poisoning storage`, () => {
     const f = fixture(), binding = f.binding(), receipt = f.publisher.commitSerialized(f.serialize());
     const next = structuredClone(f.metadata); change(next); validateMetadata(next);
-    f.publisher.commitSerialized(JSON.stringify(next));
+    const latest = f.publisher.commitSerialized(JSON.stringify(next));
     expect(() => f.publisher.assertCommitted(receipt, binding)).toThrow(MetadataCommitProofError);
+    // Historical association uses the original snapshot, never borrows or
+    // requires the latest publication's configuration or representation.
+    f.publisher.assertOriginalAssociation(receipt, f.dispatch);
+    if (name.startsWith("source ") || ["run native ID", "run identity", "run/source removal"].includes(name)) {
+      expect(() => f.publisher.assertOriginalAssociation(latest, f.dispatch)).toThrow(MetadataCommitProofError);
+    } else f.publisher.assertOriginalAssociation(latest, f.dispatch);
     expect(f.failures).toEqual([]);
     const restored = f.publisher.commitSerialized(f.serialize()); f.publisher.assertCommitted(restored, binding);
   });
@@ -145,6 +155,87 @@ describe("bridge-owned synchronous metadata publication", () => {
     const latest = f.publisher.commitSerialized(f.serialize()), binding = f.binding();
     expect(() => f.publisher.assertCommitted(original, binding)).toThrow("configuration changed");
     f.publisher.assertCommitted(latest, binding);
+  });
+
+  test("historical association survives a new head, including a receipt published after the original run settled", () => {
+    const f = fixture(), binding = f.binding(), original = f.publisher.commitSerialized(f.serialize());
+    f.run.status = "completed"; f.run.endedAt = "2026-10-25T10:01:00.000Z";
+    const next: Run = { ...f.run, runId: crypto.randomUUID(), nativeCommandId: "msg_next", status: "running", createdAt: f.run.endedAt };
+    delete next.endedAt;
+    f.metadata.runs.push(next); f.session.lastRunId = next.runId;
+    f.session.model = "next-model"; f.session.profileId = "base:oc";
+    f.metadata.reconciliationRequired = true;
+    const afterSettlement = f.publisher.commitSerialized(f.serialize());
+    f.publisher.assertOriginalAssociation(original, f.dispatch);
+    f.publisher.assertOriginalAssociation(afterSettlement, f.dispatch);
+    expect(() => f.publisher.assertCommitted(original, binding)).toThrow(MetadataCommitProofError);
+    expect(() => f.publisher.assertCommitted(afterSettlement, binding)).toThrow(MetadataCommitProofError);
+    expect(f.failures).toEqual([]);
+  });
+
+  test("original association cannot borrow missing source/run representation from a later receipt", () => {
+    const f = fixture();
+    const missing = f.publisher.commitSerialized(JSON.stringify({ ...f.metadata, sessions: [], runs: [] }));
+    const matching = f.publisher.commitSerialized(f.serialize());
+    expect(() => f.publisher.assertOriginalAssociation(missing, f.dispatch)).toThrow(MetadataCommitProofError);
+    f.publisher.assertOriginalAssociation(matching, f.dispatch);
+    expect(f.failures).toEqual([]);
+  });
+
+  test("original association requires the exact native source, run, and command identity", () => {
+    const f = fixture(), receipt = f.publisher.commitSerialized(f.serialize());
+    const changes: DispatchIdentity[] = [
+      ...[
+        { harnessId: "claude-code" }, { authorityId: `sane-native-v1:oc:${"d".repeat(64)}` },
+        { authorityId: null }, { nativeSessionId: "ses_other" }, { nativeSessionId: null },
+        { sessionId: crypto.randomUUID() }, { cwd: f.root + "/other" },
+      ].map(change => ({ ...f.dispatch, source: { ...f.dispatch.source, ...change } })),
+      { ...f.dispatch, runId: crypto.randomUUID() },
+      { ...f.dispatch, nativeCommandId: "msg_other" }, { ...f.dispatch, nativeCommandId: null },
+    ];
+    for (const identity of changes) {
+      expect(() => f.publisher.assertOriginalAssociation(receipt, identity)).toThrow(MetadataCommitProofError);
+    }
+    f.publisher.assertOriginalAssociation(receipt, f.dispatch);
+    expect(f.failures).toEqual([]);
+  });
+
+  test("original association rejects a valid run belonging to another represented session", () => {
+    const f = fixture(), g = fixture();
+    g.session.nativeSessionId = "ses_other";
+    const receipt = f.publisher.commitSerialized(JSON.stringify({ ...f.metadata,
+      sessions: [f.session, g.session], runs: [f.run, g.run] }));
+    expect(() => f.publisher.assertOriginalAssociation(receipt, { ...f.dispatch, runId: g.run.runId,
+      nativeCommandId: g.run.nativeCommandId! })).toThrow(MetadataCommitProofError);
+    f.publisher.assertOriginalAssociation(receipt, f.dispatch);
+    expect(f.failures).toEqual([]);
+  });
+
+  test("original compact association pins request identity, not instructions or admission progress", () => {
+    for (const harness of ["claude-code", "opencode"] as const) {
+      const f = fixture(harness, false), requestId = crypto.randomUUID(), identity = { ...f.dispatch, requestId };
+      f.run.operation = "compact"; f.run.compact = { requestId, ...(harness === "claude-code" ? { instructions: "original" } : {}) };
+      const receipt = f.publisher.commitSerialized(f.serialize());
+      f.publisher.assertOriginalAssociation(receipt, identity);
+      expect(() => f.publisher.assertOriginalAssociation(receipt, f.dispatch)).toThrow(MetadataCommitProofError);
+      expect(() => f.publisher.assertOriginalAssociation(receipt, { ...identity, requestId: crypto.randomUUID() })).toThrow(MetadataCommitProofError);
+      f.run.compact.requestId = crypto.randomUUID();
+      if (harness === "claude-code") f.run.compact.instructions = "changed";
+      else f.run.compact.nativeAdmittedId = "msg_coalesced";
+      const changed = f.publisher.commitSerialized(f.serialize());
+      f.publisher.assertOriginalAssociation(receipt, identity);
+      expect(() => f.publisher.assertOriginalAssociation(changed, identity)).toThrow(MetadataCommitProofError);
+      expect(f.failures).toEqual([]);
+    }
+  });
+
+  test("non-compact association does not invent a required request ID or require launch configuration", () => {
+    for (const harness of ["claude-code", "opencode"] as const) {
+      const f = fixture(harness, false), receipt = f.publisher.commitSerialized(f.serialize());
+      f.publisher.assertOriginalAssociation(receipt, f.dispatch);
+      f.publisher.assertOriginalAssociation(receipt, { ...f.dispatch, requestId: crypto.randomUUID() });
+      expect(f.failures).toEqual([]);
+    }
   });
 
   test("omitted session harness defaults to CC in the trusted projection; no activation ID is invented", () => {
@@ -203,8 +294,9 @@ describe("bridge-owned synchronous metadata publication", () => {
         if (mutation === "symlink") fs.symlinkSync(path + ".original", path);
         if (mutation === "hardlink") fs.linkSync(path + ".original", path);
       }
-      expect(() => f.publisher.assertCommitted(receipt, f.binding())).toThrow();
+      expect(() => f.publisher.assertOriginalAssociation(receipt, f.dispatch)).toThrow();
       expect(f.failures).toHaveLength(1);
+      expect(() => f.publisher.assertCommitted(receipt, f.binding())).toThrow("reconciliation required");
       const remaining = fs.readdirSync(f.root).sort();
       expect(() => f.publisher.commitSerialized(f.serialize())).toThrow("reconciliation required");
       expect(fs.readdirSync(f.root).sort()).toEqual(remaining);
@@ -213,12 +305,21 @@ describe("bridge-owned synchronous metadata publication", () => {
   }
 
   for (const symlink of [false, true]) test(`canonical root ${symlink ? "symlink" : "replacement inode"} refuses publication`, () => {
-    const f = fixture(), moved = f.root + "-moved"; roots.push(moved);
+    const f = fixture(), receipt = f.publisher.commitSerialized(f.serialize()), moved = f.root + "-moved"; roots.push(moved);
     fs.renameSync(f.root, moved);
     if (symlink) fs.symlinkSync(moved, f.root); else fs.mkdirSync(f.root);
-    expect(() => f.publisher.commitSerialized(f.serialize())).toThrow("root changed");
+    expect(() => f.publisher.assertOriginalAssociation(receipt, f.dispatch)).toThrow("root changed");
+    expect(() => f.publisher.commitSerialized(f.serialize())).toThrow("reconciliation required");
     expect(f.failures).toHaveLength(1);
     expect(fs.readFileSync(join(moved, "metadata.json"), "utf8")).toBe(f.serialize());
+  });
+
+  test("association checks physical ownership even when the receipt is invalid", () => {
+    const f = fixture();
+    f.guard(() => { throw new Error("ownership lost"); });
+    expect(() => f.publisher.assertOriginalAssociation(absent, f.dispatch)).toThrow("ownership lost");
+    expect(() => f.publisher.assertOriginalAssociation(absent, f.dispatch)).toThrow("reconciliation required");
+    expect(f.failures).toHaveLength(1);
   });
 
   test("constructor validates store ID, manifest, metadata and synchronous ownership without creating files", () => {

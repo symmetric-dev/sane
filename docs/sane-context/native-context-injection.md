@@ -1,131 +1,99 @@
-# App-owned native context injection
+# App-owned user-role context delivery
 
-SANE now supplies role instructions and procedures to exact native sessions through the App. Canonical sessions no longer require SANE agent and skill Markdown to be installed in OpenCode or Claude Code.
+Claude Code and OpenCode use one shared selective composer and submission
+coordinator. SANE context travels in the normal user-role prompt, not a parallel
+hook, system-prompt file or native instruction entry. Canonical App sessions use
+pinned context/execution packages rather than installed SANE agent/skill Markdown.
+Runtime plugins, authenticated hooks and MCP integrations remain necessary.
 
-This document describes the implemented migration, including its compatibility boundaries.
+## What is sent
 
-## Before and after
+- **Explicit activation:** selected role, framework, pinned procedure index,
+  initial Pickup and current Session context, composed once. Worker activation
+  selects its applicable procedure, structured assignment and protocol context.
+- **Ordinary Base or SANE follow-up:** the authored body only, without recurring
+  standing or Session context. Resume, process restart, missing evidence and
+  package revision changes do not independently authorize activation or resend.
+- **Explicit selection:** Session updates select current authoritative roots;
+  science messages share selected frozen snapshots with the authored comment.
+  They do not automatically repeat standing context. The Session-update backend
+  has no dedicated App update control.
 
-Previously, installation published SANE agent definitions and lifecycle skills into each harness's discovery directories. The App selected those installed agents and supplied framework/startup context separately. Resuming a legacy conversation could still require its installed agent file.
+Bootstrap validates its pinned context/execution pair once during explicit
+preparation. Selected content is composed once, with retained
+`assertSelectionCurrent` checks for mutable intent/source, binding and body
+currency. SANE ordinary preparation checks paired lifecycle metadata, original ready
+admission and known unsupported states; it does not reconstruct activation from
+journals/native history or validate context packages/execution policy in the
+generic message engine. Policy loading and pinned integrity remain separate
+execution-configuration duties. Do not modify pinned revision directories.
 
-With canonical delivery, the App:
+## Transport and execution remain distinct
 
-1. Reads authored role, framework, procedure, and execution-policy sources.
-2. Builds immutable, content-addressed context and execution packages.
-3. Pins those package revisions to the session.
-4. Configures native execution separately from instruction text.
-5. Delivers context to the exact native session and records delivery evidence.
-
-The harness still executes models and tools. Runtime plugins, hooks, and MCP integrations remain necessary; removing installed Markdown does not mean removing those integrations.
-
-## Where context lives
-
-| Purpose | Location |
-| --- | --- |
-| Authored role instructions and execution settings | `context/agents/sane/{assistant,worker}/*.md` |
-| Authored assistant procedures and resources | `context/skills/sane-assistant-<role>-<phase>/` |
-| Framework source | `packages/sane-core/src/sane-context.ts` |
-| Immutable session procedure copies | `<App dataDir>/context-packages/<revision>/` |
-| Workstream documents/state | Target repository's `.sane/` |
-
-Authored agents and skills live together under `context/`. These files are source inputs, not a requirement to install them into a harness. Existing pinned packages retain their original source paths and hashes; the loader supports both the old and new skill-source layouts.
-
-In the development installation, the source checkout is `/Users/beto/sane` and the configured App data directory is `packages/sane-app/.data-fresh`. Those are installation-specific paths, not required names.
-
-## Instruction composition
-
-For assistants, standing context is composed in this order:
-
-1. Agent body, beginning with “You are a …”.
-2. SANE framework and applicable coordination guidance.
-3. Private procedure index with pinned file paths.
-4. Initial Pickup procedure text.
-
-Assistance and Delivery are referenced for selective reading with ordinary file tools. They are not all eagerly inlined. Dynamic Session context supplies the current workstream, workstream root, and implementation root. Workers receive their applicable role, procedure, and assignment; native children do not inherit the parent's App procedures and assignments wholesale.
-
-Role Markdown frontmatter is interpreted as execution configuration, not injected as prose. Models, effort, permissions, and delegation are separate from context composition. Temperature is omitted from canonical root and child launch configuration, even when present in authored snapshots.
-
-## Harness-specific delivery
-
-### OpenCode
-
-The installed SANE plugin exposes the `sane-execution/configure` RPC. The App uses it to prepare generated execution agents with empty system text, select execution settings, and verify readback. Generated definitions are location-scoped and hidden; they are not a session-private agent catalog.
-
-Canonical instructions use an exact-session `sane.context` instruction entry. The App verifies the stored entry before dispatch. Generated policy handling preserves the intended worker restrictions despite native global permission defaults, while preserving session overrides and ordinary-session behavior.
-
-An updated App requires an updated installed plugin. Restarting OpenCode alone cannot add missing runtime files or RPCs.
+Both adapters bind exact encoded outgoing bytes to the original request/run and
+source. Existing ownership, cancellation, admission, durable publication and
+no-replay fences remain; composing a message grants none of that authority.
 
 ### Claude Code
 
-The App supplies launch-local agent definitions through `--agents`, pinned standing text through `--append-system-prompt-file`, and dynamic context through a `UserPromptSubmit` hook. Canonical launches request `--include-hook-events` so the App can observe the hook acknowledgement.
+The composed text is encoded in a retained user JSON message and written unchanged
+to stdin. Pipe flush establishes submitted, with native acceptance unknown.
+Canonical resumes disable restoration of old system-prompt snapshots with
+`--system-prompt-snapshot off`. Standing `--append-system-prompt-file` delivery
+and `UserPromptSubmit` additional-context delivery/acknowledgment gates are retired.
+Operational/authentication hooks, MCP caller bindings, native-child definitions
+and supported permission/model translation remain separate execution concerns.
 
-Upgraded sessions use `--system-prompt-snapshot off` on subsequent resumes as well, preventing stale legacy snapshots from restoring the old role context.
+### OpenCode
 
-SANE MCP tool calls use single-use caller bindings issued by a pre-tool hook. Hook and MCP processes must use the same binding directory. Duplicate token issuers with different roots are invalid deployment configuration; runtime installation now handles owned-hook replacement and explicit root alignment.
+The composed text is encoded once into the actual HTTP prompt body and sent
+unchanged. Acceptance requires the exact command acknowledgment; an ambiguous
+response stays unknown. The App no longer writes `sane.context` instruction
+entries or framework/Session synthetic messages. Legacy owned entries are not
+silently deleted or adopted.
 
-Claude execution-policy translation is bounded rather than full OpenCode parity. Supported model/effort and whole-tool restrictions are translated, with omissions and conservative restrictions recorded where applicable.
+The installed `sane-execution/configure` RPC still configures generated root
+execution agents with empty instruction text and retains native-child policy,
+permission and model handling. Prompt setup reuses its full resolved execution
+context for launch metadata: the shared prompt path has two timed
+`execution.resolve` steps rather than three. The separate post-policy binding
+lookup remains, as does fresh final preflight after configuration effects;
+compaction retains its independent lookup fallback. This is not a global cache
+or a performance qualification.
 
-## Updates, branches, and migration
+## Limits and inspection
 
-Canonical delivery is the default for normal App startup. `--context-delivery startup` remains an explicit compatibility mode. Existing sessions retain their recorded delivery configuration.
+There is no automatic legacy migration, SANE branch inheritance or qualified SANE
+compaction/reset recovery. Known unsupported legacy, branch and recorded
+reset/compaction states refuse without silent bootstrap, adoption or resend.
+Base branching and dedicated native compaction retain their existing paths.
+Ordinary sends do not continuously inspect native history, so out-of-band edits
+or resets are not guaranteed to be detected. Lifecycle metadata is not proof of
+historical delivery, Session-root provenance continuity or current retention.
 
-To change a procedure, edit its authored source under `context/skills/`. The App packages updated content for new SANE activations; no manual copy into the package store is needed. Existing sessions retain their pinned revisions. Restarting or compacting does not refresh their authored context.
+The legacy `contextDelivery` values are compatibility aliases, not alternate
+transports. Runtime installation does not itself migrate sessions, delete native
+history or authorize installed-asset retirement.
 
-Branching supports migration:
+**View SANE context** explicitly reads protected recorded outgoing evidence.
+Historical activation/native-source/reader modules remain read-only inspection
+tools, not ordinary send gates. Inspection never repairs logs, substitutes current
+files or resends messages. App **Message receipts** record admission separately
+from native outcomes; exact-status recovery never replays the request. Neither
+recorded acceptance nor a successful run proves model consumption.
 
-- A legacy SANE branch under canonical mode reserves paired canonical context/execution before native fork.
-- A canonical branch preserves its existing revisions. It does not serve as a context-refresh operation.
-- Base branches remain Base.
-- Model/effort settings and history through the selected branch boundary are preserved.
-- Replacement uses existing assignment-transfer behavior and retains the original as history.
-
-Canonical-to-canonical branching preserves inherited context bytes rather than appending an entire new instruction entry merely to add continuation guidance. Legacy migrations retain continuation guidance so the assistant continues its current work instead of treating the branch as fresh Pickup. Existing duplicated historical text is not deleted.
-
-There is no general in-place procedure-refresh mechanism. Do not modify files inside a pinned revision directory: hashes and provenance are validated.
-
-## Workers and Scout Crew
-
-App-managed workers are launched through `sane_worker_start`; their context and execution policies are pinned independently of the parent's delivery mode. A legacy parent can therefore launch canonical workers, but the parent still needs its legacy assets until migrated.
-
-New Scout Crews explicitly launch App-managed `scout` workers instead of native subagents. Their idle turns remain nonterminal while required child outcomes are outstanding. Once child outcomes are ready, the crew resumes in its exact session to synthesize findings before its final result reaches its own parent. Existing pinned crews retain their earlier delegation behavior.
-
-Other roles can still use configured native delegation where supported. Native delegation and App-managed worker tracking are distinct mechanisms.
-
-## Installation and asset retirement
-
-`sane install context-packages` defaults to runtime-only provisioning for both CLI and ordinary API calls. Explicit legacy asset/model/skill installation options remain available. Runtime reinstall preserves recognized custom connection paths and unrelated configuration.
-
-Runtime-only provisioning does not itself remove existing Markdown. Retirement is a separate operation: identify SANE-owned installed files, back them up, and remove those copies while retaining runtime integrations and App-owned sources/packages.
-
-Before retirement, migrate or finish active legacy sessions. Removing their installed definitions can prevent resume even though prior instructions remain in conversation history. A new canonical branch is the supported continuation route; removing assets is not an automatic session migration.
-
-## Verification and lessons from rollout
-
-The rollout exposed integration gaps that isolated tests had not covered:
-
-- Missing Claude hook-event visibility caused the App to reject a delivered context as unacknowledged.
-- Pending-input codecs initially rejected the new canonical configuration fields.
-- Outdated installed OpenCode plugins lacked the required execution RPC.
-- Missing packaged repository-reader modules prevented Claude MCP startup.
-- Global OpenCode permission ordering conflicted with generated worker policies.
-- Forwarded temperature was rejected by a selected provider/model.
-- Canonical branch continuation text caused a full instruction entry to be appended again.
-
-These received bounded fixes and focused regression coverage. A real canonical Claude Planning session resumed successfully; a real OpenCode Critic completed and its exact result reached the resumed Engineering parent.
-
-Prepared context, configured execution, stored readback, hook acknowledgement, native model output, and final result delivery are different evidence stages. Mock-provider captures establish request assembly, not semantic model compliance. Passing a broad suite is not a substitute for a small installed-path check.
-
-At the time of writing, the final installed first-call/compaction smoke checks were cancelled before completion. The new App-managed Scout Crew lifecycle and temperature omission have focused/native-fixture coverage but still require evaluation on the updated installed stack. Source commits do not imply installed runtime deployment.
+See the [operator guide](../../packages/sane-app/HUMAN-OPERATOR-GUIDE.md#sane-context-and-message-receipts)
+and [current cutover contract](../../reports/context-message-cutover-2026-10-26/README.md).
+Dated verification captures describe their checkpoint, not a current full-App,
+browser/native workflow or crash/retention qualification. Source changes do not
+imply runtime deployment.
 
 ## Implementation entry points
 
-- `packages/sane-app/src/context-package.ts`: composition and package contracts.
-- `packages/sane-app/src/context-package-store.ts`: authored sources, publication, and integrity.
-- `packages/sane-app/src/context-delivery.ts`: exact bindings and delivery receipts.
-- `packages/sane-app/src/canonical-execution-store.ts`: immutable execution snapshots.
-- `packages/sane-app/src/canonical-agent-operations.ts`: harness execution translation.
-- `packages/sane-app/src/branch-context.ts`: branch continuation composition.
-- `packages/sane-app/src/scout-crew-lifecycle.ts`: nested Scout coordination.
-- `packages/sane-app/src/{bridge,claude-run-service,opencode-run-service}.ts`: lifecycle and dispatch.
-- `opencode/plugins/sane/execution.ts`: OpenCode runtime execution configuration.
-- `packages/sane-cli/src/install-sane-agent-context-packages.ts`: provisioning.
+- [Shared composer freshness](../../packages/sane-app/src/context-message-engine.ts)
+  and [owned preparation](../../packages/sane-app/src/owned-message-preparation.ts).
+- [Shared submission coordinator](../../packages/sane-app/src/run-submission-preparation.ts)
+  and [execution preparation](../../packages/sane-app/src/execution-preparation-service.ts).
+- [Claude adapter](../../packages/sane-app/src/claude-run-service.ts),
+  [OpenCode adapter](../../packages/sane-app/src/opencode-run-service.ts) and
+  [protected read-only evidence routes](../../packages/sane-app/src/conversation-evidence-routes.ts).

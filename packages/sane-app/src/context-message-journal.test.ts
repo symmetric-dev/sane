@@ -122,6 +122,12 @@ describe("inactive context evidence adapter on the same journal", () => {
     f.persist(f.submission, f.observation("outcome", "not-submitted"));
     expect(f.read().map(event => (event.data as any).stage).filter(Boolean)).toEqual(["outcome"]);
   });
+  test("definite withholding before any attempt does not pretend to flush queued metadata or poison storage", () => {
+    const f = fixture(); f.reserve("submission", f.submission); f.blockMetadata();
+    f.persist(f.submission, f.observation("outcome", "not-submitted"));
+    expect(f.read().at(-1)!.data).toMatchObject({ stage: "outcome", evidence: { submission: "not-submitted", nativeAcceptance: "not-accepted" } });
+    expect(f.failures).toEqual([]);
+  });
 
   test("CC initial and live-input boundaries retain separate message identities", () => {
     for (const live of [false, true]) {
