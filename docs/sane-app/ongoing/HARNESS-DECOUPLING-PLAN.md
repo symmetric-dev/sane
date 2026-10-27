@@ -21,7 +21,9 @@ The next concrete Grok step is the bounded source/evidence contract and explicit
 storage-extension review below. Do not start the Base adapter, enable a profile,
 or implement the proposed source-record v2 / repository schema v6 during that
 review. Native trials, migrations, provisioning and service changes retain their
-separate authorization gates.
+separate authorization gates. Remaining CC/OC authorization fallthroughs, and
+what must stay native-specific, are inventoried in
+[Harness decoupling status](HARNESS-DECOUPLING-STATUS.md).
 
 ### Reconciliation
 

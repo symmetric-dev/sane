@@ -3,6 +3,8 @@
 For this checkout, see [Harness decoupling and Grok integration](HARNESS-DECOUPLING-PLAN.md).
 Grok is in near scope; Gemini remains research-first work after Grok. The plan
 preserves existing CC/OC behavior and data, with explicit capability limits.
+The post-merge inventory of what landed and which CC/OC fallthroughs remain is
+in [Harness decoupling status](HARNESS-DECOUPLING-STATUS.md).
 
 Current checkpoint: [C10 human verification and foundation acceptance](C10-PLAN.md),
 ending with a full workstream.

@@ -1467,7 +1467,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   async function branchDomain(source: Session, enroll = false) {
     const admission = admissions.get(source.sessionId);
     if (!admission || admission.state !== "ready") throw new Error("Source admission is not ready");
-    if (source.nativeSessionId !== admission.nativeId || source.authorityId !== admission.source.authorityId || source.harness !== (admission.source.descriptor.harness === "cc" ? "claude-code" : "opencode") || source.cwd !== admission.binding.executionCheckout) throw new Error("Source identity or execution checkout differs from its admission");
+    if (source.nativeSessionId !== admission.nativeId || source.authorityId !== admission.source.authorityId || source.harness !== toSessionHarness(admission.source.descriptor.harness) || source.cwd !== admission.binding.executionCheckout) throw new Error("Source identity or execution checkout differs from its admission");
     await router!.execution(admission);
     if (admission.binding.domain.mode === "app-only" && (await catalog.get(admission.binding.workspaceId)).kind === "repository") {
       const inspected = await router!.inspect(admission.binding.workspaceId);
@@ -1555,7 +1555,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!op.nativeId) throw new Error("Native destination identity is unknown; no creation retry is permitted");
     if (meta.sessions.some(s => s.sessionId !== op.destinationId && s.authorityId === source.authorityId && s.nativeSessionId === op.nativeId)) throw new Error("Native fork identity is already associated with another App conversation");
     const original = admissions.get(source.sessionId)!;
-    if (!admissions.get(op.destinationId)) await admissions.begin({ sessionId: op.destinationId, operation: "create", harness: source.harness === "opencode" ? "oc" : "cc", cwd: source.cwd, nativeId: op.nativeId, workspaceId: original.binding.workspaceId, worktreeId: original.binding.worktreeId, parent: original.binding.domain.mode === "repository" ? { harness: original.source.descriptor.harness, authorityId: original.source.authorityId, nativeId: source.nativeSessionId! } : null });
+    if (!admissions.get(op.destinationId)) await admissions.begin({ sessionId: op.destinationId, operation: "create", harness: toNativeHarness(source.harness as Harness), cwd: source.cwd, nativeId: op.nativeId, workspaceId: original.binding.workspaceId, worktreeId: original.binding.worktreeId, parent: original.binding.domain.mode === "repository" ? { harness: original.source.descriptor.harness, authorityId: original.source.authorityId, nativeId: source.nativeSessionId! } : null });
     const admission = admissions.get(op.destinationId)!;
     if (admission.nativeId !== op.nativeId || !["identity_known", "ready"].includes(admission.state)) throw new Error("Destination admission differs from the confirmed branch identity");
     const sourceDomain = original.binding.domain, destinationDomain = admission.binding.domain;
@@ -1790,7 +1790,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const admission = admissions.get(session.sessionId);
     if (activeRun.sessionId !== session.sessionId || !admission || admission.state !== "ready"
       || admission.nativeId !== session.nativeSessionId || admission.source.authorityId !== session.authorityId
-      || admission.binding.executionCheckout !== session.cwd || admission.source.descriptor.harness !== (session.harness === "opencode" ? "oc" : "cc")) throw new WorkstreamAdapterError(409, "context-source-unavailable", "Continuation requires its original ready native admission");
+      || admission.binding.executionCheckout !== session.cwd || toSessionHarness(admission.source.descriptor.harness) !== session.harness) throw new WorkstreamAdapterError(409, "context-source-unavailable", "Continuation requires its original ready native admission");
     if (branches.list().some(op => op.destinationId === session.sessionId)) throw new WorkstreamAdapterError(409, "context-branch-prefix-unproven", "Inherited shared context has no qualified branch lifecycle");
     for (const run of meta.runs) {
       if (run.sessionId !== session.sessionId) continue;
@@ -1937,7 +1937,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (!sameDispatchSource(dispatchSource(session), capturedIdentity.source)) throw new WorkstreamAdapterError(409, "context-source-changed", "Original native source changed before new context submission");
           const a = admissions.get(session.sessionId);
           if (!a || a.state !== "ready" || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId
-            || a.binding.executionCheckout !== session.cwd || a.source.descriptor.harness !== (session.harness === "opencode" ? "oc" : "cc")) throw new WorkstreamAdapterError(409, "context-source-unavailable", "Context message source differs from its ready native admission");
+            || a.binding.executionCheckout !== session.cwd || toSessionHarness(a.source.descriptor.harness) !== session.harness) throw new WorkstreamAdapterError(409, "context-source-unavailable", "Context message source differs from its ready native admission");
         };
         const assertAdmissionMetadata = owner.assertMetadataCommitted!;
         const messages = createDispatchContextBinding({ identity: capturedIdentity, session, readIntent: () => options.messageIntent,
@@ -2266,7 +2266,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       assertDispatch(); assertContext();
       const a = admissions.get(conversationId);
       if (!a || a.state !== "ready" || a.nativeId !== session!.nativeSessionId || a.source.authorityId !== session!.authorityId
-        || a.source.descriptor.harness !== (harness === "opencode" ? "oc" : "cc") || a.binding.executionCheckout !== cwd
+        || a.source.descriptor.harness !== toNativeHarness(harness) || a.binding.executionCheckout !== cwd
         || session!.authorityId !== activationInput.source.authorityId || sessionHarness(session!) !== harness
         || session!.cwd !== cwd || session!.lastRunId !== null || meta.runs.some(row => row.sessionId === conversationId)
         || canonicalJSON({ saneExecution: session!.saneExecution, saneContext: session!.saneContext }) !== canonicalJSON(activationInput.activation)) throw new UserInputPreparationError("Activation journal has no exact ready original native admission and pinned pair", 409);
@@ -2790,7 +2790,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const executionRevision = pinned.saneExecution?.revision;
     if (!packageRef || !executionRevision) return {};
     await contextPackages.load(packageRef);
-    const childHarness = worker.launch.harness === "opencode" ? "oc" : "cc";
+    const childHarness = toNativeHarness(worker.launch.harness);
     const selected: SelectedNativeRuntime | undefined = options.nativeRuntime && options.nativeSources.oc.harness === "oc" ? { ...options.nativeRuntime,
       registrationFile: options.nativeSources.oc.registrationFile, appConnectionFile: join(options.dataDir, "native-handoff.json") } : undefined;
     const proveRuntime = async (harness: "cc" | "oc", checkout: string) => {
@@ -4808,7 +4808,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (typeof input.workspaceId !== "string" || typeof input.worktreeId !== "string" || (await catalog.binding(input.workspaceId, input.worktreeId)).cwd !== cwd) throw new OpenCodeError("Selected worktree differs from native execution directory", 409);
           }
           const catalogSelection = await catalog.register(cwd);
-          if (!admissions.get(sessionId)) await admissions.begin({ sessionId, operation: "attach", harness: harness === "opencode" ? "oc" : "cc", nativeId: nativeSessionId, cwd, workspaceId: catalogSelection.workspaceId, worktreeId: catalogSelection.worktreeId });
+          if (!admissions.get(sessionId)) await admissions.begin({ sessionId, operation: "attach", harness: toNativeHarness(harness), nativeId: nativeSessionId, cwd, workspaceId: catalogSelection.workspaceId, worktreeId: catalogSelection.worktreeId });
           const candidate: Session = session ?? { sessionId, nativeSessionId, authorityId: nativeSource(harness), harness, cwd, lastStatus: "unknown", lastRunId: null, title: "Conversation", titleSource: "fallback", titleRevision: 0, titleAutoEligible: false, attachment: { state: "pending", source: nativeSource(harness) } };
           const native = await readNativeHistory(harness, nativeSessionId, cwd);
           if (!native.messages.length) throw new OpenCodeError("Native transcript is empty; nothing attached", 409);

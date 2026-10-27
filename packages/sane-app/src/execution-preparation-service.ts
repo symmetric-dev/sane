@@ -6,6 +6,7 @@ import { atomicAppRecord, type Admission } from "./app-store";
 import { validateCanonicalExecution } from "./canonical-activation-validation";
 import type { CanonicalExecutionRef, CanonicalExecutionSnapshot, CanonicalExecutionStore } from "./canonical-execution-store";
 import type { ContextPackageStore } from "./context-package-store";
+import { toSessionHarness } from "./harness-names";
 import { uuid, type Session } from "./history";
 import { createCanonicalActivation, reserveActivation, validateCanonicalActivation, type ActivationSnapshot } from "./user-input-preparation";
 import type { ExecutionContext } from "./workstreams";
@@ -59,7 +60,7 @@ export function createExecutionPreparationService({ dataDir, executionPackages, 
     const pin = executionPin(session);
     const assertBinding = () => {
       const current = getSession(sessionId), a = getAdmission(sessionId);
-      if (!current || executionPin(current) !== pin || !a || a.state !== "ready" || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || a.binding.executionCheckout !== session.cwd || a.source.descriptor.harness !== (session.harness === "opencode" ? "oc" : "cc")) throw new Error("Canonical execution requires an exact ready admission");
+      if (!current || executionPin(current) !== pin || !a || a.state !== "ready" || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || a.binding.executionCheckout !== session.cwd || toSessionHarness(a.source.descriptor.harness) !== session.harness) throw new Error("Canonical execution requires an exact ready admission");
     };
     assertBinding();
     if (!session.saneContext) throw new Error("Canonical execution requires paired context");

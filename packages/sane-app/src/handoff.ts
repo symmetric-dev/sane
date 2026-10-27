@@ -8,6 +8,7 @@ import type { CatalogService } from "./catalog";
 import type { SourceRecords } from "./app-store";
 import type { Session } from "./history";
 import type { HandoffPresentation, HandoffParty } from "./handoff-contract";
+import { toSessionHarness } from "./harness-names";
 import { RepositoryRouter, WorkstreamAdapterError } from "./workstreams";
 
 const same = (a: ConversationRef, b: ConversationRef) => a.harness === b.harness && a.authorityId === b.authorityId && a.nativeId === b.nativeId;
@@ -283,7 +284,7 @@ export class HandoffService {
     const binding = admission.binding;
     if (binding.domain.mode !== "repository" || binding.domain.repositoryId !== h.repositoryId || binding.executionCheckout !== r.checkout.path || !binding.checkoutPin || !Object.entries(r.checkout).every(([key, value]) => binding.checkoutPin![key as keyof CheckoutPin] === value)) throw new DomainError("CONFLICT", "Queued recipient repository binding or checkout pin changed.");
     if (!session || session.attachment?.state === "pending") throw new DomainError("CONFLICT", "Queued recipient session is absent or its attachment is pending.");
-    if (session.harness !== (ref.harness === "oc" ? "opencode" : "claude-code") || session.authorityId !== ref.authorityId || session.nativeSessionId !== ref.nativeId || session.cwd !== r.checkout.path) throw new DomainError("CONFLICT", "Queued recipient session identity or checkout changed.");
+    if (session.harness !== toSessionHarness(ref.harness) || session.authorityId !== ref.authorityId || session.nativeSessionId !== ref.nativeId || session.cwd !== r.checkout.path) throw new DomainError("CONFLICT", "Queued recipient session identity or checkout changed.");
   }
   async prepareRecipient(workspaceId: string, handoffId: string, create: (handoff: Handoff) => Promise<void>) {
     const domain = (await this.router.forWorkspace(workspaceId)).domain, h = domain.getHandoff(handoffId);
