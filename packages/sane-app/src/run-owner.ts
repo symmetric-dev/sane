@@ -1,11 +1,15 @@
 import type { Run } from "./history";
 import type { DispatchSubmission, DispatchNativeAcceptance, DispatchIdentity } from "../shared/conversation/dispatch-contract";
 import type { OwnedContextMessages, OwnedSubmissionPublication } from "./context-message-transport";
+import type { OwnedRunControls } from "./run-controls";
 
 /** Shared execution ownership. The bridge coordinator retains the single registry;
  * harness services must not release or replace owners independently. */
 export type RunOwner = {
   run: Run;
+  /** Immutable owner-bound lifecycle operations for the original resources. */
+  readonly controls?: OwnedRunControls;
+  /** Private legacy OC monitor/transport state, never lifecycle routing authority. */
   native?: boolean;
   nativeDispatched?: boolean;
   /** Honest CLI lifecycle evidence; exit alone is not proof of stream drain. */

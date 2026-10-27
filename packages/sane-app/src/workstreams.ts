@@ -4,6 +4,7 @@ import { uuid, type Session } from "./history";
 import type { WorkstreamOverview } from "./workstreams-contract";
 import type { CatalogService } from "./catalog";
 import type { Admission, SourceRecords } from "./app-store";
+import { toNativeHarness } from "./harness-names";
 
 export type AppConversation = Pick<Session, "sessionId" | "harness" | "nativeSessionId" | "authorityId" | "cwd">;
 export type ExecutionContext = Pick<InvocationContext, "executionCheckout" | "artifactsRoot"> & { workstreamId: string | null };
@@ -86,9 +87,9 @@ export class WorkstreamAdapter {
   close() { this.domain.close(); }
   get repositoryId() { return this.domain.repositoryId; }
   reference(session: AppConversation): ConversationRef {
-    const harness = session.harness === "opencode" ? "oc" : session.harness === "claude-code" ? "cc" : null;
-    if (!harness || !session.nativeSessionId || !session.authorityId) throw new WorkstreamAdapterError(409, "invalid-app-reference", "Qualified native identity is required");
-    return { harness, authorityId: session.authorityId, nativeId: session.nativeSessionId };
+    const harness = session.harness;
+    if ((harness !== "opencode" && harness !== "claude-code") || !session.nativeSessionId || !session.authorityId) throw new WorkstreamAdapterError(409, "invalid-app-reference", "Qualified native identity is required");
+    return { harness: toNativeHarness(harness), authorityId: session.authorityId, nativeId: session.nativeSessionId };
   }
   appSessionId(ref: ConversationRef, sessions: readonly AppConversation[]) {
     const matches = sessions.filter(s => sameRef(this.reference(s), ref));

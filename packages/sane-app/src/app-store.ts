@@ -1,17 +1,20 @@
 import { lstatSync, mkdirSync, openSync, closeSync, fsyncSync, writeFileSync, readFileSync, readdirSync, realpathSync, renameSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
-import { normalizeNativeSource } from "sane-core/server";
-import type { NativeSourceDescriptor, NativeAuthority, ConversationRef, CheckoutPin } from "sane-core/contracts";
+import { join } from "node:path";
+import type { NativeAuthority, ConversationRef, CheckoutPin } from "sane-core/contracts";
+import { isNativeHarness, validNativeAuthorityId } from "sane-core/native-source-contract";
+import { AppStoreError, exact, absolute, time, corrupt } from "./app-store-format";
+import { assertSourceDescriptor, assertQualifiedReference, validateSources, resolveSources, assertSourceConfiguration, type SourceConfiguration } from "./app-sources";
+import { toSessionHarness } from "./harness-names";
 import { uuid, validateMetadata, validModel, validEffort, validVariant, validProfileId } from "./history";
 import { isAssistantAgentId, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, ASSISTANT_AGENT_DESCRIPTIONS, isWorkerAgentId, WORKER_AGENT_IDS } from "sane-core/agent-catalog";
 import { isUtilityAgentId, UTILITY_AGENT_IDS } from "sane-core/agent-catalog";
 import { AGENT_COLOR_IDS, AGENT_ICON_IDS, BASE_PROFILE_IDS, LEGACY_KNOWLEDGE_PROFILE, builtinProfiles, builtinWorkerDefaults, seedAgentProfiles, templateProfileId, workerTemplateProfileId, utilityTemplateProfileId, type AgentProfiles } from "./agent-profiles-contract";
 
+export { AppStoreError, exact } from "./app-store-format";
+export { validateSources, resolveSources, assertSourceConfiguration, type SourceConfiguration, type SourceRecord, type SourceRecords } from "./app-sources";
+
 /** Fresh format only. Callers hold installation ownership, then data ownership. */
 export type AppManifest = { format: "sane-app-store"; version: 1; storeId: string; createdAt: string };
-export type SourceConfiguration = { cc: NativeSourceDescriptor; oc: NativeSourceDescriptor };
-export type SourceRecord = { descriptor: NativeSourceDescriptor; authorityId: string | null };
-export type SourceRecords = { version: 1; cc: SourceRecord; oc: SourceRecord };
 export type AdmissionBinding = { workspaceId: string; worktreeId: string; bindingRevision: string; executionCheckout: string; checkoutPin: CheckoutPin | null; domain: { mode: "app-only" } | { mode: "repository"; repositoryId: string; primaryCheckout: string } };
 export type Admission = {
   version: 1; requestId: string; sessionId: string; operation: "create" | "attach" | "enroll";
@@ -20,40 +23,12 @@ export type Admission = {
   nativeId: string | null; createdAt: string; error: string | null;
 };
 export type AdmissionRecords = { version: 1; admissions: Admission[] };
-export class AppStoreError extends Error {
-  constructor(public readonly code: "APP_STORE_UNINITIALIZED" | "APP_STORE_UNSUPPORTED" | "APP_STORE_CORRUPT" | "APP_SOURCE_MISMATCH", message: string) { super(message); }
-}
-export function exact(value: unknown, required: readonly string[], optional: readonly string[] = []): asserts value is Record<string, any> {
-  if (!value || typeof value !== "object" || Array.isArray(value) || required.some(k => !Object.hasOwn(value, k)) || Object.keys(value).some(k => !required.includes(k) && !optional.includes(k))) throw new AppStoreError("APP_STORE_CORRUPT", "Invalid fresh App record shape");
-}
-const absolute = (v: unknown): v is string => typeof v === "string" && isAbsolute(v) && !v.includes("\0");
-const time = (v: unknown) => typeof v === "string" && Number.isFinite(Date.parse(v));
-function corrupt(message: string): never { throw new AppStoreError("APP_STORE_CORRUPT", message); }
-function descriptor(value: unknown, harness: "cc" | "oc"): asserts value is NativeSourceDescriptor {
-  const key = harness === "cc" ? "profileRoot" : "registrationFile";
-  exact(value, ["version", "harness", "kind", key]);
-  if (value.version !== 1 || value.harness !== harness || value.kind !== (harness === "cc" ? "local-profile" : "local-registration") || !absolute(value[key])) corrupt("Invalid native source descriptor");
-}
-export function validateSources(value: unknown): SourceRecords {
-  exact(value, ["version", "cc", "oc"]);
-  if (value.version !== 1) corrupt("Unsupported source record version");
-  for (const harness of ["cc", "oc"] as const) {
-    const record = value[harness]; exact(record, ["descriptor", "authorityId"]); descriptor(record.descriptor, harness);
-    if (record.authorityId !== null && (typeof record.authorityId !== "string" || !new RegExp(`^sane-native-v1:${harness}:[a-f0-9]{64}$`).test(record.authorityId))) corrupt("Invalid source authority");
+function validAdmissionNativeId(harness: unknown, nativeId: string): boolean {
+  switch (harness) {
+    case "cc": return uuid(nativeId);
+    case "oc": return /^ses[a-zA-Z0-9_-]{1,200}$/.test(nativeId);
+    default: return false;
   }
-  return value as SourceRecords;
-}
-export function resolveSources(config: SourceConfiguration): SourceRecords {
-  const resolve = (harness: "cc" | "oc"): SourceRecord => {
-    descriptor(config[harness], harness);
-    try { return normalizeNativeSource(config[harness]); }
-    catch (e) { if ((e as { code?: string }).code !== "SOURCE_UNAVAILABLE") throw e; return { descriptor: config[harness], authorityId: null }; }
-  };
-  return { version: 1, cc: resolve("cc"), oc: resolve("oc") };
-}
-function ref(value: unknown) {
-  exact(value, ["harness", "authorityId", "nativeId"]);
-  if (!["cc", "oc"].includes(value.harness) || typeof value.authorityId !== "string" || !new RegExp(`^sane-native-v1:${value.harness}:[a-f0-9]{64}$`).test(value.authorityId) || typeof value.nativeId !== "string" || !value.nativeId || value.nativeId.includes("\0")) corrupt("Invalid qualified reference");
 }
 export function validateAdmissions(value: unknown): AdmissionRecords {
   exact(value, ["version", "admissions"]);
@@ -64,17 +39,17 @@ export function validateAdmissions(value: unknown): AdmissionRecords {
     if (a.version !== 1 || !uuid(a.requestId) || !uuid(a.sessionId) || ids.has(a.requestId) || sessions.has(a.sessionId) || !["create", "attach", "enroll"].includes(a.operation) || !["intent", "native_creation_unknown", "identity_known", "ready", "rejected"].includes(a.state) || !time(a.createdAt) || a.error !== null && typeof a.error !== "string") corrupt("Invalid admission record");
     ids.add(a.requestId); sessions.add(a.sessionId);
     exact(a.source, ["descriptor", "authorityId"]);
-    if (!["cc", "oc"].includes(a.source.descriptor?.harness)) corrupt("Invalid admission source");
-    descriptor(a.source.descriptor, a.source.descriptor.harness);
+    if (!isNativeHarness(a.source.descriptor?.harness)) corrupt("Invalid admission source");
+    assertSourceDescriptor(a.source.descriptor, a.source.descriptor.harness);
     const harness = a.source.descriptor.harness;
-    if (typeof a.source.authorityId !== "string" || !new RegExp(`^sane-native-v1:${harness}:[a-f0-9]{64}$`).test(a.source.authorityId)) corrupt("Invalid admission source authority");
+    if (!validNativeAuthorityId(harness, a.source.authorityId)) corrupt("Invalid admission source authority");
     if (a.nativeId !== null) {
-      ref({ harness, authorityId: a.source.authorityId, nativeId: a.nativeId });
-      if (harness === "cc" ? !uuid(a.nativeId) : !/^ses[a-zA-Z0-9_-]{1,200}$/.test(a.nativeId)) corrupt("Invalid native identity");
+      assertQualifiedReference({ harness, authorityId: a.source.authorityId, nativeId: a.nativeId });
+      if (!validAdmissionNativeId(harness, a.nativeId)) corrupt("Invalid native identity");
       const key = JSON.stringify([harness, a.source.authorityId, a.nativeId]); if (qualified.has(key)) corrupt("Duplicate qualified native identity"); qualified.add(key);
     }
     if (["ready", "identity_known"].includes(a.state) && a.nativeId === null || a.state === "native_creation_unknown" && (a.operation !== "create" || a.nativeId !== null)) corrupt("Invalid admission state/identity");
-    if (a.parent !== null) ref(a.parent);
+    if (a.parent !== null) assertQualifiedReference(a.parent);
     exact(a.binding, ["workspaceId", "worktreeId", "bindingRevision", "executionCheckout", "checkoutPin", "domain"]);
     const b = a.binding;
     if (![b.workspaceId, b.worktreeId, b.bindingRevision].every(uuid) || !absolute(b.executionCheckout)) corrupt("Invalid admission catalog binding");
@@ -236,7 +211,7 @@ export function validateAppStore(root: string) {
   if (navigation.version !== 1) corrupt("Unsupported navigation");
   for (const session of metadata.sessions) {
     const a = admissions.admissions.find(a => a.sessionId === session.sessionId);
-    if (!a || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || a.binding.executionCheckout !== session.cwd || (a.source.descriptor.harness === "cc" ? "claude-code" : "opencode") !== session.harness) corrupt("History has no matching admission");
+    if (!a || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || a.binding.executionCheckout !== session.cwd || toSessionHarness(a.source.descriptor.harness) !== session.harness) corrupt("History has no matching admission");
   }
   for (const a of admissions.admissions) {
     const source = sources[a.source.descriptor.harness];
@@ -263,11 +238,4 @@ export function initializeAppStore(root: string, config: SourceConfiguration) {
   for (const [name, value] of Object.entries(records)) { const fd = openSync(join(root, name), "wx", 0o600); try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); } finally { closeSync(fd); } }
   const dir = openSync(root, "r"); try { fsyncSync(dir); } finally { closeSync(dir); }
   return validateAppStore(root);
-}
-export function assertSourceConfiguration(stored: SourceRecords, config: SourceConfiguration): void {
-  const resolved = resolveSources(config);
-  for (const harness of ["cc", "oc"] as const) {
-    const prior = stored[harness], next = resolved[harness];
-    if (JSON.stringify(prior.descriptor) !== JSON.stringify(next.descriptor) || prior.authorityId !== null && next.authorityId !== null && prior.authorityId !== next.authorityId) throw new AppStoreError("APP_SOURCE_MISMATCH", `Configured ${harness} source differs from the App store pin`);
-  }
 }

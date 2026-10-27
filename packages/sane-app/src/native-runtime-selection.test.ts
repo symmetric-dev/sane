@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { installSaneAgentContextPackages, proveInstalledExplicitWorkerRuntime, type SelectedNativeRuntime } from "../../sane-cli/src/install-sane-agent-context-packages";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { installSaneAgentContextPackages, PLUGIN_CORE_SRC_FILES, PLUGIN_FILENAMES, proveInstalledExplicitWorkerRuntime, type SelectedNativeRuntime } from "../../sane-cli/src/install-sane-agent-context-packages";
 import { resolveAppConfig } from "./app-config";
 import { OpenCodeAdapter } from "./opencode";
 
@@ -18,6 +19,22 @@ async function fixture() {
     const value = JSON.parse(readFileSync(path, "utf8")); update(value); writeFileSync(path, JSON.stringify(value));
   } };
 }
+test("vendored native source normalization includes its new contract dependency", async () => {
+  const f = await fixture(), filename = "native-source-contract.ts";
+  expect(PLUGIN_CORE_SRC_FILES.filter(file => file === filename)).toHaveLength(1);
+  expect(PLUGIN_FILENAMES).toContain(`sane/runtime/packages/sane-core/src/${filename}`);
+  const installed = join(f.selected.pluginDirectory, "runtime/packages/sane-core/src");
+  expect(readFileSync(join(installed, filename), "utf8")).toBe(readFileSync(resolve(import.meta.dir, "../../sane-core/src", filename), "utf8"));
+  // Import from the installed fixture, not the workspace, so a missing copied
+  // dependency fails even when workspace package resolution would succeed.
+  const runtime: typeof import("../../sane-core/src/native-source") = await import(pathToFileURL(join(installed, "native-source.ts")).href);
+  expect(runtime.normalizeNativeSource({ version: 1, harness: "cc", kind: "local-profile", profileRoot: f.profile }).descriptor)
+    .toEqual({ version: 1, harness: "cc", kind: "local-profile", profileRoot: f.profile });
+  // Installation does not start a service or create its registration directory.
+  mkdirSync(dirname(f.selected.registrationFile), { recursive: true });
+  expect(runtime.normalizeNativeSource({ version: 1, harness: "oc", kind: "local-registration", registrationFile: f.selected.registrationFile }).descriptor)
+    .toEqual({ version: 1, harness: "oc", kind: "local-registration", registrationFile: f.selected.registrationFile });
+});
 for (const harness of ["cc", "oc"] as const) test(`${harness}: explicitly selected installed runtime qualifies without consulting the real home`, async () => {
   const f = await fixture();
   expect(await proveInstalledExplicitWorkerRuntime(f.profile, harness, f.selected)).toEqual(["sane_worker_complete", "sane_worker_notify", "sane_worker_message_parent", "sane_worker_message"]);

@@ -5,6 +5,7 @@ import { AgentLaunchConfigurationError, claudeAgentSettings, sha256, snapshotIde
 import { projectCompactions } from "./compaction";
 import type { Event, Run, Session, TerminationUncertainty } from "./history";
 import type { RunOwner } from "./run-owner";
+import type { RunControlOperations } from "./run-controls";
 import { WorkstreamAdapterError, type ExecutionContext } from "./workstreams";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
 import { CLAUDE_RESULT_TEXT_LIMIT, consumeClaudeResultRecord, createClaudeResultSequenceState, type ClaudeResultSequenceState } from "../shared/conversation/cc-result";
@@ -167,6 +168,25 @@ export class ClaudeRunService {
 
   readSubmissionTiming(owner: RunOwner): Readonly<{ initial?: RunSubmissionTimingSnapshot; liveInput?: RunSubmissionTimingSnapshot }> | undefined {
     return this.submissionTimings.get(owner);
+  }
+
+  /** Bound to the original owner, never a later session owner or DTO lookup. */
+  controls(owner: RunOwner): RunControlOperations {
+    const done = owner.done;
+    return {
+      cancellation: "retain-result",
+      interrupt: async () => ({ interrupted: await this.terminate(owner) }),
+      cleanup: () => owner.child ? this.terminate(owner) : Promise.resolve(true),
+      shutdown: async () => {
+        // Preparation rechecks closing before spawn. Still observe the live child
+        // after draining, rather than caching a prelaunch no-child observation.
+        if (owner.child) await this.terminate(owner);
+        const drained = await Promise.race([done.then(() => true), this.runtime.sleep(3000).then(() => false)]);
+        if (!drained || (owner.child && this.groupAlive(owner))) return { drained: false, reconciliationRequired: true };
+        return { drained: true, reconciliationRequired: false };
+      },
+      readPreparationTiming: () => this.readSubmissionTiming(owner),
+    };
   }
 
   private retainSubmissionTiming(owner: RunOwner, kind: "initial" | "liveInput", timing: ReturnType<typeof createRunSubmissionTiming>): void {

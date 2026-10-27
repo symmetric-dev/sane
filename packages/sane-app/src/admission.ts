@@ -3,6 +3,7 @@ import type { ConversationRef } from "sane-core/contracts";
 import { atomicAppRecord, validateAdmissions, type Admission, type AdmissionRecords, type SourceRecords } from "./app-store";
 import type { CatalogService } from "./catalog";
 import { RepositoryRouter, WorkstreamAdapterError } from "./workstreams";
+import { toSessionHarness } from "./harness-names";
 
 /** Serialized by the bridge admission gate. All writes are synchronous durable publication. */
 export class AdmissionService {
@@ -57,7 +58,7 @@ export class AdmissionService {
     if (adapter) {
       revalidateCheckout(adapter.domain.context, b.checkoutPin!);
       // Core retry is identity/pin/parent-only: it never reapplies membership or phases.
-      adapter.register({ sessionId, harness: a.source.descriptor.harness === "cc" ? "claude-code" : "opencode", nativeSessionId: a.nativeId, authorityId: a.source.authorityId, cwd: b.executionCheckout }, a.parent);
+      adapter.register({ sessionId, harness: toSessionHarness(a.source.descriptor.harness), nativeSessionId: a.nativeId, authorityId: a.source.authorityId, cwd: b.executionCheckout }, a.parent);
     }
     return a;
   }

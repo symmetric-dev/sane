@@ -39,7 +39,8 @@ import { acquireInstallation, acquireData, validateOwnershipPaths, type Ownershi
 import { claudeSourceRoot } from "./claude-source";
 import { decodeLog, lastJournalSeq, validCompactRequest, uuid, efforts, type SaneSessionContext, type Session, type Run, type Event, type Metadata, type TerminationUncertainty } from "./history";
 import { projectCompactions } from "./compaction";
-import type { CompactEligibility, CompactRequest, CompactResponse, MessageSnapshot } from "./oc-contract";
+import type { CompactEligibility, CompactRequest, CompactResponse, MessageSnapshot, Harness } from "./oc-contract";
+import type { OpenCodeLaunch } from "./opencode";
 import { OpenCodeAdapter, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeUnavailableError, openCodePermissionAllows, permissionPatternMatches } from "./opencode";
 import { readOpenCodeWorkerContinuation, type OpenCodeWorkerContinuation } from "./opencode-worker-continuation";
 import { OpenCodeRunService } from "./opencode-run-service";
@@ -53,6 +54,7 @@ import { conversationUpdateRoute } from "./conversation-update-routes";
 import { ChromePushService } from "./chrome-push";
 import { isConversationUpdateSource, updateOccurrenceId, updateSourceKey, type ConversationUpdatePage } from "../shared/conversation/conversation-updates";
 import type { RunOwner as Owner } from "./run-owner";
+import { bindRunControls, requestRunCancellation } from "./run-controls";
 import { ConversationCoordinator, type ConversationAdmissionLease, type ConversationOperationIntent, type ConversationReadinessOptions } from "./conversation-coordinator";
 import { sessionListProjection, SessionListReadinessScope, type SessionListProjection } from "./session-list-projection";
 import { sessionDisplayTitle, type SessionListRow } from "./session-list-response";
@@ -109,6 +111,8 @@ import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult, W
 import { validateAppStore, assertSourceConfiguration, atomicAppRecord, atomicNativeHistory, loadAgentProfiles, validateAgentProfiles, AppStoreError, type Admission, type SourceConfiguration } from "./app-store";
 import { genericSessionTitle, legacyProfileId, resolveAssistantProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { AdmissionService } from "./admission";
+import { beginConversationCreation, completeConversationCreation, type NativeConversationCreation } from "./conversation-creation";
+import { claudeConversationCreation, openCodeConversationCreation } from "./native-conversation-creation";
 import { HandoffService, handoffRecipientTitle, nextSlotSessionIndex, projectHandoffEnqueue, projectHandoffStatus, slotSessionIndex } from "./handoff";
 import { DomainError, canonicalSlot, equivalentSlots, normalizeNativeSource, revalidateCheckout, discoverRepository, inspectRepositoryStore } from "sane-core/server";
 import type { Handoff } from "sane-core/contracts";
@@ -482,6 +486,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   });
   science = new ScienceService(catalog, router);
   const admissions = new AdmissionService(options.dataDir, store.admissions, store.sources, catalog, router);
+  function conversationCreation(harness: Harness, cwd: string, launch: () => OpenCodeLaunch): NativeConversationCreation {
+    return dispatchHarness(harness, {
+      "claude-code": () => claudeConversationCreation(),
+      opencode: () => openCodeConversationCreation(oc, cwd, launch),
+    });
+  }
   const scienceChats = new ScienceChatService(new ScienceStore(options.dataDir, store.manifest.storeId), science, catalog, admissions, id => meta.sessions.find(s => s.sessionId === id), async (id, messageId) => {
     const session = meta.sessions.find(s => s.sessionId === id);
     if (!session) return false;
@@ -660,7 +670,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     observationAdmission: owner => {
       if (storageFailed) return { ready: false, code: "storage-unavailable", reason: "Storage unavailable; operator reconciliation required" };
       const run = owner.run, session = meta.sessions.find(s => s.sessionId === run.sessionId), a = admissions.get(run.sessionId);
-      if (startupObservations.get(run.sessionId) !== run || !owner.native || run.status !== "running" || !run.nativeCommandId
+      if (startupObservations.get(run.sessionId) !== run || owner.controls?.source.harnessId !== "opencode" || run.status !== "running" || !run.nativeCommandId
         || !["preparing", "sending", "accepted"].includes(run.nativePhase ?? "") || session?.harness !== "opencode"
         || !session.nativeSessionId || session.authorityId !== nativeSource("opencode") || session.cwd !== run.cwd
         || !a || a.source.descriptor.harness !== "oc" || a.nativeId !== session.nativeSessionId
@@ -696,6 +706,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return result.lease;
   }
   function installOwner(lease: ConversationAdmissionLease, owner: Owner) {
+    bindOwnerControls(owner);
     const result = coordinator.installOwner(lease, owner);
     if (!result.ready) throw new WorkstreamAdapterError(result.code === "capacity" ? 429 : 409, result.code, result.reason);
   }
@@ -790,7 +801,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   const preparationTimingArchive = createSubmissionTimingArchive();
   function readOwnerPreparationTiming(owner: Owner) {
-    try { return copyPreparationTimings(owner.native ? ocRuns.readSubmissionTiming(owner) : claudeRuns.readSubmissionTiming(owner)); }
+    try { return copyPreparationTimings(owner.controls?.readPreparationTiming?.()); }
     catch { return undefined; } // Optional diagnostics never gate lifecycle or HTTP handling.
   }
   function releaseOwner(owner: Owner) {
@@ -951,11 +962,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         predictedTitle = await handoffContextTitle(h, workspaceId);
         const sessionId = h.recipient.sessionId, cwd = h.recipient.checkout.path, harness = toSessionHarness(h.recipient.harness);
         if (sessionId !== selected.recipient.sessionId || !coordinator.holdsAdmission(lease!, sessionId)) throw new WorkstreamAdapterError(409, "recipient-unavailable", "Recipient admission changed");
+        let launch: OpenCodeLaunch | undefined;
+        const native = conversationCreation(harness, cwd, () => launch!);
         let a = admissions.get(sessionId);
         const freshAdmission = !a;
         if (!a) {
           const association = await catalog.register(cwd);
-          a = await admissions.begin({ sessionId, operation: "create", harness: h.recipient.harness, cwd, nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: association.workspaceId, worktreeId: association.worktreeId });
+          a = await beginConversationCreation(admissions, { sessionId, cwd, workspaceId: association.workspaceId, worktreeId: association.worktreeId }, native);
         }
         if (a.source.authorityId !== h.recipient.authorityId || a.binding.executionCheckout !== cwd || a.binding.domain.mode !== "repository" || a.binding.domain.repositoryId !== h.repositoryId) throw new WorkstreamAdapterError(409, "recipient-mismatch", "Reserved recipient binding changed");
         if (closing || storageFailed) throw new WorkstreamAdapterError(503, "recipient-unavailable", "App execution owner unavailable");
@@ -974,24 +987,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (policy && policy.spec.name !== `sane/assistant/${role}`) throw new Error("Reserved execution policy role changed");
         const model = config?.model ?? (policy?.model ? `${policy.model.providerID}/${policy.model.id}` : undefined);
         const effort = config?.effort ?? (!config?.model ? policy?.model?.variant : undefined);
-        let launch = a.state === "intent" && harness === "opencode"
+        launch = a.state === "intent" && harness === "opencode"
           ? config ? { agent: nativeAgent, ...(model ? { model: oc.model(model, effort) } : {}) }
             : await oc.resolveLaunch(cwd, { agent: nativeAgent, model, effort })
           : undefined;
-        if (a.state === "intent") a = await admissions.createNative(sessionId, async () => (await oc.createResolved(cwd, launch!)).id);
-        if (!a.nativeId || a.state === "native_creation_unknown") throw new WorkstreamAdapterError(409, "native_creation_unknown", "Reconcile recipient creation before retry");
-        if (!meta.sessions.some(s => s.sessionId === sessionId)) {
-          if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId, cwd, nativeAgent);
-          meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, title: predictedTitle, titleSource: "handoff", titleRevision: 0, titleAutoEligible: false,
-            ...(config ? { profileId: config.profileId, ...(harness === "claude-code" ? { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}) } : {}) } : {}),
-            ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: !sane.saneExecution || harness !== "opencode", ...sane } : {}),
-            ...(launch?.model ? { model: `${launch.model.providerID}/${launch.model.id}`, ...(launch.model.variant ? { effort: launch.model.variant } : {}) } : {}),
-          });
-          await persist();
-        }
-        await catalog.associate(sessionId, cwd, a.binding.workspaceId, a.binding.worktreeId);
-        await admissions.register(sessionId);
-        if (a.state !== "ready") admissions.ready(sessionId);
+        await completeConversationCreation(admissions, a, native, async a => {
+          if (!meta.sessions.some(s => s.sessionId === sessionId)) {
+            if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId!, cwd, nativeAgent);
+            meta.sessions.push({ sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, title: predictedTitle, titleSource: "handoff", titleRevision: 0, titleAutoEligible: false,
+              ...(config ? { profileId: config.profileId, ...(harness === "claude-code" ? { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}) } : {}) } : {}),
+              ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: !sane.saneExecution || harness !== "opencode", ...sane } : {}),
+              ...(launch?.model ? { model: `${launch.model.providerID}/${launch.model.id}`, ...(launch.model.variant ? { effort: launch.model.variant } : {}) } : {}),
+            });
+            await persist();
+          }
+          await catalog.associate(sessionId, cwd, a.binding.workspaceId, a.binding.worktreeId);
+        });
         replyIntegration?.requestRefresh();
       });
       const session = meta.sessions.find(s => s.sessionId === handoff.recipient.sessionId);
@@ -1134,7 +1145,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     pendingInputWake?.close();
     // Ownership records are the durable sentinel even if every later disk
     // write fails. Reopening requires process exit and explicit reconciliation.
-    for (const owner of owners.values()) if (owner.child) void terminate(owner);
+    for (const owner of owners.values()) {
+      // Original cleanup must not rediscover a transport or cancel remote work.
+      try { void cleanupOwner(owner).catch(() => {}); } catch { /* Retention is already latched. */ }
+    }
   }
   // All failClosed dependencies are initialized here. Earlier proof failures
   // already latched OUTER retention; later ones also fence the actual writer.
@@ -1181,11 +1195,23 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     serial = next.catch(error => { failClosed(error, "serialized-storage-write"); });
     return next;
   }
-  function groupAlive(owner: Owner): boolean {
+  function claudeGroupAlive(owner: Owner): boolean {
     return claudeRuns.groupAlive(owner);
   }
-  function terminate(owner: Owner): Promise<boolean> {
-    return claudeRuns.terminate(owner);
+  function bindOwnerControls(owner: Owner) {
+    const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
+    if (!session) throw new HarnessOperationError("Run owner conversation is unavailable", 409, "owner-harness-mismatch");
+    const source = dispatchSource(session);
+    const controls = dispatchHarness(source.harnessId, {
+      "claude-code": () => claudeRuns.controls(owner),
+      opencode: () => ocRuns.controls(owner),
+    });
+    bindRunControls(owner, source, controls);
+  }
+  function cleanupOwner(owner: Owner): Promise<boolean> {
+    // Cleanup targets original resources even when launch identity has failed.
+    if (!owner.controls) throw new HarnessOperationError("Run owner controls are unavailable", 409, "owner-harness-mismatch");
+    return owner.controls.cleanup();
   }
   function reserveJournalEvent(run: Run, kind: Event["kind"], data: unknown) {
     if (!events.has(run.runId) && deferredJournals.has(run.runId)) journalEvents(run.runId);
@@ -1654,14 +1680,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         await emit(run, "status", { status: "running", operation: "compact", compactionLifecycle: "requested" });
         await persist();
       } catch (error) { owner.settled = true; finished.resolve(); throw error; }
-      void executeCompact(owner, input.instructions).catch(async error => { failClosed(error, "compaction"); await terminate(owner); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
+      void executeCompact(owner, input.instructions).catch(async error => { failClosed(error, "compaction"); await cleanupOwner(owner); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
       return { sessionId: session.sessionId, runId: run.runId, operation: projectCompactions(session, [run], journalEvents(run.runId))[0]! };
     } finally { coordinator.releaseAdmission(lease); }
   }
   function ownedSession(owner: Owner) {
     const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
     if (!session) throw new HarnessOperationError("Run owner conversation is unavailable", 409, "owner-harness-mismatch");
-    return { sessionId: session.sessionId, harness: sessionHarness(session) };
+    return { sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId, nativeSessionId: session.nativeSessionId, cwd: session.cwd };
   }
   async function executeCompact(owner: Owner, instructions?: string) {
     return dispatchOwnedOperation(ownedSession(owner), owner, "compact", {
@@ -1748,7 +1774,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     settlementEvidence: (owner, source) => {
       const session = meta.sessions.find(s => s.sessionId === source.sessionId);
       return { childPresent: !!owner.child && !!session && sameDispatchSource(source, dispatchSource(session)),
-        exitCode: owner.child?.exitCode ?? null, groupAlive: !!owner.child && groupAlive(owner), streamsDrained: owner.streamsDrained === true };
+        exitCode: owner.child?.exitCode ?? null, groupAlive: !!owner.child && claudeGroupAlive(owner), streamsDrained: owner.streamsDrained === true };
     },
   }));
   dispatchRegistry.register(createOpenCodeDispatchAdapter({
@@ -1876,7 +1902,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         // not a storage failure. Partial publication still retains ownership.
         // After-release source errors are still post-publication failures.
         if (published || coordinator.hasOwner(run.sessionId) || !(error instanceof UserInputPreparationError || error instanceof WorkstreamAdapterError)) failClosed();
-      }, terminate,
+      }, terminate: cleanupOwner,
       guards: owner => ({ settled: owner.settled, released: !coordinator.owns(owner), status: owner.run.status,
         cancelling: !!owner.cancelling, stopRequested: !!owner.stopRequested, stopping: !!owner.stopping,
         closing, storageFailed, reconciliationRequired: !!meta.reconciliationRequired || retainOwner }),
@@ -2091,20 +2117,23 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         ? structuredClone({ saneContext: prepared.configuration.saneContext, saneExecution: prepared.configuration.saneExecution }) : saneSessionContext({ kind: "assistant", role: input.agent! })) : {});
       if (prepared.configuration.saneExecution && (sane.saneExecution?.revision !== prepared.configuration.saneExecution.revision || sane.saneContext?.package?.revision !== prepared.configuration.saneContext?.package?.revision)) throw new Error("Prepared activation differs from its durable reservation");
       assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
-      await admissions.begin({ sessionId: conversationId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd,
-        nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: association.workspaceId, worktreeId: association.worktreeId });
+      const native = conversationCreation(harness, cwd, () => { assertLease(); return prepared.nativeLaunch!; });
+      const admission = await beginConversationCreation(admissions, { sessionId: conversationId, cwd,
+        workspaceId: association.workspaceId, worktreeId: association.worktreeId }, native);
       assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
-      if (harness === "opencode") await admissions.createNative(conversationId, async () => { assertLease(); return (await oc.createResolved(cwd, prepared.nativeLaunch!)).id; });
-      const a = admissions.get(conversationId)!;
-      assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
-      session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
-        title: genericSessionTitle({ agent: input.agent, agentKind: input.agent ? "assistant" : undefined }), titleSource: "fallback", titleRevision: 0, titleAutoEligible: true,
-        ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}),
-        ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: !sane.saneExecution || harness !== "opencode", ...sane } : {}),
-        ...(prepared.selectedProfile ? { profileId: prepared.selectedProfile.id } : {}) };
-      createdSnapshot = structuredClone(session);
-      meta.sessions.push(session); await persist();
-      await admissions.register(conversationId); admissions.ready(conversationId); replyIntegration?.requestRefresh();
+      const created = await completeConversationCreation(admissions, admission, native, async a => {
+        assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
+        const createdSession: Session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
+          title: genericSessionTitle({ agent: input.agent, agentKind: input.agent ? "assistant" : undefined }), titleSource: "fallback", titleRevision: 0, titleAutoEligible: true,
+          ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}),
+          ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: !sane.saneExecution || harness !== "opencode", ...sane } : {}),
+          ...(prepared.selectedProfile ? { profileId: prepared.selectedProfile.id } : {}) };
+        createdSnapshot = structuredClone(createdSession);
+        meta.sessions.push(createdSession); await persist();
+        return createdSession;
+      });
+      session = created.value;
+      replyIntegration?.requestRefresh();
     }
     let nativeDelivery: "queue" | undefined;
     if (nativeHandoff) {
@@ -2768,14 +2797,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (policy && policy.spec.name !== `sane/${w.launch.identity?.kind}/${w.launch.identity?.role}`) throw new Error("Reserved worker execution policy role changed");
         let nativeLaunch = harness === "opencode" ? await oc.resolveLaunch(w.checkout, { agent: policy ? "build" : w.launch.agent, model: w.launch.model ?? (policy?.model ? `${policy.model.providerID}/${policy.model.id}` : undefined), effort: w.launch.effort ?? (!w.launch.model ? policy?.model?.variant : undefined) }) : undefined;
         if (harness === "claude-code" && !policy) await claudeAgentSettings(claudeRoot, w.launch.identity!);
-        let a = await admissions.begin({ sessionId: w.sessionId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd: w.checkout, nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: parentAdmission.binding.workspaceId, worktreeId: parentAdmission.binding.worktreeId, parent: w.parent.native });
-        if (harness === "opencode") a = await admissions.createNative(w.sessionId, async () => (await oc.createResolved(w.checkout, nativeLaunch!)).id);
-        const launch = { ...w.launch, ...(nativeLaunch?.model ? { model: `${nativeLaunch.model.providerID}/${nativeLaunch.model.id}`, effort: nativeLaunch.model.variant } : {}) };
-        const session: Session = { sessionId: w.sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd: w.checkout, lastStatus: "unknown", lastRunId: null, ...agentLaunchSnapshot(launch), ...pinnedContext, ...(pinnedContext.saneExecution ? { nativeAgentSelected: harness !== "opencode" } : {}), title: genericSessionTitle({ agent: w.input.worker, agentKind: "worker" }), titleSource: "fallback", titleRevision: 0, titleAutoEligible: false };
-        workerStore.update(w.id, { launch, child: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! } });
-        meta.sessions.push(session); await persist();
-        await catalog.associate(w.sessionId, w.checkout, a.binding.workspaceId, a.binding.worktreeId);
-        await admissions.register(w.sessionId); admissions.ready(w.sessionId);
+        const native = conversationCreation(harness, w.checkout, () => nativeLaunch!);
+        const admission = await beginConversationCreation(admissions, { sessionId: w.sessionId, cwd: w.checkout,
+          workspaceId: parentAdmission.binding.workspaceId, worktreeId: parentAdmission.binding.worktreeId, parent: w.parent.native }, native);
+        const { admission: a, value: session } = await completeConversationCreation(admissions, admission, native, async a => {
+          const launch = { ...w.launch, ...(nativeLaunch?.model ? { model: `${nativeLaunch.model.providerID}/${nativeLaunch.model.id}`, effort: nativeLaunch.model.variant } : {}) };
+          const session: Session = { sessionId: w.sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd: w.checkout, lastStatus: "unknown", lastRunId: null, ...agentLaunchSnapshot(launch), ...pinnedContext, ...(pinnedContext.saneExecution ? { nativeAgentSelected: harness !== "opencode" } : {}), title: genericSessionTitle({ agent: w.input.worker, agentKind: "worker" }), titleSource: "fallback", titleRevision: 0, titleAutoEligible: false };
+          workerStore.update(w.id, { launch, child: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! } });
+          meta.sessions.push(session); await persist();
+          await catalog.associate(w.sessionId, w.checkout, a.binding.workspaceId, a.binding.worktreeId);
+          return session;
+        });
         replyIntegration?.requestRefresh();
         if (closing || storageFailed || meta.reconciliationRequired) throw new Error("App unavailable before worker submission; launch remains reserved");
         if (workerStore.get(w.id)!.cancelRequestedAt) {
@@ -3120,23 +3152,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
 
   async function cancelOwner(owner: Owner) {
     requireOwnedOperation(ownedSession(owner), owner, "cancelOwnedRun");
-    if (!owner.cancel) {
-      owner.cancelling = true; owner.stopRequested = true;
-      owner.cancel = (async () => {
-        if (owner.run.status !== "running") return { interrupted: false };
-        await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence" });
-        if (owner.native) return ocRuns.interrupt(owner);
-        return { interrupted: await terminate(owner) };
-      })().finally(() => {
-        // Native interruption acknowledges one execution, not future restart
-        // continuations. Coalesce only in-flight requests; an explicit later
-        // Stop must be able to interrupt the still-owned native run again.
-        if (owner.native) owner.cancel = undefined;
-        owner.cancelling = false; releaseOwner(owner);
-      });
-    }
-    const attempt = owner.cancel;
-    try { return await attempt; } catch (e) { if (owner.cancel === attempt) owner.cancel = undefined; throw e; }
+    return requestRunCancellation(owner, "worker", {
+      emitStopping: () => emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence" }),
+      isCurrent: () => owners.get(owner.run.sessionId) === owner,
+      release: releaseOwner,
+    });
   }
   const handoffProblems = new Map<string, string>();
   /** Only actual synchronous writers use this fence; read/native proof failures
@@ -3566,7 +3586,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     nativeReadiness: pinnedNativeReadiness,
     terminalSnapshot: (source, commandId) => readOnlyDispatchProof(() => oc.snapshot(source.nativeSessionId!, commandId, source.cwd)),
     readPendingCancellation: owner => ocRuns.readPendingCancellation(owner),
-    groupAlive, readLocalSettlement: owner => claudeRuns.readLocalSettlement(owner), currentAppIdle: queueCurrentAppIdle, failClosed,
+    groupAlive: claudeGroupAlive, readLocalSettlement: owner => claudeRuns.readLocalSettlement(owner), currentAppIdle: queueCurrentAppIdle, failClosed,
     // Resolve the existing supervised admission when the scheduler polls,
     // after startup constructs it; do not capture an uninitialized service.
     admit: async (prepared, lease, input) => {
@@ -4800,30 +4820,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (!owner) return json({ interrupted: false, status: session.lastStatus,
             ...(recoveredInputConversations.has(session.sessionId) ? { code: "pending-input-reconciliation-required", reconciliationRequired: true } : {}),
             reason: "No active App-owned run; external execution must be stopped in its native harness" });
-          if (!owner.cancel) {
-          owner.cancelling = true;
-          owner.cancel = (async () => {
-            owner.stopRequested = true;
-            if (owner.run.status === "running") await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence",
-              ...(worker && isExplicitWorker(worker) ? { workerRunStopped: true } : {}) });
-            if (owners.get(session.sessionId) !== owner || owner.run.status !== "running") return { interrupted: false };
-            if (owner.native) return ocRuns.interruptCurrent(owner);
-            const stopped = await terminate(owner);
-            return { interrupted: stopped };
-          })().finally(() => {
-            // A native restart can resume execution after this acknowledgement.
-            // Keep ownership until terminal evidence, but do not cache a settled
-            // interrupt forever. Concurrent Stops still share this attempt.
-            if (owner.native) owner.cancel = undefined;
-            owner.cancelling = false; releaseOwner(owner);
-          });
-          }
-          const attempt = owner.cancel;
-          try { return json(await attempt); }
+          try { return json(await requestRunCancellation(owner, "user", {
+            emitStopping: () => emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence",
+              ...(worker && isExplicitWorker(worker) ? { workerRunStopped: true } : {}) }),
+            isCurrent: () => owners.get(session.sessionId) === owner,
+            release: releaseOwner,
+          })); }
           catch (error) {
             // An explicit retry is allowed after an ambiguous network failure;
             // concurrent requests still share the same in-flight attempt.
-            if (owner.cancel === attempt) owner.cancel = undefined;
             if (owner.run.status === "running") await emit(owner.run, "status", { status: "running", connection: "unconfirmed", reason: "Stop acknowledgement unavailable; execution state remains unconfirmed" });
             throw error;
           }
@@ -4899,7 +4904,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await workers.drainLaunches();
     await terminals.close();
     await Promise.all([...owners.values()].map(async owner => {
-      if (!owner.native && owner.child && !await terminate(owner)) retainOwner = true;
+      if (!await cleanupOwner(owner)) retainOwner = true;
       await Promise.all([owner.done, owner.submission?.catch(() => {}), owner.cancel?.catch(() => {})]);
     }));
     await Promise.all([...dispatchTasks, ...attachmentTasks, ...handoffDispatches.values(), workerOutboxTask, handoffTask, nativeSubagentRecorder.drain()]);
@@ -5113,6 +5118,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const descriptor = requireOperation(sessionHarness(meta.sessions.find(s => s.sessionId === recovering.sessionId)!), "recoverRun");
     const finished = Promise.withResolvers<void>();
     const owner: Owner = { run: recovering, native: descriptor.nativeHarness === "oc", done: finished.promise, settled: false };
+    bindOwnerControls(owner);
     const adoption = coordinator.adoptObservedOwner(owner);
     startupObservations.delete(recovering.sessionId);
     if (!adoption.ready) throw new WorkstreamAdapterError(409, adoption.code, adoption.reason);
@@ -5272,19 +5278,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!attachmentsDrained) failClosed();
     }
     await Promise.all([...owners.values()].map(async owner => {
-    if (owner.native) {
-      // Let any outstanding bounded HTTP request finish before releasing local
-      // storage ownership. This waits for the adapter, never for native work.
-       const detached = await Promise.race([Promise.all([owner.done, owner.cancel?.catch(() => {})]).then(() => true), Bun.sleep(12000).then(() => false)]);
-      if (!detached) retainOwner = true;
-    }
-    if (owner && !owner.native) {
-      // execute checks closing after every prelaunch await; no future spawn is
-      // possible even if preparation outlives this bounded shutdown.
-      if (owner.child) await terminate(owner);
-      const done = await Promise.race([owner.done.then(() => true), Bun.sleep(3000).then(() => false)]);
-      if (!done || (owner.child && groupAlive(owner))) { retainOwner = true; meta.reconciliationRequired = true; }
-    }
+      if (!owner.controls) throw new HarnessOperationError("Run owner controls are unavailable", 409, "owner-harness-mismatch");
+      const outcome = await owner.controls.shutdown();
+      if (!outcome.drained) retainOwner = true;
+      if (outcome.reconciliationRequired) meta.reconciliationRequired = true;
     }));
     // Owner release and source reconciliation are separate boundaries. A report
     // can be released while its journal/domain reconciliation is still awaited.

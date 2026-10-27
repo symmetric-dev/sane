@@ -1,6 +1,7 @@
 import type { Event, Run, Session, Status } from "./history";
 import { OpenCodeCommandProtocolError, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeQueuedHandoffProtocolError, OpenCodeUnavailableError, isQueuedHandoffAdmission, normalizeMessage, prepareOpenCodePrompt, type NativeCommandObservation, type NativeCommandSnapshot, type OpenCodeAdapter, type OpenCodePreparedPrompt, type OpenCodePromptPacket } from "./opencode";
 import type { RunOwner } from "./run-owner";
+import type { RunControlOperations } from "./run-controls";
 import type { ExecutionContext } from "./workstreams";
 import { snapshotIdentity } from "./agent-launch";
 import { nativeAgentId } from "sane-core/agent-catalog";
@@ -84,6 +85,23 @@ export class OpenCodeRunService {
   constructor(private readonly deps: OpenCodeRunDependencies) {}
   readSubmissionTiming(owner: RunOwner): Readonly<{ initial?: RunSubmissionTimingSnapshot }> | undefined {
     return this.submissionTimings.get(owner);
+  }
+  /** Local detach drains requests only; remote work is never stopped here. */
+  controls(owner: RunOwner): RunControlOperations {
+    const done = owner.done;
+    return {
+      cancellation: "in-flight",
+      interrupt: mode => mode === "worker" ? this.interrupt(owner) : this.interruptCurrent(owner),
+      cleanup: () => Promise.resolve(true),
+      shutdown: async () => {
+        const drained = await Promise.race([
+          Promise.all([done, owner.cancel?.catch(() => {})]).then(() => true),
+          this.deps.sleep(12000).then(() => false),
+        ]);
+        return { drained, reconciliationRequired: false };
+      },
+      readPreparationTiming: () => this.readSubmissionTiming(owner),
+    };
   }
   private retainSubmissionTiming(owner: RunOwner, timing: ReturnType<typeof createRunSubmissionTiming>): void {
     try { this.submissionTimings.set(owner, Object.freeze({ initial: timing.snapshot() })); }
@@ -751,7 +769,7 @@ export class OpenCodeRunService {
     return this.interruptSubmission(owner, true, true);
   }
   private async interruptSubmission(owner: RunOwner, withheld: boolean, checkOwner: boolean): Promise<{ interrupted: boolean }> {
-    const run = owner.run, queued = run.nativeDelivery === "queue";
+    const run = owner.run, queued = run.nativeDelivery === "queue", controls = owner.controls;
     let pins: HandoffPins | undefined;
     try { pins = this.assertHandoff(owner); } catch { return { interrupted: false }; }
     const sessionId = pins?.sessionId ?? run.sessionId, session = this.deps.session(sessionId);
@@ -809,6 +827,24 @@ export class OpenCodeRunService {
       }
       return { interrupted: false };
     }
-    return this.deps.oc.cancel(this.deps.session(owner.run.sessionId).nativeSessionId!);
+    // Bound cancellation must not rediscover a replacement native session after
+    // submission or endpoint discovery. Legacy unbound callers retain their
+    // existing acknowledgement/current-owner rules without a new proof gate.
+    if (!controls) return this.deps.oc.cancel(nativeSessionId);
+    const beforeCancel = () => {
+      controls.assertIdentity(owner);
+      if (checkOwner && this.deps.currentOwner(sessionId) !== owner || run.status !== "running") {
+        throw new OpenCodeSourceMismatchError("Native cancellation withheld after ownership changed");
+      }
+      const source = controls.source, current = this.deps.session(source.sessionId);
+      if (owner.controls !== controls || owner.run !== run || source.harnessId !== "opencode"
+        || source.sessionId !== sessionId || source.nativeSessionId !== nativeSessionId || source.cwd !== cwd
+        || !current || current.sessionId !== source.sessionId || current.harness !== source.harnessId
+        || (current.authorityId ?? null) !== source.authorityId || current.nativeSessionId !== source.nativeSessionId || current.cwd !== source.cwd) {
+        throw new OpenCodeSourceMismatchError("Native cancellation withheld after original control source changed");
+      }
+    };
+    beforeCancel();
+    return this.deps.oc.cancel(nativeSessionId, beforeCancel);
   }
 }

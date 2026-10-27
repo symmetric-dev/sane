@@ -68,7 +68,7 @@ export const PLUGIN_SRC_FILES: readonly string[] = ["cli-arguments.ts", "native-
  * runtime closure here; it must not import App persistence or service modules. */
 export const PLUGIN_APP_SHARED_FILES: readonly string[] = ["user-questions-contract.ts"]
 
-export const PLUGIN_CORE_SRC_FILES: readonly string[] = ["agent-catalog.ts", "artifact-lock.ts", "bootstrap-registry.ts", "bootstrap-validation.ts", "confined-lifecycle-filesystem.ts", "contracts.ts", "document-catalog.ts", "errors.ts", "execution-report-validation.ts", "handoff.ts", "job-policy.ts", "lifecycle-filesystem.ts", "lifecycle.ts", "native-source.ts", "provision.ts", "repository.ts", "repository-reader.ts", "repository-reader-worker.ts", "schema.ts", "schema-upgrade.ts", "server.ts", "slots.ts", "validation.ts", "workstream-type.ts"]
+export const PLUGIN_CORE_SRC_FILES: readonly string[] = ["agent-catalog.ts", "artifact-lock.ts", "bootstrap-registry.ts", "bootstrap-validation.ts", "confined-lifecycle-filesystem.ts", "contracts.ts", "document-catalog.ts", "errors.ts", "execution-report-validation.ts", "handoff.ts", "job-policy.ts", "lifecycle-filesystem.ts", "lifecycle.ts", "native-source-contract.ts", "native-source.ts", "provision.ts", "repository.ts", "repository-reader.ts", "repository-reader-worker.ts", "schema.ts", "schema-upgrade.ts", "server.ts", "slots.ts", "validation.ts", "workstream-type.ts"]
 
 export const PLUGIN_FILENAMES = [
   "sane/index.ts",
