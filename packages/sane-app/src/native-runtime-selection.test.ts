@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { installSaneAgentContextPackages, PLUGIN_CORE_SRC_FILES, PLUGIN_FILENAMES, proveInstalledExplicitWorkerRuntime, type SelectedNativeRuntime } from "../../sane-cli/src/install-sane-agent-context-packages";
+import { installSaneAgentContextPackages, PLUGIN_CORE_SRC_FILES, PLUGIN_SRC_FILES, PLUGIN_FILENAMES, proveInstalledExplicitWorkerRuntime, type SelectedNativeRuntime } from "../../sane-cli/src/install-sane-agent-context-packages";
 import { resolveAppConfig } from "./app-config";
 import { OpenCodeAdapter } from "./opencode";
 
@@ -19,6 +19,14 @@ async function fixture() {
     const value = JSON.parse(readFileSync(path, "utf8")); update(value); writeFileSync(path, JSON.stringify(value));
   } };
 }
+test("installer closure keeps the source contract and the OpenCode browser caller", () => {
+  expect(PLUGIN_CORE_SRC_FILES.filter(file => file === "native-source-contract.ts")).toHaveLength(1);
+  expect(PLUGIN_SRC_FILES.filter(file => file === "native-browser.ts")).toHaveLength(1);
+  expect(PLUGIN_FILENAMES).toContain("sane/runtime/packages/sane-cli/src/native-browser.ts");
+  expect(PLUGIN_FILENAMES).toContain("sane/runtime/packages/sane-core/src/native-source-contract.ts");
+  expect(PLUGIN_CORE_SRC_FILES).toContain("markdown-document-validation.ts");
+  expect(PLUGIN_CORE_SRC_FILES).toContain("planning-document-validation.ts");
+});
 test("vendored native source normalization includes its new contract dependency", async () => {
   const f = await fixture(), filename = "native-source-contract.ts";
   expect(PLUGIN_CORE_SRC_FILES.filter(file => file === filename)).toHaveLength(1);

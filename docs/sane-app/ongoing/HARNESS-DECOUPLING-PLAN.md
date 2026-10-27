@@ -1,45 +1,108 @@
 # Harness decoupling and Grok integration
 
-Status: Phases 1–3 implemented and focused-offline-verified in
-`experiment/user-context-delivery`; Grok remains unimplemented.
-Baseline: `ecfffc6`, after the shared-context, submission, receipt and cleanup work.
+Status: Phases 1–3 remain implemented. Local main `6d5d9f0` is merged as
+`bdafad7` and the incoming browser/notebook/verification integrations are
+adapted to the existing boundaries. Grok remains unimplemented.
+Baseline: `bdafad7`, after checkpoint `7a3f25a` and the local-main integration.
 
 **Near scope: targeted decoupling, then Grok integration. Gemini follows Grok
 and still requires research.** This is not a claim that either new harness is
 production-ready, or authorization to run native trials, install runtimes,
 migrate stores or change running services.
 
-## Current priority — reconcile newer main before Grok
+## Current priority — Grok contract after main reconciliation
 
-Priority updated 2026-10-27: bring the newer integrations from the local `main`
-checkout into this branch, then review/adapt their consequential harness coupling
-before starting the Grok contract and adapter work below.
+Reconciled 2026-10-27. Local `main` `6d5d9f0` (`marimo fixes`, five commits after
+merge-base `dd87753`) is merged into `experiment/user-context-delivery` as
+`bdafad7`. The main checkout `/Users/beto/sane` was not fetched, reset, or
+modified. This remains a local-main observation, not a remote freshness claim.
 
-1. Checkpoint the completed decoupling, tests and plan before merging. This
-   checkpoint includes the plan itself so the decisions are preserved in branch
-   history, not merely present in the worktree.
-2. Merge the committed local `main` tip, resolving conflicts without discarding
-   either branch's integrations or the selective-context/submission safeguards.
-   At inspection, `/Users/beto/sane` was clean at `6d5d9f0` (five main-only commits).
-   This is a local-main observation, not a remote-fetch freshness claim.
-3. Review the incoming browser/resource-pairing, notebook and worker-verification
-   changes against the existing source, admission, dispatch, owner-control and
-   caller-authorization boundaries. Adapt actual CC/OC assumptions where needed;
-   do not erase native-specific protocols or create a universal harness framework.
-4. With focused verification authorized for the affected integration paths, record
-   the reconciled baseline and remaining gaps before resuming Grok work.
+The next concrete Grok step is the bounded source/evidence contract and explicit
+storage-extension review below. Do not start the Base adapter, enable a profile,
+or implement the proposed source-record v2 / repository schema v6 during that
+review. Native trials, migrations, provisioning and service changes retain their
+separate authorization gates.
 
-Incoming changes overlap checkpointed work in `bridge.ts`, `claude-run-service.ts`,
-the context-package installer and this directory's index. Preserve the distinct
-local-process/remote-observer behavior, exact input/source binding, immutable
-receipts, native caller provenance and no replay during reconciliation. Browser
-pairing metadata must not become browser-control authority or imply Grok support.
+### Reconciliation
 
-This checkpoint captures Phases 1–3, their focused tests and this merge-first plan.
-No merge has been performed; merge work awaits separate user confirmation.
-Grok source/storage choices remain proposals, not implemented extensions. Native
-trials, migrations, provisioning and service changes retain their separate
-authorization gates.
+Conflicts were only in `bridge.ts`, `claude-run-service.ts`, and
+`install-sane-agent-context-packages.ts`. Auto-merged overlap in the ongoing
+index, App README, `app.tsx`, `browser-pair-dialog.tsx`, and frontend `store.ts`
+kept both the admission-recovery ledger and main's group page size plus
+checkout-preserving navigation.
+
+Resolutions that matter:
+
+- Claude launch stays on experiment `setupLaunch`. Main's pre-extraction spawn
+  path was not restored. Browser MCP is a Claude `--mcp-config` argument after
+  the source pin, and only for an explicit `claude-code` non-worker, non-compact
+  launch. Tool names are appended only to the synthetic Base allow list. Pinned
+  canonical permissions stay unchanged.
+- The installer copy list is the union: `native-source-contract.ts` remains, and
+  `native-browser.ts` plus main's validation/context modules are added. The
+  selected-runtime proof still refuses a global fallback.
+- App admission, owner controls, conversation creation, and the extracted
+  terminal/workspace routes stay. Host browser routes were inserted beside them.
+  Terminal upgrades carry `{ kind: "terminal" }` so the shared socket dispatcher
+  does not treat them as browser sockets.
+- First-submission naming uses `submitted(user text)` after the journal commit,
+  including the context-paired submission path. It does not reconstruct a
+  transcript or run inside the journal queue. Science still refuses historical
+  version-2 replay; naming text is the version-3 user body.
+- Skill, procedure, template, notebook-preview, and validation changes came in
+  as committed. They were not redesigned.
+
+Incoming integrations adapted to existing boundaries:
+
+- Grant admission, resource-link discovery, and the OpenCode `/native/browser`
+  resolver use `validateHarness` / `toNativeHarness` / `toSessionHarness`. They
+  do not treat an unknown harness as the other one. Historical pair-metadata
+  omission still uses the existing `sessionHarness` default and does not mint
+  grants.
+- A host handoff token without a caller is `403 browser-session-unverified`,
+  including when exactly one Control grant exists. Session credentials and
+  qualified OpenCode callers remain the two transports. Pair writes do not call
+  `setGrant`.
+- The shared handoff bearer is published only as `native-handoff.json`. The
+  extra `browser-mcp.json` copy of that token was not kept. Per-run
+  `${runId}.browser-mcp.json` is the Claude stdio config, not that bearer.
+- Browser pairing remains metadata. Chromium shutdown stays on the browser
+  service, not on conversation Stop or OpenCode interrupt.
+
+### Verification of `bdafad7` plus these focused tests
+
+Not evidence from the pre-merge checkpoint. Focused offline run: **65 tests,
+316 assertions, four files, zero failures**. Files:
+`browser-broker-auth.test.ts`, `claude-run-service-context.test.ts`,
+`native-runtime-selection.test.ts`, `session-naming-submission.test.ts`.
+The runtime-selection file still installs the vendored closure in a temp
+directory and refuses global fallback. No bridge boot, Chromium, native CLI,
+or full suite.
+
+App `tsc --noEmit` adds no diagnostic from this integration. It still reports
+the two existing `user-questions-service.ts:26` TS2739 errors and one
+pre-existing `workstreams.test-utils.tsx:13` TS2353 (`approvals`), present on
+both parents and not introduced here. This is not a clean full-App typecheck
+or native acceptance.
+
+### Remaining gaps
+
+- Grant and broker identity checks are not booted-bridge or HTTP tests. The
+  broker test plants an in-memory grant and does not start Chromium, so a
+  successful qualified-caller tool result is unproven.
+- Canonical Claude launches may still receive `--mcp-config` under the existing
+  `bypassPermissions` argv. The grant, not the allow list, is the control
+  boundary. A role session with a grant can use host browser tools; that is
+  main's eligibility, not a new permission engine.
+- Pair-metadata identity still defaults an omitted historical harness through
+  `sessionHarness`. That default is not used to issue credentials or grants.
+- Pre-existing binary harness comparisons outside this integration, including
+  code-share and branch admission, were not swept.
+- In-progress Job Specs that still use the old Boundaries/Verification sections
+  fail planning validation. Completed specs stay on placeholder checks. File
+  bytes are not rewritten.
+- Grok source/evidence/storage, authentication, policy, and delivery remain
+  separate gates. Browser pairing does not imply Grok support.
 
 ## Goal
 

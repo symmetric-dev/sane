@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import { ClaudeRunService, hookEvents, type ClaudeRunDependencies, type ClaudeRunRuntime } from "./claude-run-service";
 import { composeContextMessage } from "./context-message";
@@ -311,5 +312,57 @@ describe("Claude owned user-role context transport", () => {
       messageId: f.submissions[index]!.messageId, text: JSON.parse(f.writes[index]!).message.content });
     f.session.nativeSessionId = "foreign-source";
     for (const read of f.actualReaders) expect(read).toThrow();
+  });
+
+  test("Claude browser MCP is a launch argument and does not widen pinned permissions", async () => {
+    const mcp = { mcpConfigPath: "/synthetic/data/run.browser-mcp.json", allowedTools: ["mcp__sane-browser__browser_status"] };
+    const calls: string[] = [];
+    const base = fixture();
+    base.deps.browserMcp = async (sessionId, runId) => { calls.push(`${sessionId}:${runId}`); return mcp; };
+    await base.service.execute(base.owner, "ordinary", true, () => {});
+    expect(base.run.status).toBe("completed");
+    expect(calls).toEqual([`${base.run.sessionId}:${runId}`]);
+    expect(base.args).toContain("--mcp-config");
+    expect(base.args[base.args.indexOf("--mcp-config") + 1]).toBe(mcp.mcpConfigPath);
+    const baseSettings = JSON.parse(base.settings[0]!);
+    expect(baseSettings.permissions.allow).toEqual(["mcp__sane__sane_worker_message", ...mcp.allowedTools]);
+    const launch = base.events.find(event => event.kind === "launch")?.data as { settings: { sha256: string } };
+    expect(launch.settings.sha256).toBe(createHash("sha256").update(base.settings[0]!).digest("hex"));
+
+    const canonical = fixture();
+    canonical.run.agent = "engineering"; canonical.run.agentKind = "assistant";
+    const policy = parseCanonicalAgentOperations("---\ndescription: Synthetic\nmode: primary\npermission:\n  shell: deny\n---\nROLE\n", "sane/assistant/engineering");
+    canonical.deps.canonicalExecution = async () => ({ schema: 1, revision: "a".repeat(64), policy, children: [] });
+    canonical.deps.browserMcp = async () => mcp;
+    await canonical.service.execute(canonical.owner, "ordinary", true, () => {});
+    expect(canonical.spawns).toBe(1);
+    expect(canonical.args).toContain("--mcp-config");
+    const pinned = JSON.parse(canonical.settings[0]!).permissions;
+    expect(pinned.allow ?? []).not.toEqual(expect.arrayContaining(mcp.allowedTools));
+    expect(JSON.stringify(pinned)).not.toContain("sane-browser");
+
+    const worker = fixture();
+    worker.session.agentKind = "worker";
+    let workerCalls = 0;
+    worker.deps.browserMcp = async () => { workerCalls++; return mcp; };
+    await worker.service.execute(worker.owner, "ordinary", true, () => {});
+    expect(workerCalls).toBe(0);
+    expect(worker.args).not.toContain("--mcp-config");
+
+    const compact = fixture();
+    compact.run.operation = "compact";
+    let compactCalls = 0;
+    compact.deps.browserMcp = async () => { compactCalls++; return mcp; };
+    await compact.service.execute(compact.owner, "/compact preserve decisions", true, () => {});
+    expect(compactCalls).toBe(0);
+    expect(compact.args).not.toContain("--mcp-config");
+
+    const omitted = fixture();
+    delete omitted.session.harness;
+    let omittedCalls = 0;
+    omitted.deps.browserMcp = async () => { omittedCalls++; return mcp; };
+    await omitted.service.execute(omitted.owner, "ordinary", true, () => {});
+    expect(omittedCalls).toBe(0);
+    expect(omitted.args).not.toContain("--mcp-config");
   });
 });
