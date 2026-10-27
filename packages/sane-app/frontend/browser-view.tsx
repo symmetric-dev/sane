@@ -21,7 +21,7 @@ export function BrowserProvider({ workspaceId, children }: { workspaceId: string
   return <BrowserContext.Provider value={{ workspaceId, state, reloads, reload }}>{children}</BrowserContext.Provider>;
 }
 
-/** Render above BrowserHeader inside the shell's browser top region, not in BrowserView. */
+/** Render alongside BrowserHeader in the shell's single browser toolbar. */
 export function BrowserTabStrip({ onSelect }: { onSelect?: () => void }) {
   const { workspaceId, state } = useBrowser();
   const atLimit = state.tabs.length >= MAX_BROWSER_TABS;
@@ -33,11 +33,11 @@ export function BrowserTabStrip({ onSelect }: { onSelect?: () => void }) {
       <button type="button" className="browser-new-tab" aria-label={newTabLabel} title={newTabLabel} disabled={!workspaceId || atLimit} onClick={() => {
         if (workspaceId) browserTabs.add(workspaceId);
         onSelect?.();
-      }}><FiPlus size={16} aria-hidden="true" /><span className="browser-tab-action-label">New tab</span></button>
+      }}><FiPlus size={16} aria-hidden="true" /></button>
       <button type="button" className="browser-layout-toggle" aria-label={layoutLabel} title={layoutLabel} aria-pressed={state.showAll} disabled={!workspaceId || state.tabs.length < 2} onClick={() => {
         if (workspaceId) browserTabs.update(workspaceId, current => ({ ...current, showAll: !current.showAll }));
         onSelect?.();
-      }}><FiGrid size={16} aria-hidden="true" /><span className="browser-tab-action-label">{layoutLabel}</span></button>
+      }}><FiGrid size={16} aria-hidden="true" /></button>
       <small className="browser-tab-count" aria-label={`${state.tabs.length} of ${MAX_BROWSER_TABS} browser tabs open`} title={atLimit ? newTabLabel : `Up to ${MAX_BROWSER_TABS} tabs`}>{state.tabs.length} / {MAX_BROWSER_TABS}</small>
     </div>
     {atLimit && <span className="sr-only" role="status">Close a tab to open another.</span>}
@@ -48,6 +48,9 @@ function BrowserTabList({ orientation, onSelect }: { orientation: "horizontal" |
   const { workspaceId, state } = useBrowser();
   const list = useRef<HTMLDivElement>(null);
   const restoreFocus = useRef<string | null>(null);
+  const [renaming, setRenaming] = useState<{ workspaceId: string; tabId: string } | null>(null);
+  const renameTab = renaming?.workspaceId === workspaceId ? state.tabs.find(tab => tab.id === renaming.tabId) : undefined;
+  useEffect(() => { setRenaming(null); }, [workspaceId]);
   useLayoutEffect(() => {
     if (!restoreFocus.current) return;
     const focusWorkspace = restoreFocus.current;
@@ -59,13 +62,18 @@ function BrowserTabList({ orientation, onSelect }: { orientation: "horizontal" |
   useEffect(() => {
     list.current?.querySelector<HTMLButtonElement>(`[data-browser-tab="${state.activeId}"]`)?.parentElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [workspaceId, state.activeId, state.tabs]);
-  return <div ref={list} className="browser-tab-list" role="tablist" aria-label="Open browser tabs" aria-orientation={orientation}>{state.tabs.map((tab, index) => {
+  return <><div ref={list} className="browser-tab-list" role="tablist" aria-label="Open browser tabs" aria-orientation={orientation}>{state.tabs.map((tab, index) => {
     const label = browserTabLabel(tab, index);
     const previousKey = orientation === "horizontal" ? "ArrowLeft" : "ArrowUp";
     const nextKey = orientation === "horizontal" ? "ArrowRight" : "ArrowDown";
     return <div className={`browser-tab-row${state.activeId === tab.id ? " selected" : ""}`} role="presentation" key={tab.id}>
-      <button type="button" role="tab" aria-selected={state.activeId === tab.id} aria-controls={`browser-panel-${tab.id}`} title={tab.url || label} onClick={() => {
-        if (workspaceId) browserTabs.update(workspaceId, current => ({ ...current, activeId: tab.id }));
+      <button type="button" role="tab" aria-selected={state.activeId === tab.id} aria-controls={`browser-panel-${tab.id}`} aria-description={state.activeId === tab.id ? "Tap or click to rename this tab." : undefined} aria-haspopup={state.activeId === tab.id ? "dialog" : undefined} title={`${tab.url || label}${state.activeId === tab.id ? "\nTap or click to rename tab" : ""}`} onClick={() => {
+        if (!workspaceId) return;
+        if (state.activeId === tab.id) {
+          setRenaming({ workspaceId, tabId: tab.id });
+          return;
+        }
+        browserTabs.update(workspaceId, current => ({ ...current, activeId: tab.id }));
         onSelect?.();
       }} onKeyDown={event => {
         // Keep navigation on the tab itself: sibling close buttons are ordinary buttons.
@@ -81,7 +89,26 @@ function BrowserTabList({ orientation, onSelect }: { orientation: "horizontal" |
         browserTabs.close(workspaceId, tab.id);
       }}><FiX size={14} aria-hidden="true" /></button>
     </div>;
-  })}</div>;
+  })}</div>
+    {workspaceId && renameTab && <BrowserRenameDialog key={JSON.stringify([workspaceId, renameTab.id])} workspaceId={workspaceId} tab={renameTab} close={() => setRenaming(null)} />}
+  </>;
+}
+
+function BrowserRenameDialog({ workspaceId, tab, close }: { workspaceId: string; tab: BrowserTab; close: () => void }) {
+  const [alias, setAlias] = useState(tab.alias ?? "");
+  const input = useRef<HTMLInputElement>(null);
+  return <ShellDialog title="Rename tab" close={close} className="browser-rename-dialog" initialFocus={() => input.current}>
+    <form onSubmit={event => {
+      event.preventDefault();
+      browserTabs.update(workspaceId, current => ({ ...current, tabs: current.tabs.map(item => item.id === tab.id ? { ...item, alias: alias.trim() || undefined } : item) }));
+      close();
+    }}>
+      <label htmlFor={`browser-alias-${tab.id}`}>Tab name</label>
+      <input ref={input} id={`browser-alias-${tab.id}`} value={alias} onChange={event => setAlias(event.target.value)} onFocus={event => event.currentTarget.select()} maxLength={80} placeholder="Use the URL as the tab name" autoComplete="off" aria-describedby={`browser-alias-help-${tab.id}`} />
+      <p id={`browser-alias-help-${tab.id}`} className="muted">Leave blank to restore the URL-based name.</p>
+      <div className="browser-rename-actions"><button type="button" onClick={close}>Cancel</button><button type="submit" className="primary-button">Save</button></div>
+    </form>
+  </ShellDialog>;
 }
 
 export function BrowserSidebar({ onSelect }: { onSelect: () => void }) {
@@ -105,7 +132,7 @@ export function BrowserSidebar({ onSelect }: { onSelect: () => void }) {
 export function BrowserHeader() {
   const { workspaceId, state, reload } = useBrowser();
   const tab = state.tabs.find(item => item.id === state.activeId);
-  return workspaceId && tab ? <BrowserAddress key={JSON.stringify([workspaceId, tab.id])} workspaceId={workspaceId} tab={tab} reload={() => reload(tab.id)} /> : <div className="conversation-heading">Browser <small>Workspace preview</small></div>;
+  return workspaceId && tab ? <BrowserAddress key={JSON.stringify([workspaceId, tab.id])} workspaceId={workspaceId} tab={tab} tabCount={state.tabs.length} reload={() => reload(tab.id)} /> : <div className="conversation-heading">Browser <small>Workspace preview</small></div>;
 }
 
 export function BrowserFooter({ navigation }: { navigation: ReactNode }) {
@@ -147,7 +174,7 @@ export function BrowserView({ active }: { active: boolean }) {
   </section>;
 }
 
-function BrowserAddress({ workspaceId, tab, reload }: { workspaceId: string; tab: BrowserTab; reload: () => void }) {
+function BrowserAddress({ workspaceId, tab, tabCount, reload }: { workspaceId: string; tab: BrowserTab; tabCount: number; reload: () => void }) {
   const [draft, setDraft] = useState(tab.url), [error, setError] = useState("");
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -155,7 +182,9 @@ function BrowserAddress({ workspaceId, tab, reload }: { workspaceId: string; tab
     // Selecting a blank tab with the keyboard must not steal the roving tab focus.
     if (!tab.url && !document.activeElement?.hasAttribute("data-browser-tab")) input.current?.focus();
   }, [tab.url]);
-  return <form className="browser-address" onSubmit={event => {
+  // Keep half the row for one or two tabs, then yield space to additional tabs.
+  const width = Math.max(25, 50 - Math.max(0, tabCount - 2) * 5);
+  return <form className="browser-address" style={{ flexBasis: `${width}%` }} onSubmit={event => {
     event.preventDefault();
     try {
       const url = browserUrl(draft);

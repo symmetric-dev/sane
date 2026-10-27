@@ -13,7 +13,7 @@
 .browser-new-tab,.browser-layout-toggle { display:flex; align-items:center; gap:8px; padding:10px 8px; text-align:left; font-size:12px; }
 .browser-new-tab:hover:not(:disabled),.browser-layout-toggle:hover:not(:disabled) { background:var(--accent); }
 .browser-layout-toggle { border-top:1px solid var(--border); border-radius:0; }
-.browser-tab-strip { container-type:inline-size; display:flex; align-items:center; flex-shrink:0; gap:8px; width:100%; min-width:0; padding:6px 12px; border-bottom:1px solid var(--border); background:var(--background); }
+.browser-tab-strip { container-type:inline-size; display:flex; flex:1; align-items:center; gap:8px; min-width:0; }
 .browser-tab-strip .browser-tab-list { flex:1; flex-direction:row; align-items:center; min-width:0; padding:2px; overflow-x:auto; overflow-y:hidden; overscroll-behavior-x:contain; scrollbar-width:thin; }
 .browser-tab-strip .browser-tab-row { flex:0 0 180px; min-width:0; border:1px solid var(--border); background:var(--background); color:var(--muted-foreground); }
 .browser-tab-strip .browser-tab-row:hover { background:var(--accent); }
@@ -28,19 +28,26 @@
 .browser-tab-strip button:focus-visible,.browser-sidebar .browser-tab-row button:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
 /* Container queries also cover a narrow paired pane on a wide desktop. */
 @container (max-width:560px) {
-  .browser-tab-action-label { display:none; }
+  .browser-tab-count { display:none; }
   .browser-tab-strip .browser-tab-row { flex-basis:152px; }
   .browser-tab-strip .browser-new-tab,.browser-tab-strip .browser-layout-toggle { min-width:40px; min-height:40px; }
   .browser-tab-strip .browser-tab-row .icon-button { min-width:40px; min-height:40px; }
 }
 .browser-view { flex:1; display:flex; flex-direction:column; min-height:0; min-width:0; overflow:hidden; }
 .browser-view[hidden],.browser-frame[hidden] { display:none; }
-.browser-address { position:relative; display:flex; flex:1; min-width:0; align-items:center; gap:6px; }
+.browser-address { position:relative; display:flex; flex:0 1 50%; max-width:50%; min-width:min(220px, 50%); align-items:center; gap:6px; }
 .browser-address input { flex:1; min-width:0; width:0; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--background); color:var(--foreground); font:inherit; font-size:13px; }
+.browser-address input:focus-visible { outline-offset:0; }
 .browser-address .primary-button { flex-shrink:0; padding:6px 12px; }
 .browser-external { display:flex; align-items:center; justify-content:center; flex-shrink:0; min-width:32px; min-height:32px; color:var(--muted-foreground); }
 .browser-address .browser-refresh { flex-shrink:0; min-width:32px; min-height:32px; color:var(--muted-foreground); }
 .browser-address-error { position:absolute; top:calc(100% + 8px); left:0; right:0; z-index:2; margin:0; padding:8px 10px; border:1px solid var(--error); border-radius:8px; background:var(--error-background); font-size:12px; color:var(--error); }
+.browser-rename-dialog { width:min(400px, calc(100vw - 32px)); }
+.browser-rename-dialog form { display:flex; flex-direction:column; gap:10px; }
+.browser-rename-dialog input { width:100%; min-width:0; font-size:16px; }
+.browser-rename-dialog p { margin:0; font-size:12px; }
+.browser-rename-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:6px; }
+.browser-rename-actions>button { min-height:40px; padding:8px 12px; }
 .browser-frames { flex:1; display:flex; min-height:0; min-width:0; overflow:hidden; }
 .browser-frames-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); grid-auto-rows:minmax(0,1fr); gap:1px; background:var(--border); }
 .browser-frame { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; background:var(--background); }

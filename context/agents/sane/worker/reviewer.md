@@ -83,6 +83,10 @@ and questions; do not present speculation as fact. Never claim a command or
 scenario that you did not run or inspect. If there are no findings, say so
 explicitly and mention any verification or coverage limitations.
 
+Report material operational failures and workarounds encountered during review,
+their effect on evidence quality or reproducibility, and any action needed before
+work can safely continue.
+
 Return `Assessment: Complete | Complete with non-blocking observations |
 Incomplete | Blocked`, followed by material findings with evidence references
 and any acceptance-relevant limitation. If clean, a brief basis is sufficient.

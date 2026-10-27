@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { FiArrowRight, FiArrowUpRight, FiBookOpen, FiCheck, FiChevronRight, FiClock, FiCornerUpLeft, FiGitBranch, FiHelpCircle, FiInfo, FiPause, FiRefreshCw, FiSlash, FiSquare, FiUser, FiUsers, FiX } from "react-icons/fi";
+import { FiArrowRight, FiArrowUpRight, FiCheck, FiChevronRight, FiClock, FiCornerUpLeft, FiGitBranch, FiHelpCircle, FiInfo, FiPause, FiRefreshCw, FiSlash, FiSquare, FiUser, FiUsers, FiX } from "react-icons/fi";
 import type { WorkerDelivery, WorkerExchange, WorkerRecord, WorkerResult } from "../src/worker-contract";
 import { workerCountsAsActiveExecution, workerProtocolStatus, workerResults, workerStoppable } from "../src/worker-contract";
 import { exchangeRecipientLabel, exchangeSenderLabel, workerStatusText } from "./worker-presentation";
@@ -70,6 +70,7 @@ function formatDirectWorkerCount(count: number | undefined) {
 }
 function WorkerDetails({ worker: w, view, close, trigger }: { worker: WorkerRecord; view: WorkerView; close: () => void; trigger: HTMLButtonElement | null }) {
   const profile = useWorkerVisual(w);
+  const [activeView, setActiveView] = useState(view);
   const dialog = useRef<HTMLDialogElement>(null);
   const id = useId();
   const results = workerResults(w);
@@ -82,15 +83,25 @@ function WorkerDetails({ worker: w, view, close, trigger }: { worker: WorkerReco
   }, [trigger]);
   const report = (r: WorkerResult) => <details className="worker-result" key={r.revision}><summary><strong>Result {r.revision}</strong><span className={`worker-status${r.outcome.status === "failed" ? " is-error" : ""}`}>{r.outcome.status}</span><time dateTime={r.outcome.at}>{new Date(r.outcome.at).toLocaleString()}</time><FiChevronRight className="worker-result-chevron" size={14} aria-hidden="true" /></summary><pre className="worker-result-output">{r.outcome.summary}</pre></details>;
   return createPortal(<dialog ref={dialog} className="worker-details-dialog" aria-modal="true" aria-labelledby={id} onCancel={event => { event.preventDefault(); close(); }} onClick={event => { if (event.target === event.currentTarget) close(); }}>
-    <header className="worker-details-header"><WorkerIcon profile={profile} size={24} /><div><h2 id={id}>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</h2><p className="muted">{view === "history" ? `Result history · ${results.length}` : "Worker details"}</p></div><button type="button" className="icon-button" aria-label="Close worker details" onClick={close}><FiX size={18} aria-hidden="true" /></button></header>
-    <div className="worker-details-body">{view === "history" ? results.length ? results.map(report) : <p className="muted">No results recorded yet.</p> : <>
+    <header className="worker-details-header"><WorkerIcon profile={profile} size={24} /><div><h2 id={id}>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</h2><p className="muted">Worker details</p></div><button type="button" className="icon-button" aria-label="Close worker details" onClick={close}><FiX size={18} aria-hidden="true" /></button></header>
+    <div className="worker-details-tabs" role="tablist" aria-label="Worker information" onKeyDown={event => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? "details" : event.key === "End" ? "history" : activeView === "details" ? "history" : "details";
+      setActiveView(next);
+      document.getElementById(`${id}-${next}-tab`)?.focus();
+    }}>
+      {(["details", "history"] as const).map(tab => <button key={tab} type="button" role="tab" id={`${id}-${tab}-tab`} aria-selected={activeView === tab} aria-controls={`${id}-${tab}-panel`} tabIndex={activeView === tab ? 0 : -1} onClick={() => setActiveView(tab)}>{tab === "details" ? "Details" : `History (${results.length})`}</button>)}
+    </div>
+    <div className="worker-details-body" role="tabpanel" id={`${id}-history-panel`} aria-labelledby={`${id}-history-tab`} tabIndex={0} hidden={activeView !== "history"}>{results.length ? results.map(report) : <p className="muted">No results recorded yet.</p>}</div>
+    <div className="worker-details-body" role="tabpanel" id={`${id}-details-panel`} aria-labelledby={`${id}-details-tab`} tabIndex={0} hidden={activeView !== "details"}>
       <dl className="facts">{[["Subject", w.input.subject ?? "None"], ["Jobs", w.input.jobs?.join(", ") || "None"], ["Status", workerStatusText(w) ?? w.state], ["Harness", harnessName(w.launch.harness)], ["Model", usage?.model ?? w.launch.model ?? "Native default"], ["Recorded tool calls", snapshot?.toolCallCount?.toLocaleString() ?? "Unavailable — refresh to observe"], ["Direct workers", formatDirectWorkerCount(snapshot?.directWorkerCount)], ["Context usage", usage?.percentage === undefined ? "Unavailable" : `${Math.round(usage.percentage)}%${usage.stale ? " (stale while compacting)" : ""}`], ["Input context tokens", usage?.tokens.toLocaleString() ?? "Unavailable"], ["Model window", usage?.capacity?.toLocaleString() ?? "Unavailable"], ["Usage reported", usage ? new Date(usage.time).toLocaleString() : "Unavailable"], ["Refreshed", snapshot ? new Date(snapshot.observedAt).toLocaleString() : "Not yet refreshed"], ["Worker ID", w.id], ["Conversation ID", w.sessionId], ["Native session ID", w.child?.nativeId ?? "Unavailable"], ["Initial run", w.runId ?? "Unavailable"], ["Continuation run", w.continuation?.runId ?? "None"], ["Report-back", (w.latestResult ?? results.at(-1))?.notification.state ?? "No result yet"]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       <p className="muted">Tool calls cover recorded activity in this worker session, including continuations but excluding descendants. Direct workers count SANE child workers, including completed workers, but exclude deeper descendants and native subagents. Context is the last reported input usage, not a live token counter or the auto-compaction threshold.</p>
       {snapshot?.warnings.map(warning => <p key={warning} className="notice">{warning}</p>)}
       {w.error && <p className="notice error">{w.error}</p>}{w.continuation?.error && <p className="notice error">{w.continuation.error}</p>}{w.continuationCancellation && <p className="notice">Stop requested {new Date(w.continuationCancellation.requestedAt).toLocaleString()}. {w.continuationCancellation.error}</p>}
       {results.map(r => <p className="muted" key={r.revision}>Result {r.revision} · {r.notification.state}{r.notification.error && <span className="notice error">{r.notification.error}</span>}</p>)}
       <WorkerExchanges worker={w} />
-    </>}</div>
+    </div>
   </dialog>, document.body);
 }
 export function WorkerCard({ worker: supplied, workers = [], runs = [], open = openWorker, sendAnchor = false }: { worker: WorkerRecord; workers?: WorkerRecord[]; runs?: Run[]; open?: (worker: WorkerRecord) => void; sendAnchor?: boolean }) {
@@ -124,13 +135,12 @@ export function WorkerCard({ worker: supplied, workers = [], runs = [], open = o
   const contextLabel = usage?.percentage === undefined ? "Context —" : `Context ${Math.round(usage.percentage)}%${usage.stale ? " (stale)" : ""}`;
   const contextTitle = usage ? `${usage.tokens.toLocaleString()} input tokens${usage.capacity ? ` / ${usage.capacity.toLocaleString()}` : "; model window unavailable"}. ${usage.model}. Reported ${new Date(usage.time).toLocaleString()}.${usage.stale ? " Stale while compacting." : " Last reported input context, not a live token counter."} ${refreshedAt}` : `Context usage unavailable. ${refreshedAt}`;
   return <section className={`worker-card${movingStatus ? " is-active" : ""}`} data-send-kind={sendAnchor ? "worker" : undefined} data-send-id={sendAnchor ? w.id : undefined} tabIndex={sendAnchor ? -1 : undefined} aria-label={sendAnchor ? "Worker send" : undefined}>
-    <header><WorkerStatusIcon state={statusState} label={statusLabel} /><WorkerIcon profile={profile} /><div className="worker-card-heading"><strong title={profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong>{!!w.input.jobs?.length && <span className="worker-card-jobs" title={`Jobs: ${w.input.jobs.join(", ")}`}><span className="sr-only">{w.input.jobs.length === 1 ? "Job: " : "Jobs: "}</span>{w.input.jobs.map(job => <code key={job}>{job}</code>)}</span>}{w.input.subject && <span className="worker-card-subject muted" title={w.input.subject}>{w.input.subject}</span>}</div>
-      <div className="worker-actions worker-card-detail-actions">
+    <header>
+      <div className="worker-card-icon"><WorkerIcon profile={profile} size={40} /></div>
+      <div className="worker-card-heading"><div className="worker-card-title">
+        <WorkerStatusIcon state={statusState} label={statusLabel} />
         <button type="button" className={`worker-action worker-info${attention ? " has-issue" : ""}`} aria-haspopup="dialog" aria-label={attention ? "Worker details, attention needed" : "Worker details"} title={attention ? "Worker details, attention needed" : "Worker details"} onClick={event => show("details", event.currentTarget)}><FiInfo size={14} aria-hidden="true" /></button>
-        <button type="button" className="worker-action" aria-haspopup="dialog" aria-label={`Result history, ${results.length} results`} title={`Result history (${results.length})`} disabled={!results.length} onClick={event => show("history", event.currentTarget)}><FiBookOpen size={14} aria-hidden="true" /><span className="worker-count" aria-hidden="true">{results.length}</span></button>
-      </div>
-    </header>
-    <div className="worker-card-controls">
+        <strong title={profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong>{!!w.input.jobs?.length && <span className="worker-card-jobs" title={`Jobs: ${w.input.jobs.join(", ")}`}><span className="sr-only">{w.input.jobs.length === 1 ? "Job: " : "Jobs: "}</span>{w.input.jobs.map(job => <code key={job}>{job}</code>)}</span>}</div>{w.input.subject && <span className="worker-card-subject muted" title={w.input.subject}>{w.input.subject}</span>}</div>
       <div className="worker-actions worker-card-metrics">
         <div className="worker-card-times"><time className="worker-card-timing" dateTime={timestamp} title={`Started ${new Date(timestamp).toLocaleString()}`} aria-label={`Started ${new Date(timestamp).toLocaleString()}`}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time><span className="worker-card-separator" aria-hidden="true">-</span><span className="worker-card-elapsed" aria-label={`Elapsed: ${duration}`}>{duration}</span></div>
         <span className="worker-card-metric-group"><span className="worker-card-separator" aria-hidden="true">|</span><span className="worker-card-metric" title={`Recorded calls in this worker session, including continuations; excludes descendants. ${refreshedAt}`}>{snapshot?.toolCallCount == null ? "—" : snapshot.toolCallCount.toLocaleString()} Calls</span></span>
@@ -142,7 +152,7 @@ export function WorkerCard({ worker: supplied, workers = [], runs = [], open = o
         <CancelWorker parent={w.parent.sessionId} input={{ ids: [w.id] }} label="Cancel worker assignment" disabled={!stoppable}>Cancel</CancelWorker>
         {workers.some(child => child.parent.sessionId === w.sessionId) && <CancelWorker parent={w.parent.sessionId} input={{ ids: [w.id], includeDescendants: true }} label="Cancel worker tree" icon={<FiGitBranch size={13} aria-hidden="true" />}>Cancel Tree</CancelWorker>}
       </div>
-    </div>
+    </header>
     {read.error && <p className="notice error" role="alert">Refresh failed: {read.error}{snapshot ? " Showing the previous snapshot." : ""}</p>}
     {snapshot?.warnings.map(warning => <p key={warning} className="notice" role="status">{warning}</p>)}
     <WorkerExchanges worker={w} compact />

@@ -292,7 +292,6 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
         <BrowserPairToolbar state={state} pane={pairPane} setPane={setPairPane} openChat={openChat} unpair={unpair} unpairBusy={pair.unlinkBusy} exitPair={exitPair} linkedSessions={pairMenu.button} openContext={() => setDrawer("context")} />
         <div className="browser-pair-transcript" ref={setDesktopTranscript} />
       </section> : undefined}
-      beforeHeader={view === "browser" ? <BrowserTabStrip onSelect={() => setDrawer(null)} /> : undefined}
       onOpenNotification={openNotification}
       workspaceSelection={workspaceSelection}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
@@ -333,12 +332,12 @@ function ShellHeader({ state, view, artifact, linkedSessions, overview, overview
     <button type="button" className="details-button" aria-label="Conversation details" onClick={openDetails}><Icon name="details" /><span>Details</span></button>
   </>;
   else if (view === "terminal") heading = <TerminalHeader />;
-   else if (view === "browser") heading = <><BrowserHeader />{linkedSessions}</>;
+    else if (view === "browser") heading = <><BrowserHeader /><BrowserTabStrip />{linkedSessions}</>;
   else if (view === "history") heading = <div className="conversation-heading">History</div>;
   else if (viewGroup(view) === "settings") heading = <div className="conversation-heading">{view === "workstreams" ? "Settings · Workstreams" : "Settings"}</div>;
   else if (artifact && view === "code") heading = <div className="conversation-heading">Files · Read-only workstream artifact</div>;
   else heading = <WorkspaceHeader />;
-  return <>{heading}{viewGroup(view) === "files" && <WorkspaceSearchButton />}<button type="button" className="icon-button application-opener" aria-label="Application menu" aria-haspopup="dialog" onClick={openApplication}><FiMoreHorizontal size={16} aria-hidden="true" /><span className={`connection-dot ${state.connected ? "online" : ""}`} /></button></>;
+  return <>{heading}{viewGroup(view) === "files" && <WorkspaceSearchButton />}{view !== "browser" && <button type="button" className="icon-button application-opener" aria-label="Application menu" aria-haspopup="dialog" onClick={openApplication}><FiMoreHorizontal size={16} aria-hidden="true" /><span className={`connection-dot ${state.connected ? "online" : ""}`} /></button>}</>;
 }
 
 function ShellNotices({ state, view, openDetails }: { state: State; view: ActiveView; openDetails: () => void }) {

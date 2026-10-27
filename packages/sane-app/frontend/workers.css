@@ -1,16 +1,18 @@
-.worker-card { margin:10px 0; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:transparent; min-width:0; }
-.transcript .worker-card,.worker-transcript .worker-card { padding-block:16px; }
-.worker-card > header { display:flex; align-items:center; gap:8px; }
+.worker-card { margin:10px 0; padding:10px 8px; border:1px solid var(--border); border-radius:8px; background:transparent; min-width:0; container-type:inline-size; }
+.transcript .worker-card,.worker-transcript .worker-card { padding-block:12px; }
+.worker-card > header { display:grid; grid-template-columns:48px minmax(100px,1fr) auto; grid-template-rows:repeat(2,minmax(24px,auto)); align-items:center; gap:2px 8px; }
+.worker-card-icon { grid-column:1; grid-row:1 / span 2; display:grid; place-items:center; }
 .worker-card.is-active { border-color:color-mix(in srgb,var(--primary) 26%,var(--border)); }
-.worker-card-heading { display:flex; flex:1; min-width:0; align-items:baseline; gap:4px 10px; }
+.worker-card-heading { grid-column:2; grid-row:1 / span 2; display:grid; grid-template-rows:subgrid; min-width:0; align-items:center; }
+.worker-card-title { display:flex; align-items:center; gap:4px; min-width:0; }
+.worker-card-title > .worker-info { flex-shrink:0; }
 .worker-card-heading strong { min-width:0; flex:0 1 auto; font-size:13px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .worker-card-jobs { display:flex; flex:0 1 auto; gap:4px 6px; min-width:0; max-width:35%; overflow:hidden; }
 .worker-card-jobs code { flex-shrink:0; padding:2px 5px; border-radius:4px; background:var(--muted); color:var(--muted-foreground); font-size:11px; }
-.worker-card-subject { flex:1 1 0; min-width:0; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.worker-card-subject { grid-row:2; min-width:0; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .worker-card-times { display:flex; align-items:baseline; flex-shrink:0; gap:8px; }
 .worker-card-metric-group { display:inline-flex; align-items:center; flex-shrink:0; gap:8px; white-space:nowrap; }
 .worker-card-separator { color:var(--muted-foreground); font-size:11px; }
-.worker-card-detail-actions { flex-shrink:0; }
 .worker-card-timing,.worker-card-elapsed { font-size:11px; color:var(--muted-foreground); font-variant-numeric:tabular-nums; }
 .worker-card-timing,.worker-card-elapsed { white-space:nowrap; }
 .worker-card-status { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; width:16px; height:20px; color:var(--muted-foreground); }
@@ -25,9 +27,8 @@
 .worker-status.is-error { color:var(--error); }
 .worker-status.is-uncertain { color:var(--foreground); }
 .worker-status.is-active::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; flex-shrink:0; }
-.worker-card-controls { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; margin-top:8px; }
-.worker-card-controls > .worker-actions { min-width:0; max-width:100%; }
-.worker-card-metrics { justify-content:flex-start; }
+.worker-card > header > .worker-card-metrics { grid-column:3; grid-row:1; justify-content:flex-end; min-width:0; }
+.worker-card > header > .worker-secondary-actions { grid-column:3; grid-row:2; min-width:0; max-width:100%; }
 .worker-secondary-actions { margin-left:auto; justify-content:flex-end; }
 .worker-waiting { margin:10px 0 0; font-size:11px; }
 .worker-exchanges { margin:8px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px; }
@@ -60,14 +61,18 @@
 .worker-exchange-content > summary:focus-visible { outline:2px solid var(--focus-ring); outline-offset:3px; }
 .worker-exchange-content > div { margin-top:10px; color:var(--foreground); overflow-wrap:anywhere; }
 .worker-exchange-card > footer { margin-top:10px; }
-.worker-details-dialog { width:min(760px,calc(100vw - 32px)); max-width:none; max-height:85dvh; padding:0; border:1px solid var(--border); border-radius:16px; color:var(--foreground); background:var(--card); box-shadow:0 24px 80px var(--shadow-panel); }
+.worker-details-dialog { width:min(760px,calc(100vw - 32px)); max-width:none; height:720px; max-height:85dvh; overflow:hidden; padding:0; border:1px solid var(--border); border-radius:16px; color:var(--foreground); background:var(--card); box-shadow:0 24px 80px var(--shadow-panel); }
 .worker-details-dialog[open] { display:flex; flex-direction:column; }
 .worker-details-dialog::backdrop { background:var(--backdrop-dialog); }
 .worker-details-header { display:flex; align-items:center; gap:12px; padding:18px 20px; border-bottom:1px solid var(--border); flex-shrink:0; }
 .worker-details-header > div { flex:1; min-width:0; }
 .worker-details-header h2 { margin:0; font-size:15px; overflow-wrap:anywhere; }
 .worker-details-header p { margin:4px 0 0; font-size:12px; }
-.worker-details-body { padding:18px 20px; overflow:auto; overscroll-behavior:contain; min-height:0; }
+.worker-details-tabs { display:flex; gap:16px; padding:0 20px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.worker-details-tabs > button { padding:12px 0; border-radius:0; border-bottom:2px solid transparent; background:none; color:var(--muted-foreground); font-size:12px; }
+.worker-details-tabs > button[aria-selected="true"] { border-bottom-color:var(--primary); color:var(--foreground); }
+.worker-details-tabs > button:hover { color:var(--foreground); }
+.worker-details-body { flex:1; padding:18px 20px; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; min-height:0; }
 .worker-details-body .facts dd,.worker-details-body .notice { overflow-wrap:anywhere; }
 .worker-result + .worker-result { border-top:1px solid var(--border); }
 .worker-result > summary { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:36px; padding:8px 0; font-size:12px; cursor:pointer; list-style:none; }
@@ -107,6 +112,10 @@
 .viewport [data-send-kind]:focus-visible,.viewport .send-target-highlight { outline:2px solid var(--focus-ring); outline-offset:3px; }
 .viewport .send-target-highlight { background:var(--accent); }
 .send-navigation-notice { margin:4px 20px; font-size:12px; }
+@container (max-width:640px) {
+  .worker-card > header { grid-template-columns:48px minmax(0,1fr) auto; }
+  .worker-card > header > .worker-card-metrics { grid-column:1 / -1; grid-row:3; margin-top:4px; }
+}
 @media (max-width:768px) {
   .worker-card button,.worker-receipt button { min-height:36px; }
 }

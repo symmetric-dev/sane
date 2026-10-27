@@ -1,6 +1,6 @@
 export const MAX_BROWSER_TABS = 8;
 const STORAGE_PREFIX = "sane.browser.tabs.v1.";
-export type BrowserTab = { id: string; url: string };
+export type BrowserTab = { id: string; url: string; alias?: string };
 export type BrowserTabs = { tabs: BrowserTab[]; activeId: string | null; showAll: boolean; storageError: string };
 const empty = (): BrowserTabs => ({ tabs: [], activeId: null, showAll: false, storageError: "" });
 
@@ -23,7 +23,8 @@ function load(workspaceId: string): BrowserTabs {
     const tabs: BrowserTab[] = saved.tabs.map((tab: BrowserTab) => {
       if (!tab || typeof tab.id !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(tab.id) || ids.has(tab.id) || typeof tab.url !== "string") throw new Error("Invalid saved browser tab");
       ids.add(tab.id);
-      return { id: tab.id, url: tab.url ? browserUrl(tab.url) : "" };
+      const alias = typeof tab.alias === "string" ? tab.alias.trim().slice(0, 80) : "";
+      return { id: tab.id, url: tab.url ? browserUrl(tab.url) : "", ...(alias ? { alias } : {}) };
     });
     return { tabs, activeId: tabs.some(tab => tab.id === saved.activeId) ? saved.activeId : tabs[0]?.id ?? null, showAll: saved.showAll === true, storageError: "" };
   } catch { return empty(); }
@@ -62,6 +63,7 @@ export const browserTabs = {
 };
 
 export function browserTabLabel(tab: BrowserTab, index: number): string {
+  if (tab.alias) return tab.alias;
   if (!tab.url) return `New tab ${index + 1}`;
   try { const url = new URL(tab.url); return url.host + (url.pathname === "/" ? "" : url.pathname); }
   catch { return `Tab ${index + 1}`; }

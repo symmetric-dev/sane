@@ -7,7 +7,7 @@ description: Use when preparing an initial Planning package for review and deliv
 
 ## Completion Checks
 
-Review the Execution Plan, Job Specs, and Verification Specs against their templates. Confirm each Job Spec supplies the outcome, inputs, boundaries, and non-test checks a fresh Implementer needs without reconstructing the planning conversation. Keep tests and Verification Spec references out of Job Specs. Check checkpoint coverage, dependencies, and parallel batches, then run `sane validate planning`.
+Review the Execution Plan, Job Specs, and Verification Specs against their templates. Confirm each Job Spec supplies the outcome, inputs, boundaries, operational prerequisites, and any meaningful job-specific non-test checks a fresh Implementer needs without reconstructing the planning conversation. Keep tests and Verification Spec references out of Job Specs. Check each Verification Spec's Scope, Review Focus, and Test Work for checkpoint coverage and expected evidence without duplicating general worker instructions. Check dependencies and parallel batches, then run `sane validate planning`.
 
 ## User Review
 

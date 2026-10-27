@@ -40,7 +40,9 @@ assigned ownership of it.
    evidence; do not make them.
 5. Return the verified behavior, changed test paths, exact commands, exit statuses,
    passed/failed/skipped/not-run outcomes, the implementation state tested,
-   evidence limits, and findings needing attention. If explicitly assigned a
+   evidence limits, and findings needing attention. Include material operational
+   failures and workarounds, their effect on the evidence, and any action needed
+   before continuing. If explicitly assigned a
    report file, write it using the supplied template, reconcile it after further
    verification, and include its path. Otherwise, do not create a report file.
 

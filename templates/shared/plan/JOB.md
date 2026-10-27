@@ -13,12 +13,16 @@ Directory convention:
 - `<implementation>/...` is relative to the **Implementation root**.
 - `<workstream>/...` is relative to the **Workstream root**.
 
-## Goal
+## Goal and Scope
 
 <!-- State the technical objective and resulting product capability or behavior
-in a short paragraph. -->
+in a short paragraph. Include the concrete scope limits, adjacent interfaces to
+preserve, and explicit exclusions rather than repeating them in Instructions. -->
 
 {{Technical outcome and the behavior or capability it enables.}}
+
+- Preserve {{adjacent interface, behavior, or data invariant}}.
+- {{Related capability or change}} is outside this assignment.
 
 ## Context
 
@@ -54,41 +58,24 @@ references out of this Job Spec. -->
 
 <!-- Use numbered, actionable instructions grounded in inspected code. State
 locations, contracts, and expected behavior; make genuine ordering constraints
-explicit. Resolve missing design decisions before assigning implementation. -->
+explicit. Include meaningful job-specific non-test checks alongside the relevant
+work, with working directories and expected outcomes. Do not repeat general
+checking rules or checkpoint test work. Resolve missing design decisions before
+assigning implementation. Put operational stop conditions in Operational
+Readiness and other assignment-specific decision boundaries with the affected
+instruction; do not restate the goal as a completion checklist. -->
 
 1. {{Action}} in `<implementation>/`{{path}} to produce {{required behavior}}, using {{specified interface or data contract}}.
 2. {{Related action or integration}} so that {{caller/consumer}} receives {{expected result, including relevant failure behavior}}.
 
-## Boundaries
-
-<!-- Use bullets for concrete scope limits and adjacent interfaces to preserve.
-Describe the boundary itself rather than naming the job that owns other work. -->
-
-- Preserve {{adjacent interface, behavior, or data invariant}}.
-- {{Related capability or change}} is outside this assignment.
-
-## Verification
-
-<!-- List non-test checks available to the Implementer, such as typechecking,
-static analysis, or a build, with working directories and expected outcomes.
-Keep test work in the Verification Spec, not in this Job Spec. -->
-
-- From `<implementation>/`{{directory}}, run {{non-test command}}. Expect {{observable result}}.
-
 ## Report Requirements
 
-<!-- List only evidence specific to evaluating this assignment's outcome.
-Reference authoritative source or artifacts for detail rather than duplicating
-logs. The report destination and template are supplied with the job assignment. -->
+<!-- List only assignment-specific evidence beyond the standard Job Report.
+Reference checks from Instructions rather than repeating their commands, and
+link authoritative sources rather than duplicating logs. The report destination
+and template are supplied with the job assignment. State `None` when no additional
+evidence is needed. -->
 
 - {{Assignment-specific result to report}}, linking {{authoritative source or artifact}} for detailed evidence.
-- {{Verification evidence needed to evaluate this outcome, including relevant command results or environment identity.}}
+- {{Additional evidence needed to evaluate this outcome, referencing the relevant instruction or authoritative artifact.}}
 - If {{relevant issue is encountered}}, record {{finding and evidence needed for follow-up}}.
-
-## Resolutions
-
-<!-- State completion conditions and assignment-specific reasons to stop or
-raise a decision. -->
-
-- Complete when {{required outcome and verification conditions are satisfied}}.
-- If {{specific prerequisite gap or decision boundary arises}}, return {{evidence and decision needed to proceed}}.
