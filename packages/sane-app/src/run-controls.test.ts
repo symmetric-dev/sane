@@ -120,7 +120,10 @@ describe("owner-bound run controls", () => {
       f.owned.native = harness !== "opencode";
       const session = { ...f.source, harness };
       expect(requireOwnedOperation(session, f.owned, "cancelOwnedRun").id).toBe(harness);
-      expect(dispatchOwnedOperation(session, f.owned, "cancelOwnedRun", { "claude-code": () => "cc", opencode: () => "oc" }))
+      expect(dispatchOwnedOperation(session, f.owned, "cancelOwnedRun", {
+        "claude-code": () => "cc", opencode: () => "oc",
+        grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
+      }))
         .toBe(harness === "opencode" ? "oc" : "cc");
     }
   });

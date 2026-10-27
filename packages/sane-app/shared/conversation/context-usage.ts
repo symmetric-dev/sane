@@ -118,6 +118,9 @@ function openCodeUsage(runs: Run[], models: ModelChoice[], history?: ReconciledH
 
 /** Last-reported model-window usage, not a live token counter or compaction threshold. */
 export function contextUsageFor(harness: Harness, runs: Run[], models: ModelChoice[], history?: ReconciledHistory | null, compactions: CompactionRecord[] = []): ContextUsageSnapshot | null {
+  // Grok has no Claude or OpenCode usage snapshot. Do not interpret Claude
+  // stdout as this conversation's context window.
+  if (harness === "grok") return null;
   let usage = harness === "opencode" ? openCodeUsage(runs, models, history) : claudeUsage(runs, history);
   // Snapshot boundaries were already applied in native order. Their most recent
   // observation (including a repeated import/UPSERT) is not a new reset clock.

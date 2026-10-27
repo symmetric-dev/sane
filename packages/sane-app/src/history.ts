@@ -39,7 +39,7 @@ export type Metadata = { sessions: Session[]; runs: Run[]; reconciliationRequire
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 export const uuid = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 /** Stored profile reference, including template:knowledge; not a selectable profile validator. */
-export const validProfileId = (v: unknown): v is string => typeof v === "string" && (/^base:(cc|oc)$/.test(v) || v.startsWith("template:") && isStoredAssistantAgentId(v.slice(9)) || v.startsWith("worker:") && isWorkerAgentId(v.slice(7)) || uuid(v));
+export const validProfileId = (v: unknown): v is string => typeof v === "string" && (/^base:(cc|oc|gk)$/.test(v) || v.startsWith("template:") && isStoredAssistantAgentId(v.slice(9)) || v.startsWith("worker:") && isWorkerAgentId(v.slice(7)) || uuid(v));
 export const validVariant = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 200 && !/[\x00-\x1f]/.test(v);
 const status = (v: unknown): v is Status => typeof v === "string" && ["running", "completed", "failed", "interrupted"].includes(v);
 const timestamp = (v: unknown) => typeof v === "string" && Number.isFinite(Date.parse(v));

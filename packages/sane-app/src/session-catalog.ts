@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import Fuse from "fuse.js";
 import { equivalentSlots, isStoredSlot } from "sane-core/contracts";
+import { getHarnessDescriptor } from "../shared/conversation/harness-capabilities";
 import type { SessionCatalogGroup, SessionCatalogPageInfo, SessionCatalogQuery } from "../shared/conversation/session-catalog";
 import type { Association } from "./catalog-contract";
 import { ConversationRecencyCache } from "./conversation-recency";
@@ -30,7 +31,7 @@ export function sessionCatalogQuery(params: URLSearchParams): Query {
   if (!/^\d+$/.test(rawLimit) || !Number.isInteger(limit) || limit < 1 || limit > 100) invalid("limit must be between 1 and 100");
   const mode = text("mode", "chat"), harness = text("harness", "all"), status = text("status", "all"), showDeleted = text("showDeleted", "0"), availableOnly = text("availableOnly", "0");
   if (mode !== "chat" && mode !== "history") invalid("Invalid mode");
-  if (!["all", "opencode", "claude-code"].includes(harness)) invalid("Invalid harness");
+  if (!["all", "opencode", "claude-code", "grok"].includes(harness)) invalid("Invalid harness");
   if (!["all", "starting", "running", "completed", "failed", "interrupted", "unknown"].includes(status)) invalid("Invalid status");
   if (showDeleted !== "0" && showDeleted !== "1") invalid("showDeleted must be 0 or 1");
   if (availableOnly !== "0" && availableOnly !== "1") invalid("availableOnly must be 0 or 1");
@@ -103,7 +104,8 @@ export class SessionCatalog {
       for (const run of input.runs) { const rows = runsBySession.get(run.sessionId) ?? []; rows.push(run); runsBySession.set(run.sessionId, rows); }
       const rows = input.sessions.map(session => {
         const harness = session.harness ?? "claude-code";
-        return { id: session.sessionId, text: `${sessionDisplayTitle(session, runsBySession.get(session.sessionId) ?? [], input.events) || ""} ${session.cwd} ${session.sessionId} ${harness} ${harness === "opencode" ? "OpenCode OC" : "Claude Code CC"}` };
+        const named = getHarnessDescriptor(harness);
+        return { id: session.sessionId, text: `${sessionDisplayTitle(session, runsBySession.get(session.sessionId) ?? [], input.events) || ""} ${session.cwd} ${session.sessionId} ${harness} ${named ? `${named.label} ${named.shortLabel}` : harness}` };
       });
       // Same fuzzy threshold, location independence and zero-hit substring fallback
       // as conversation-filter.tsx. This is title/identity search, not transcripts.

@@ -89,7 +89,7 @@ describe("bridge harness authorization refuses unknown identities", () => {
     await expect(enrollBranch(op, session("opencode"))).rejects.toThrow("stop-after-begin");
     expect(begun.map(input => input.harness)).toEqual(["cc", "oc"]);
     await expect(enrollBranch(op, session(undefined))).rejects.toThrow(TypeError);
-    await expect(enrollBranch(op, session("grok"))).rejects.toThrow("Unknown session harness");
+    await expect(enrollBranch(op, session("grok"))).rejects.toThrow("Grok is not a repository harness");
     expect(begun).toHaveLength(2);
   });
 
@@ -195,7 +195,7 @@ describe("bridge harness authorization refuses unknown identities", () => {
     expect(matched).toBe(false);
     harness = "grok"; row = admission("cc"); active.harness = "grok";
     await expect(admitPreparedInput(prepared(), { id: "lease" })).rejects.toThrow(TypeError);
-    await expect(admitPreparedInput(prepared(), { id: "lease" })).rejects.toThrow("Unknown session harness");
+    await expect(admitPreparedInput(prepared(), { id: "lease" })).rejects.toThrow("Grok is not a repository harness");
   });
 
   test("admitExplicitWorker: unknown launch harness throws; known launches prove cc/oc", async () => {

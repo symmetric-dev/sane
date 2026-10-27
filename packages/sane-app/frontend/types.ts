@@ -3,7 +3,7 @@ import type { CompactRequest, CompactResponse, CompactState, HandoffApprovalRepl
 import type { DiagnosticEvent, Harness, ModelChoice, Run, RunMetadata, RunStatus } from "../shared/conversation/types";
 import type { ScienceSnapshotReference, ScienceSubmissionView, ScienceSubmissionDetail } from "../shared/conversation/types";
 export type { ScienceSnapshotReference, ScienceSubmissionView, ScienceSubmissionDetail } from "../shared/conversation/types";
-import type { HarnessCapabilities } from "../shared/conversation/harness-capabilities";
+import { getHarnessDescriptor, type HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 export type { HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 export type { RunStatus, Harness, ModelChoice, TextPart, ToolPart, Message, UsageSnapshot, DiagnosticEvent, Run, RunMetadata } from "../shared/conversation/types";
 export { active } from "../shared/conversation/types";
@@ -26,8 +26,8 @@ export type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agen
 export type { Interaction, InteractionReply, FormField, HandoffApprovalReply } from "../shared/conversation/native-contract";
 export type WorkerSessionMetadata = { id: string; parent: { sessionId: string; runId: string; toolCallId: string } };
 export type { WorkerProtocolStatus };
-export const harnessName = (harness: Harness) => harness === "opencode" ? "OpenCode" : "Claude Code";
-export const harnessShort = (harness: Harness): "OC" | "CC" => harness === "opencode" ? "OC" : "CC";
+export const harnessName = (harness: Harness) => getHarnessDescriptor(harness)?.label ?? "Unknown harness";
+export const harnessShort = (harness: Harness) => getHarnessDescriptor(harness)?.shortLabel ?? "?";
 export type AgentChoice = { id: string; label: string; description: string };
 export type Conversation = { id: string; harness: Harness; authorityId?: string; nativeSessionId?: string; updateSource?: ConversationUpdateSource; activity?: ConversationActivity; nativeActivity?: "active" | "idle" | "unknown"; nativeActivityReason?: string; updatedAt?: string | null; cwd: string; lastRunId: string | null; lastRunStatus?: RunStatus; lastRunOperation?: "prompt" | "compact"; lastRunEndedAt?: string; status: RunStatus; title?: string; titleSource?: SessionTitleSource; titleRevision?: number; hidden?: boolean; model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; availability?: Availability; queuedFollowups?: QueuedFollowup[]; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; workerProtocol?: WorkerProtocolStatus; directWorkerCount?: number; branchOrigin?: string; branchDraft?: string; replacedBy?: string } & Partial<Association>;
 export type Capabilities = {

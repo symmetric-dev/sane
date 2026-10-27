@@ -1,5 +1,6 @@
 import type { Run, Session } from "./history";
 import { saneContextSnapshot } from "./agent-launch";
+import { WorkstreamAdapterError } from "./workstreams";
 
 export const NATIVE_COMMAND_PREFIX = "msg_";
 const NATIVE_COMMAND_PATTERN = /^msg_[a-zA-Z0-9_-]+$/;
@@ -17,6 +18,7 @@ export function newDispatchRun(
   session: Pick<Session, "sessionId" | "harness" | "cwd" | "model" | "effort" | "agent" | "agentKind" | "nativeAgentSelected" | "profileId">,
   extra?: Partial<Run>,
 ): { run: Run; commandId: string } {
+  if (session.harness === "grok") throw new WorkstreamAdapterError(501, "unsupported-harness-operation", "Grok dispatch is not available");
   const run: Run = {
     runId: crypto.randomUUID(),
     sessionId: session.sessionId,

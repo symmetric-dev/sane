@@ -84,7 +84,7 @@ export function profileForSnapshot(profiles: AgentProfiles, snapshot: AgentSnaps
 /** Editable fields accepted by POST/PUT /api/agents. */
 export type AgentProfileInput = Partial<Pick<AgentProfile, "label" | "description" | "harness" | "model" | "effort" | "icon" | "color" | "hidden" | "workerProfiles">>;
 
-export const BASE_PROFILE_IDS: Record<Harness, string> = { "claude-code": "base:cc", opencode: "base:oc" };
+export const BASE_PROFILE_IDS: Record<Harness, string> = { "claude-code": "base:cc", opencode: "base:oc", grok: "base:gk" };
 export const templateProfileId = (role: AssistantAgentId) => `template:${role}`;
 /** Current configuration reference only; never apply to historical snapshots or native identity. */
 export const currentConfigProfileId = (id: string): string => id === LEGACY_KNOWLEDGE_PROFILE.id ? templateProfileId("curation") : id;
@@ -106,12 +106,12 @@ const TEMPLATE_VISUALS: Record<AssistantAgentId, { icon: AgentIconId; color: Age
 export function builtinProfiles(now = new Date().toISOString()): AgentProfile[] {
   const base = (harness: Harness, order: number): AgentProfile => ({
     id: BASE_PROFILE_IDS[harness], kind: "base", role: null, harness, model: "", effort: "",
-    label: harness === "opencode" ? "Base · OpenCode" : "Base · Claude Code",
+    label: ({ "claude-code": "Base · Claude Code", opencode: "Base · OpenCode", grok: "Base · Grok" } satisfies Record<Harness, string>)[harness],
     description: "Harness defaults. No SANE instructions.",
     icon: "circle", color: "slate", builtin: true, locked: false, order, updatedAt: now,
   });
   return [
-    base("claude-code", 0), base("opencode", 1),
+    base("claude-code", 0), base("opencode", 1), base("grok", 2),
     ...ASSISTANT_AGENT_IDS.map((role, i): AgentProfile => ({
       id: templateProfileId(role), kind: "assistant", role, harness: "claude-code", model: "", effort: "",
       label: ASSISTANT_AGENT_LABELS[role], description: ASSISTANT_AGENT_DESCRIPTIONS[role],

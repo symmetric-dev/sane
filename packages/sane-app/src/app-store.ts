@@ -7,6 +7,7 @@ import { assertSourceDescriptor, assertQualifiedReference, validateSources, vali
 import { uuid, validateStoredMetadata, validModel, validEffort, validVariant, validProfileId } from "./history";
 import { isAssistantAgentId, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, ASSISTANT_AGENT_DESCRIPTIONS, isWorkerAgentId, WORKER_AGENT_IDS } from "sane-core/agent-catalog";
 import { isUtilityAgentId, UTILITY_AGENT_IDS } from "sane-core/agent-catalog";
+import { isHarness } from "../shared/conversation/harness-capabilities";
 import { AGENT_COLOR_IDS, AGENT_ICON_IDS, BASE_PROFILE_IDS, LEGACY_KNOWLEDGE_PROFILE, builtinProfiles, builtinWorkerDefaults, seedAgentProfiles, templateProfileId, workerTemplateProfileId, utilityTemplateProfileId, type AgentProfiles } from "./agent-profiles-contract";
 
 export { AppStoreError, exact } from "./app-store-format";
@@ -114,7 +115,7 @@ function validateProfileIdentity(p: Record<string, any>, allowLegacyKnowledge = 
   if (p.kind === "base" ? p.role !== null : p.kind === "worker" ? !isWorkerAgentId(p.role) : p.kind === "utility" ? !isUtilityAgentId(p.role) : p.kind !== "assistant" || !(isAssistantAgentId(p.role) || allowLegacyKnowledge && p.role === "knowledge")) invalid();
   if (p.role === "knowledge" && (!allowLegacyKnowledge || p.kind !== "assistant" || !(legacy || uuid(p.id)))) invalid();
   if (legacy && (p.kind !== "assistant" || p.role !== "knowledge")) invalid();
-  if (base && (p.kind !== "base" || BASE_PROFILE_IDS[p.harness as "claude-code" | "opencode"] !== p.id)) invalid();
+  if (base && (p.kind !== "base" || !isHarness(p.harness) || BASE_PROFILE_IDS[p.harness] !== p.id)) invalid();
   if (template && (p.kind !== "assistant" || templateProfileId(p.role) !== p.id)) invalid();
   if (worker && (p.kind !== "worker" || workerTemplateProfileId(p.role) !== p.id)) invalid();
   if (utility && (p.kind !== "utility" || utilityTemplateProfileId(p.role) !== p.id)) invalid();
@@ -130,9 +131,13 @@ export function validateAgentProfiles(value: unknown): AgentProfiles {
     ids.add(p.id);
     validateProfileIdentity(p);
     if (p.locked !== false) corrupt("Invalid agent profile locked flag");
-    if (p.harness !== "claude-code" && p.harness !== "opencode") corrupt("Unknown harness");
+    if (!isHarness(p.harness)) corrupt("Unknown harness");
     if (p.model !== "" && !validModel(p.model)) corrupt("Invalid model ID");
-    if (p.effort !== "" && (p.harness === "opencode" ? !validVariant(p.effort) : !validEffort(p.effort))) corrupt(p.harness === "opencode" ? "Invalid native variant ID" : "effort must be low, medium, high, xhigh, or max");
+    if (p.effort !== "") {
+      if (p.harness === "grok") { if (!validVariant(p.effort)) corrupt("Invalid Grok effort"); }
+      else if (p.harness === "opencode") { if (!validVariant(p.effort)) corrupt("Invalid native variant ID"); }
+      else if (!validEffort(p.effort)) corrupt("effort must be low, medium, high, xhigh, or max");
+    }
     if (p.kind === "base" && p.harness === "opencode" && p.effort !== "" && p.model === "") corrupt("Select a model before selecting a variant");
     if (typeof p.label !== "string" || !p.label.trim() || p.label.length > 80) corrupt("Label must be 1-80 characters");
     if (typeof p.description !== "string" || p.description.length > 400) corrupt("Description must be at most 400 characters");

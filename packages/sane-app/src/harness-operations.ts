@@ -23,11 +23,12 @@ export function requireOperation(value: unknown, operation: HarnessOperation): H
 
 /** Preserve each native API's arguments and result, including richer history
  * shapes. There is intentionally no catch-all Claude driver. */
-export function dispatchHarness<CC, OC>(value: unknown, callbacks: { "claude-code": () => CC; opencode: () => OC }): CC | OC {
+export function dispatchHarness<CC, OC, GK>(value: unknown, callbacks: { "claude-code": () => CC; opencode: () => OC; grok: () => GK }): CC | OC | GK {
   const harness = validateHarness(value);
   switch (harness) {
     case "claude-code": return callbacks["claude-code"]();
     case "opencode": return callbacks.opencode();
+    case "grok": return callbacks.grok();
   }
   const exhaustive: never = harness;
   throw new HarnessOperationError(`Unknown harness: ${exhaustive}`, 400, "unknown-harness");
@@ -58,7 +59,7 @@ export function requireOwnedOperation(session: OwnedOperationSession, owner: Ope
   return descriptor;
 }
 
-export function dispatchOwnedOperation<CC, OC>(session: OwnedOperationSession, owner: OperationOwner, operation: HarnessOperation, callbacks: { "claude-code": () => CC; opencode: () => OC }): CC | OC {
+export function dispatchOwnedOperation<CC, OC, GK>(session: OwnedOperationSession, owner: OperationOwner, operation: HarnessOperation, callbacks: { "claude-code": () => CC; opencode: () => OC; grok: () => GK }): CC | OC | GK {
   const descriptor = requireOwnedOperation(session, owner, operation);
   return dispatchHarness(descriptor.id, callbacks);
 }

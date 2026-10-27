@@ -24,6 +24,7 @@ import { denyUserQuestionsIdentity, matchesUserQuestionsTool, matchesUserQuestio
 import { UserQuestionsDelivery, UserQuestionsDeliveryDeferred, UserQuestionsDeliverySuperseded, type UserQuestionsDeliveryDenial } from "./user-questions-delivery";
 import { httpErrorResponse, toHttpError } from "./bridge-errors";
 import { newDispatchRun, newNativeCommandId } from "./dispatch-run";
+import { preparedAdmissionNativeCommandId } from "./prepared-admission-command";
 import { toNativeHarness, toSessionHarness } from "./harness-names";
 import { createPoller } from "./poller";
 import { createPresentationSnapshot } from "./presentation-snapshot";
@@ -65,6 +66,7 @@ import { SessionCatalog, SessionCatalogError } from "./session-catalog";
 import { createSessionCatalogRoute, matchesSessionCatalogRoute } from "./session-catalog-routes";
 import { workerObservationEvidence } from "./worker-observation-evidence";
 import { HarnessDispatchRegistry, HarnessDispatchError, DispatchProofUnavailableError, createClaudeDispatchAdapter, createOpenCodeDispatchAdapter, sameDispatchSource, type DispatchLifecycleHooks } from "./harness-dispatch";
+import { createGrokDispatchAdapter } from "./grok-adapter";
 import type { DispatchOrigin, DispatchSource, DispatchIdentity, DispatchEvidenceHooks } from "../shared/conversation/dispatch-contract";
 import type { PreparedAdmissionContext, PreparedAdmissionOptions, PreparedInputAdmission } from "./prepared-input-admission";
 import { synchronousDispatchHook } from "./dispatch-evidence";
@@ -341,12 +343,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const oc = new OpenCodeAdapter(undefined, undefined, options.nativeSources.oc.registrationFile);
   // Historical App sessions may omit the harness; no unknown value defaults.
   const sessionHarness = (session: Session) => validateHarness(session.harness, { defaultHarness: "claude-code" });
-  const nativeSource = (harness?: string) => store.sources[getHarnessDescriptor(validateHarness(harness, { defaultHarness: "claude-code" }))!.nativeHarness].authorityId ?? "unavailable";
+  const pairSessionHarness = (session: Session): "claude-code" | "opencode" => {
+    const harness = sessionHarness(session);
+    if (harness !== "claude-code" && harness !== "opencode") throw new HarnessOperationError("Grok is not available for browser pairing", 501, "unsupported-harness-operation");
+    return harness;
+  };
+  const nativeSource = (harness?: string) => {
+    const native = getHarnessDescriptor(validateHarness(harness, { defaultHarness: "claude-code" }))!.nativeHarness;
+    if (native !== "cc" && native !== "oc") throw new HarnessOperationError("Grok is not a repository source", 501, "unsupported-harness-operation");
+    return store.sources[native].authorityId ?? "unavailable";
+  };
   function readNativeHistory(harness: unknown, nativeId: string, cwd: string) {
     const descriptor = requireOperation(harness, "readHistory");
     return dispatchHarness(descriptor.id, {
       "claude-code": async () => ({ messages: await readClaudeHistory(nativeId, cwd, claudeRoot), activity: "unknown" as const }),
       opencode: () => oc.history(nativeId, cwd),
+      grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
     });
   }
   const forbidden = Object.keys(process.env).filter(k => /^(ANTHROPIC_|CLAUDE_CODE_USE_|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_API_KEY|CLAUDE_CODE_BASE_URL|CLAUDE_CODE_CUSTOM_MODEL_OPTION|AWS_BEARER_TOKEN_BEDROCK|OPENAI_API_KEY|OPENAI_BASE_URL)/.test(k));
@@ -498,6 +510,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return dispatchHarness(harness, {
       "claude-code": () => claudeConversationCreation(),
       opencode: () => openCodeConversationCreation(oc, cwd, launch),
+      grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
     });
   }
   const scienceChats = new ScienceChatService(new ScienceStore(options.dataDir, store.manifest.storeId), science, catalog, admissions, id => meta.sessions.find(s => s.sessionId === id), async (id, messageId) => {
@@ -695,7 +708,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       ...workerStore.deliveriesToReconcile().filter(d => !retiredId(d.parentSessionId)).map(d => d.parentSessionId),
     ],
     policy: options => readinessPolicy(options, sessionListReadiness.current),
-    canRetainPredecessor: owner => claudeRuns.canQueueFollowup(owner),
+    canRetainPredecessor: owner => {
+      const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
+      if (session?.harness === "grok") return false;
+      return claudeRuns.canQueueFollowup(owner);
+    },
     wake: { dispatch: () => {
       // A failed private queue claim releases its transient lease. Do not feed
       // that notification back into its own scheduler. Foreign changes during
@@ -933,8 +950,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const native = launch.harness === "opencode" ? await oc.resolveLaunch(cwd, canonical ? { ...launch, agent: "build", model: launch.model ?? canonical.model, effort: launch.effort ?? (!launch.model ? canonical.effort : undefined) } : launch) : undefined;
     const model = native ? native.model ? `${native.model.providerID}/${native.model.id}` : undefined : launch.model;
     const effort = native ? native.model?.variant : launch.effort;
+    const repositoryHarness = descriptor.nativeHarness;
+    if (repositoryHarness !== "cc" && repositoryHarness !== "oc") throw new HarnessOperationError("Grok is not a repository harness", 501, "unsupported-harness-operation");
     return {
-      harness: descriptor.nativeHarness,
+      harness: repositoryHarness,
       executionConfig: { profileId: launch.profileId, agent: launch.agent!, ...(model ? { model } : {}), ...(effort ? { effort } : {}) },
     };
   }, id => !retirementPaused(id));
@@ -1114,9 +1133,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!result.ready && result.code === "conversation-busy" && sessionId && inputMode === "user"
       && !coordinator.hasAdmission(sessionId) && !coordinator.hasReconciliation(sessionId) && !pendingInputs?.hasChain(sessionId)) {
       const owner = owners.get(sessionId);
-      const inspectEnqueue = () => coordinator.inspectReadiness({ conversationId: sessionId, intent: { kind: "user-prompt" }, phase: "enqueue" });
-      const policy = read ? sessionListReadiness.inspect(read, inspectEnqueue) : inspectEnqueue();
-      if (policy.ready && owner && claudeRuns.canSendInput(owner)) return { canSend: true, liveInputRunId: owner.run.runId };
+      const session = meta.sessions.find(s => s.sessionId === sessionId);
+      // Live input stays unavailable for Grok. Do not ask Claude whether this owner can send.
+      if (session?.harness !== "grok") {
+        const inspectEnqueue = () => coordinator.inspectReadiness({ conversationId: sessionId, intent: { kind: "user-prompt" }, phase: "enqueue" });
+        const policy = read ? sessionListReadiness.inspect(read, inspectEnqueue) : inspectEnqueue();
+        if (policy.ready && owner && claudeRuns.canSendInput(owner)) return { canSend: true, liveInputRunId: owner.run.runId };
+      }
     }
     return result.ready ? { canSend: true, ...(result.queueAfterRunId ? { queueAfterRunId: result.queueAfterRunId } : {}) } : { canSend: false, reason: result.reason, code: result.code };
   }
@@ -1220,6 +1243,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return next;
   }
   function claudeGroupAlive(owner: Owner): boolean {
+    const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
+    if (session?.harness === "grok") throw new HarnessOperationError("Grok is not observed through Claude process groups", 501, "unsupported-harness-operation");
     return claudeRuns.groupAlive(owner);
   }
   function bindOwnerControls(owner: Owner) {
@@ -1229,6 +1254,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const controls = dispatchHarness(source.harnessId, {
       "claude-code": () => claudeRuns.controls(owner),
       opencode: () => ocRuns.controls(owner),
+      grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
     });
     bindRunControls(owner, source, controls);
   }
@@ -1550,6 +1576,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (native.at(-1)?.messageId !== latest.uuid || !native.some(m => m.messageId === selected.uuid)) throw new Error("Native history differs from SANE's completed run evidence; external activity must be reconciled");
         return { boundary: selected.uuid as string, before: undefined, sourceFingerprint: branchFingerprint(native) };
       },
+      grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
     });
   }
   async function enrollBranch(op: BranchOperation, source: Session) {
@@ -1624,7 +1651,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!op.nativeId) throw new Error("Fork creation is uncertain. Destination is unknown; creation will not be retried. Original memberships are unchanged.");
       const adapter = await branchDomain(source);
       if (!adapter?.domain.branchCompleted(adapter.reference(source), op.id)) {
-        const sourceHistory = await dispatchHarness(sessionHarness(source), { opencode: () => oc.history(source.nativeSessionId!, source.cwd), "claude-code": async () => ({ messages: await readClaudeHistory(source.nativeSessionId!, source.cwd, claudeRoot) }) });
+        const sourceHistory = await dispatchHarness(sessionHarness(source), {
+          opencode: () => oc.history(source.nativeSessionId!, source.cwd),
+          "claude-code": async () => ({ messages: await readClaudeHistory(source.nativeSessionId!, source.cwd, claudeRoot) }),
+          grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
+        });
         if ("activity" in sourceHistory && sourceHistory.activity !== "idle" || branchFingerprint("rawMessages" in sourceHistory ? sourceHistory.rawMessages : sourceHistory.messages) !== op.sourceFingerprint) throw new Error("Source native history changed or became active during branching. Transfer is blocked; the confirmed native destination is retained for inspection.");
       }
       if (source.harness === "claude-code") await verifyClaudeFork(op.nativeId, source.cwd, source.nativeSessionId!, op.boundary, claudeRoot);
@@ -1764,6 +1795,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return dispatchOwnedOperation(ownedSession(owner), owner, "compact", {
       "claude-code": () => claudeRuns.execute(owner, `/compact${instructions ? ` ${instructions}` : ""}`, true, () => {}),
       opencode: () => ocRuns.executeNativeCompact(owner),
+      grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
     });
   }
   const ocRuns = new OpenCodeRunService({
@@ -1869,6 +1901,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       return { commandId, outcome: outcome === "succeeded" || outcome === "failed" || outcome === "interrupted" ? outcome : "unknown" };
     },
     nativeReadiness: pinnedNativeReadiness,
+  }));
+  // No Grok executable field exists in this change. Never search PATH. Readiness
+  // refuses a missing executable; registration itself does not spawn.
+  function configuredGrokExecutable(): string | undefined {
+    return undefined;
+  }
+  dispatchRegistry.register(createGrokDispatchAdapter({
+    executable: configuredGrokExecutable(),
   }));
   function executePrompt(lease: ConversationAdmissionLease, session: Session, run: Run, prompt: string, resume: boolean, origin: DispatchOrigin,
     options: { requestId?: string; coordinatorIntent?: ConversationOperationIntent["kind"]; validate?: () => void; link?: () => void; configure?: () => void; evidence?: DispatchEvidenceHooks; delivery?: PreparedAdmissionContext["delivery"]; nativeQueuedHandoff?: DispatchIdentity; publish?: PreparedAdmissionOptions["publish"]; submissionPublication?: SubmissionPublicationFactory; workerDeliveryId?: string; beforeSend?: () => void; messageIntent?: BridgeMessageIntent; activationPreparation?: { preparation: PendingActivationPreparation; assertCurrent: () => void }; reconciliation?: Omit<NonNullable<DispatchLifecycleHooks<Owner>["reconciliation"]>, "begin"> } = {}) {
@@ -2076,6 +2116,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
    * recovery. Ordinary user sends are idle-only. */
   async function admitPreparedInput(prepared: PreparedUserInput, lease: ConversationAdmissionLease, options: PreparedAdmissionOptions & { scienceSubmission?: { conversationId: string; requestId: string }; messageIntent?: BridgeMessageIntent; submissionPublication?: SubmissionPublicationFactory } = {}) {
     const { conversationId, cwd, harness } = prepared.binding;
+    if (harness === "grok") throw new WorkstreamAdapterError(501, "unsupported-harness-operation", "Grok prepared admission is not available");
     const input = prepared.normalized, { model, effort, agent } = prepared.configuration;
     const { queuedFollowupId, publish } = options;
     let namingText = prepared.prompt;
@@ -2116,10 +2157,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       && ((!prepared.resume && prepared.canonicalActivation !== undefined) || anchored);
     if (anchored && !prepareActivationJournal) throw new UserInputPreparationError("Pending activation requires explicit original-journal adoption; this delivery path cannot replace it", 409);
     let activationPreparation: PendingActivationPreparation | undefined;
-    const activationInput = prepareActivationJournal && isAssistantAgentId(agent) && prepared.configuration.saneExecution && prepared.configuration.saneContext ? {
+    if (prepareActivationJournal && harness !== "claude-code" && harness !== "opencode") throw new HarnessOperationError("Grok does not support pending activation", 501, "unsupported-harness-operation");
+    const activationHarness = harness === "claude-code" || harness === "opencode" ? harness : undefined;
+    const activationInput = prepareActivationJournal && activationHarness && isAssistantAgentId(agent) && prepared.configuration.saneExecution && prepared.configuration.saneContext ? {
       sessionId: conversationId, identity: { kind: "assistant" as const, role: agent },
       activation: { saneExecution: prepared.configuration.saneExecution, saneContext: prepared.configuration.saneContext },
-      source: { harnessId: harness, authorityId: prepared.binding.authorityId, cwd },
+      source: { harnessId: activationHarness, authorityId: prepared.binding.authorityId, cwd },
     } : undefined;
     const assertPreparationAdmission = () => {
       if (!coordinator.holdsAdmission(lease, conversationId) || closing || storageFailed || retainOwner || meta.reconciliationRequired
@@ -2141,7 +2184,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Resolve the original preparation identity BEFORE constructing dispatch or
     // linking any consumer. No replacement attempt is allocated on adoption.
     const runId = activationPreparation?.runId ?? context?.runId ?? crypto.randomUUID();
-    const nativeCommandId = harness === "opencode" ? activationPreparation?.nativeCommandId ?? context?.nativeCommandId ?? `msg_${crypto.randomUUID().replaceAll("-", "")}` : null;
+    // Grok throws here, before followup checks, receipts, or admission writes.
+    const nativeCommandId = preparedAdmissionNativeCommandId(harness, activationPreparation?.nativeCommandId ?? context?.nativeCommandId);
     const identity: DispatchIdentity = Object.freeze({ runId, nativeCommandId, ...(intent.requestId !== undefined ? { requestId: intent.requestId } : {}), source: Object.freeze({ harnessId: harness, sessionId: conversationId,
       authorityId: prepared.binding.authorityId, nativeSessionId: prepared.binding.nativeSessionId ?? null, cwd }) });
     if (context && (!prepared.resume || !prepared.binding.nativeSessionId || typeof context.runId !== "string" || !uuid(context.runId)
@@ -2348,7 +2392,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (input.operation === "remove" || input.operation === "clear") return;
     const prefix = PairError === BrowserPairError ? "browser-pair" : "resource-pair";
     const expected = input.session, session = meta.sessions.find(session => session.sessionId === expected.sessionId);
-    if (!session || !sameBrowserPairSession(expected, { sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId ?? "", nativeSessionId: session.nativeSessionId ?? "" })) throw new PairError(409, `${prefix}-identity`, "Conversation identity changed; reconnect before pairing");
+    if (!session || !sameBrowserPairSession(expected, { sessionId: session.sessionId, harness: pairSessionHarness(session), authorityId: session.authorityId ?? "", nativeSessionId: session.nativeSessionId ?? "" })) throw new PairError(409, `${prefix}-identity`, "Conversation identity changed; reconnect before pairing");
     assertCatalogActive(session);
     if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || session.attachment?.state === "pending"
       || branches.replaced(session.sessionId) || branches.pending(session.sessionId) || catalog.association(session.sessionId).association !== "resolved"
@@ -2907,6 +2951,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     async launch(w) {
       assertStartupReady();
       const harness = validateHarness(w.launch.harness);
+      if (harness === "grok") throw new WorkstreamAdapterError(501, "unsupported-harness-operation", "Grok does not support worker launch");
       requireOperation(harness, "prompt");
       workerStore.update(w.id, { state: "launching" });
       const parentAdmission = admissions.get(w.parent.sessionId)!;
@@ -3105,6 +3150,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const problem = (message: string) => workerStore.pendingProblem(parentSessionId, message);
     const session = meta.sessions.find(s => s.sessionId === parentSessionId);
     if (!session) return problem("Parent session unavailable; outcomes retained for inspection");
+    if (session.harness === "grok") throw new WorkstreamAdapterError(501, "unsupported-harness-operation", "Grok does not support worker report dispatch");
     requireOperation(sessionHarness(session), "prompt");
     // Hidden is a reversible soft-hide: retain outcomes and pause automatic turns.
     if (session.hidden) return problem("Parent is soft-hidden; unhide to restore report eligibility. Explicit stop suppression still requires user submission.");
@@ -3221,6 +3267,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (exchange.delivery.state !== "queued") return;
     const session = meta.sessions.find(s => s.sessionId === exchange.recipient.sessionId);
     if (!session || !session.nativeSessionId) return workerStore.noteExchange(exchange.id, "Exchange recipient is unavailable; the message remains queued");
+    if (session.harness === "grok") throw new WorkstreamAdapterError(501, "unsupported-harness-operation", "Grok does not support worker exchange dispatch");
     if (session.hidden) return workerStore.noteExchange(exchange.id, "Recipient is soft-hidden; the exchange remains queued");
     if (workerStore.suppressed(session.sessionId)) return workerStore.noteExchange(exchange.id, "Automatic continuation is stopped; the exchange remains queued");
     const recipientWorker = workerStore.getBySession(session.sessionId);
@@ -3382,7 +3429,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       || notification?.state === "accepted" || notification?.state === "claimed") return;
     // Only definite non-submission can retry, with a bounded retry cadence.
     if (notification && Date.now() - Date.parse(notification.updatedAt) < 30_000) return;
-    const session = meta.sessions.find(s => toNativeHarness(sessionHarness(s)) === h.sender.harness
+    const session = meta.sessions.find(s => s.harness !== "grok" && toNativeHarness(sessionHarness(s)) === h.sender.harness
       && s.authorityId === h.sender.authorityId && s.nativeSessionId === h.sender.nativeId);
     if (!session) throw new WorkstreamAdapterError(409, "handoff-sender-unavailable", "Denial recorded; the original sender is unavailable. Notification remains pending.");
     if (retirementPaused(session.sessionId)) return;
@@ -3425,6 +3472,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!availability(h.recipient.sessionId, true, true, true).canSend || handoffReservations.has(h.recipient.sessionId)) return;
     h = await prepareHandoffRecipient(workspaceId, id);
     const session = meta.sessions.find(s => s.sessionId === h.recipient.sessionId)!;
+    if (session.harness === "grok") throw new WorkstreamAdapterError(501, "unsupported-harness-operation", "Grok does not support handoff dispatch");
     const descriptor = requireOperation(sessionHarness(session), "prompt");
     if (session.attachment && descriptor.policies.attachedSendRequiresNativeStopped && !handoffAcknowledgements.has(h.id)) throw new WorkstreamAdapterError(409, "native-acknowledgement-required", "Confirm external assistant execution is stopped with the handoff acknowledge endpoint before delivery");
     if (!availability(session.sessionId, true, true).canSend || handoffReservations.has(session.sessionId)) return;
@@ -3552,6 +3600,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!session) throw new PendingInputDomainError("pending-input-not-found", "Unknown conversation", 404);
     if (session.hidden) throw new PendingInputDomainError("pending-input-hidden", "Unhide the conversation before adding/resuming waiting input");
     if (sessionHarness(session) === "claude-code" && session.attachment) throw new PendingInputDomainError("pending-input-attached-cc", "Attached Claude input requires a fresh external-stopped acknowledgement; queued automation is not supported");
+    if (sessionHarness(session) === "grok") throw new PendingInputDomainError("unsupported-harness-operation", "Grok does not support queued input");
     // Legacy immediate/followup reservations cannot race the new FIFO domain.
     if (admitting.has(sessionId) || projectClaudeFollowups(sessionId, meta.runs, id => journalEvents(id), id => claudeRuns.followupPending(id)).some(r => claudeRuns.followupPending(r.requestId))) throw new PendingInputDomainError("pending-input-legacy-reservation", "Finish the existing admission/legacy followup before starting a FIFO chain");
     const ready = coordinator.inspectReadiness({ conversationId: sessionId, intent: { kind: "user-prompt" }, phase: "enqueue" });
@@ -3662,6 +3711,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (closing || storageFailed || !startupReady) throw new PendingInputDomainError("pending-input-owner-unavailable", "Queue submission ownership unavailable", 503);
     const session = meta.sessions.find(s => s.sessionId === id);
     if (!session || session.hidden || sessionHarness(session) === "claude-code" && session.attachment) throw new PendingInputDomainError("pending-input-unavailable", "Queue conversation is hidden, missing or requires an external-stopped acknowledgement");
+    if (sessionHarness(session) === "grok") throw new PendingInputDomainError("unsupported-harness-operation", "Grok does not support queued input");
     const denied = readinessPolicy({ conversationId: id, intent: { kind: "user-prompt" }, phase: "enqueue" });
     if (denied) throw new PendingInputDomainError(denied.code, denied.reason);
   }
@@ -3669,6 +3719,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const id = source.sessionId;
     queueSubmissionSafety(id);
     const session = meta.sessions.find(s => s.sessionId === id)!, admission = admissions.get(id);
+    if (session.harness === "grok" || source.harnessId === "grok") throw new PendingInputDomainError("unsupported-harness-operation", "Grok queued idle is not observed through Claude");
     if (source.harnessId !== "claude-code" || !sameDispatchSource(source, dispatchSource(session))) throw new PendingInputDomainError("source-changed", "Current App idle source differs from the captured queue source");
     const blocked = (reason: string) => ({ ready: false as const, code: "claude-local-unproven" as const, reason });
     const association = catalog.association(id);
@@ -3711,7 +3762,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     nativeReadiness: pinnedNativeReadiness,
     terminalSnapshot: (source, commandId) => readOnlyDispatchProof(() => oc.snapshot(source.nativeSessionId!, commandId, source.cwd)),
     readPendingCancellation: owner => ocRuns.readPendingCancellation(owner),
-    groupAlive: claudeGroupAlive, readLocalSettlement: owner => claudeRuns.readLocalSettlement(owner), currentAppIdle: queueCurrentAppIdle, failClosed,
+    groupAlive: claudeGroupAlive, readLocalSettlement: owner => {
+      const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
+      if (session?.harness === "grok") return { ready: false, reason: "Grok has no Claude local settlement", code: "claude-local-unproven" };
+      return claudeRuns.readLocalSettlement(owner);
+    }, currentAppIdle: queueCurrentAppIdle, failClosed,
     // Resolve the existing supervised admission when the scheduler polls,
     // after startup constructs it; do not capture an uninitialized service.
     admit: async (prepared, lease, input) => {
@@ -3745,6 +3800,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
       const owner = owners.get(form.sessionId);
       if (owner?.stopRequested || owner?.cancelling || owner?.stopping) return { ready: false, disposition: "pause", reason: "Conversation was stopped; resume answer delivery explicitly" };
+      if (meta.sessions.find(s => s.sessionId === form.sessionId)?.harness === "grok") return { ready: false, disposition: "pause", reason: "Grok questions are not observed through Claude" };
       if (form.native.harness === "cc" && (!owner || owner.run.runId === form.delivery?.runId && !owner.nativeDispatched)) {
         const idle = claudeRuns.readLocalIdle(form.sessionId, owner);
         if (!idle.ready) return { ready: false, disposition: "wait", reason: idle.reason };
@@ -3899,7 +3955,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
       if (intent.operation === "live-input") {
         const owner = owners.get(binding.conversationId);
-        if (!owner || owner.run.runId !== intent.expectedLiveRunId || !claudeRuns.canSendInput(owner)) throw new AppAdmissionRequestError("target-conflict", "The selected live run changed or is no longer eligible");
+        const liveSession = meta.sessions.find(s => s.sessionId === binding.conversationId);
+        if (liveSession?.harness === "grok" || !owner || owner.run.runId !== intent.expectedLiveRunId || !claudeRuns.canSendInput(owner)) throw new AppAdmissionRequestError("target-conflict", "The selected live run changed or is no longer eligible");
       }
       const decision = coordinator.inspectReadiness({ conversationId: binding.conversationId, intent: { kind: "user-prompt" }, phase: intent.operation === "live-input" ? "enqueue" : "admission" });
       if (!decision.ready) throw new AppAdmissionRequestError(decision.code === "capacity" ? "capacity" : "pending-admission", decision.reason, decision.code === "capacity" ? 429 : 409);
@@ -3953,7 +4010,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const assetRoute = createAssetRoute({ assetsDir, assetManifest });
   const agentProfileRoute = createAgentProfileRoute({ readProfiles: () => agentProfiles, commitProfiles: commitAgents });
   const browserPairRoute = createBrowserPairRoute({ storeId: store.manifest.storeId, browserPairs, catalog,
-    findSession: id => meta.sessions.find(session => session.sessionId === id), sessionHarness, nativeSource,
+    findSession: id => meta.sessions.find(session => session.sessionId === id), sessionHarness: pairSessionHarness, nativeSource,
     assertDomainMutationOpen, authenticated: req => auth.authenticated(req), assertCatalogActive,
     isWorkerSession: id => workerStore.hasSession(id),
     branchReplaced: id => !!branches.replaced(id), branchPending: id => !!branches.pending(id),
@@ -4137,6 +4194,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const snapshots = scienceReferences(input.sessionId, input.scienceSnapshots, settings);
       const sharingSession = meta.sessions.find(row => row.sessionId === input.sessionId);
       if (!sharingSession) return json({ error: "Unknown science-sharing conversation" }, 404);
+      if (sharingSession.harness === "grok") throw new WorkstreamAdapterError(501, "unsupported-harness-operation", "Grok prepared admission is not available");
       scienceReceipt = scienceSubmissions.prepare(prior && prior.intent.version !== 3
         ? { ...prior.intent, text: input.prompt, snapshots }
         : { version: 3, binding: contextBinding(sharingSession), storeId: store.manifest.storeId, conversationId: input.sessionId, requestId: input.requestId, text: input.prompt, snapshots });
@@ -4158,6 +4216,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
       ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) });
     const { conversationId, cwd } = prepared.binding;
+    if (prepared.binding.harness === "grok") throw new WorkstreamAdapterError(501, "unsupported-harness-operation", "Grok prepared admission is not available");
     if (originalSubmission && conversationId !== originalSubmission.binding.conversationId) throw new AppAdmissionRequestError("target-conflict", "Prepared conversation differs from its original server binding");
     if (originalIntent) {
       assertAppAdmissionExpectedSource(originalIntent, { sessionId: conversationId, harnessId: prepared.binding.harness,
@@ -4169,7 +4228,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
     }
     const liveOwner = owners.get(conversationId);
-    if (originalIntent?.operation === "live-input" && (!liveOwner || liveOwner.run.runId !== originalIntent.expectedLiveRunId || !claudeRuns.canSendInput(liveOwner))) throw new AppAdmissionRequestError("target-conflict", "The selected live run changed during preparation; no replacement send is allowed");
+    if (originalIntent?.operation === "live-input" && (prepared.binding.harness === "grok" || !liveOwner || liveOwner.run.runId !== originalIntent.expectedLiveRunId || !claudeRuns.canSendInput(liveOwner))) throw new AppAdmissionRequestError("target-conflict", "The selected live run changed during preparation; no replacement send is allowed");
     if (!scienceReceipt && (!originalIntent || originalIntent.operation === "live-input") && prepared.binding.harness === "claude-code" && liveOwner && claudeRuns.canSendInput(liveOwner)) {
       if (prepared.stagedUpgrade || prepared.configuration.model !== liveOwner.run.model || prepared.configuration.effort !== liveOwner.run.effort) return json({ error: "Wait for this run to finish before changing assistant settings", code: "claude-input-configuration" }, 409);
       const checkCurrent = () => {
@@ -4204,7 +4263,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         try {
           const reservation = scienceSubmissions.reserve(key);
           if (!reservation.reserved) return json({ error: "Science submission already reserved; no replay", code: "science-submission-unknown" }, 409);
-          const runId = crypto.randomUUID(), nativeCommandId = prepared.binding.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : null;
+          const runId = crypto.randomUUID(), nativeCommandId = preparedAdmissionNativeCommandId(prepared.binding.harness);
           const association = { runId, nativeCommandId };
           scienceSubmissions.associate(key, association);
           const validateIdentity = (identity: DispatchIdentity) => {
@@ -4581,6 +4640,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return await dispatchHarness(descriptor.id, {
           "claude-code": () => { throw new HarnessOperationError("This harness has no live model catalog", 501, "unsupported-harness-operation"); },
           opencode: async () => json({ models: await oc.models(cwd) }),
+          grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
         });
       }
       const workerCancel = /^\/api\/sessions\/([^/]+)\/workers\/cancel$/.exec(path);
@@ -4723,6 +4783,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const nativeId = await dispatchHarness(descriptor.id, {
             opencode: async () => (await oc.fork(source.nativeSessionId!, source.cwd, op!.boundary, op!.before, beforeFork)).id,
             "claude-code": async () => (await forkClaudeHistory(source.nativeSessionId!, source.cwd, op!.boundary, claudeRoot, beforeFork)).sessionId,
+            grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
           });
           op = { ...op, nativeId, state: "confirmed" }; branches.save(op);
           const destination = await enrollBranch(op, source);
@@ -4776,6 +4837,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const pending = admissions.get(sessionId)!;
           // Do not confuse uncertain creation with same-known-identity retry.
           if (!pending.nativeId) return json({ error: "Native creation identity is unknown; operator inspection required", code: "native_creation_unknown" }, 409);
+          if (session.harness === "grok") throw new HarnessOperationError("Grok does not support native history checks", 501, "unsupported-harness-operation");
           if (session.harness === "opencode") await oc.assertIdle(pending.nativeId, pending.binding.executionCheckout);
           else if (!(await readClaudeHistory(pending.nativeId, pending.binding.executionCheckout, claudeRoot)).length && pending.operation !== "create") return json({ error: "Native history unavailable" }, 409);
           await admissions.register(sessionId); await persist(); admissions.ready(sessionId);
@@ -4898,6 +4960,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const input = await body(req);
         if (!input || Object.keys(input).some(key => !["prompt", "nativeStopped"].includes(key)) || typeof input.prompt !== "string" || !input.prompt.trim()) return json({ error: "Provide an authored context-update prompt and optional nativeStopped acknowledgement" }, 400);
         if (pendingInputs!.hasChain(session.sessionId)) return json({ error: "Explicit context updates cannot enter an existing ordinary-input chain", code: "pending-input-chain-active" }, 409);
+        if (session.harness === "grok") throw new WorkstreamAdapterError(501, "unsupported-harness-operation", "Grok prepared admission is not available");
         const prepared = await prepareUserInput({ ...input, sessionId: session.sessionId }, { ...preparationState(), defaultCwd: options.cwd,
           conversationId: () => crypto.randomUUID(), selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
           ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) });
@@ -4983,6 +5046,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const adapter = await router!.forAdmission(admission);
           if (!adapter) return json({ error: "Conversation has no repository domain", code: "not-repository" }, 409);
           // Single harness mapping: bans raw ternaries for session/native conversion.
+          if (session.harness === "grok") throw new HarnessOperationError("Grok is not available for handoff approval", 501, "unsupported-harness-operation");
           const nativeHarness = toNativeHarness(sessionHarness(session));
           const senderRef = adapter.reference(session);
           if (senderRef.harness !== nativeHarness) return json({ error: "Conversation harness changed", code: "harness-mismatch" }, 409);
@@ -5046,7 +5110,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (currentOwner) requireOwnedOperation({ sessionId: session.sessionId, harness: sessionHarness(session) }, currentOwner, "cancelOwnedRun");
           if (closing || storageFailed) return json({ error: "Bridge unavailable; cancellation state must be checked in the native harness" }, 503);
           const owner = pendingInputControls.stop(session.sessionId);
-          claudeRuns.cancelFollowup(session.sessionId);
+          if (session.harness !== "grok") claudeRuns.cancelFollowup(session.sessionId);
           pendingInputControls.cancellationWrite(() => workerStore.suppress(session.sessionId, true)); // Idle too; never cascade.
           userQuestions.pause(session.sessionId, "Stopped by the user. Resume explicitly to send the saved answers.");
           const worker = workerStore.getBySession(session.sessionId);
@@ -5393,6 +5457,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const recoveryTask = Promise.resolve().then(() => dispatchOwnedOperation(ownedSession(owner), owner, "recoverRun", {
       "claude-code": () => { throw new HarnessOperationError("Claude process ownership cannot be recovered", 501, "unsupported-harness-operation"); },
       opencode: () => recovering.operation === "compact" ? ocRuns.recoverNativeCompact(owner) : recovering.nativePhase === "preparing" ? ocRuns.finishNative(owner, "failed", "Bridge restarted before native submission") : ocRuns.monitorNative(owner),
+      grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
     }))
       .catch(error => { recoveryHealthy = false; failClosed(error, "startup-recovery"); }).finally(async () => {
         // Acquire the exact barrier while still owning. Release and done are not

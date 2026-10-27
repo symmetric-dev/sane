@@ -164,7 +164,7 @@ export class ChatStore {
   };
   private appAdmissionSource(conversation?: Conversation) {
     // Missing identity is not an alias for the currently selected native source.
-    if (!conversation?.authorityId || !conversation.nativeSessionId) return null;
+    if (!conversation?.authorityId || !conversation.nativeSessionId || (conversation.harness !== "claude-code" && conversation.harness !== "opencode")) return null;
     return { harnessId: conversation.harness, authorityId: conversation.authorityId,
       nativeSessionId: conversation.nativeSessionId, cwd: conversation.cwd };
   }
