@@ -36,15 +36,15 @@ export function createBrowserPairRoute(ports: BrowserPairRoutePorts): (req: Requ
     if (req.method !== "PUT") return json({ error: "Method not allowed" }, 405, { allow: "GET, PUT" });
     if (url.searchParams.size) throw new BrowserPairError(400, "browser-pair-input", "Pairing writes do not accept query parameters");
     const input = await body(req);
-    if (!isBrowserPairWrite(input)) throw new BrowserPairError(400, "browser-pair-input", "Provide an exact browser tab, conversation identity, operation and expected revision");
+    if (!isBrowserPairWrite(input)) throw new BrowserPairError(400, "browser-pair-input", "Provide an exact browser tab, operation, expected revision, and conversation identity for session-level changes");
     // Metadata only: no native refresh, prompt preparation or dispatch. The
     // browser owns its tab IDs; the server never fetches a tab's URL.
     const assertCurrent = () => {
       ports.assertDomainMutationOpen();
       if (req.signal.aborted || !ports.authenticated(req)) throw new BrowserPairError(409, "browser-pair-interrupted", "Pairing request is no longer current");
       if (!ports.catalog.workspaceName(input.workspaceId)) throw new BrowserPairError(404, "browser-pair-workspace", "Unknown browser workspace");
-      // Removing a stale link must remain possible after retirement/replacement.
-      if (input.operation === "remove") return;
+      // Removing or clearing a stale link must remain possible after retirement/replacement.
+      if (input.operation === "remove" || input.operation === "clear") return;
       const session = ports.findSession(input.session.sessionId);
       if (!session || !sameBrowserPairSession(input.session, { sessionId: session.sessionId, harness: ports.sessionHarness(session), authorityId: session.authorityId ?? "", nativeSessionId: session.nativeSessionId ?? "" })) throw new BrowserPairError(409, "browser-pair-identity", "Conversation identity changed; reconnect before pairing");
       ports.assertCatalogActive(session);

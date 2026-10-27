@@ -19,9 +19,10 @@
  * no `<!--` guidance comments (every template carries them with an
  * instruction to replace them, so an unedited template always fails).
  * Root docs have no template copy in `resources/`; the same three rules
- * apply uniformly. Job Specs reject unresolved {{...}} prose slots.
- * Execution job reports additionally enforce their title,
- * section structure, populated sections, and resolved placeholders.
+ * apply uniformly. Planning specs enforce their section structure, populated
+ * sections, and resolved placeholders; completed Job Specs retain their authored
+ * structure. Execution job reports additionally enforce their title and allow
+ * optional Operational Findings between Unresolved Issues and Recommendations.
  *
  * Research index divergences are warnings, never failures.
  */
@@ -32,6 +33,7 @@ import { createHash } from "node:crypto"
 import { ROOT_DOC_BY_TYPE } from "./bootstrap-registry.ts"
 import type { WorkstreamType } from "./workstream-type.ts"
 import { jobSpecTitle, validateExecutionReport, validateJobPlaceholders, type ReportDiagnostic } from "./execution-report-validation.ts"
+import { validateJobSpec, validateVerificationSpec } from "./planning-document-validation.ts"
 import { LIFECYCLE_PHASES, type LifecycleJob } from "./lifecycle.ts"
 
 export interface ValidationState {
@@ -162,7 +164,13 @@ export async function validatePhaseDocs(
     }
     if ((phase === "planning" && (relativePath.startsWith("execution/jobs/") || relativePath.startsWith("execution/verification/")))
       || (phase === "execution" && relativePath.startsWith("execution/test-reports/"))) {
-      const errors = validateJobPlaceholders(content, relativePath)
+      // Completed specs are immutable evidence, not candidates for a template migration.
+      const completed = db.jobs.some(job => job.spec_path === relativePath && job.status === "completed")
+      const errors = phase === "planning" && relativePath.startsWith("execution/jobs/") && !completed
+        ? validateJobSpec(content, relativePath)
+        : phase === "planning" && relativePath.startsWith("execution/verification/")
+          ? validateVerificationSpec(content, relativePath)
+          : validateJobPlaceholders(content, relativePath)
       if (errors.length) {
         problems.push(...errors.map((e) => `${e.path}:${e.line}: ${e.message}`))
         return

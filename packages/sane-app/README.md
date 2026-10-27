@@ -186,6 +186,45 @@ native services. The bridge must remain running and reachable. No service worker
 offline cache, or queued offline mutations are installed. After updating, restart
 the bridge and reload the installed app just as you would a browser tab.
 
+## File previews and pairing (PoC)
+
+Files and Browser use the same sidebar geometry. Browser tabs live in the sidebar;
+paired views can switch that sidebar between Files/Tabs and Agent history. The
+existing conversation composer stays mounted. On compact screens, Agent history
+opens in the main pane while the navigation drawer remains available for files/tabs.
+Switching top-level views retains their sidebar selection/visibility and the live
+Files/Notebook presentation within the current authenticated worktree. It does not
+reload a notebook merely because Chat or Browser was opened.
+
+Use the sidebar's Paired sessions menu to link a conversation to a browser tab or
+the selected worktree file. Source and Notebook presentations of one file share
+links; selecting another file does not move the active pairing. Links are passive:
+they neither send file/page content nor grant agent access. Host-browser Observe
+and Control grants remain separate. Existing browser links keep their storage and
+revision history; file links use `resource-pairs.json` in the App data directory.
+Entering Browser or Files through primary navigation restores links only for the
+currently selected conversation. The remembered resource wins when linked;
+otherwise a matching linked resource in that browsing scope is selected. Entering
+from Chat reveals Agent history. Closed browser tabs are never recreated, and an
+unrelated conversation is never restored as a fallback. Ordinary file/search/link
+navigation does not trigger this view-entry behavior.
+
+For a `.py` file, choose **Configure Notebook view** in File actions or the notebook
+setup panel. Use the top-row Source/Notebook selector. Configure an existing
+marimo server URL and its notebook root relative to this exact worktree. For
+example, a server launched for
+`notebooks/` maps `notebooks/example.py` to `?file=example.py`. This is an explicit
+user-provided mapping, not proof of the server's checkout or live kernel identity.
+
+Configuration is device-local and qualified by App store and worktree binding.
+Credentials and token-bearing URLs cannot be saved; use marimo's own authentication.
+Notebook content uses an isolated iframe, without SANE's browser navigation UI.
+Opening is explicit and may execute Python on the configured server. Unsaved editor
+changes are not transferred; save first or explicitly open the saved disk version.
+The PoC does not provision servers, install dependencies, pair live kernels with
+agents, or enable notebook inspection/edit/run tools. Browser embedding restrictions
+and authentication can still prevent a server from loading.
+
 ## Resource and identity boundaries
 
 - Fresh app catalog UUIDs, conversation/run history, navigation, settings and locks

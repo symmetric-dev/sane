@@ -1,8 +1,11 @@
 # Job {{id}}: {{job name}} Report
 
 <!-- Replace every {{...}} slot with authored content and remove
-guidance comments before delivery. Retain the directory convention and exactly
-these three H2 sections, once each and in order. H3–H6 grouping is optional.
+guidance comments before delivery. Retain the directory convention and the H2s
+Outcome, Unresolved Issues, and Recommendations once each and in order. Include
+Operational Findings between Unresolved Issues and Recommendations only when
+there are material operational findings; otherwise omit that section entirely.
+H3–H6 grouping is optional.
 Use the report destination supplied with the job assignment.
 Report the current outcome, including partial implementation, failure, or a
 discovered prerequisite gap. Apply the Job's Report Requirements. Update findings
@@ -18,7 +21,8 @@ Directory convention:
 
 <!-- State what was achieved and what remains incomplete. A useful outcome may
 be an evidenced finding rather than implemented code. Distinguish checks that
-passed, failed, or were not run, and state the limits of their evidence. -->
+passed, failed, or were not run, and state the limits of their evidence. Reference
+operational findings when they affect the outcome rather than repeating them. -->
 
 {{Current result and any incomplete part of the assignment.}}
 
@@ -27,21 +31,36 @@ passed, failed, or were not run, and state the limits of their evidence. -->
 
 ## Unresolved Issues
 
-<!-- Record unresolved defects, blockers, material deviations, and uncertainties
-affecting the assignment. Include required but incomplete work here. Remove
-resolved findings unless they explain a current limitation or material outcome.
-If none remain, state `No unresolved issues identified within the performed work.`
+<!-- Record unresolved implementation defects, missing behavior, material
+deviations, and uncertainties, with required next actions. Include required but
+incomplete implementation work here. Record operational problems in Operational
+Findings instead. Remove resolved findings unless they explain a current
+limitation or material outcome.
+If none remain, state `No unresolved implementation issues identified within the performed work.`
 That statement does not replace disclosure of verification limitations. -->
 
-- {{Current issue}} — Evidence: {{reference}}. Effect: {{requirement blocked, incorrect behavior, or remaining uncertainty}}.
+- {{Current issue}} — Evidence: {{reference}}. Effect: {{requirement blocked, incorrect behavior, or remaining uncertainty}}. Required action: {{correction or decision needed}}.
+
+## Operational Findings
+
+<!-- Optional: omit this heading and its contents when there are no material
+process, tooling, setup, or documentation problems. When one occurred, disclosure
+is required if a workaround affected correctness, evidence quality,
+reproducibility, or safe continuation. Record the expected approach, observed
+failure, workaround (if any), evidence and outcome impact, and required action.
+State whether it must be resolved before continuing; a successful workaround is
+not proof that the documented procedure is reliable or authorization to adopt it.
+Do not duplicate the finding in Unresolved Issues or Recommendations. -->
+
+- {{Operational problem}} — Expected: {{documented approach}}. Observed: {{failure and evidence}}. Workaround: {{alternative or none}}. Impact: {{evidence or continuation limitation}}. Required action: {{correction or decision, and whether needed before continuing}}.
 
 ## Recommendations
 
-<!-- Include an evidence-backed next action only when useful. Name the affected
-component or interface rather than assuming knowledge of the Execution Plan's job allocation.
-Distinguish a proposed action from a verified remedy; reference findings above
-instead of duplicating them. Required incomplete work remains in Unresolved Issues,
-even when a recommendation describes how to address it. State `None` when no
+<!-- Include an evidence-backed optional improvement or guidance only when
+useful. Name the affected component or interface rather than assuming knowledge
+of the Execution Plan's job allocation. Distinguish a proposed action from a
+verified remedy; reference findings above instead of duplicating them. Required
+corrections belong with their findings, not here. State `None` when no
 recommendation is warranted. -->
 
 - {{Suggested action}} for {{affected component or interface}}, because {{finding or evidence reference}}. Applies when {{relevant condition or limit}}.

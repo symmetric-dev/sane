@@ -146,7 +146,13 @@ export function WorkspaceSearchPanel({ children }: { children: ReactNode }) {
   const search = useWorkspaceSearchContext(), controller = useWorkspace();
   const [filtersOpen, setFiltersOpen] = useState(false);
   const enabled = search?.mode === "search" && controller.view === "code";
-  useEffect(() => { if (enabled && search?.focusRequest) search.input.current?.focus(); }, [enabled, search?.focusRequest]);
+  const focusedRequest = useRef({ scope: controller.scope, revision: 0 });
+  useEffect(() => {
+    if (focusedRequest.current.scope !== controller.scope) focusedRequest.current = { scope: controller.scope, revision: 0 };
+    if (!enabled || !search || focusedRequest.current.revision === search.focusRequest) return;
+    focusedRequest.current.revision = search.focusRequest;
+    if (search.focusRequest) search.input.current?.focus();
+  }, [controller.scope, enabled, search?.focusRequest]);
   useLayoutEffect(() => {
     if (!enabled || !search || search.showingFile || !search.results.current) return;
     search.results.current.scrollTop = search.resultScroll.current.key === search.state.key ? search.resultScroll.current.top : 0;
@@ -158,13 +164,12 @@ export function WorkspaceSearchPanel({ children }: { children: ReactNode }) {
       (search.resultButtons.current.get(pending.id) ?? search.results.current).focus({ preventScroll: true });
     }
   }, [search?.showingFile, search?.state.key, enabled]);
-  if (!enabled || !search) return <>{children}</>;
-  const { options, matches, opened, groups } = search;
+  const options = search?.options ?? initialOptions, matches = search?.matches ?? [], opened = search?.opened, groups = search?.groups ?? new Map<string, WorkspaceSearchMatch[]>();
   const fileMatches = opened ? groups.get(opened.path) ?? [] : [];
   const fileIndex = opened ? fileMatches.indexOf(opened) : -1;
   const plainKey = (event: KeyboardEvent) => !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.nativeEvent.isComposing;
   const keyDown = (event: KeyboardEvent) => {
-    if (!plainKey(event)) return;
+    if (!enabled || !search || !plainKey(event)) return;
     const node = event.target as HTMLElement;
     const inResults = [...search.resultButtons.current.values()].includes(node as HTMLButtonElement);
     const index = matches.findIndex(match => searchMatchId(match) === search.activeId);
@@ -182,8 +187,8 @@ export function WorkspaceSearchPanel({ children }: { children: ReactNode }) {
       event.preventDefault(); search.open(matches[inResults ? Math.max(0, index) : 0]!);
     }
   };
-  return <div className="workspace-search-panel" onKeyDown={keyDown} role="region" aria-label="Search saved files panel">
-    <div className="workspace-search-toolbar">
+  return <div className="workspace-search-panel" onKeyDown={keyDown} role={enabled ? "region" : undefined} aria-label={enabled ? "Search saved files panel" : undefined}>
+    {search && <div className="workspace-search-toolbar" hidden={!enabled}>
       <div className="workspace-search-query-row">
         <label className="workspace-search-query">Find text<input ref={search.input} type="search" value={options.query} onChange={event => search.update({ query: event.target.value })} placeholder="Literal text (not a regular expression)" /></label>
         <div className="workspace-search-options">
@@ -199,16 +204,16 @@ export function WorkspaceSearchPanel({ children }: { children: ReactNode }) {
       </div>}
       <p className="workspace-search-scope">Saved files only in this worktree. Unsaved buffers are not searched or replaced.</p>
       <WorkspaceSearchStatus />
-    </div>
-    {search.showingFile && opened && <div className="workspace-search-filebar">
+    </div>}
+    {search && opened && <div className="workspace-search-filebar" hidden={!enabled || !search.showingFile}>
       <button ref={search.allResultsButton} type="button" onClick={search.allResults}>All results</button>
       <span className="workspace-search-filename" title={opened.path}>{opened.path}</span>
       <span aria-label="Current file match">{fileIndex + 1} of {fileMatches.length}</span>
       <button type="button" aria-label="Previous match" disabled={!controller.buffer || controller.opening || fileIndex <= 0} onClick={() => search.open(fileMatches[fileIndex - 1]!)}>↑</button>
       <button type="button" aria-label="Next match" disabled={!controller.buffer || controller.opening || fileIndex < 0 || fileIndex >= fileMatches.length - 1} onClick={() => search.open(fileMatches[fileIndex + 1]!)}>↓</button>
     </div>}
-    <div ref={search.results} className="workspace-search-results" hidden={search.showingFile} role="region" tabIndex={-1} aria-label="Saved-file search results" aria-busy={!!search.state.loading}
-      onScroll={event => { if (!search.showingFile) search.resultScroll.current = { key: search.state.key, top: event.currentTarget.scrollTop }; }}>
+    {search && <div ref={search.results} className="workspace-search-results" hidden={!enabled || search.showingFile} role="region" tabIndex={-1} aria-label="Saved-file search results" aria-busy={!!search.state.loading}
+      onScroll={event => { if (enabled && !search.showingFile) search.resultScroll.current = { key: search.state.key, top: event.currentTarget.scrollTop }; }}>
       {[...groups].map(([path, entries]) => <section key={path} aria-label={path}>
         <h3>{path}<span>{entries.length}</span></h3><ul>{entries.map(match => {
           const id = searchMatchId(match);
@@ -219,8 +224,10 @@ export function WorkspaceSearchPanel({ children }: { children: ReactNode }) {
           </button></li>;
         })}</ul>
       </section>)}
-    </div>
-    {search.showingFile && <div className="workspace-search-file">{children}</div>}
+    </div>}
+    {/* A fixed owner keeps Source and the notebook iframe attached through search,
+        all-results, and shell navigation; hiding never starts a notebook. */}
+    <div className="workspace-search-file" hidden={!!enabled && !search?.showingFile}>{children}</div>
   </div>;
 }
 

@@ -60,6 +60,7 @@ export type ClaudeRunDependencies = {
   canonicalExecution?: CanonicalExecutionProvider;
   /** Recorded worker pin only. Absent must not upgrade an unpinned resume. */
   explicitProtocol?: (sessionId: string) => WorkerProtocolPin | undefined;
+  browserMcp?: (sessionId: string, runId: string) => Promise<{ mcpConfigPath: string; allowedTools: string[] } | null>;
 };
 
 type SpawnOptions = {
@@ -659,11 +660,23 @@ export class ClaudeRunService {
         if (identity && !privateExecution) throw new AgentLaunchConfigurationError("SANE Claude roles require canonical execution configuration");
         // Base sessions grant parent messaging without inheriting bridge context.
         const ccAgent = privateExecution?.agent, permissions = privateExecution?.permissions ?? { allow: ["mcp__sane__sane_worker_message"] };
+        const session = assertSource();
+        // Browser MCP is a Claude launch argument, not a pinned policy or a shared Stop control.
+        // Compact, workers, and an omitted harness do not receive it. Tool names are visible
+        // only on the synthetic Base allow list; canonical permissions stay byte-stable.
+        const browserMcp = operation !== "compact" && session.harness === "claude-code" && session.agentKind !== "worker" && deps.browserMcp
+          ? await steps.step("transport.setup", () => { assertSource(); return deps.browserMcp!(sessionId, runId); })
+          : null;
+        assertSource();
+        const launchPermissions = browserMcp && !privateExecution
+          ? { allow: [...(Array.isArray(permissions.allow) ? permissions.allow : []), ...browserMcp.allowedTools] }
+          : permissions;
         const settingsPath = join(this.options.dataDir, `${runId}.settings.json`);
-        const settings = JSON.stringify({ hooks, ...(permissions ? { permissions } : {}) });
+        const settings = JSON.stringify({ hooks, ...(launchPermissions ? { permissions: launchPermissions } : {}) });
         await steps.step("transport.setup", () => deps.enqueue(() => runtime.writeSettings(settingsPath, settings)));
         const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", nativeSessionId!, "--settings", settingsPath];
         if (operation !== "compact") args.push("--input-format", "stream-json");
+        if (browserMcp) args.push("--mcp-config", browserMcp.mcpConfigPath);
         if (privateExecution) args.push(...privateExecution.args);
         // Never revive an old system-context snapshot on a canonical SANE resume.
         if (resume && privateExecution) args.push("--system-prompt-snapshot", "off");

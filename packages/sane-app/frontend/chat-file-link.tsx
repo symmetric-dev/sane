@@ -31,7 +31,7 @@ export function ChatFileNavigationProvider({ children, navigate, pairedSessionId
   const open = (sessionId: string, path: string, expected?: ExpectedFileScope) => {
     const state = store.snapshot(), repository = catalog.snapshot();
     const conversation = state.conversations.find(item => item.id === sessionId);
-    const conversationVisible = repository.navigation.view === "chat" || repository.navigation.view === "browser" && pairedSessionId === sessionId;
+    const conversationVisible = repository.navigation.view === "chat" || ["browser", "code"].includes(repository.navigation.view) && pairedSessionId === sessionId;
     if (state.phase !== "ready" || state.selected !== sessionId || !conversationVisible) return "Open this conversation in Chat before opening its files.";
     if (!conversation?.workspaceId || !conversation.worktreeId || conversation.association !== "resolved") return "This conversation's execution worktree is unavailable.";
     const { workspaceId, worktreeId } = conversation;

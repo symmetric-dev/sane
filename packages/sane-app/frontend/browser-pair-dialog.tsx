@@ -7,20 +7,22 @@ import { compactCommand } from "./compaction";
 import { ShellDialog } from "./shell-dialog";
 import { store } from "./store";
 import { ApiError } from "./cc-client";
-import { browserTabLabel, browserTabs } from "./browser-tabs";
+import { browserTabs } from "./browser-tabs";
+import { previewPairTargetLabel } from "./preview-pair-target";
 import { readBrowserPairs, writeBrowserPairs } from "./browser-pair-client";
-import type { BrowserPairMode, BrowserPairSnapshot } from "../shared/browser-pair-contract";
+import type { PairMode as BrowserPairMode, PairSnapshot as BrowserPairSnapshot } from "../shared/resource-pair-contract";
 import "./browser-pair-dialog.css";
 
 type Props = {
   intent: BrowserPairIntent;
   name: string;
+  initialMode?: BrowserPairMode;
   pair: (sessionId: string, expected: BrowserPairIntent) => boolean;
   close: () => void;
 };
 
 /** Mounted at shell level: activating the pair cannot destroy its message or receipt. */
-export function BrowserPairDialog({ intent, name, pair, close }: Props) {
+export function BrowserPairDialog({ intent, name, initialMode = "replace", pair, close }: Props) {
   const [text, setText] = useState("");
   const [nativeStopped, setNativeStopped] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -29,7 +31,7 @@ export function BrowserPairDialog({ intent, name, pair, close }: Props) {
   const [stale, setStale] = useState(false);
   const [loadingLinks, setLoadingLinks] = useState(true);
   const [links, setLinks] = useState<BrowserPairSnapshot | null>(null);
-  const [mode, setMode] = useState<BrowserPairMode>("replace");
+  const [mode, setMode] = useState<BrowserPairMode>(initialMode);
   const savedLinks = useRef<BrowserPairSnapshot | null>(null);
   const activating = useRef(false);
   const messageId = useId(), acknowledgementId = useId();
@@ -50,7 +52,7 @@ export function BrowserPairDialog({ intent, name, pair, close }: Props) {
       load.abort();
       operation.current?.abort();
       setStale(true);
-      setError("The conversation, browser tab, sign-in, or workspace changed. Close this dialog and connect again. Your optional message has not been redirected.");
+      setError("The conversation, resource, sign-in, or workspace changed. Close this dialog and connect again. Your optional message has not been redirected.");
     };
     const stopStore = store.subscribe(check), stopCatalog = catalog.subscribe(check), stopTabs = browserTabs.subscribe(check);
     check();
@@ -88,7 +90,7 @@ export function BrowserPairDialog({ intent, name, pair, close }: Props) {
         savedLinks.current = saved; setLinks(saved);
         writingLinks = false;
       }
-      if (!alive.current || controller.signal.aborted || invalidated.current || !browserPairIntentMatches(intent, store.snapshot(), catalog.snapshot())) throw new Error("Links were saved for the original tab, but the pairing view changed. Close this dialog and connect again.");
+      if (!alive.current || controller.signal.aborted || invalidated.current || !browserPairIntentMatches(intent, store.snapshot(), catalog.snapshot())) throw new Error("Links were saved for the original resource, but the pairing view changed. Close this dialog and connect again.");
       activating.current = true;
       if (!callbacks.current.pair(intent.sessionId, intent)) {
         setError("Links were saved, but this conversation cannot be opened in the paired view now. No message was sent. Close this dialog and connect again.");
@@ -140,7 +142,7 @@ export function BrowserPairDialog({ intent, name, pair, close }: Props) {
       if (writingLinks && failure instanceof ApiError && failure.status === 409) setStale(true);
       setError(posted ? "Acceptance is unknown. Check this conversation’s history before sending again. No automatic retry will occur."
         : writingLinks ? `${failure instanceof Error ? failure.message : "Pairing update was not confirmed."} Close this dialog and connect again to check stored links. No optional message was sent and your text is preserved; no automatic retry will occur.`
-        : `${failure instanceof Error ? failure.message : "Could not prepare the message."} ${savedLinks.current ? "Browser links remain saved." : "No browser link was saved."} No message was sent and your optional text is preserved.`);
+        : `${failure instanceof Error ? failure.message : "Could not prepare the message."} ${savedLinks.current ? "Resource links remain saved." : "No resource link was saved."} No message was sent and your optional text is preserved.`);
     } finally {
       stopStore(); stopCatalog(); stopTabs();
       if (operation.current === controller) operation.current = null;
@@ -149,24 +151,25 @@ export function BrowserPairDialog({ intent, name, pair, close }: Props) {
     }
   };
   const tabs = browserTabs.snapshot(intent.target.workspaceId);
-  const tabIndex = tabs.tabs.findIndex(tab => tab.id === intent.target.tabId);
-  const tabName = tabIndex < 0 ? "Original browser tab" : browserTabLabel(tabs.tabs[tabIndex]!, tabIndex);
-  return <ShellDialog title="Pair conversation with browser view?" close={dismiss} closeDisabled={busy} className="browser-pair-dialog">
+  const targetName = previewPairTargetLabel(intent.target, tabs);
+  const browser = intent.target.kind === "browser";
+  return <ShellDialog title={`Pair conversation with ${browser ? "browser" : "file"} view?`} close={dismiss} closeDisabled={busy} className="browser-pair-dialog">
     <form onSubmit={event => { event.preventDefault(); void submit(); }}>
       <p className="browser-pair-dialog-name">{name}</p>
-      <p className="muted">Use this conversation alongside the browser view. Its execution worktree stays unchanged.</p>
-      <p className="browser-pair-dialog-tab">Browser tab: <strong>{tabName}</strong></p>
-      {loadingLinks ? <p className="muted" role="status">Loading paired sessions…</p> : links && <p className="muted">{links.sessions.length} paired {links.sessions.length === 1 ? "session" : "sessions"} saved for this tab.</p>}
+      <p className="muted">Use this conversation alongside the {browser ? "browser" : "file"} view. Its execution worktree and your browsed checkout stay unchanged.</p>
+      <p className="browser-pair-dialog-tab">{browser ? "Browser tab" : "File"}: <strong>{targetName}</strong></p>
+      {!browser && <p className="muted">Source and Notebook share the same file pairing.</p>}
+      {loadingLinks ? <p className="muted" role="status">Loading paired sessions…</p> : links && <p className="muted">{links.sessions.length} paired {links.sessions.length === 1 ? "session" : "sessions"} saved for this resource.</p>}
       <fieldset className="browser-pair-dialog-mode" disabled={busy || unknown || stale || loadingLinks || !links || !!savedLinks.current}>
         <legend>Paired sessions</legend>
-        <label><input type="radio" name={`${messageId}-mode`} value="replace" checked={mode === "replace"} onChange={() => setMode("replace")} /><span>Replace all paired sessions <small>Keep only this conversation linked to this tab (default).</small></span></label>
-        <label><input type="radio" name={`${messageId}-mode`} value="add" checked={mode === "add"} onChange={() => setMode("add")} /><span>Add to paired sessions <small>Keep this tab’s existing links and add this conversation.</small></span></label>
+        <label><input type="radio" name={`${messageId}-mode`} value="replace" checked={mode === "replace"} onChange={() => setMode("replace")} /><span>Replace all paired sessions <small>Keep only this conversation linked to this resource (default).</small></span></label>
+        <label><input type="radio" name={`${messageId}-mode`} value="add" checked={mode === "add"} onChange={() => setMode("add")} /><span>Add to paired sessions <small>Keep this resource’s existing links and add this conversation.</small></span></label>
       </fieldset>
-      <p className="muted">Links to other tabs are unchanged. The sidebar shows one conversation at a time. Saved links do not trigger agent actions or grant browser access.</p>
+      <p className="muted">Links to other resources are unchanged. The sidebar shows one conversation at a time. Saved links do not trigger agent actions or grant browser access.</p>
       <label htmlFor={messageId}>Message <span className="muted">(optional)</span></label>
       <textarea id={messageId} rows={4} value={text} disabled={busy || unknown} onChange={event => setText(event.target.value)} placeholder="Pair without a message, or send a follow-up to this conversation" />
       {needsAck && <label className="browser-pair-dialog-ack" htmlFor={acknowledgementId}><input id={acknowledgementId} type="checkbox" checked={nativeStopped} disabled={busy || unknown} onChange={event => setNativeStopped(event.target.checked)} /><span>I confirm external assistant execution is stopped before sending.</span></label>}
-      <p className="muted">Only your message is sent. Browser URLs, screenshots, and page content are not included. Existing chat drafts are preserved.</p>
+      <p className="muted">Only your message is sent. File contents, notebook outputs, browser URLs, screenshots, and page content are not included. Existing chat drafts are preserved.</p>
       {error && <p className="notice error" role="alert">{error}</p>}
       <div className="browser-pair-dialog-actions"><button type="button" disabled={busy} onClick={dismiss}>Cancel</button><button type="submit" className="primary-button" disabled={busy || unknown || stale || loadingLinks || !links}>{busy ? "Pairing…" : "OK"}</button></div>
     </form>

@@ -14,5 +14,8 @@ focus.
 See [Terminal performance gaps](TERMINAL-PERFORMANCE-GAPS.md) for implemented
 mitigations, remaining freezes, and opt-in diagnostics. Investigation is paused.
 
+See [Shared local browser plan](SHARED-BROWSER-PLAN.md) for the proposed host-owned
+Chromium viewer, human/agent control, captures, and diagnostics over Tailscale.
+
 - No old-workstream compatibility, migration, or regression parity required.
 - Coordinate with unbound conversations and Markdown here, not SANE tools.

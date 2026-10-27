@@ -57,6 +57,11 @@ export function workspaceBufferIsDirty(catalogWorkspaceId: string, worktreeId: s
   const buffer = roots.get(JSON.stringify([catalogWorkspaceId, worktreeId, bindingRevision, root]))?.buffers.get(path);
   return !!buffer && dirty(buffer);
 }
+/** Existing presentation only; never acquires a worktree or reads a file. */
+export function workspaceRememberedSelection(catalogWorkspaceId: string, worktreeId: string, bindingRevision: string, root: string) {
+  const remembered = roots.get(JSON.stringify([catalogWorkspaceId, worktreeId, bindingRevision, root]));
+  return remembered ? { path: remembered.selected, comparison: remembered.comparison } : null;
+}
 export function invalidateWorkspaceRequests() { invalidateCoalescedRequests(); epoch++; for (const root of roots.values()) { root.generation++; root.git = undefined; root.gitVersion++; root.mutations.clear(); for (const buffer of root.buffers.values()) { buffer.saving = false; buffer.checking = false; } } notifyWorkspace(); }
 export function resetWorkspaceState() { invalidateCoalescedRequests(); epoch++; roots.clear(); notifyWorkspace(); }
 const requestId = (workspace: Workspace) => JSON.stringify([workspace.catalogWorkspaceId, workspace.worktreeId]);

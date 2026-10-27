@@ -1,6 +1,6 @@
 import { readFile, writeFile, appendFile, stat, readdir, realpath, open } from "node:fs/promises";
-import { constants, readFileSync, statSync, writeFileSync } from "node:fs";
-import { resolve, dirname, join, isAbsolute } from "node:path";
+import { constants, readFileSync, statSync, writeFileSync, lstatSync, realpathSync } from "node:fs";
+import { resolve, dirname, join, isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -11,6 +11,9 @@ import { requireNativeBearer, requireStartupReady } from "./bridge-native-auth";
 import { CodeShareStore, CodeShareError } from "./code-share-store";
 import { BrowserPairStore, BrowserPairError } from "./browser-pair-store";
 import { createBrowserPairRoute } from "./browser-pair-routes";
+import { sameBrowserPairSession } from "../shared/browser-pair-contract";
+import { ResourcePairStore, ResourcePairError } from "./resource-pair-store";
+import { isPairLinkedSnapshot, isPairTarget, isPairWrite, type PairSession, type PairTarget } from "../shared/resource-pair-contract";
 import { CodeShareService } from "./code-share-service";
 import { denyCodeShareIdentity, matchesCodeShareTool, matchesCodeSharePart, readCodeShareContinuation } from "./code-share-evidence";
 import type { NativeCodeShareRequest } from "../shared/code-share-contract";
@@ -102,6 +105,9 @@ import { CatalogService } from "./catalog";
 import { WorkspaceCreationService } from "./workspace-creation";
 import { TerminalService, type TerminalSocketData } from "./terminal";
 import { createTerminalRoute, matchesTerminalRoute } from "./terminal-routes";
+import { BrowserService, type BrowserSocketData } from "./browser/browser-service";
+import { BrowserGrantError } from "./browser/browser-grant-registry";
+import { BROWSER_MCP_TOOLS } from "../shared/browser-host-contract";
 import { ScienceService, scienceRoute } from "./science";
 import { ScienceChatService, scienceChatRoute } from "./science-chat-service";
 import { ScienceStore } from "./science-store";
@@ -367,6 +373,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let pendingInputRecovery: PendingInputRecovery | undefined;
   let pendingInputWake: PendingInputWake | undefined;
   let sessionNaming: SessionNamingService | undefined;
+  const namingSubmissions = new WeakMap<Run, string>();
   const queueServiceTasks = new Set<Promise<void>>();
   const queueAdmissionTasks = new Set<Promise<void>>();
   let classifyingPendingInputs = false;
@@ -899,6 +906,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     failClosed, emit, persist, enqueue, execution, executionContext, compactExecution,
     refreshCompactHistory, assertWorkerDeliverySubmission, canonicalExecution,
     explicitProtocol: sessionId => workerStore.getBySession(sessionId)?.protocol,
+    browserMcp: async (sessionId, runId) => {
+      const session = meta.sessions.find(s => s.sessionId === sessionId), admission = admissions.get(sessionId);
+      if (!session || !admission || admission.state !== "ready" || session.agentKind === "worker" || !session.nativeSessionId || !session.authorityId) return null;
+      // Credential issuance is Claude-only and must not default an omitted harness to Claude Code.
+      try {
+        if (validateHarness(session.harness) !== "claude-code" || toSessionHarness(admission.source.descriptor.harness) !== "claude-code"
+          || admission.nativeId !== session.nativeSessionId || admission.source.authorityId !== session.authorityId
+          || admission.binding.executionCheckout !== session.cwd) return null;
+      } catch { return null; }
+      const token = browsers.issueSessionCredential({ sessionId: session.sessionId, harness: "claude-code", authorityId: session.authorityId, nativeSessionId: session.nativeSessionId });
+      const credPath = join(options.dataDir, `${runId}.browser-credential.json`);
+      await writeFile(credPath, JSON.stringify({ version: 1, url: `http://127.0.0.1:${hookServer.port}/native/browser`, token, pid: process.pid, sessionId: session.sessionId }), { mode: 0o600 });
+      const mcpConfigPath = join(options.dataDir, `${runId}.browser-mcp.json`);
+      await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: { "sane-browser": { type: "stdio", command: process.execPath, args: [join(root, "src/browser/browser-mcp-server.ts"), credPath] } } }), { mode: 0o600 });
+      return { mcpConfigPath, allowedTools: BROWSER_MCP_TOOLS.map(name => `mcp__sane-browser__${name}`) };
+    },
   });
   const handoffs = new HandoffService(admissions, catalog, router, store.sources, () => meta.sessions, () => {
     if (closing || storageFailed || meta.reconciliationRequired) throw new WorkstreamAdapterError(503, "handoff-owner-unavailable", "App execution owner is unavailable");
@@ -1243,6 +1266,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return reservation;
   }
   function emit(run: Run, kind: Event["kind"], data: unknown) {
+    let namingText: string | undefined;
+    if (kind === "submission" && namingSubmissions.has(run)) {
+      const original = namingSubmissions.get(run)!;
+      namingSubmissions.delete(run);
+      // Only live first-submission evidence qualifies. Never backfill a name
+      // from a later send, even if an earlier automatic attempt was unavailable.
+      try {
+        const list = events.get(run.runId);
+        if (list && !list.some(event => event.kind === "submission") && !meta.runs.some(previous => previous.sessionId === run.sessionId && previous.runId !== run.runId
+          && previous.operation !== "compact" && journalEvents(previous.runId).some(event => event.kind === "submission"))) namingText = original;
+      } catch { /* Optional naming cannot interfere with submission. */ }
+    }
     const reservation = reserveJournalEvent(run, kind, data);
     // Preserve the global metadata/write queue. Only the physical run-log append
     // changes implementation; there is no asynchronous append left in flight for
@@ -1254,11 +1289,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // onBound only staged these immutable source facts; it certified no send.
       boundContextAssociations.delete(owner!);
       const paired = reserveJournalEvent(run, "context", association);
-      return enqueue(async () => { runJournals.commit(paired); });
+      const contextCommitted = enqueue(async () => { runJournals.commit(paired); });
+      if (namingText !== undefined) {
+        const original = namingText;
+        void contextCommitted.then(() => { setTimeout(() => sessionNaming?.submitted(run.sessionId, run, original), 0); }).catch(() => {});
+      }
+      return contextCommitted;
     }
-    if (kind === "status" && (data as { status?: string } | null)?.status === "completed" && run.operation !== "compact") {
-      // Generation runs on a later turn, never inside emit/finalization's queue.
-      void committed.then(() => { setTimeout(() => sessionNaming?.completed(run.sessionId, run, events.get(run.runId) ?? []), 0); }).catch(() => {});
+    if (namingText !== undefined) {
+      const original = namingText;
+      // Both harnesses commit submissions here. Generation runs on a later
+      // turn, never inside the journal queue or the run admission barrier.
+      void committed.then(() => { setTimeout(() => sessionNaming?.submitted(run.sessionId, run, original), 0); }).catch(() => {});
     }
     return committed;
   }
@@ -1384,13 +1426,41 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   if (journalByteNotes.length && !await updates.noteJournalBytes(journalByteNotes)) throw new Error("Conversation update journal length note failed; reconciliation required");
   if (options.reconcileInterrupted) meta.reconciliationRequired = false;
   await persist();
-  let origin = "";
+  let origin = "", browserLoopbackOrigin = "";
   const auth = new BridgeAuth(authOptions, {
-    getOrigin: () => origin, revokeTerminal: token => { terminals.revoke(token); chromePush?.revokeOwner(token); },
+    getOrigin: () => origin, revokeTerminal: token => { terminals.revoke(token); browsers.revoke(token); chromePush?.revokeOwner(token); },
   });
   const terminalLog = join(options.dataDir, "terminal-performance.log");
   const terminals = new TerminalService(catalog, token => auth.validTerminalToken(token), line => {
     void appendFile(terminalLog, `${line}\n`, { mode: 0o600 }).catch(() => {});
+  });
+  const browsers = new BrowserService({ dataDir: options.dataDir, validToken: token => auth.validTerminalToken(token),
+    getOrigins: () => ({ publicOrigin: origin, loopbackOrigin: browserLoopbackOrigin }),
+    onError: error => {
+      void appendFile(join(options.dataDir, "browser-errors.log"), `${new Date().toISOString()} ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`, { mode: 0o600 }).catch(() => {});
+    },
+    validateSession: (target, identity) => {
+      const session = meta.sessions.find(session => session.sessionId === identity.sessionId), admission = admissions.get(identity.sessionId);
+      let sessionHarnessId: Harness;
+      try { sessionHarnessId = validateHarness(session?.harness); }
+      catch { throw new BrowserGrantError(409, "browser-grant-identity", "Conversation identity or workspace changed; reconnect before granting browser access"); }
+      if (!session || !admission || admission.state !== "ready" || admission.binding.workspaceId !== target.workspaceId
+        || identity.harness !== sessionHarnessId || identity.authorityId !== session.authorityId || identity.nativeSessionId !== session.nativeSessionId) throw new BrowserGrantError(409, "browser-grant-identity", "Conversation identity or workspace changed; reconnect before granting browser access");
+      const association = catalog.association(session.sessionId);
+      let admittedHarness: Harness;
+      try { admittedHarness = toSessionHarness(admission.source.descriptor.harness); }
+      catch { throw new BrowserGrantError(409, "browser-grant-identity", "Conversation admission or workspace changed; reconnect before granting browser access"); }
+      if (association.association !== "resolved" || association.workspaceId !== target.workspaceId || association.worktreeId !== admission.binding.worktreeId
+        || admission.nativeId !== session.nativeSessionId || admission.source.authorityId !== session.authorityId
+        || admittedHarness !== sessionHarnessId
+        || admission.binding.executionCheckout !== session.cwd) throw new BrowserGrantError(409, "browser-grant-identity", "Conversation admission or workspace changed; reconnect before granting browser access");
+      assertCatalogActive(session);
+      if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || session.attachment?.state === "pending"
+        || branches.replaced(session.sessionId) || branches.pending(session.sessionId)
+        || session.authorityId !== nativeSource(session.harness)) throw new BrowserGrantError(409, "browser-grant-unavailable", "This conversation is unavailable for browser access");
+      catalog.assertBinding(admission.binding.workspaceId, admission.binding.worktreeId, admission.binding.executionCheckout, admission.binding.bindingRevision);
+      return undefined;
+    },
   });
   const branchContext = (id: string) => ({ actor: { kind: "system" as const }, correlationId: id });
   const branchFingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -2007,6 +2077,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const { conversationId, cwd, harness } = prepared.binding;
     const input = prepared.normalized, { model, effort, agent } = prepared.configuration;
     const { queuedFollowupId, publish } = options;
+    let namingText = prepared.prompt;
     // Copy explicit context before any await. Hooks are capabilities, not mutable
     // settings aliases; IDs, intent and origin cannot drift during preflight.
     const context = options.context && Object.freeze({ ...options.context, intent: Object.freeze({ ...options.context.intent }), evidence: options.context.evidence && Object.freeze({ ...options.context.evidence }) });
@@ -2017,6 +2088,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         || context?.runId !== receipt.association?.runId || (context?.nativeCommandId ?? null) !== receipt.association?.nativeCommandId
         || context?.origin !== "user" || context.delivery !== "idle-only" || queuedFollowupId) throw new UserInputPreparationError("Science admission must use its exact reserved text and original dispatch identity", 409);
       if (receipt.intent.version !== 3) throw new UserInputPreparationError("Historical science dispatch text cannot be converted or replayed through shared context", 409, "science-legacy-context-unproven");
+      namingText = receipt.intent.text;
     }
     if (context && (context.delivery !== "idle-only" && context.delivery !== "native-queued-handoff"
       || !["user", "queued-user", "questionnaire-response", "worker-report", "worker-exchange", "handoff"].includes(context.origin))) throw new UserInputPreparationError("Explicit admission requires a known delivery policy and origin", 409);
@@ -2220,7 +2292,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         assertPreparedUserInputCurrent(prepared, preparationState(), installedSnapshot);
         if (run.runId !== runId || !meta.runs.includes(run) || !configured.saneExecution || !configured.saneContext?.package) throw new UserInputPreparationError("Original canonical activation intent is unavailable", 409);
       },
-    } : undefined);
+    } : undefined);    // Capture only user-origin input before role/science/context expansion.
+    // Other dispatch origins and inherited/attached sessions remain ineligible.
+    if ((origin === "user" || origin === "queued-user") && session.titleAutoEligible && session.agentKind !== "worker" && !session.attachment) namingSubmissions.set(run, namingText);
     const lifecycle = executePrompt(lease, session, run, effectivePrompt, prepared.resume, origin, {
       requestId: intent.requestId,
       coordinatorIntent: intent.kind,
@@ -2266,6 +2340,56 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const qualifiedWorkerInvocations = new WeakMap<NativeWorkerInvocation, { admission: Admission; session: Session; starting: boolean; continuation?: WorkerContinuationAuthorization }>();
   const codeShares = new CodeShareStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "code-share-storage"));
   const browserPairs = new BrowserPairStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "browser-pair-storage"));
+  const resourcePairs = new ResourcePairStore(options.dataDir, store.manifest.storeId, browserPairs, error => failClosed(error, "resource-pair-storage"));
+  // Shared admission fence for both APIs. Removal never requires the linked
+  // conversation to remain active, so stale links can still be removed.
+  function assertPairConversation(input: { operation: "clear" } | { operation: "add" | "replace" | "remove"; session: PairSession }, PairError: typeof ResourcePairError | typeof BrowserPairError) {
+    if (input.operation === "remove" || input.operation === "clear") return;
+    const prefix = PairError === BrowserPairError ? "browser-pair" : "resource-pair";
+    const expected = input.session, session = meta.sessions.find(session => session.sessionId === expected.sessionId);
+    if (!session || !sameBrowserPairSession(expected, { sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId ?? "", nativeSessionId: session.nativeSessionId ?? "" })) throw new PairError(409, `${prefix}-identity`, "Conversation identity changed; reconnect before pairing");
+    assertCatalogActive(session);
+    if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || session.attachment?.state === "pending"
+      || branches.replaced(session.sessionId) || branches.pending(session.sessionId) || catalog.association(session.sessionId).association !== "resolved"
+      || session.authorityId !== nativeSource(session.harness)) throw new PairError(409, `${prefix}-unavailable`, `This conversation is unavailable for ${PairError === BrowserPairError ? "browser" : "resource"} pairing`);
+  }
+  async function resourcePairTargetFence(target: PairTarget, requireFile: boolean): Promise<() => void> {
+    if (target.kind === "browser") return () => {
+      if (!catalog.workspaceName(target.workspaceId)) throw new ResourcePairError(404, "resource-pair-workspace", "Unknown browser workspace");
+    };
+    // Selection metadata plus synchronous catalog inode pins: unlike binding(),
+    // this passive operation does not run Git discovery or read file contents.
+    const workspace = await catalog.registered(target.workspaceId);
+    return resourcePairFileTargetFence(target, workspace, requireFile);
+  }
+  function resourcePairFileTargetFence(target: Extract<PairTarget, { kind: "file" }>, workspace: Awaited<ReturnType<CatalogService["registered"]>>, requireFile: boolean): () => void {
+    const tree = workspace.worktrees.find(tree => tree.worktreeId === target.worktreeId);
+    if (!tree) throw new ResourcePairError(404, "resource-pair-worktree", "Unknown file worktree");
+    const { root, bindingRevision } = tree;
+    const inside = (parent: string, child: string) => { const path = relative(parent, child); return !isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`); };
+    const check = () => {
+      catalog.assertBinding(target.workspaceId, target.worktreeId, root, bindingRevision);
+      const data = realpathSync(options.dataDir), path = join(root, target.path);
+      const protectedPaths = [data, workspace.commonDir, tree.gitDir, ...domainProtectedPaths].filter((path): path is string => !!path);
+      if (root.split(sep).some(part => [".git", ".sane"].includes(part.toLowerCase())) || !inside(root, path)
+        || protectedPaths.some(protectedPath => inside(protectedPath, root) || inside(protectedPath, path))) throw new ResourcePairError(403, "resource-pair-path", "File path is not accessible");
+      if (!requireFile) return;
+      let cursor = root;
+      try {
+        const parts = target.path.split("/");
+        for (let i = 0; i < parts.length; i++) {
+          cursor = join(cursor, parts[i]!);
+          const info = lstatSync(cursor);
+          if (info.isSymbolicLink() || realpathSync(cursor) !== cursor || (i < parts.length - 1 ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) throw new ResourcePairError(403, "resource-pair-file", "Pair an existing regular worktree file without symlink or hardlink traversal");
+        }
+      } catch (error) {
+        if (error instanceof ResourcePairError) throw error;
+        throw new ResourcePairError(409, "resource-pair-file", "File is unavailable; reopen it before pairing");
+      }
+    };
+    check();
+    return check;
+  }
   function codeShareSession(request: Pick<NativeCodeShareRequest, "caller">) {
     let source;
     try { source = normalizeNativeSource(request.caller.source); } catch { return denyCodeShareIdentity(); }
@@ -4137,7 +4261,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         || req.headers.get("origin") !== scope.requestOrigin || req.headers.get("host") !== scope.host || req.headers.get("cookie") !== scope.cookie) throw new AppAdmissionAuthorizationError("The original authenticated submission request was revoked or changed before intake");
     };
   }
-  async function handle(req: Request, srv: Pick<Bun.Server<undefined>, "requestIP" | "port">, upgrade?: (req: Request, data: TerminalSocketData) => boolean): Promise<Response | undefined> {
+  type BridgeSocketData = ({ kind: "terminal" } & TerminalSocketData) | ({ kind: "browser" } & BrowserSocketData);
+  async function handle(req: Request, srv: Pick<Bun.Server<undefined>, "requestIP" | "port">, upgrade?: (req: Request, data: BridgeSocketData) => boolean): Promise<Response | undefined> {
     try {
       const url = new URL(req.url); const path = url.pathname;
       if (path.startsWith("/hooks/")) {
@@ -4160,8 +4285,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         const connection = signedIn ? nativeConnectionSnapshot.read() : undefined;
         const nativeConnection = connection?.value ?? { available: false, connected: false, state: "unavailable", reason: connection?.error };
-        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { storeId: store.manifest.storeId, appAdmissionCapability: { protocol: "app-admission", version: 1, state: appAdmissionFeature.state === "enabled" ? "enabled" : "requires-initialization" }, conversationUpdates: true, ...(pendingInputAutomationHealthy() ? { pendingInputCapability: { protocol: "pending-input", version: 1, supported: true, maxWaiting: 3, removal: true, resume: true } } : {}), capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [
-          { id: "claude-code", name: getHarnessDescriptor("claude-code")!.label, available: true, connected: true, state: "available", capabilities: capabilitiesFor("claude-code") },
+        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { storeId: store.manifest.storeId, appAdmissionCapability: { protocol: "app-admission", version: 1, state: appAdmissionFeature.state === "enabled" ? "enabled" : "requires-initialization" }, conversationUpdates: true, ...(pendingInputAutomationHealthy() ? { pendingInputCapability: { protocol: "pending-input", version: 1, supported: true, maxWaiting: 3, removal: true, resume: true } } : {}), capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability, browser: browsers.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [          { id: "claude-code", name: getHarnessDescriptor("claude-code")!.label, available: true, connected: true, state: "available", capabilities: capabilitiesFor("claude-code") },
           { id: "opencode", name: getHarnessDescriptor("opencode")!.label, ...nativeConnection, capabilities: capabilitiesFor("opencode") },
         ] } : {}) });
       }
@@ -4199,6 +4323,76 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!meta.sessions.some(session => session.sessionId === sessionId)) return json({ error: "Unknown conversation" }, 404);
         return json({ forms: userQuestions.list(sessionId) });
       }
+      if (path === "/api/resource-pairs/linked") {
+        if (req.method !== "GET") return json({ error: "Method not allowed" }, 405, { allow: "GET" });
+        const names = ["storeId", "workspaceId", "worktreeId", "kind", "session"];
+        if ([...url.searchParams.keys()].some(key => !names.includes(key)) || names.some(key => url.searchParams.getAll(key).length !== 1)) throw new ResourcePairError(400, "resource-pair-input", "Provide storeId, workspaceId, worktreeId, kind and a JSON session only");
+        const encodedSession = url.searchParams.get("session")!;
+        if (encodedSession.length > 2048) throw new ResourcePairError(400, "resource-pair-input", "Invalid conversation identity");
+        let session: unknown;
+        try { session = JSON.parse(encodedSession); } catch { throw new ResourcePairError(400, "resource-pair-input", "Invalid JSON conversation identity"); }
+        const lookup = { version: 1, storeId: url.searchParams.get("storeId"), workspaceId: url.searchParams.get("workspaceId"),
+          worktreeId: url.searchParams.get("worktreeId"), kind: url.searchParams.get("kind"), session, targets: [] };
+        if (!isPairLinkedSnapshot(lookup)) throw new ResourcePairError(400, "resource-pair-input", "Invalid resource pairing discovery identity");
+        const { version: _version, targets: _targets, ...scope } = lookup;
+        const admissionPin = JSON.stringify(admissions.get(scope.session.sessionId));
+        const assertCurrent = () => {
+          if (req.signal.aborted || !auth.authenticated(req)) throw new ResourcePairError(409, "resource-pair-interrupted", "Pairing request is no longer current");
+          if (!startupReady || closing || storageFailed) throw new ResourcePairError(503, "resource-pair-unavailable", "Resource pairing discovery is unavailable");
+          if (scope.storeId !== store.manifest.storeId) throw new ResourcePairError(409, "resource-pair-store", "The App store changed; reconnect before pairing");
+          assertPairConversation({ operation: "add", session: scope.session }, ResourcePairError);
+          const current = meta.sessions.find(item => item.sessionId === scope.session.sessionId)!, admission = admissions.get(scope.session.sessionId);
+          const association = catalog.association(scope.session.sessionId);
+          if (current.hidden || !admission || admission.state !== "ready" || JSON.stringify(admission) !== admissionPin
+            || admission.nativeId !== scope.session.nativeSessionId || admission.source.authorityId !== scope.session.authorityId
+            || admission.source.descriptor.harness !== toNativeHarness(scope.session.harness)
+            || association.workspaceId !== admission.binding.workspaceId || association.worktreeId !== admission.binding.worktreeId
+            || current.cwd !== admission.binding.executionCheckout) throw new ResourcePairError(409, "resource-pair-identity", "Conversation admission changed; reconnect before restoring links");
+          // Cached authority IDs do not attest that their configured/admitted
+          // locators still resolve to that authority after an async boundary.
+          try {
+            const source = store.sources[admission.source.descriptor.harness];
+            if (source.authorityId !== scope.session.authorityId
+              || normalizeNativeSource(source.descriptor).authorityId !== scope.session.authorityId
+              || normalizeNativeSource(admission.source.descriptor).authorityId !== scope.session.authorityId) throw new Error("Native source changed");
+          } catch {
+            throw new ResourcePairError(409, "resource-pair-identity", "Native authority changed or is unavailable; reconnect before restoring links");
+          }
+          catalog.assertBinding(admission.binding.workspaceId, admission.binding.worktreeId, admission.binding.executionCheckout, admission.binding.bindingRevision);
+        };
+        assertCurrent();
+        // Navigation is independent of the conversation's execution checkout.
+        // Browser targets need only their workspace; files need the exact live
+        // browsing worktree. Execution binding checks remain in assertCurrent.
+        const workspace = await catalog.registered(scope.workspaceId);
+        assertCurrent();
+        let assertBrowsing: () => void;
+        if (scope.kind === "browser") {
+          assertBrowsing = () => {
+            if (!catalog.workspaceName(scope.workspaceId)) throw new ResourcePairError(404, "resource-pair-workspace", "Unknown browser workspace");
+          };
+        } else {
+          const tree = workspace.worktrees.find(item => item.worktreeId === scope.worktreeId);
+          if (!tree) throw new ResourcePairError(404, "resource-pair-worktree", "Unknown resource worktree");
+          assertBrowsing = () => catalog.assertBinding(scope.workspaceId, scope.worktreeId, tree.root, tree.bindingRevision);
+        }
+        assertBrowsing();
+        const snapshot = resourcePairs.listForSession(scope);
+        // From this point through publication everything is synchronous: a
+        // concurrent unlink cannot be crossed by an async per-file preflight.
+        snapshot.targets = snapshot.targets.filter(item => {
+          if (item.target.kind === "browser") return true;
+          try { resourcePairFileTargetFence(item.target, workspace, true); return true; }
+          catch (error) {
+            if (error instanceof ResourcePairError && ["resource-pair-path", "resource-pair-file"].includes(error.code)) return false;
+            throw error;
+          }
+        });
+        assertCurrent();
+        assertBrowsing();
+        if (!isPairLinkedSnapshot(snapshot)) throw new ResourcePairError(503, "resource-pair-storage", "Invalid resource pairing discovery snapshot");
+        return json(snapshot);
+      }
       if (!startupReady && path.startsWith("/api/") && !["GET", "HEAD"].includes(req.method)) return json({ error: "Startup execution classification is incomplete", code: "startup-classifying" }, 503);
       if (path === "/api/submissions") {
         if (req.method !== "POST") return json({ error: "Method not allowed" }, 405, { allow: "POST" });
@@ -4229,10 +4423,35 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json(begun.receipt, 202);
         } catch (error) { finish(); throw error; }
       }
+      if (path === "/api/resource-pairs") {
+        if (req.method === "GET") {
+          if ([...url.searchParams.keys()].some(key => !["storeId", "target"].includes(key))
+            || ["storeId", "target"].some(key => url.searchParams.getAll(key).length !== 1)) throw new ResourcePairError(400, "resource-pair-input", "Provide storeId and a JSON target only");
+          if (url.searchParams.get("storeId") !== store.manifest.storeId) throw new ResourcePairError(409, "resource-pair-store", "The App store changed; reconnect before pairing");
+          let target: unknown;
+          try { target = JSON.parse(url.searchParams.get("target")!); } catch { throw new ResourcePairError(400, "resource-pair-input", "Invalid JSON resource target"); }
+          if (!isPairTarget(target)) throw new ResourcePairError(400, "resource-pair-input", "Invalid resource identity");
+          const assertTarget = await resourcePairTargetFence(target, false);
+          if (req.signal.aborted || !auth.authenticated(req)) throw new ResourcePairError(409, "resource-pair-interrupted", "Pairing request is no longer current");
+          assertTarget();
+          return json(resourcePairs.read(target));
+        }
+        if (req.method !== "PUT") return json({ error: "Method not allowed" }, 405, { allow: "GET, PUT" });
+        if (url.searchParams.size) throw new ResourcePairError(400, "resource-pair-input", "Pairing writes do not accept query parameters");
+        const input = await body(req);
+        if (!isPairWrite(input)) throw new ResourcePairError(400, "resource-pair-input", "Provide an exact resource target, operation, expected revision, and conversation identity for session-level changes");
+        const assertTarget = await resourcePairTargetFence(input.target, input.operation === "add" || input.operation === "replace");
+        const assertCurrent = () => {
+          assertDomainMutationOpen();
+          if (req.signal.aborted || !auth.authenticated(req)) throw new ResourcePairError(409, "resource-pair-interrupted", "Pairing request is no longer current");
+          assertTarget();
+          assertPairConversation(input, ResourcePairError);
+        };
+        return json(resourcePairs.write(input, assertCurrent));
+      }
       if (path === "/api/browser-pairs") {
         const response = await browserPairRoute(req, url);
-        if (response !== null) return response;
-      }
+        if (response !== null) return response;      }
       if (path === "/api/session-retirements") {
         if (!loopback(srv.requestIP(req)?.address ?? "")) return json({ error: "Retirement operations require the local authenticated listener", code: "retirement-local-only" }, 403);
         if (url.searchParams.size) return json({ error: "Retirement endpoint does not accept query parameters" }, 400);
@@ -4326,8 +4545,29 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return (await scienceRoute(req, science!, () => !closing && !storageFailed && !!token && auth.terminalToken(req) === token))!;
       }
       if (matchesTerminalRoute(path)) {
-        const result = await terminalRoute(req, url, upgrade);
+        const result = await terminalRoute(req, url, upgrade ? (request, data) => upgrade(request, { kind: "terminal", ...data }) : undefined);
         if (result.handled) return result.response;
+      }
+      const browserMatch = /^\/api\/workspaces\/([^/]+)\/browser\/(.+)$/.exec(path);
+      if (browserMatch) {
+        const workspaceId = decodeURIComponent(browserMatch[1]!), suffix = browserMatch[2]!, token = auth.terminalToken(req);
+        if (!token) return json({ error: "Authentication required" }, 401);
+        if (!catalog.workspaceName(workspaceId)) return json({ error: "Unknown workspace" }, 404);
+        if ((suffix.endsWith("/socket") || !["GET", "HEAD"].includes(req.method)) && req.headers.get("origin") !== origin) return json({ error: "Origin rejected" }, 403);
+        const authorized = () => !closing && !storageFailed && !!catalog.workspaceName(workspaceId) && auth.terminalToken(req) === token;
+        const socketMatch = /^tabs\/([^/]+)\/socket$/.exec(suffix);
+        if (socketMatch) {
+          if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
+          if (url.search) return json({ error: "Browser sockets do not accept query parameters", code: "browser-query" }, 400);
+          if (!upgrade || req.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "WebSocket upgrade required" }, 426);
+          try {
+            const data = await browsers.prepare(workspaceId, decodeURIComponent(socketMatch[1]!), token);
+            if (!authorized()) { browsers.cancelUpgrade(data); return json({ error: "Attachment authorization changed" }, 401); }
+            try { if (upgrade(req, { kind: "browser", ...data })) return undefined; } catch { browsers.cancelUpgrade(data); return json({ error: "WebSocket upgrade failed" }, 400); }
+            browsers.cancelUpgrade(data); return json({ error: "WebSocket upgrade failed" }, 400);
+          } catch (error) { return browsers.errorResponse(error); }
+        }
+        return browsers.route(req, workspaceId, suffix, authorized, token);
       }
       if (matchesWorkspaceRoute(path)) {
         const response = await workspaceRoute(req, url);
@@ -4888,7 +5128,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (error instanceof AppAdmissionAuthorizationError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof AppAdmissionStorageError) { failClosed(error, "app-admission-http"); return json({ error: "App admission storage is unavailable; reconcile the original request without resending", code: "app-admission-storage-unavailable" }, 503); }
       if (error instanceof AppAdmissionRequestError) return json({ error: error.message, code: error.code }, error.status);
-      if (error instanceof BrowserPairError) return json({ error: error.message, code: error.code }, error.status);
+      if (error instanceof BrowserPairError || error instanceof ResourcePairError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof SessionRetirementError || error instanceof SessionCatalogError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof UserQuestionsError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof ScienceSubmissionStorageError) { failClosed(); return json({ error: error.message, code: "science-submission-unknown" }, 503); }
@@ -4902,7 +5142,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await coordinator.close();
     await userQuestionsDelivery.close();
     await workers.drainLaunches();
-    await terminals.close();
+    await Promise.all([terminals.close(), browsers.close()]);
     await Promise.all([...owners.values()].map(async owner => {
       if (!await cleanupOwner(owner)) retainOwner = true;
       await Promise.all([owner.done, owner.submission?.catch(() => {}), owner.cancel?.catch(() => {})]);
@@ -4914,7 +5154,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   };
   // Finite inactivity headroom above the clients' 25s/30s deadlines and 15s
   // backend reads. Do not let Bun's short default terminate valid requests.
-  const server = Bun.serve<TerminalSocketData>({ hostname: options.host, port: options.port, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, websocket: terminals.websocket,
+  const terminalSocket = (socket: Bun.ServerWebSocket<BridgeSocketData>) => socket as Bun.ServerWebSocket<TerminalSocketData>;
+  const browserSocket = (socket: Bun.ServerWebSocket<BridgeSocketData>) => socket as Bun.ServerWebSocket<BrowserSocketData>;
+  const server = Bun.serve<BridgeSocketData>({ hostname: options.host, port: options.port, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, websocket: {
+    maxPayloadLength: 65536, backpressureLimit: 10 * 1024 * 1024, closeOnBackpressureLimit: true, perMessageDeflate: false, idleTimeout: 60, sendPings: true,
+    open: socket => socket.data.kind === "terminal" ? terminals.websocket.open?.(terminalSocket(socket)) : browsers.websocket.open?.(browserSocket(socket)),
+    message: (socket, message) => socket.data.kind === "terminal" ? terminals.websocket.message(terminalSocket(socket), message) : browsers.websocket.message(browserSocket(socket), message),
+    close: (socket, code, reason) => socket.data.kind === "terminal" ? terminals.websocket.close?.(terminalSocket(socket), code, reason) : browsers.websocket.close?.(browserSocket(socket), code, reason),
+    drain: socket => socket.data.kind === "terminal" ? terminals.websocket.drain?.(terminalSocket(socket)) : browsers.websocket.drain?.(browserSocket(socket)),
+  },
     fetch: (req, srv) => withApiCompression(req, () => handle(req, srv, (request, data) => srv.upgrade(request, { data })), {
       // This POST only reprojects stored/native transcript evidence; it never
       // submits input. Other mutation acknowledgements keep the safer default.
@@ -4922,10 +5170,28 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }),
   });
   boundListenerStops.push(async () => { await server.stop(true); });
-  const hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/user-questions" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeUserQuestions(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
+  const hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/browser" ? (loopback(srv.requestIP(req)?.address ?? "") ? browsers.handleNativeBroker(req, handoffToken, caller => {
+    try {
+      const source = normalizeNativeSource(caller.source as Parameters<typeof normalizeNativeSource>[0]);
+      if (source.authorityId !== caller.authorityId) throw new Error();
+      const admission = admissions.getByNative({ harness: source.descriptor.harness, authorityId: caller.authorityId, nativeId: caller.nativeId });
+      const session = admission && meta.sessions.find(s => s.sessionId === admission.sessionId);
+      const sessionHarnessId = session ? validateHarness(session.harness) : undefined;
+      if (!admission || admission.state !== "ready" || !session || !sessionHarnessId || retirementPaused(session.sessionId) || session.hidden
+        || session.nativeSessionId !== caller.nativeId || session.authorityId !== caller.authorityId
+        || sessionHarnessId !== toSessionHarness(source.descriptor.harness)
+        || session.cwd !== caller.cwd || admission.binding.executionCheckout !== caller.cwd
+        || canonicalJSON(admission.source) !== canonicalJSON(source)) throw new Error();
+      return { sessionId: session.sessionId, harness: sessionHarnessId, authorityId: session.authorityId, nativeSessionId: session.nativeSessionId };
+    } catch { throw new BrowserGrantError(403, "browser-session-unverified", "This conversation is not an admitted SANE session"); }
+  }) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/user-questions" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeUserQuestions(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
   boundListenerStops.push(async () => { await hookServer.stop(true); });
   presentationPoller.start();
   origin = options.publicOrigin ?? `http://${options.host.includes(":") ? `[${options.host}]` : options.host}:${server.port}`;
+  browserLoopbackOrigin = `http://127.0.0.1:${server.port}`;
+  browsers.setHookEndpoint(`http://127.0.0.1:${hookServer.port}/native/browser`, handoffToken);
+  // OpenCode reads native-handoff.json and sends a qualified caller. Do not publish
+  // a second copy of that bearer as browser-mcp.json; possession is not a grant.
   atomicAppRecord(options.dataDir, "native-handoff.json", { version: 1, url: `http://127.0.0.1:${hookServer.port}/native/handoffs`, token: handoffToken, pid: process.pid });
   // Start recovery only after both listeners are acquired. A port-bind failure
   // must not leave observers writing after startup releases the ownership lock.
@@ -5270,7 +5536,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await workerOutboxTask;
     await handoffTask;
     await Promise.all(handoffDispatches.values());
-    await terminals.close();
+    await Promise.all([terminals.close(), browsers.close()]);
     if (attachmentTasks.size) {
       let timeout: ReturnType<typeof setTimeout> | undefined;
       const attachmentsDrained = await Promise.race([Promise.all([...attachmentTasks]).then(() => true), new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), 12000); })]);

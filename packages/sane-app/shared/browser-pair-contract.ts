@@ -5,8 +5,8 @@ export type BrowserPairLink = BrowserPairSession & { linkedAt: string; lastPaire
 export type BrowserPairSnapshot = BrowserPairTarget & { version: 1; storeId: string; revision: number; sessions: BrowserPairLink[] };
 export type BrowserPairMode = "replace" | "add";
 export type BrowserPairWrite = BrowserPairTarget & {
-  version: 1; storeId: string; expectedRevision: number; operation: BrowserPairMode | "remove"; session: BrowserPairSession;
-};
+  version: 1; storeId: string; expectedRevision: number;
+} & ({ operation: BrowserPairMode | "remove"; session: BrowserPairSession } | { operation: "clear" });
 export const MAX_BROWSER_PAIR_SESSIONS = 100;
 const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 const keys = (value: Record<string, unknown>, names: readonly string[], optional: readonly string[] = []) => names.every(name => Object.hasOwn(value, name)) && Object.keys(value).every(name => names.includes(name) || optional.includes(name));
@@ -31,9 +31,9 @@ export function isBrowserPairSnapshot(value: unknown): value is BrowserPairSnaps
     && new Set(value.sessions.map(link => link.sessionId)).size === value.sessions.length;
 }
 export function isBrowserPairWrite(value: unknown): value is BrowserPairWrite {
-  return object(value) && keys(value, ["version", "storeId", "workspaceId", "tabId", "expectedRevision", "operation", "session"])
+  return object(value) && keys(value, ["version", "storeId", "workspaceId", "tabId", "expectedRevision", "operation", ...(value.operation === "clear" ? [] : ["session"])])
     && value.version === 1 && uuid(value.storeId) && target(value) && Number.isSafeInteger(value.expectedRevision) && value.expectedRevision >= 0
-    && ["replace", "add", "remove"].includes(value.operation) && isBrowserPairSession(value.session);
+    && (value.operation === "clear" || ["replace", "add", "remove"].includes(value.operation) && isBrowserPairSession(value.session));
 }
 export function isBrowserPairTarget(value: unknown): value is BrowserPairTarget {
   return object(value) && keys(value, ["workspaceId", "tabId"]) && target(value);

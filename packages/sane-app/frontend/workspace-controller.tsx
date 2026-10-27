@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { GitComparison, WorkspaceDiff, WorkspaceFile } from "../src/workspace-contract";
 import type { WorktreeResolution as Workspace } from "../src/catalog-contract";
 import type { EditorView } from "@codemirror/view";
@@ -25,7 +25,7 @@ type Scope = {
   directoryRevalidators: Set<() => Promise<void>>;
 };
 
-function useController(conversationId: string | null, view: ActiveView, navigate: (view: ActiveView) => void, bindingRevision?: string) {
+function useController(conversationId: string | null, view: ActiveView, navigate: (view: ActiveView) => void, bindingRevision?: string, requestedPath?: string | null) {
   useSyncExternalStore(subscribeWorkspace, workspaceSnapshot);
   const [resolved, setResolved] = useState<Scope | null>(null);
   const [error, setError] = useState(""), [resolving, setResolving] = useState(false);
@@ -55,6 +55,17 @@ function useController(conversationId: string | null, view: ActiveView, navigate
   const buffer = root?.buffers.get(selected);
   const selectionKey = scope ? JSON.stringify([scope.generation, workspace!.workspaceId, view, selected, comparisonKind, openAttempt, view === "git" ? gitRevision : 0]) : "";
   const currentScope = (candidate: Scope) => candidate.id === identity.current.conversationId && candidate.bindingRevision === identity.current.bindingRevision && candidate.generation === generation.current && candidate.auth === workspaceEpoch() && candidate.reader.current();
+
+  // View-entry restoration can select a linked file without going through a tree
+  // callback. Reconcile the authoritative bookmark before painting its contents.
+  useLayoutEffect(() => {
+    if (!scope || !root || requestedPath == null || root.selected === requestedPath || !currentScope(scope)) return;
+    selectionRequest.current++; pendingLocation.current = null;
+    root.selected = requestedPath;
+    if (identity.current.view === "code") setCodeActivation({ scope, revision: ++activationRevision.current, source: "files" });
+    setLocationNotice(""); setLocalCompare(null); setDiff(null); setOpening(null);
+    setOpenAttempt(value => value + 1); notifyWorkspace();
+  }, [scope, requestedPath]);
 
   useEffect(() => {
     const request = ++generation.current, auth = workspaceEpoch();
@@ -415,7 +426,7 @@ export function WorkspaceProvider({ view, navigate, children }: { view: ActiveVi
   const { navigation, workspaces } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const selectedWorktree = workspaces.find(w => w.workspaceId === navigation.workspaceId)?.worktrees.find(w => w.worktreeId === navigation.worktreeId);
   const id = navigation.workspaceId && navigation.worktreeId ? worktreeScope(navigation.workspaceId, navigation.worktreeId) : null;
-  const controller = useController(id, view, navigate, selectedWorktree?.bindingRevision);
+  const controller = useController(id, view, navigate, selectedWorktree?.bindingRevision, navigation.filePath);
   return <WorkspaceContext.Provider value={controller}>{children}</WorkspaceContext.Provider>;
 }
 // Shared shell/chat seam for future actions; only existing file navigation is modeled here.

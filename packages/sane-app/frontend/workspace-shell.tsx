@@ -19,6 +19,7 @@ type ShellProps = {
   /** Never copied into the navigation drawer: live portals have only one home. */
   desktopSidebar?: ReactNode;
   paired?: boolean;
+  resourceSidebar?: boolean;
   notices?: ReactNode;
   children: ReactNode;
   retryCatalog: () => void;
@@ -41,11 +42,11 @@ export function ShellSidebar({ children, navigation, retryCatalog, workspaceSele
 }
 
 /** Feature providers and their state owners remain above these layout regions. */
-export function WorkspaceShell({ view, sidebar, desktopSidebar, paired = false, navigation, header, beforeHeader, notices, children, retryCatalog, workspaceSelection, sidebarOpen, sidebarHidden = false, toggleSidebar, openSidebar, closeSidebar, onOpenNotification = () => false }: ShellProps) {
+export function WorkspaceShell({ view, sidebar, desktopSidebar, paired = false, resourceSidebar = false, navigation, header, beforeHeader, notices, children, retryCatalog, workspaceSelection, sidebarOpen, sidebarHidden = false, toggleSidebar, openSidebar, closeSidebar, onOpenNotification = () => false }: ShellProps) {
   const group = viewGroup(view);
   const flowSidebar = useChatFlowSidebarSlot();
   const sidebarContent = flowSidebar ? flowSidebar.content : sidebar;
-  const sidebarTitle = paired || group === "browser" ? "Conversations" : flowSidebar?.title ?? (group === "files" ? "Files" : group === "settings" ? "Settings" : "Conversations");
+  const sidebarTitle = resourceSidebar ? view === "browser" ? "Browser tabs" : "Files" : flowSidebar?.title ?? (group === "files" ? "Files" : group === "settings" ? "Settings" : "Conversations");
   const sidebarId = useId(), drawerId = useId();
   const media = paired ? BROWSER_PAIR_COMPACT_MEDIA : "(max-width:700px)";
   const [mobile, setMobile] = useState(() => window.matchMedia(media).matches);
@@ -59,7 +60,7 @@ export function WorkspaceShell({ view, sidebar, desktopSidebar, paired = false, 
   useEffect(() => { if (!mobile && sidebarOpen) closeSidebar(); }, [mobile, sidebarOpen, closeSidebar]);
   const expanded = mobile ? sidebarOpen : !sidebarHidden;
   const toggleLabel = mobile ? "Open workspace navigation" : sidebarHidden ? "Show sidebar" : "Hide sidebar";
-  return <div className={`app-shell view-${view} group-${group}${paired ? " browser-pair" : ""}`}>
+  return <div className={`app-shell view-${view} group-${group}${paired ? " browser-pair" : ""}${resourceSidebar ? " has-resource-sidebar" : ""}`}>
     <SessionNameDialog />
     <aside id={sidebarId} className="sidebar" aria-label={paired ? "Paired conversation" : flowSidebar?.title ?? "Workspace sidebar"} hidden={sidebarHidden} inert={sidebarHidden}><ShellSidebar navigation={navigation} retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar}>{desktopSidebar !== undefined ? desktopSidebar : flowSidebar && mobile ? null : sidebarContent}</ShellSidebar></aside>
     <main className="main">

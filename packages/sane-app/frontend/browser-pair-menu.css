@@ -1,0 +1,26 @@
+.icon-button.browser-pair-menu-trigger { display:inline-flex; flex-direction:row; flex-wrap:nowrap; align-items:center; justify-content:center; gap:4px; white-space:nowrap; font-size:11px; font-variant-numeric:tabular-nums; }
+.browser-pair-menu { position:fixed; z-index:100; width:min(320px,calc(100vw - 16px)); overflow:auto; padding:6px; border:1px solid var(--border); border-radius:10px; background:var(--background); color:var(--foreground); box-shadow:0 8px 28px #0003; }
+.browser-pair-menu>header { display:flex; flex-direction:column; gap:3px; padding:6px 8px 10px; font-size:12px; }
+.browser-pair-menu>header>span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted-foreground); font-size:11px; }
+.browser-pair-menu button { display:flex; align-items:center; gap:8px; min-height:32px; padding:6px 8px; border-radius:6px; font-size:12px; text-align:left; }
+.browser-pair-menu>button { width:100%; }
+.browser-pair-menu button:hover:not(:disabled),.browser-pair-menu button:focus-visible { background:var(--accent); }
+.browser-pair-menu button:disabled { opacity:.5; }
+.browser-pair-menu button>svg { flex-shrink:0; }
+.browser-pair-menu-row { display:flex; gap:2px; }
+.browser-pair-menu-row>button:first-child { flex:1; min-width:0; }
+.browser-pair-menu-row>button:first-child>span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.browser-pair-menu-check { display:flex; flex-shrink:0; width:15px; }
+.browser-pair-menu-remove { flex-shrink:0; color:var(--muted-foreground); }
+.browser-pair-menu>p { margin:6px 8px; font-size:12px; }
+.browser-pair-menu-separator { height:1px; margin:6px 2px; background:var(--border); }
+.browser-pair-menu .browser-pair-menu-danger { color:var(--error); }
+.browser-pair-menu-confirm { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+.browser-pair-picker { width:min(480px,calc(100vw - 24px)); }
+.browser-pair-picker>.shell-dialog-content { display:flex; flex-direction:column; min-height:0; height:min(650px,calc(100dvh - 80px)); }
+.browser-pair-picker .conversation-sidebar-list { min-height:0; }
+.browser-pair-menu-session+.browser-pair-menu-session { border-top:1px solid var(--border); }
+.browser-pair-grants { display:flex; align-items:center; gap:4px; padding:2px 8px 8px 31px; }
+.browser-pair-grants>span { flex:1; font-size:11px; color:var(--muted-foreground); }
+.browser-pair-grants button { border:1px solid var(--border); min-height:34px; }
+.browser-pair-grants [aria-checked="true"] { border-color:var(--primary); color:var(--primary); background:var(--accent); }
