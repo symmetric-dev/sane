@@ -378,7 +378,12 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
     // Never evaluate the admission getter inside the spawn catch, where a thrown
     // error could mean native side effects. Direct sends retain local withholding;
     // shared sends retain their coordinator's already-recorded intent on failure.
-    const env = childEnv(homeRoot, owner.contextIdentity!.source.nativeSessionId!, options.callerContext?.(owner), options.toolPath);
+    // callerContext also re-asserts ownership/binding, so always evaluate it. With
+    // the per-run hook runtime, the root envelope crosses only through hooked
+    // shells: unhooked paths (monitor, fail-open hook timeouts, native children)
+    // keep the refusal marker instead of inheriting root caller authority.
+    const callerContext = options.callerContext?.(owner);
+    const env = childEnv(homeRoot, owner.contextIdentity!.source.nativeSessionId!, turn.runtime ? undefined : callerContext, options.toolPath);
     if (!boundary) { readPrompt(); owner.dispatchEvidence?.beforeNative(); }
     // This is the final synchronous fence for BOTH default and injected spawn.
     if (owner.stopRequested) { notSubmitted(turn, "Grok stop was requested before spawn", true); ready(false); return; }

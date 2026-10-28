@@ -793,7 +793,7 @@ export class BrowserService {
       check(); await this.client().sendSession(state.cdpSessionId, "Input.dispatchMouseEvent", { type: "mouseWheel", ...position, deltaX, deltaY });
     }, input.documentId);
   }
-  async handleNativeBroker(req: Request, hostToken: string, resolveCaller?: (caller: BrowserNativeCaller) => BrowserSessionIdentity): Promise<Response> {
+  async handleNativeBroker(req: Request, hostToken: string, resolveCaller?: (caller: BrowserNativeCaller, tool: BrowserMcpToolName, args: Record<string, unknown>) => BrowserSessionIdentity): Promise<Response> {
     try {
       if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
       if (req.headers.has("origin")) return json({ error: "Forbidden", code: "browser-auth" }, 403);
@@ -808,7 +808,7 @@ export class BrowserService {
         if (this.sessionCredentials.get(token) !== credential) fail(401, "browser-auth", "Authentication revoked");
         session = credential.session; target = credential.target;
       } else if (host && Object.hasOwn(input, "caller") && resolveCaller) {
-        session = resolveCaller(input.caller as BrowserNativeCaller);
+        session = resolveCaller(input.caller as BrowserNativeCaller, tool, args);
       } else {
         // The shared handoff bearer is not a qualified native invocation. Omitting caller must not impersonate a unique grant.
         throw new BrowserGrantError(403, "browser-session-unverified", "This conversation is not an admitted SANE session");

@@ -263,7 +263,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const harness = store.harness();
   const workspace = store.workspace();
   const modelUnavailable = store.modelUnavailable();
-  useEffect(() => { if (capabilities.listModels && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) { const timer = setTimeout(() => void store.loadModels(harness), 300); return () => clearTimeout(timer); } }, [harness, capabilities.listModels, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
+  useEffect(() => { if (harness !== "grok" && capabilities.listModels && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) { const timer = setTimeout(() => void store.loadModels(harness), 300); return () => clearTimeout(timer); } }, [harness, capabilities.listModels, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
    const appRunning = state.runs.some(run => active(run.status));
    const running = appRunning || active(conversation?.status ?? "completed");
    const busyInput = running && !liveInputReady(conversation, state.availability) || !!state.availability.nativeQueue || !!state.availability.queueAfterRunId;

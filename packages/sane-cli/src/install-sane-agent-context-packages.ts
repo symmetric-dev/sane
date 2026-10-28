@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path"
 import { injectAgentModel, loadAgentModelConfig, validateAgentTaskPermissions } from "./agent-model-config.ts"
 import { ccAgentFilename, parseSaneAgent, serializeCcAgent, serializeCcSettings } from "./agent-serialization.ts"
 import { CLAUDE_PRE_TOOL_USE_MATCHER, nativeIntegrationConfiguration } from "./native-configuration.ts"
+import { SCHEMA_VERSION } from "../../sane-core/src/schema.ts"
 
 export const AGENT_FILENAMES = [
   "sane/assistant/curation.md",
@@ -677,6 +678,21 @@ export type NativeRuntimeSelection = {
 }
 export type SelectedNativeRuntime = NativeRuntimeSelection & { registrationFile: string; appConnectionFile: string }
 
+/**
+ * Installed native tools (CC MCP/hook, OC plugin) run the vendored core under
+ * `<plugin>/runtime`, not this source tree. A schema mismatch makes every
+ * native SANE tool reject the repository, so report it as runtime drift.
+ * Returns an actionable message, or undefined when the schema matches.
+ */
+export async function installedRuntimeSchemaDrift(pluginDirectory: string): Promise<string | undefined> {
+  const path = join(pluginDirectory, "runtime", "packages", "sane-core", "src", "schema.ts")
+  let installed: number | undefined
+  try { installed = Number((await readFile(path, "utf8")).match(/export const SCHEMA_VERSION\s*=\s*(\d+)/)?.[1] ?? NaN) } catch { return `Installed SANE runtime is missing ${path}; reinstall the native runtime.` }
+  if (!Number.isInteger(installed)) return `Installed SANE runtime schema is unreadable at ${path}; reinstall the native runtime.`
+  if (installed !== SCHEMA_VERSION) return `Installed SANE native runtime at ${pluginDirectory} uses sane-domain v${installed}, but this SANE build uses v${SCHEMA_VERSION}; reinstall the native runtime and restart native sessions/services.`
+  return
+}
+
 export async function proveInstalledExplicitWorkerRuntime(profileRoot: string, harness: "cc" | "oc", selected?: SelectedNativeRuntime): Promise<readonly string[] | undefined> {
   try {
     // Explicit deployments never fall back to the operator's global install.
@@ -717,6 +733,7 @@ export async function proveInstalledExplicitWorkerRuntime(profileRoot: string, h
     }
     const contract = await readInstalled(join(runtimeSrc, "native-worker-contract.ts"))
     if (!EXPLICIT_WORKER_OPERATIONS.every(operation => quotedTool(operation, contract)) || !contract.includes("nativeWorkerOperations")) return
+    if (await installedRuntimeSchemaDrift(pluginRoot)) return
     const home = resolve(pluginRoot, "../../../..")
     if (harness === "oc") {
       const [plugin, opencode, config] = await Promise.all([

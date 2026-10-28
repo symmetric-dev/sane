@@ -15,8 +15,8 @@ export type GrokAcpCapabilities = {
   /** Native initialize metadata, NOT an invented per-method capabilities list. */
   readonly grokShell: boolean;
   readonly metadataField: "meta" | "_meta" | null;
-  readonly compactMethod: "x.ai/compact_conversation" | null;
-  readonly forkMethod: "x.ai/session/fork" | null;
+  readonly compactMethod: "_x.ai/compact_conversation" | null;
+  readonly forkMethod: "_x.ai/session/fork" | null;
   readonly methodAdvertisement: "grok-shell-family" | "none";
 };
 
@@ -24,6 +24,8 @@ export type GrokAcpCapabilities = {
  * across versions), not extensionMethods/supportedMethods. Its own pager reads
  * grokShell at initialize. The two routes below are documented in
  * ~/.grok/docs/user-guide/15-agent-mode.md and present in the installed binary.
+ * Names below include ACP's required wire-level underscore, which its SDK
+ * normally adds to the logical names in Grok's docs.
  * Family advertisement is not proof that an individual RPC will succeed.
  * Never turn an agentInfo name/version or an arbitrary nested string into a
  * capability. Unknown/missing/conflicting metadata fails closed. */
@@ -38,8 +40,8 @@ export function discoverGrokAcpCapabilities(result: unknown): GrokAcpCapabilitie
     loadSession: object(response.agentCapabilities) && response.agentCapabilities.loadSession === true,
     grokShell,
     metadataField: conflict ? null : meta ? "meta" : underscoreMeta ? "_meta" : null,
-    compactMethod: grokShell ? "x.ai/compact_conversation" : null,
-    forkMethod: grokShell ? "x.ai/session/fork" : null,
+    compactMethod: grokShell ? "_x.ai/compact_conversation" : null,
+    forkMethod: grokShell ? "_x.ai/session/fork" : null,
     methodAdvertisement: grokShell ? "grok-shell-family" : "none",
   });
 }
@@ -66,7 +68,7 @@ export type GrokAcpCloseEvidence = {
   readonly processGroupGone: boolean;
   readonly termSent: boolean;
   readonly killSent: boolean;
-  readonly operation: "compact" | "fork";
+  readonly operation: "compact" | "fork" | "models";
   readonly nativeRequest: "not-written" | "write-attempted" | "written";
   readonly nativeResultReceived: boolean;
   /** Compact-specific compatibility fields; false/not-written for a fork. */
@@ -191,7 +193,8 @@ function environment(homeRoot: string): NodeJS.ProcessEnv {
   return env;
 }
 
-/** Own a local ACP process for exactly one native operation RPC. No session/new,
+/** Own a local ACP process for exactly one native operation RPC (or initialize
+ * alone for catalog discovery). No session/new,
  * prompt, prose slash-command, identity reassignment, or shared leader. Tool
  * capabilities are false and every incoming client RPC is explicitly denied.
  * This is a client boundary, not an OS sandbox for native Grok internals.
@@ -204,10 +207,10 @@ function environment(homeRoot: string): NodeJS.ProcessEnv {
  * process-group disappearance are established. closed alone proves no group drain. */
 async function runGrokOperation(
   options: GrokAcpOperationOptions & { nativeSessionId: string },
-  operation: { kind: "compact" | "fork"; method: string; params: unknown; timeoutMs?: number; targetNativeSessionId?: string },
+  operation: { kind: "compact" | "fork" | "models"; method: string; params: unknown; timeoutMs?: number; targetNativeSessionId?: string },
 ): Promise<GrokAcpCompactionResult> {
   exactAbsolute(options.executable, "executable"); exactAbsolute(options.homeRoot, "home root"); exactAbsolute(options.cwd, "cwd");
-  grokCompactRequest(options.nativeSessionId); // Validate UUID before spawning.
+  if (operation.kind !== "models") grokCompactRequest(options.nativeSessionId); // Validate UUID before spawning.
   const initTimeout = duration(options.initializeTimeoutMs, 30_000), loadTimeout = duration(options.loadTimeoutMs, 30_000);
   const operationTimeout = duration(operation.timeoutMs, 0);
   const eofGrace = duration(options.eofGraceMs, 500), termGrace = duration(options.termGraceMs, 1_000), killGrace = duration(options.killGraceMs, 1_000);
@@ -315,11 +318,14 @@ async function runGrokOperation(
     try { value = JSON.parse(line); } catch { throw new Error("Grok ACP emitted non-JSON stdout"); }
     if (!object(value) || value.jsonrpc !== "2.0") throw new Error("Invalid Grok ACP JSON-RPC envelope");
     if (typeof value.method === "string") {
+      // Match logical names after decoding ACP extension notifications. Base
+      // protocol methods such as session/update are not prefixed.
+      const method = value.method.startsWith("_x.ai/") ? value.method.slice(1) : value.method;
       if (own(value, "id")) {
         // No filesystem, terminal, elicitation, auth, sampling or permission
         // callback is allowed, even if the native process requests one.
         if (typeof value.id !== "string" && typeof value.id !== "number" && value.id !== null) throw new Error("Invalid Grok ACP callback ID");
-        if (value.method === "session/request_permission") {
+        if (method === "session/request_permission") {
           write({ jsonrpc: "2.0", id: value.id, result: { outcome: { outcome: "cancelled" } } });
         } else {
           write({ jsonrpc: "2.0", id: value.id, error: { code: -32000, message: "Client operations are denied during native session maintenance" } });
@@ -327,12 +333,12 @@ async function runGrokOperation(
         throw new Error(`Grok ACP requested a denied client operation: ${value.method}`);
       }
       const params = value.params;
-      if (["session/update", "x.ai/session/update", "x.ai/session_notification"].includes(value.method) && object(params)) {
+      if (["session/update", "x.ai/session/update", "x.ai/session_notification"].includes(method) && object(params)) {
         const expectedTarget = operation.kind === "fork" && nativeRequest !== "not-written" && params.sessionId === operation.targetNativeSessionId;
         if (params.sessionId !== undefined && params.sessionId !== options.nativeSessionId && !expectedTarget) throw new Error("Grok ACP notification session identity mismatch");
       }
       const compaction = object(params) ? parseGrokCompactionEvent(params.notification ?? params.update ?? params) : undefined;
-      options.onNotification?.({ method: value.method, params, ...(compaction ? { compaction } : {}) });
+      options.onNotification?.({ method, params, ...(compaction ? { compaction } : {}) });
       return;
     }
     if (typeof value.id !== "number") return;
@@ -408,7 +414,7 @@ async function runGrokOperation(
     if (options.signal?.aborted) { abort(); throw failure; }
     // --no-leader is essential: Stop must own the actual local agent, not just
       // kill a stdio proxy while a shared leader continues the native operation.
-    child = spawn(options.executable, ["agent", "--no-leader", "--always-approve", "stdio"], {
+    child = spawn(options.executable, ["agent", "--no-leader", ...(operation.kind === "models" ? [] : ["--always-approve"]), "stdio"], {
       cwd: options.cwd, env: environment(options.homeRoot), shell: false,
       detached: true, stdio: ["pipe", "pipe", "pipe"],
     });
@@ -439,13 +445,15 @@ async function runGrokOperation(
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       clientInfo: { name: `sane-grok-${operation.kind}`, version: "1" },
-    }, initTimeout);
+    }, initTimeout, operation.kind === "models");
     capabilities = discoverGrokAcpCapabilities(initializeResult);
-    const advertisedMethod = operation.kind === "compact" ? capabilities.compactMethod : capabilities.forkMethod;
-    if (!capabilities.loadSession || advertisedMethod !== operation.method) throw new Error("Grok ACP initialize did not advertise session loading and Grok extensions");
-    loadResult = await request("session/load", { cwd: options.cwd, sessionId: options.nativeSessionId, mcpServers: [] }, loadTimeout);
-    if (object(loadResult) && loadResult.sessionId !== undefined && loadResult.sessionId !== options.nativeSessionId) throw new Error("Grok ACP loaded a different native session");
-    await request(operation.method, operation.params, operationTimeout, true);
+    if (operation.kind !== "models") {
+      const advertisedMethod = operation.kind === "compact" ? capabilities.compactMethod : capabilities.forkMethod;
+      if (!capabilities.loadSession || advertisedMethod !== operation.method) throw new Error("Grok ACP initialize did not advertise session loading and Grok extensions");
+      loadResult = await request("session/load", { cwd: options.cwd, sessionId: options.nativeSessionId, mcpServers: [] }, loadTimeout);
+      if (object(loadResult) && loadResult.sessionId !== undefined && loadResult.sessionId !== options.nativeSessionId) throw new Error("Grok ACP loaded a different native session");
+      await request(operation.method, operation.params, operationTimeout, true);
+    }
   } catch (error) { failure ??= error; }
   finally {
     drained = await finish();
@@ -455,7 +463,7 @@ async function runGrokOperation(
   }
   const observation = evidence();
   if (failure || stopped || !drained || !nativeResultReceived) {
-    const OperationError = operation.kind === "compact" ? GrokAcpCompactionError : GrokAcpForkError;
+    const OperationError = operation.kind === "compact" ? GrokAcpCompactionError : operation.kind === "fork" ? GrokAcpForkError : GrokAcpOperationError;
     throw new OperationError(
       !drained ? "grok-acp-drain-incomplete" : stopped ? "grok-acp-stopped" : "grok-acp-failed",
       !drained ? "Grok ACP process-group close/drain is unproven after bounded termination"
@@ -465,6 +473,13 @@ async function runGrokOperation(
     );
   }
   return { nativeSessionId: options.nativeSessionId, result: nativeResult, initializeResult, loadResult, capabilities: capabilities!, process: observation };
+}
+
+/** Catalog discovery is initialize-only: no native session is created/loaded,
+ * no prompt is sent, and no session admission or model inference is needed. */
+export async function initializeGrokCatalog(options: GrokAcpOperationOptions): Promise<unknown> {
+  const outcome = await runGrokOperation({ ...options, nativeSessionId: "" }, { kind: "models", method: "initialize", params: {} });
+  return outcome.initializeResult;
 }
 
 /** Native compact only: no prompt or slash-command prose. */
@@ -490,7 +505,7 @@ export async function forkGrokSession(options: ForkGrokSessionOptions): Promise<
   // and target absence. Its CLI argv are intentionally not used on the ACP route.
   await prepareGrokFork(options.homeRoot, options.cwd, options.sourceNativeSessionId, options.targetNativeSessionId);
   const outcome = await runGrokOperation({ ...options, nativeSessionId: options.sourceNativeSessionId }, {
-    kind: "fork", method: "x.ai/session/fork", timeoutMs: options.forkTimeoutMs,
+    kind: "fork", method: "_x.ai/session/fork", timeoutMs: options.forkTimeoutMs,
     targetNativeSessionId: options.targetNativeSessionId,
     params: {
       sourceSessionId: options.sourceNativeSessionId,

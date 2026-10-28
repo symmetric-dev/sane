@@ -108,11 +108,11 @@ export const HARNESS_DESCRIPTORS: Readonly<Record<Harness, HarnessDescriptor>> =
       permissionReply: unsupported("Grok does not support permission replies"),
       questionReply: unsupported("Grok does not support question replies"),
       listHandoffApprovals: supported, handoffReply: supported,
-      listModels: unsupported("Grok accepts model text without a live model catalog"),
+      listModels: supported,
       recoverRun: unsupported("Grok process ownership cannot be recovered after an App restart"),
     },
     policies: {
-      modelInput: "free-text", catalogRequiredForSend: false, effortMode: "model-variant", effortValues: Object.freeze([] as const),
+      modelInput: "live-catalog", catalogRequiredForSend: false, effortMode: "model-variant", effortValues: Object.freeze([] as const),
       compactionInstructions: false, branchFromNativeMessage: false, branchAttachedConversation: false,
       branchRequiresPrompt: false, attachedSendRequiresNativeStopped: true,
     },

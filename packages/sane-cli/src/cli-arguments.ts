@@ -91,6 +91,9 @@ export function classifyCaller(signals: CallerSignals, flags: Readonly<Record<st
   if (signals.SANE_CALLER_CONTEXT !== undefined) {
     const parsed = json(signals.SANE_CALLER_CONTEXT)
     const keys = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? Object.keys(parsed) : []
+    // Hook-reported qualification refusal: diagnostic only, never an identity.
+    const refusal = keys.length === 2 && keys.includes("version") && keys.includes("unavailable") ? (parsed as Record<string, unknown>).unavailable : undefined
+    if (typeof refusal === "string") throw new ParseFailure("NATIVE_CONTEXT_UNAVAILABLE", `Native caller qualification failed: ${refusal.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 500)}`)
     if (keys.length === 3 && keys.includes("version") && keys.includes("harness") && keys.includes("nativeId")) ref = reference(parsed)
     else if (keys.includes("bootstrap")) {
       const input = object(parsed)

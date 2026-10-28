@@ -319,7 +319,7 @@ export class GrokRunService<Owner extends RunOwner = RunOwner> {
       current();
       state.source = Object.freeze({ ...source }); this.processes.add(state);
       enqueue("status", { status: "running", operation: "compact", compactionLifecycle: "requested" });
-      enqueue("launch", { harness: "grok", operation: "compact", transport: "acp", method: "x.ai/compact_conversation", nativeSessionId: pinned.nativeId, cwd: source.cwd });
+      enqueue("launch", { harness: "grok", operation: "compact", transport: "acp", method: "_x.ai/compact_conversation", nativeSessionId: pinned.nativeId, cwd: source.cwd });
       await compact.journal; await this.ports.persist(); current();
       response = await compactGrokSession({ executable: this.ports.executable, homeRoot: this.ports.homeRoot, cwd: source.cwd,
         nativeSessionId: pinned.nativeId, signal: compact.controller.signal,
@@ -380,9 +380,9 @@ export class GrokRunService<Owner extends RunOwner = RunOwner> {
         else if (latestCompaction) snapshot({ ...latestCompaction, nativeMetadata: { notification: latestCompaction.nativeMetadata, rpcResult } });
         if (metadata.lifecycle === "failed") { failed = true; failure ??= new Error("Grok compact RPC returned an explicit failed outcome"); }
       } else if (nativeError !== undefined) {
-        snapshot({ trigger: "manual", lifecycle: "failed", error: nativeError, nativeMetadata: { method: "x.ai/compact_conversation", nativeError } });
+        snapshot({ trigger: "manual", lifecycle: "failed", error: nativeError, nativeMetadata: { method: "_x.ai/compact_conversation", nativeError } });
       } else if (submission !== "not-submitted" && (!latestCompaction || latestCompaction.lifecycle === "running")) {
-        snapshot({ trigger: "manual", lifecycle: "unconfirmed", nativeMetadata: { method: "x.ai/compact_conversation", process: observed, resultReceived: false } });
+        snapshot({ trigger: "manual", lifecycle: "unconfirmed", nativeMetadata: { method: "_x.ai/compact_conversation", process: observed, resultReceived: false } });
       }
       if (latestCompaction?.lifecycle === "failed") { failed = true; failure ??= new Error("Grok emitted a native compaction failure"); }
       enqueue("context", { type: "grok-compact-result", requestId: run.compact?.requestId, source,

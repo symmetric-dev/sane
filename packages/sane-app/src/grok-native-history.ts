@@ -265,10 +265,12 @@ export async function verifyGrokFork(nativeId: string, cwd: string, sourceNative
  * The headless -p '/compact' path is NOT established by the installed docs. */
 export function grokCompactRequest(nativeId: string) {
   assertId(nativeId);
-  return { method: "x.ai/compact_conversation" as const, params: { sessionId: nativeId } };
+  // Grok documents the logical extension name; ACP puts a leading underscore
+  // on extension methods on the JSON-RPC wire (normally added by its SDK).
+  return { method: "_x.ai/compact_conversation" as const, params: { sessionId: nativeId } };
 }
 
-/** Parse actual headless auto_compact_* notifications, not an assistant saying
+/** Parse actual ACP/headless auto_compact_* notifications, not an assistant saying
  * it compacted, ordinary result.success, process exit, or the ACP RPC ack.
  * Installed native notification schema uses tokens_before/tokens_after and
  * elapsed_ms. A preview is retained as native metadata, not a full summary.
@@ -276,10 +278,13 @@ export function grokCompactRequest(nativeId: string) {
  * display while keeping command completion attribution explicitly unconfirmed. */
 export function parseGrokCompactionEvent(value: unknown): CompactionMetadata | undefined {
   if (!object(value)) return;
-  const lifecycle = value.type === "auto_compact_started" ? "running"
-    : value.type === "auto_compact_completed" ? "completed"
-    : value.type === "auto_compact_failed" ? "failed"
-    : value.type === "auto_compact_cancelled" ? "unconfirmed" : undefined;
+  // ACP session/update and _x.ai/session/update identify events with
+  // sessionUpdate. Headless notification payloads may instead use type.
+  const type = value.sessionUpdate ?? value.type;
+  const lifecycle = type === "auto_compact_started" ? "running"
+    : type === "auto_compact_completed" ? "completed"
+    : type === "auto_compact_failed" ? "failed"
+    : type === "auto_compact_cancelled" ? "unconfirmed" : undefined;
   if (!lifecycle) return;
   const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
   return { trigger: "auto", lifecycle, preTokens: number(value.tokens_before ?? value.tokens_used), postTokens: number(value.tokens_after),

@@ -337,7 +337,10 @@ export class GrokOutputProjection {
   snapshot(status = this.run.status, stderr = ""): { run: RunMetadata; messages: Message[] } {
     const run = { ...this.run, status };
     const base = { runId: run.id, time: run.createdAt, status, normalized: true };
-    const messages: Message[] = [{ ...base, id: `${run.id}:user`, role: "user", parts: [{ type: "text", text: this.prompt }] }];
+    // Native maintenance has no authored prompt or assistant response stream.
+    // Its result is rendered by the separate compaction evidence projection.
+    const compact = run.operation === "compact";
+    const messages: Message[] = compact ? [] : [{ ...base, id: `${run.id}:user`, role: "user", parts: [{ type: "text", text: this.prompt }] }];
     if (this.omitted || this.oversized || this.blocksOmitted) {
       const detail = [this.omitted ? `${this.omitted} earlier display entries omitted` : "", this.oversized ? `${this.oversized} oversized stream records omitted` : "", this.blocksOmitted ? "excess content blocks omitted" : ""].filter(Boolean).join("; ");
       messages.push({ ...base, id: `${run.id}:truncation`, role: "system", parts: [{ type: "text", text: `[Grok display truncated: ${detail}]` }] });
@@ -355,7 +358,7 @@ export class GrokOutputProjection {
     }
     const hasOutput = messages.some(message => message.role === "assistant");
     const terminal = status !== "starting" && status !== "running";
-    const detail = this.failure || (!hasOutput && terminal ? this.diagnostic || clip(stderr, 2_000) || "No recognized Grok output was captured." : "");
+    const detail = this.failure || (!hasOutput && terminal ? this.diagnostic || clip(stderr, 2_000) || (compact ? "" : "No recognized Grok output was captured.") : "");
     if (detail) messages.push({ ...base, id: `${run.id}:diagnostic`, role: "system", parts: [{ type: "text", text: detail }] });
     return { run, messages };
   }

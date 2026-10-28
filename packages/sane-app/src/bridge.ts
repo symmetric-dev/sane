@@ -129,7 +129,7 @@ import { WorkerService, type WorkerParent } from "./workers";
 import type { ExplicitWorkerOperations } from "./native-workers";
 import { createNativeWorkerHandler, NativeWorkerRequestError, type NativeWorkerCallerResolver } from "./native-workers";
 import { matchesOpenCodeWorkerPart, nativeWorkerInput, projectNativeWorkerReply, type NativeWorkerInvocation } from "../../sane-cli/src/native-worker-contract";
-import { proveInstalledExplicitWorkerRuntime, type NativeRuntimeSelection, type SelectedNativeRuntime } from "../../sane-cli/src/install-sane-agent-context-packages";
+import { installedRuntimeSchemaDrift, proveInstalledExplicitWorkerRuntime, type NativeRuntimeSelection, type SelectedNativeRuntime } from "../../sane-cli/src/install-sane-agent-context-packages";
 import { GROK_RUNTIME_HEADER, grokRuntimeInputDigest, verifyGrokRuntimeProof } from "../../sane-cli/src/native-grok-binding";
 import { workerTerminationUncertainty } from "./worker-recovery";
 import { hasVerifiedSettledTermination } from "./settled-journal-reconciliation";
@@ -147,6 +147,7 @@ import { CanonicalExecutionStore, type CanonicalExecutionRef } from "./canonical
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
 import { NativeSubagentService } from "./native-subagent-service";
 import { GrokAppService } from "./grok-app-service";
+import { GrokModelCatalog } from "./grok-model-catalog";
 import { GrokOutputProjection } from "./grok-output";
 import { GrokRunService } from "./grok-run-service";
 import { proveInstalledGrokWorkerRuntime } from "./grok-native-runtime";
@@ -353,6 +354,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   if (process.env.CLAUDE_CONFIG_DIR !== undefined && claudeSourceRoot() !== claudeRoot) throw new Error("Contradictory native selector: CLAUDE_CONFIG_DIR");
   if (process.env.CLAUDE_CODE_PROJECT_DIR_NAME) throw new Error("Unsupported native selector: CLAUDE_CODE_PROJECT_DIR_NAME");
   const oc = new OpenCodeAdapter(undefined, undefined, options.nativeSources.oc.registrationFile);
+  // Diagnostic only: CC/OC native tools run the installed vendored closure, so a
+  // stale installed schema otherwise surfaces later as generic caller failures.
+  if (options.nativeRuntime) void installedRuntimeSchemaDrift(options.nativeRuntime.pluginDirectory)
+    .then(drift => { if (drift) console.warn("[SANE native runtime drift]", drift); }, () => {});
   // Historical App sessions may omit the harness; no unknown value defaults.
   const sessionHarness = (session: Session) => validateHarness(session.harness, { defaultHarness: "claude-code" });
   const pairSessionHarness = (session: Session): Harness => sessionHarness(session);
@@ -433,6 +438,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let router: RepositoryRouter | undefined;
   let science: ScienceService | undefined;
   let grokApp: GrokAppService | undefined;
+  let grokModelCatalog: GrokModelCatalog | undefined;
   let updateService: ConversationUpdates<ClaudeConversationUpdateState> | undefined;
   let replyIntegration: OpenCodeReplyIntegration | undefined;
   let chromePush: ChromePushService | undefined;
@@ -458,6 +464,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await Promise.all([
       () => chromePush?.close(), () => workspaceCreations?.close(), () => gitOperations?.close(), () => science?.close(),
       async () => { if (grokApp && !(await grokApp.close()).drained) retainOwner = true; },
+      async () => { if (grokModelCatalog && !await grokModelCatalog.close()) retainOwner = true; },
       () => replyIntegration?.close(), () => updateService?.close(), () => searches.close(), () => sessionNaming?.close(),
     ].map(cleanup => boundedStartupCleanup(cleanup)));
     await boundedStartupCleanup(() => router?.close());
@@ -1338,6 +1345,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!cached) {
         cached = { projection: new GrokOutputProjection({ id: run.runId, conversationId: sessionId, cwd: run.cwd,
         createdAt: run.createdAt, endedAt: run.endedAt, status: run.status, harness: "grok", nativeSessionId: session.nativeSessionId,
+        operation: run.operation, ...(run.compact ? { compact: { requestId: run.compact.requestId } } : {}),
         model: run.model, effort: run.effort, agent: run.agent, agentKind: run.agentKind,
         profileId: run.profileId, nativeAgentSelected: run.nativeAgentSelected, saneContextVersion: run.saneContextVersion }, prompt ?? ""),
           through: 0, stderr: "", finished: false };
@@ -1365,6 +1373,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       nativeAcceptance: "unknown", acceptedMessageId: null, messages: projections.flatMap(projection => projection.messages),
       runs: projections.map(projection => projection.run) };
   }
+  grokModelCatalog = new GrokModelCatalog({ dataDir: options.dataDir, executable: options.grokExecutable, homeRoot: options.grokHomeRoot,
+    authorityId: () => admissions.getGrokSourcePin()?.authorityId ?? undefined,
+    assertOpen: () => { assertStorageOwned(); if (closing || storageFailed) throw new Error("App is unavailable for model discovery"); },
+  });
   grokApp = new GrokAppService({
     dataDir: options.dataDir, admissions, catalog,
     executable: options.grokExecutable, homeRoot: options.grokHomeRoot,
@@ -5089,7 +5101,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return await dispatchHarness(descriptor.id, {
           "claude-code": () => { throw new HarnessOperationError("This harness has no live model catalog", 501, "unsupported-harness-operation"); },
           opencode: async () => json({ models: await oc.models(cwd) }),
-          grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
+          grok: async () => {
+            const capability = grokApp!.capability();
+            if (!capability.configured) throw new HarnessOperationError(capability.reason ?? "Grok is not configured", 409, "grok-unconfigured");
+            return json(await grokModelCatalog!.read(cwd, url.searchParams.get("refresh") === "true"));
+          },
         });
       }
       const workerCancel = /^\/api\/sessions\/([^/]+)\/workers\/cancel$/.exec(path);
@@ -5744,7 +5760,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }),
   });
   boundListenerStops.push(async () => { await server.stop(true); });
-  const hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/browser" ? (loopback(srv.requestIP(req)?.address ?? "") ? browsers.handleNativeBroker(req, handoffToken, caller => {
+  const hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/browser" ? (loopback(srv.requestIP(req)?.address ?? "") ? grokRequestProof.run(req.headers.get(GROK_RUNTIME_HEADER) ?? undefined, () => browsers.handleNativeBroker(req, handoffToken, (caller, tool, args) => {
     try {
       const source = normalizeNativeSource(caller.source as NativeSourceDescriptor);
       if (source.authorityId !== caller.authorityId) throw new Error();
@@ -5756,9 +5772,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         || sessionHarnessId !== toSessionHarness(source.descriptor.harness)
         || session.cwd !== caller.cwd || admission.binding.executionCheckout !== caller.cwd
         || canonicalJSON(admission.source) !== canonicalJSON(source)) throw new Error();
+      // Like every other Grok tool route: the exact signed invocation of the
+      // original live, unstopped App-owned run, not only a matching admission.
+      if (source.descriptor.harness === "gk" && authorizeGrokInvocation(caller, tool, args).session !== session) throw new Error();
       return { sessionId: session.sessionId, harness: sessionHarnessId, authorityId: session.authorityId, nativeSessionId: session.nativeSessionId };
     } catch { throw new BrowserGrantError(403, "browser-session-unverified", "This conversation is not an admitted SANE session"); }
-  }) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/user-questions" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeUserQuestions(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
+  })) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/user-questions" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeUserQuestions(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
   boundListenerStops.push(async () => { await hookServer.stop(true); });
   presentationPoller.start();
   origin = options.publicOrigin ?? `http://${options.host.includes(":") ? `[${options.host}]` : options.host}:${server.port}`;
@@ -6090,6 +6109,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const gitOperationsDrain = gitOperations?.close();
     const scienceDrain = science?.close();
     const grokDrain = grokApp!.close();
+    const grokCatalogDrain = grokModelCatalog!.close();
     // Observe immediately; later shutdown stages still supervise retained ownership.
     void scienceDrain?.catch(() => { retainOwner = true; });
     const nativeSubagentDrain = nativeSubagentRecorder.drain();
@@ -6109,6 +6129,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await gitOperationsDrain;
     await boundedStartupCleanup(() => scienceDrain);
     if (!(await grokDrain).drained) retainOwner = true;
+    if (!await grokCatalogDrain) retainOwner = true;
     await nativeSubagentDrain;
     try { await workers.drainLaunches(); } catch (error) { failClosed(error, "shutdown-worker-drain"); }
     await workerOutboxTask;

@@ -19,6 +19,6 @@ export function grokCompactResultMetadata(result: unknown): CompactionMetadata {
     ...(nonnegative(value.elapsed_ms) ? { durationMs: value.elapsed_ms } : {}),
     ...(typeof value.summary === "string" ? { summary: value.summary } : {}),
     ...(failed && value.error !== undefined ? { error: value.error } : {}),
-    nativeMetadata: { method: "x.ai/compact_conversation", rpcResult: result },
+    nativeMetadata: { method: "_x.ai/compact_conversation", rpcResult: result },
   };
 }

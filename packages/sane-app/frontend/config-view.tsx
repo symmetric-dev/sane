@@ -147,6 +147,8 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
   useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const set = store.profileSet();
   const [form, setForm] = useState<Form>(() => toForm(profile));
+  const [grokEffortManual, setGrokEffortManual] = useState(false);
+  const grokCatalogScope = useRef("");
   const [confirmation, setConfirmation] = useState<"discard" | "delete" | "reset" | "duplicate" | null>(null);
   const confirmFocus = useRef<HTMLButtonElement>(null);
   const errorNotice = useRef<HTMLParagraphElement>(null);
@@ -159,9 +161,23 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
   const workspace = store.workspace();
   const descriptor = getHarnessDescriptor(form.harness);
   const capabilities = store.capabilities(form.harness);
+  const grokCatalog = state.grokModelCatalog?.cwd === workspace ? state.grokModelCatalog : undefined;
+  // Grok discovery is advisory and on-demand here, independent of OC's catalog.
+  useEffect(() => {
+    if (form.harness !== "grok") { grokCatalogScope.current = ""; return; }
+    if (!capabilities.listModels || grokCatalog?.loading) return;
+    // Reopening the editor rechecks backend freshness even when this browser
+    // still has a previously loaded catalog. Stale reads poll only until the
+    // background refresh completes or reports an error.
+    const scope = JSON.stringify([form.harness, workspace]);
+    if (grokCatalogScope.current !== scope || !grokCatalog || !grokCatalog.error && (!grokCatalog.loaded || grokCatalog.stale)) {
+      const timer = setTimeout(() => { grokCatalogScope.current = scope; void store.loadModels("grok"); }, grokCatalogScope.current === scope && grokCatalog?.loaded ? 5000 : 300);
+      return () => clearTimeout(timer);
+    }
+  }, [form.harness, capabilities.listModels, workspace, grokCatalog?.loading, grokCatalog?.loaded, grokCatalog?.stale, grokCatalog?.error]);
   // Keep the OpenCode catalog fresh per worktree root, like the chat composer.
   useEffect(() => {
-    if (descriptor?.policies.modelInput === "live-catalog" && capabilities.listModels && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) {
+    if (form.harness !== "grok" && descriptor?.policies.modelInput === "live-catalog" && capabilities.listModels && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) {
       const timer = setTimeout(() => void store.loadModels(form.harness), 300);
       return () => clearTimeout(timer);
     }
@@ -170,6 +186,8 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
   const fixedHarness = profile.builtin && profile.kind === "base", busy = state.profileBusy;
   const patch = (next: Partial<Form>) => setForm(previous => ({ ...previous, ...next }));
   const grokDefaults = profile.id === BASE_PROFILE_IDS.grok ? undefined : store.profile(BASE_PROFILE_IDS.grok);
+  const grokModels = grokCatalog?.models ?? [];
+  const grokEfforts = grokModels.find(model => model.id === (form.model || grokDefaults?.model))?.efforts ?? [];
   const problem = formError(form, profile.kind, grokDefaults);
   const dirty = (Object.keys(form) as (keyof Form)[]).some(key => form[key] !== toForm(profile)[key]);
   const isDefault = set.defaultId === profile.id;
@@ -178,7 +196,7 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
   const ocEfforts = ocModels.find(m => m.id === form.model)?.efforts ?? [];
   // Warn-not-fail, like the composer: a selection absent from the live per-cwd
   // catalog still sends with the saved value for native resolution.
-  const ocMissing = descriptor?.policies.modelInput === "live-catalog" && !!form.model && state.modelsLoaded && state.modelsCwd === workspace && !state.modelsError && !state.models.some(m => m.id === form.model);
+  const ocMissing = form.harness === "opencode" && !!form.model && state.modelsLoaded && state.modelsCwd === workspace && !state.modelsError && !state.models.some(m => m.id === form.model);
   const customHex = /^#[0-9a-f]{6}$/i.test(form.color) ? form.color : "#635877";
   const ask = (action: NonNullable<typeof confirmation>) => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setConfirmation(action); };
   const dismiss = () => { if (busy) return; if (confirmation) { setConfirmation(null); return; } if (dirty) ask("discard"); else close(); };
@@ -207,10 +225,26 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
           <div className="interaction-field"><span className="agent-field-label">Fixed role</span><span className="agent-readonly">{profile.kind === "base" ? "None (harness defaults, no instructions)" : isWorkerAgentId(profile.role) ? `Worker · ${WORKER_AGENT_CATALOG[profile.role].label}` : isUtilityAgentId(profile.role) ? `Utility · ${UTILITY_AGENT_CATALOG[profile.role].label}` : isAssistantAgentId(profile.role) ? `Assistant · ${ASSISTANT_AGENT_LABELS[profile.role]}` : profile.role}</span></div>
           <div className="interaction-field"><span className="agent-field-label" id="agent-harness">Harness</span><div className="agent-segmented" role="group" aria-labelledby="agent-harness">{(["claude-code", "opencode", "grok"] as const).map(h => <button type="button" key={h} aria-pressed={form.harness === h} disabled={fixedHarness} onClick={() => { if (form.harness !== h) patch({ harness: h, model: "", effort: "" }); }}>{harnessName(h)}</button>)}</div><small>{fixedHarness ? "Fixed for built-in Base." : "Changing harness clears the model and effort selection."}</small></div>
           {form.harness === "grok" ? <>
-            <div className="interaction-field"><label htmlFor="agent-grok-model">Grok model</label><input id="agent-grok-model" value={form.model} placeholder={grokDefaults?.model || "Grok model"} maxLength={200} onChange={event => patch({ model: event.target.value })} required={!grokDefaults} /><small>{grokDefaults ? "Empty uses the configured Base · Grok model. No Claude or OpenCode defaults." : "Explicit model string passed to Grok. No Claude or OpenCode defaults."}</small></div>
-            <div className="interaction-field"><label htmlFor="agent-grok-effort">Grok effort</label><input id="agent-grok-effort" value={form.effort} placeholder={grokDefaults?.effort || "Grok effort"} maxLength={200} onChange={event => patch({ effort: event.target.value })} required={!grokDefaults} /><small>{grokDefaults ? "Empty uses the configured Base · Grok effort, not a Claude effort or catalog variant." : "Explicit effort string passed to Grok; not a Claude effort or catalog variant."}</small></div>
+            <div className="interaction-field"><label htmlFor="agent-grok-model">Grok model</label><ModelPicker id="agent-grok-model" models={grokModels} value={form.model}
+              defaultLabel={grokDefaults ? `Use Base · Grok (${grokDefaults.model || "model"})` : "Choose a Grok model or enter its ID"}
+              label="Choose Grok model" ungroupedProvider="Grok" allowCustom allowEmpty={!!grokDefaults} disabled={busy} loading={grokCatalog?.loading}
+              onChange={model => patch({ model })} /><small>{grokDefaults ? "Empty uses Base · Grok. Custom IDs are supported." : "Choose from Grok's advertised catalog or enter an explicit model ID."}</small></div>
+            <div className="interaction-field"><label htmlFor="agent-grok-effort">Grok effort</label>{grokEffortManual || !grokEfforts.length ?
+              <input id="agent-grok-effort" value={form.effort} placeholder={grokDefaults?.effort || "Grok effort ID"} maxLength={200} onChange={event => { setGrokEffortManual(true); patch({ effort: event.target.value }); }} required={!grokDefaults} /> :
+              <select id="agent-grok-effort" value={form.effort} onChange={event => patch({ effort: event.target.value })}>
+                <option value="">{grokDefaults ? `Use Base · Grok (${grokDefaults.effort || "effort"})` : "Choose effort"}</option>
+                {form.effort && !grokEfforts.some(e => e.id === form.effort) && <option value={form.effort}>{form.effort} · custom</option>}
+                {grokEfforts.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+              </select>}
+              {!!grokEfforts.length && <button type="button" className="text-button" onClick={() => setGrokEffortManual(value => !value)}>{grokEffortManual ? "Choose advertised effort" : "Enter effort ID manually"}</button>}
+              <small>{grokDefaults ? "Empty uses Base · Grok. Changing models does not erase your saved effort." : "Use an advertised effort or enter its exact ID. Catalog discovery is optional."}</small></div>
+            <div className="interaction-field"><small role="status">{grokCatalog?.loading ? "Loading Grok models… Manual entry remains available." : grokCatalog?.fetchedAt ? `${grokCatalog.stale ? "Cached" : "Discovered"} catalog · ${new Date(grokCatalog.fetchedAt).toLocaleString()}` : "No catalog loaded. Enter model and effort IDs manually."}</small>
+              <button type="button" className="text-button" disabled={busy || grokCatalog?.loading || !capabilities.listModels} onClick={() => void store.loadModels("grok", true)}>Refresh models</button>
+              {grokCatalog?.error && <p className="notice" role="status">{grokCatalog.error} Saved selections and manual entry remain available.</p>}
+              {!!form.model && !!grokModels.length && !grokModels.some(model => model.id === form.model) && <small>Model {form.model} is not in this catalog. Grok will still receive the exact ID.</small>}
+            </div>
           </> : capabilities.modelSelection && descriptor?.policies.modelInput === "live-catalog" && descriptor.policies.effortMode === "model-variant" ? <>
-             <div className="interaction-field"><label htmlFor="agent-oc-model">Model</label><ModelPicker id="agent-oc-model" models={ocModels} value={form.model} defaultLabel={profile.kind === "base" ? "Native default" : "Agent default model"} disabled={busy || (state.modelsLoading && !ocModels.length)} loading={state.modelsLoading} onChange={model => patch({ model, effort: "" })} /><small>{state.modelsLoading ? "Loading the live catalog…" : profile.kind === "base" ? "Live catalog for the current directory. Empty means the native default." : "Empty uses the agent's configured model, then the native default."}</small></div>
+             <div className="interaction-field"><label htmlFor="agent-oc-model">Model</label><ModelPicker id="agent-oc-model" models={ocModels} value={form.model} defaultLabel={profile.kind === "base" ? "Native default" : "Agent default model"} allowCustom disabled={busy} loading={state.modelsLoading} onChange={model => patch({ model, effort: "" })} /><small>{state.modelsLoading ? "Loading the live catalog… Manual model entry remains available." : profile.kind === "base" ? "Live catalog for the current directory. Empty means the native default." : "Empty uses the agent's configured model, then the native default."}</small></div>
             <div className="interaction-field"><label htmlFor="agent-oc-variant">Model variant</label>{!form.model && profile.kind !== "base" ? <><input id="agent-oc-variant" value={form.effort} maxLength={200} placeholder="Agent default variant" onChange={event => patch({ effort: event.target.value })} /><small>Variant ID for the agent's configured model. Its variants are not listed here. Launch requires a resolvable agent model; empty preserves its default variant.</small></> : <select id="agent-oc-variant" value={form.effort} disabled={!form.model || (!ocEfforts.length && !form.effort)} onChange={event => patch({ effort: event.target.value })} title={!form.model ? "Select a model before selecting a variant" : undefined}><option value="">Default variant</option>{form.effort && !ocEfforts.some(e => e.id === form.effort) && <option value={form.effort}>{form.effort}</option>}{ocEfforts.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</select>}</div>
           </> : capabilities.modelSelection && descriptor?.policies.modelInput === "free-text" && descriptor.policies.effortMode === "fixed" ? <>
             <div className="interaction-field"><label htmlFor="agent-cc-model">Model</label><input id="agent-cc-model" list="agent-cc-models" value={form.model} onChange={event => patch({ model: event.target.value.trim() })} placeholder="Default model" maxLength={200} /><datalist id="agent-cc-models"><option value="sonnet" /><option value="opus" /><option value="haiku" /></datalist><small>Empty means the native default. Custom IDs supported.</small></div>
@@ -220,7 +254,7 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
           <div className="interaction-field"><span className="agent-field-label" id="agent-color">Color</span><div className="agent-swatches" role="group" aria-labelledby="agent-color">{AGENT_COLOR_IDS.map(id => <button type="button" key={id} className="agent-swatch" aria-pressed={form.color === id} aria-label={id} title={id} style={{ background: agentColor(id) }} onClick={() => patch({ color: id })} />)}<label className="agent-swatch agent-swatch-custom" data-selected={form.color.startsWith("#") || undefined} title="Custom color" style={{ background: form.color.startsWith("#") ? form.color : undefined }}><span className="sr-only">Custom color</span><input type="color" value={customHex} onChange={event => patch({ color: event.target.value as AgentColor })} /></label></div></div>
           </details>
         </fieldset>
-        {state.modelsError && descriptor?.policies.modelInput === "live-catalog" && <p className="notice" role="status">{state.modelsError} <button type="button" className="text-button" disabled={state.modelsLoading || !capabilities.listModels} onClick={() => void store.loadModels(form.harness)}>Retry connection</button></p>}
+        {form.harness === "opencode" && state.modelsError && descriptor?.policies.modelInput === "live-catalog" && <p className="notice" role="status">{state.modelsError} <button type="button" className="text-button" disabled={state.modelsLoading || !capabilities.listModels} onClick={() => void store.loadModels(form.harness)}>Retry connection</button></p>}
         {ocMissing && <p className="notice" role="status">Model {form.model} is not in the current OpenCode catalog for this directory. Sending will still use the selection.</p>}
         {problem && <p className="notice error" role="alert">{problem}</p>}
         {(profile.kind === "base" || profile.kind === "assistant") && <div className="agent-toggles">

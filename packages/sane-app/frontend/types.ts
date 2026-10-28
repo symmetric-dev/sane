@@ -81,6 +81,7 @@ export interface ConversationClient {
   workers?(id: string, signal?: AbortSignal): Promise<import("./worker-client").WorkerProjection>;
   events(run: Run, signal?: AbortSignal): Promise<{ events: DiagnosticEvent[]; nextCursor: number; status: RunStatus }>;
    models(cwd: string, signal?: AbortSignal): Promise<ModelChoice[]>;
+   grokModels?(cwd: string, signal?: AbortSignal, refresh?: boolean): Promise<import("../shared/conversation/model-catalog").ModelCatalog>;
    interactions(id: string, signal?: AbortSignal): Promise<Interaction[]>;
    reply(id: string, interactionId: string, reply: InteractionReply): Promise<void>;
    /** Sender-session handoff approvals. Attached to the sender sessionId that

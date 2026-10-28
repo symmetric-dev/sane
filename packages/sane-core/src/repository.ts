@@ -313,6 +313,7 @@ function validateStore(db: Database, discovery: RepositoryDiscovery, recovery = 
   checkDiscovery(discovery); safeStoreFiles(discovery)
   if (!db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='store_metadata'").get()) fail("UNSUPPORTED_SCHEMA", `Unsupported schema at ${discovery.databasePath}. Expected sane-domain.`)
   const row = db.query<any, []>("SELECT * FROM store_metadata WHERE id=1").get()
+  if (row?.format === "sane-domain" && Number.isInteger(row.version) && row.version > SCHEMA_VERSION) fail("UNSUPPORTED_SCHEMA", `sane-domain v${row.version} at ${discovery.databasePath} is newer than this SANE runtime (v${SCHEMA_VERSION}); update the installed SANE runtime that opened it (${import.meta.dir}).`)
   if (!row || row.format !== "sane-domain" || !(RECOGNIZED_SCHEMA_VERSIONS as readonly number[]).includes(row.version)) fail("UNSUPPORTED_SCHEMA", `Unsupported sane-domain version at ${discovery.databasePath}.`)
   assertSchemaCapabilities(db, row.version)
   if (!existsSync(join(discovery.stateRoot, "complete.json"))) fail("INCOMPLETE_INITIALIZATION", "Missing domain completion marker; upgrade cannot adopt a partial initialization.")

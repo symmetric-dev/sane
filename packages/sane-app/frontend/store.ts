@@ -87,6 +87,8 @@ export type State = {
   /** Original-source evidence only, never a retry/replay queue. */
   unconfirmedSubmissions?: Record<string, UnconfirmedSubmission>;
   models: ModelChoice[]; modelsLoading: boolean; modelsError: string; modelsLoaded: boolean;
+  /** Separate advisory discovery; never substitutes for the OpenCode catalog. */
+  grokModelCatalog?: import("../shared/conversation/model-catalog").ModelCatalog & { cwd: string; loading: boolean; loaded: boolean };
   modelsCwd: string; interactions: Interaction[]; handoffApprovals: Interaction[]; interactionError: string; actionBusy: boolean; actionNotice: string;
   nativeHistory?: ReconciledHistory | null;
   pendingTurn?: PendingTurn | null;
@@ -189,7 +191,10 @@ export class ChatStore {
     if (this.grokViews.size > 20) this.grokViews.delete(this.grokViews.keys().next().value!);
     const previous = this.state.conversations.find(item => item.id === view.sessionId);
     const captureAvailability = grokAvailability(view, this.grokUnconfirmed.has(view.sessionId));
-    const availability = captureAvailability.canSend && readiness?.canSend === false ? readiness : captureAvailability;
+    // Managed status includes current shared readiness. A sidebar summary read
+    // before it may still say busy after the original owner has been released.
+    // Use summary restrictions only for capture responses lacking readiness.
+    const availability = !view.availability && captureAvailability.canSend && readiness?.canSend === false ? readiness : captureAvailability;
     const last = view.runs.at(-1);
     const nativeHistory = history?.sessionId === view.sessionId && history.nativeSessionId === view.nativeSessionId ? history : null;
     const runs = grokRuns(view);
@@ -1294,6 +1299,7 @@ export class ChatStore {
   private cacheable = false;
   private started = false;
   private modelRequest = 0;
+  private grokModelRequest = 0;
   private replied = new Set<string>();
   private nativeHistoryLoaded = false;
   private selectionEpoch = 0;
@@ -1845,7 +1851,27 @@ export class ChatStore {
       if (auth === this.authEpoch && sameIdentity() && this.state.selected === id) this.reconnect();
     }
   };
-  loadModels = async (harness: unknown = this.harness()) => {
+  loadModels = async (harness: unknown = this.harness(), refresh = false) => {
+    if (harness === "grok") {
+      if (!this.supportedCapabilities(harness).listModels || !this.client.grokModels) return;
+      const cwd = this.workspace(), cached = this.state.grokModelCatalog?.cwd === cwd ? this.state.grokModelCatalog : undefined;
+      if (cached?.loading) return;
+      const auth = this.authEpoch, request = ++this.grokModelRequest;
+      const starting = { models: cached?.models ?? [], fetchedAt: cached?.fetchedAt ?? "", stale: cached?.stale ?? true,
+        cwd, loading: true, loaded: cached?.loaded ?? false, error: "" };
+      this.update({ grokModelCatalog: starting });
+      try {
+        const result = await this.client.grokModels(cwd, AbortSignal.timeout(25000), refresh);
+        if (auth !== this.authEpoch || request !== this.grokModelRequest) return;
+        if (!Array.isArray(result.models) || result.models.some(m => !m || typeof m.id !== "string" || typeof m.name !== "string" || !Array.isArray(m.efforts))) throw new Error("Invalid Grok model catalog");
+        this.update({ grokModelCatalog: { ...result, cwd, loading: false, loaded: true, error: result.error ?? "" } });
+      } catch (error) {
+        if (auth !== this.authEpoch || request !== this.grokModelRequest || this.expired(error)) return;
+        this.update({ grokModelCatalog: { ...starting, loading: false, stale: true,
+          error: `Grok catalog unavailable: ${error instanceof Error ? error.message : "Could not load models."} You can still enter model and effort IDs manually.` } });
+      }
+      return;
+    }
     if (!this.supportedCapabilities(harness).listModels || !this.client.models) return;
     const cwd = this.workspace();
     if (this.state.modelsLoading && this.state.modelsCwd === cwd) return;
@@ -1877,6 +1903,9 @@ export class ChatStore {
   };
   /** Warn-not-fail: a model absent from the live catalog still sends for native resolution. */
   missingModel = (): string => {
+    // Grok's optional catalog is presented in profile settings, not the shared
+    // OpenCode send gate. Unknown/custom Grok IDs remain valid selections.
+    if (this.harness() === "grok") return "";
     if (getHarnessDescriptor(this.harness())?.policies.modelInput !== "live-catalog" || this.modelUnavailable()) return "";
     const { model, effort } = this.effectiveModel();
     if (!model) return "";
@@ -2198,7 +2227,7 @@ export class ChatStore {
     clearWorkstreamMembership();
     this.replied.clear();
     this.update({ pendingCompacts: {}, compactState: null, compactions: [], compactDialog: "", compactError: "", compactInstructions: {} });
-    this.update({ phase: "login", config: undefined, conversations: [], conversationsReady: false, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
+    this.update({ phase: "login", config: undefined, conversations: [], conversationsReady: false, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", grokModelCatalog: undefined, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
   }
   private expired(error: unknown) { if ((error instanceof ApiError || error instanceof PendingInputApiError) && error.status === 401) { this.loginRequired(); return true; } return false; }
   start = () => { if (this.started) return; this.started = true; void this.boot(); };
@@ -2595,6 +2624,10 @@ export class ChatStore {
   /** Live sessions (running work or pending submission state) poll fast; static opened sessions back off. */
   private pollBusy() {
     return this.state.loading || this.state.sending || !!this.state.pendingTurn || this.state.actionBusy
+      // Run completion can precede release of the conversation reservation.
+      // Keep checking that transition rather than backing off for a full minute.
+      || !!this.state.selected && (this.state.availability.code === "conversation-busy" || !this.state.availability.code
+        && this.state.availability.reason === "This conversation already has an active run or reconciliation")
       || !!this.state.transcriptInitialLoading || !!this.state.transcriptError || !!this.state.metadataError
       || this.state.interactions.length > 0 || this.state.handoffApprovals.length > 0
       || this.state.conversations.some(conversation => conversation.status === "running" || conversation.status === "starting" || conversation.lastRunStatus === "running" || conversation.lastRunStatus === "starting")

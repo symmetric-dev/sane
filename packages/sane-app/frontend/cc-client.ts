@@ -158,6 +158,7 @@ export const conversationClient: ConversationClient = {
     const data = await request(`/api/harnesses/opencode/models?cwd=${encodeURIComponent(cwd)}`, { signal });
     return data.models ?? [];
   },
+  grokModels: (cwd, signal, refresh = false) => request(`/api/harnesses/grok/models?cwd=${encodeURIComponent(cwd)}${refresh ? "&refresh=true" : ""}`, { signal }),
   async interactions(id, signal) { return (await request(`/api/sessions/${encodeURIComponent(id)}/interactions`, { signal })).interactions ?? []; },
   reply: (id, interactionId, reply) => request(`/api/sessions/${encodeURIComponent(id)}/interactions/${encodeURIComponent(interactionId)}/reply`, { method: "POST", body: JSON.stringify(reply) }),
   async handoffApprovals(id, signal) {
