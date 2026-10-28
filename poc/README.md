@@ -1,13 +1,8 @@
-# Proofs of concept
+# Historical experiments
 
-Keep proof-of-concept implementations under `poc/<name>/`.
+These proof-of-concept implementations are not supported App entry points or
+operational references. Active development and operation use
+[SANE App](../packages/sane-app/README.md).
 
-- [agent-creature](agent-creature/) — standalone SVG pet experiment with manual
-  animation controls; no agent activity wiring or app integration.
-
-- [native-caller-capabilities](native-caller-capabilities/) — opt-in native caller
-  identity, managed-source association, and Claude completion observability probes.
-
-- [cc-web](cc-web/) — accepted Claude Code/OpenCode browser PoC, retained as a
-  historical behavior reference. Active implementation is in `packages/sane-app`;
-  [App documentation and ongoing work](../docs/sane-app/README.md) live under `docs/`.
+Historical designs, instructions, and verification notes are available in Git
+history. Keeping an experiment's source does not imply support or integration.

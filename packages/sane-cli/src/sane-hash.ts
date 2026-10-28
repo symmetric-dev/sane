@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
 
 /**
- * Content hashing for SANE 0.2.0 approvals (docs/SANE_0_2_0.md Section 2).
+ * Content hashing for workstream approval snapshots.
  *
  * The `approvals` table records `sane_hash` (content hash of the approved
  * artifact) plus a nullable `git_commit` (NULL when the workflow is not

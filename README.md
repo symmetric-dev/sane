@@ -1,53 +1,39 @@
 # SANE
 
-SANE is a CLI and agent workflow for managing bounded software workstreams.
-It helps users and AI assistants turn an idea or problem into a design,
-technical solutions, an execution plan, and verified implementation.
+SANE is a browser app for working with Claude Code and OpenCode conversations,
+software workstreams, files, Git, terminals, and Python notebooks.
 
-**Design → Engineering → Planning → Execution**, with Research available
-throughout. Users approve each phase; assistants coordinate the work and
-delegate bounded tasks to workers.
+Work through SANE App. It supplies SANE agents with their role instructions and
+workflow guidance directly; no separate CLI playbook is required.
 
-Each implementation repository keeps its workstream documents in
-`.sane/workstreams/` and workflow state in `.sane/sane.db`. SANE is currently
-an Alpha, using Bun and OpenCode.
+## Start
 
-## Start here
+Requires [Bun](https://bun.sh/) and an installed, authenticated Claude Code and/or
+managed-local OpenCode service for the conversations you want to use.
 
-**[Workflow Playbook](docs/SANE_WORKFLOW.md)** — installation, your first
-workstream, and everyday operation.
+From this checkout:
 
-[Documentation map](docs/README.md) · [Historical archive](docs/_legacy/README.md)
+```sh
+bun install
+bun run setup:app --cwd /absolute/path/to/project --port 6700
+bun run start:app
+```
 
-[SANE App](docs/sane-app/README.md) · [Ongoing App work](docs/sane-app/ongoing/README.md)
+Open `http://127.0.0.1:6700`. For native runtime installation, configuration,
+updates, and recovery, use the [operator guide](packages/sane-app/HUMAN-OPERATOR-GUIDE.md).
 
 ## Development
 
-Requires [Bun](https://bun.sh/). From this checkout:
+- [App](packages/sane-app/README.md) — frontend, server, and integration entry points.
+- [Core](packages/sane-core/README.md) — repository-domain interfaces.
+- [Science](packages/sane-science/README.md) — Python environment and notebook interfaces.
+- [Profiling](packages/sane-app/PROFILING.md) — opt-in performance capture.
 
-```bash
-bun install
+```sh
 bun run typecheck
-bun run test
+bun run build:app
 ```
 
-- `bin/sane.ts` — CLI entry point.
-- `packages/sane-cli/` — implementation and tests.
-- `packages/sane-app/` — browser App and server.
-- `packages/sane-core/` — shared domain operations.
-- `docs/sane-app/` — App documentation and ongoing checkpoint work.
-- `poc/` — historical proof-of-concept implementations.
-- `context/agents/` — assistant and worker role definitions.
-- `context/skills/` — assistant lifecycle procedures and resources.
-- `opencode/` — SANE integration plugin.
-- `templates/` — workstream document templates.
-
-The package is private to prevent accidental package publication.
-## Run SANE App from this repository
-
-Use `bun run start:app --port 6700` (`bun run start` is an alias). It builds the
-App assets and starts a foreground server with the repository root as the default
-execution cwd. `bun run start:app --help` lists options without building or starting.
-The short launch is App-only: regular `.sane` workstreams are not loaded.
-See the [operator guide](packages/sane-app/HUMAN-OPERATOR-GUIDE.md#root-launch-and-current-storage-model)
-for App initialization, existing-store restart and Tailscale origin setup.
+`context/` and `templates/` are runtime inputs, not explanatory documentation.
+Keep documentation limited to entry points, interfaces, and operational guides;
+implementation details belong in code. Historical designs and plans remain in Git.

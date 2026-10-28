@@ -49,7 +49,8 @@ Caller envelope: SANE_CALLER_CONTEXT v1 full envelope or compact shell
 Native link/handoff are supplied by the configured native tools; their CLI commands
 and candidate/merge/worktree/destructive operations are unavailable.
 Bare native session signals fail, even with explicit targets.
-No implicit initialization, native registration, or migration. See docs/SANE_WORKFLOW.md.`
+No implicit initialization, native registration, or migration. Operate through SANE App;
+see packages/sane-app/HUMAN-OPERATOR-GUIDE.md for setup and recovery.`
 
 export interface CliRuntime {
   cwd?: string

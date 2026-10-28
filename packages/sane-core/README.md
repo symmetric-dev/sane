@@ -1,40 +1,25 @@
-# Shared repository domain
+# SANE Core
 
-Private Bun source package. `sane-core/server` owns the fresh relational
-`<primary-checkout>/.sane/sane.db`; linked worktrees share it. `sane-core/contracts`
-is browser-safe. No candidate store, compatibility loader, migration or ambient
-repository/session selection exists here.
+Private Bun package providing the repository domain used by SANE App.
+The primary Git checkout owns `.sane/sane.db`; linked worktrees share that store.
 
-```ts
-import {
-  discoverRepository, inspectRepositoryStore,
-  initializeRepository, openRepositoryDomain,
-} from "sane-core/server"
+## Interfaces
 
-const discovery = discoverRepository(absoluteGitPath)
-const availability = inspectRepositoryStore(discovery) // never initializes
-// Only an explicit user initialization action may call initializeRepository.
-const context = initializeRepository(discovery)
-const domain = openRepositoryDomain(context) // never initializes/migrates
-try {
-  domain.createWorkstream({ id: "example", title: "Example", type: "feature" }, {
-    actor: { kind: "local" }, correlationId: crypto.randomUUID(),
-  })
-} finally { domain.close() }
-```
+- [package.json](package.json) — exported module paths.
+- [src/server.ts](src/server.ts) — backend domain operations and repository lifecycle exports.
+- [src/contracts.ts](src/contracts.ts) — browser-safe domain types.
+- [src/repository.ts](src/repository.ts) — discovery, inspection, explicit initialization and upgrades.
+- [src/agent-catalog.ts](src/agent-catalog.ts) — supported agent identities.
+- [src/sane-context.ts](src/sane-context.ts) — framework, session, and assignment composition.
 
-Full API handoff, actor/source contracts, sync/async signatures and verification:
-[`C7-CORE-REPORT.md`](../../docs/sane-app/archive/c7/C7-CORE-REPORT.md).
+Discover a repository and inspect its store before opening it. Inspection does not
+initialize or upgrade; those are explicit operations. Open ready stores with
+`openRepositoryDomain(context)` from `sane-core/server` and close the returned
+handle in `finally`. Do not fabricate repository identities from paths.
 
-Mutations use immediate SQLite transactions and atomic audit evidence. Artifact
-publication and approval capture hold per-workstream cross-process locks. These
-are cooperative filesystem guarantees, not external-process snapshot isolation:
-partial publication is diagnosed and retained, never silently adopted/deleted.
-Stale locks are never automatically stolen. Close repository handles explicitly.
+Mutations require explicit actor/correlation context. Artifact publication uses
+cooperative cross-process locks; partial publication is retained for diagnosis,
+not silently adopted or removed. Do not manually steal locks or treat these
+filesystem guarantees as an OS sandbox.
 
-```sh
-bun test packages/sane-core/tests --timeout 30000
-```
-
-Tests use disposable Git repositories and fresh databases; no native services,
-installed configuration or live domain state are accessed.
+For user setup and recovery, use the [App operator guide](../sane-app/HUMAN-OPERATOR-GUIDE.md).

@@ -2,279 +2,143 @@
 
 ## Setup and launch
 
-From a cloned installation checkout, install workspace dependencies with `bun install`, then:
+Install [Bun](https://bun.sh/) and authenticate the native harnesses you want to
+use: Claude Code on PATH and/or a running managed-local OpenCode service.
+From this checkout:
 
 ```sh
-bun run setup:app --cwd /path/to/project --port 6700
+bun install
+bun run setup:app --cwd /absolute/path/to/project --port 6700
 bun run start:app
 ```
 
-Setup explicitly initializes fresh App history/catalog in `packages/sane-app/.data`
-and saves `packages/sane-app/.config.json`. Repeating a matching setup preserves
-existing state. Partial, incompatible, or source-mismatched stores are rejected;
-there is no reset, import, or migration. Setup does not initialize a project's
-`.sane`. Project initialization is a separate explicit action in the selected Git
-repository; linked worktrees share its project authority. Projects need not be
-inside the SANE installation.
+Open `http://127.0.0.1:6700`. Setup saves
+`packages/sane-app/.config.json` and initializes App history/catalog in
+`packages/sane-app/.data`. Repeating a matching setup preserves existing state;
+changed settings require explicitly editing the config or selecting a new
+`--config` file. Setup does not initialize the project's `.sane` state or install
+or start native services.
 
-`bun run start`, `bun run start:app`, package `bun run start`, and direct
-`bun packages/sane-app/server.ts` use the same config-driven launch. No installer,
-background App service, or global App configuration is required. One server owns
-each installation checkout, regardless of port or selected data directory.
+`bun run start` is an alias for `bun run start:app`. The server runs in the
+foreground; one server owns each installation checkout, regardless of port or
+data directory. Use `bun run start:app --help` for launch options without starting
+the server.
 
-## Configuration
+## Install or update native integrations
 
-Use `bun run start:app --help` for options. `--config PATH` selects another saved
-config; setup can create that file in an existing parent directory. CLI settings
-override saved settings. CLI paths resolve against invocation cwd; saved paths
-resolve against the config directory. Setup saves absolute paths. Without a saved
-execution cwd, the default is invocation cwd, not the App package directory.
+SANE agents receive their instructions directly from the App. Native plugins,
+hooks, and MCP integrations are still required for SANE tools. From this checkout,
+install or refresh the executable integrations:
 
-Setup will not overwrite an existing config with changed settings. Edit that
-config explicitly, or choose a new config file. Launch overrides are temporary.
-Native source changes must still match the store's source pins.
-
-Local Claude uses `claude` on PATH by default; `--claude-bin` and
-`--claude-profile` select its executable and profile. OpenCode uses managed-local
-discovery via `--opencode-registration`. Endpoint and credentials come from that
-registration together; explicit remote endpoints are unsupported. Setup and launch
-do not install, start, or reconfigure native services. Contradictory native selector
-environment variables are rejected. Unavailable native sources do not require
-discarding App history.
-
-The listener defaults to `127.0.0.1:8787`. For an existing HTTPS reverse proxy, set
-`--public-origin https://YOUR-HOST` and `SANE_APP_PASSWORD`. A non-loopback listener
-additionally requires `--allow-remote`. These settings do not configure proxies.
-Use `--no-allow-remote` or `--clear-public-origin` to override saved values.
-
-## Assets and ownership
-
-Launch explicitly builds a complete versioned asset generation, then serves that
-selected generation. `bun run build:app` performs a standalone guarded build.
-`--no-build` validates the current generation against source/build inputs and
-output hashes before serving; stale or missing assets require rebuilding.
-The server snapshots its HTML at startup. Builds cannot replace assets beneath a
-running installation owner.
-
-Installation ownership is acquired before data ownership and held across build,
-startup, serving, and shutdown. Ctrl-C or SIGTERM drains App work before releasing
-ownership. OpenCode shutdown stops observation, not native execution. Failed drains
-retain ownership and exit unsuccessfully. After a crash, verify any surviving
-App-owned Claude processes have stopped before using `--reconcile-interrupted`.
-Reclamation requires proven-dead owner evidence; live, malformed, or unverifiable
-ownership is not silently removed. Never delete state to clear a busy indicator.
-
-## Working with projects
-
-### Present questions in chat
-
-App-owned Claude and OpenCode conversations can use `present_questions_to_user`
-without workstream enrollment, including Base conversations in ordinary directories.
-The tool accepts `{ title, pages }`, with one question per page:
-
-```json
-{
-  "title": "Implementation choices",
-  "pages": [
-    {
-      "question": "Should the helpers be copied or shared?",
-      "context": "Copying keeps existing consumers unchanged; sharing reduces duplicate maintenance.",
-      "references": ["src/helpers.ts"],
-      "options": ["Copy the helpers", "Extract shared helpers"],
-      "allow_other": true
-    },
-    { "question": "What other constraints should we consider?" }
-  ]
-}
+```sh
+bun packages/sane-cli/src/install-sane-agent-context-packages.ts --runtime-only --overwrite
 ```
 
-Omit `options` for a textarea. With options, selection is single-choice unless
-`multiple` is true; custom text requires `allow_other: true`. Empty options are
-invalid. There are no caller-supplied IDs, grading, timers, or workstream actions.
+This updates user-level harness configuration as well as runtime files. Add
+`--dry-run` to inspect planned changes first. The defaults target the user's
+standard `.claude` profile, managed OpenCode registration, and this checkout's
+`packages/sane-app/.data/native-handoff.json` connection file. If using another
+App data directory or registration, supply matching absolute paths with
+`--app-connection-file` and `--registration-file`. Custom Claude hook/MCP binding
+directories must agree; use `--binding-root` when explicitly aligning them.
 
-The tool returns after saving and presenting the form, not after it is answered.
-Questions appear as a collapsible section inside the chat composer, using the same
-controls as native questions and approvals; the message input remains usable. Native
-permission requests and handoff approvals still require a response before chat can
-continue. Delivered or dismissed question sets leave the composer automatically;
-open them from the transcript to review their history. Back/Next does not submit.
-Answers autosave, and **Submit answers** saves the final answers
-and queues a response to the same conversation. A busy assistant receives it when
-execution becomes available. All answers are optional. **Dismiss** preserves the
-form's history without sending answers. Only one unanswered form is allowed per
-conversation; published questions cannot be edited.
+Restart affected native services after refreshing their integrations. Restarting
+the App alone does not update installed plugins or MCP files. Runtime-only
+installation does not publish or retire legacy agent Markdown; do not remove
+installed definitions still needed by active legacy sessions.
 
-After submission, a compact delivery view replaces the question editor. Submitted
-answers and technical delivery details are available separately on demand.
+After source updates, stop the App gracefully, install changed dependencies,
+refresh changed native integrations, start the App again, and reload the browser.
+Existing SANE sessions retain pinned instruction revisions; restarting or
+compacting is not an instruction refresh.
 
-Saved forms and answers survive refresh and restart. Pending delivery pauses after
-restart or Stop and requires **Resume delivery**. An uncertain native acceptance
-is never automatically resent; inspect the delivery status instead. Submission
-and delivery are separate from the assistant understanding or acting on answers.
-Conflicting tabs preserve local answers and require explicit reconciliation.
+## Configuration and remote access
 
-References can be HTTP(S) links or worktree-relative paths. Local links open the
-current file using the original workspace binding; line locators remain visible
-but do not select or verify historical lines. Protected or unsupported paths stay
-text-only. Existing dirty file buffers are preserved.
+CLI overrides are temporary. CLI paths resolve against invocation cwd; saved
+paths resolve against the config directory. Setup saves absolute paths. Native
+source selectors must agree with the store's recorded source identities.
 
-Attached external conversations and managed worker conversations are not eligible
-to publish or answer forms. Read-only history retains recorded forms in the owning
-chat; branches do not inherit actionable forms. This feature does not update skills
-or agent instructions. Refresh the installed native runtime/configuration through
-the existing runtime-only installer and restart the relevant native services to
-make a newly added tool discoverable; restarting the App alone does not replace
-installed plugin/MCP files.
+- `--config PATH` selects another saved config.
+- `--cwd PATH` selects the default execution directory for new conversations.
+- `--data-dir PATH` selects App history/catalog; it is not a project `.sane` store.
+- `--claude-bin`, `--claude-profile`, and `--opencode-registration` select native
+  sources. OpenCode endpoint and credentials come from its managed registration
+  together, not an arbitrary remote endpoint.
 
-### Project selection
+The listener defaults to loopback. For an existing HTTPS reverse proxy, set
+`SANE_APP_PASSWORD` securely in the server environment and launch with the exact
+browser origin:
 
-Open a directory and select its workspace/worktree. That selection chooses new
-conversations' execution checkout; existing conversations retain their recorded
-checkout. Finish external work in a conversation before sending from the App.
-Native linking and handoffs are separate work, not part of App setup.
+```sh
+bun run start:app --public-origin https://your-host.example
+```
 
-In the workspace selector, **New workspace…** (above **Open directory…**) asks
-for an existing absolute parent directory and a new folder name. It creates that
-folder, initializes Git on `main`, writes `/.sane/` to `.gitignore`, initializes
-SANE workstream state, and selects the workspace. No initial commit, remote,
-workstream, or global agent configuration is created. The parent must be outside
-existing Git repositories and protected App/Git/SANE data; existing destinations
-are never overwritten.
+A non-loopback listener additionally requires `--allow-remote`, a password, and
+an HTTPS public origin. These settings do not create a proxy, configure TLS, or
+set up Tailscale. Do not put passwords in committed files or shared commands.
+Use `--no-allow-remote` or `--clear-public-origin` to override saved values.
 
-If the request times out or loses its response, **Check creation** retrieves the
-same request's outcome without recreating the folder. Failed or interrupted
-creation retains any partial folder for inspection; SANE does not automatically
-delete or adopt it. A successfully initialized folder can be opened with
-**Open directory…** if catalog registration failed.
+Launch builds a versioned asset generation. `--no-build` serves only a generation
+that still matches its source/build inputs; missing or stale assets require a
+rebuild. A running server does not adopt rebuilt assets or changed backend code.
 
-### Compact conversation context
+## Projects and execution targets
 
-SANE never initiates automatic compaction or changes the harness's compaction
-threshold. When Claude Code or OpenCode compacts during an App-owned run, SANE
-shows the native lifecycle and retains a compaction marker. Compaction performed
-outside the App appears after **Refresh native history**; external sessions are
-not continuously monitored.
+Open a directory and select its workspace/worktree. New conversations use that
+selection; existing conversations retain their recorded execution checkout.
+Files, Git, and Terminal use the selected browsing workspace, which may differ
+from the conversation's execution checkout. Check the displayed target before
+saving, staging, committing, pushing, or starting a terminal.
 
-For explicit manual compaction, open an existing idle conversation and use
-**Compact now** beside its context indicator, or send `/compact`. Claude Code
-also accepts `/compact <instructions>`; OpenCode does not accept custom
-compaction instructions. Compaction uses the same native conversation and
-checkout without applying a pending agent upgrade. The button preserves your
-message draft. Attached Claude conversations require confirmation that external
-execution has stopped. Managed worker conversations cannot be compacted manually
+Use **Enable workstreams** in an existing Git workspace to initialize its project
+state. **New workspace…** creates a new Git repository and initializes its SANE
+state. App setup and project initialization are separate. Linked worktrees share
+the primary checkout's `.sane`; unrelated repositories remain separate.
+
+Unsaved file buffers are browser-memory-only. Search reads saved files. Git commit
+uses the staged index; push is a separate explicit action. These operations use
+the host's Git identity and credentials. Interactive authentication may require
+an external terminal. Terminals require explicit control and do not survive App
+restart. Finish external native execution before continuing the same conversation
 from the App.
 
-Request acceptance is not completion. If acceptance or the outcome is
-unconfirmed, inspect the operation and native history before starting another
-request. Reconnecting or repeating the same recorded request never automatically
-resends a native compaction. A successful compaction can remain successful even
-if the containing assistant run is later interrupted.
+## Browser and Python
 
-Context percentage is the last reported usage of the full model window, not the
-harness's auto-compaction threshold. A running compaction makes that reading
-stale; after confirmed completion, SANE waits for new usage rather than displaying
-an invented zero percent. Skipped or failed compaction does not prove a context
-reset.
+Host-browser sessions require Chrome/Chromium on the server. Set
+`SANE_CHROMIUM_BIN` to an executable path if automatic discovery fails;
+`SANE_HOST_BROWSER=0` disables them. Host-browser URLs resolve on the server,
+not on a remote client device. Conversation pairing alone does not grant agent
+access: Observe/Control grants are separate. Review screenshots and diagnostics
+before sharing; saved captures live under `<dataDir>/browser-artifacts/`.
 
-### Git operations from chat
+Python notebook provisioning is explicit in the chat's **Notebook settings** and
+requires [uv](https://docs.astral.sh/uv/) satisfying the
+[runtime manifest](../sane-science/pyproject.toml). The project must have initialized
+SANE state. Notebooks and their environment live under the primary checkout's
+`.sane/science`; App chat history remains in the configured App data directory.
+Local Python cells are not sent to the agent unless explicitly shared. Python
+executes on the host: a virtual environment is not a security sandbox.
 
-Open **Flows → Git** from a conversation to review saved changes, stage or
-unstage whole files, enter a commit message, commit, and explicitly push. These
-are direct Git controls, not agent requests, and require no assigned workstream.
-Like Terminal, Git uses the **selected browsing workspace/worktree**, which may
-differ from the conversation's execution checkout. Check the displayed target
-and branch before making changes.
+## Shutdown, recovery, and backups
 
-On phones, switch between **Changes**, **Diff**, and **Commit & push** to give
-each step the full review area. Selecting a changed file opens its diff; switching
-views preserves your selection and commit-message draft. Desktop keeps the
-side-by-side review layout.
+Stop with Ctrl-C or SIGTERM and let draining finish. OpenCode shutdown stops App
+observation, not native execution. Back up the configured App data directory,
+saved config, project `.sane` directories, and native harness storage while their
+writers are stopped. App history alone is not a backup of native conversations.
 
-Git review shares the existing staged, unstaged, and untracked comparisons with
-the Files Git view, but does not move its file selection. Unsaved editor buffers
-are never saved automatically or included by staging. Commit uses the staged
-index; it does not automatically stage other changes. Push is a separate action
-with an explicit remote and branch. Force-push, pull/rebase, branch switching,
-amend, hunk staging, and conflict resolution are not provided here.
+After a crash, inspect surviving App-owned processes before using
+`--reconcile-interrupted`. Reclamation requires proven-dead ownership; never
+delete locks or state merely to clear a busy indicator. Partial/incompatible
+stores are not silently reset or adopted. If a schema upgrade is required, back
+up the store and stop other SANE processes before the explicit upgrade.
 
-Commit and push use the host's normal Git identity, hooks, signing, and credential
-setup. Interactive authentication may require attention in an external terminal.
-SSH uses batch-mode OpenSSH and the usual SSH configuration/agent; custom
-`core.sshCommand`, `GIT_SSH`, and `GIT_SSH_COMMAND` overrides are not used by this UI.
-If the checkout or Git state changes after review, refresh and review again before
-retrying. If an operation's outcome is unknown, inspect the repository before
-starting another mutation; a lost response is not evidence that nothing changed.
+Unknown acceptance or execution is not proof that an operation did nothing.
+Inspect operation status, repository state, or native history before another
+mutation; do not blindly resend. Submitted question answers with paused delivery
+require **Resume delivery** after restart or Stop.
 
-This first version rejects conflicted/sparse indexes, active Git sequencers,
-symlink/hard-linked staging operands, and protected or undisplayed staged paths.
-Whole-file staging captures at most 16 MiB per file and 64 MiB per snapshot;
-unsupported text previews alone do not prevent staging. Push supports one
-HTTP(S), SSH, or Git push URL and the checked-out branch's same name on the
-remote, not local-path, custom-helper, mirror, or multi-destination pushes.
-Commit-message drafts remain in memory when leaving the flow, but not across a
-page reload. Admitted operation receipts survive App restart and prevent replay
-of the same request ID.
+The browser's install menu or **Install SANE**, where offered, can create a
+standalone frontend window. This does not install a background server or provide
+offline operation; the App server must remain reachable.
 
-### Search files
-
-In Files or Git view, press **Cmd+Shift+F** on macOS or **Ctrl+Shift+F** on Windows/Linux,
-or use the visible search action. Search runs across the selected browsing
-worktree, independently of a conversation's execution checkout.
-
-Search is embedded in the Files workspace rather than a dialog. The Search
-sidebar shows only matching files, grouped by folder, with match counts; the
-main panel shows grouped matching lines. Opening a result keeps the search
-controls and filtered sidebar visible beside the existing file editor. Use
-**All results** to return to the matching lines, or **Files** to restore the
-normal file tree. Previous/next match controls navigate within the open file.
-
-This first version searches **saved file contents**, not unsaved editor buffers.
-Opening a result preserves local edits; save explicitly to include those edits
-in a subsequent search. Matching is literal, with case-sensitive and whole-word
-options and include/exclude path filters. Regular expressions, Quick Open
-(`Cmd+P`), and the Command Palette are not included yet.
-
-Filters are comma-separated, case-sensitive workspace-relative globs: `*.ts`
-matches basenames at any depth, `src/**/*.ts` matches paths, and `docs/` matches
-that directory's descendants. Supported wildcards are `*`, `?`, and `**` as a
-complete path segment; negation, brace expansion, and character classes are not
-supported. Searches honor safely readable `.gitignore` files inside the worktree,
-including nested rules and negation, even in non-Git directories. Global ignore
-settings, ignore files outside the browsing root, and `.git/info/exclude` are not
-read. Unsafe or oversized ignore files supply no rules. Dependency/generated folders named
-`node_modules`, `dist`, `build`, `coverage`, or `vendor` are always excluded.
-
-Search retains the file-access restrictions: protected App/project/Git data,
-symlink traversal, and hard-linked files are not searchable. Binary, unsupported,
-and oversized files are skipped. Large searches are bounded; check the results
-for skipped-file or truncation notices and narrow your query when necessary.
-
-Ordinary repositories, standard linked worktrees, and ordinary directories can
-reuse a validated search-scoped binding while retaining filesystem checks on
-every read. Uncertain Git mappings or complex configuration use the original
-full-validation path instead; these searches may be slower. Results remain
-atomic: matches appear only after the final workspace validation succeeds.
-Search reads at most four files concurrently and admits at most two active
-search requests across the App. A busy response can be retried shortly. Ignore
-parsing and matching run outside the App process so their CPU work can be
-stopped on cancellation or deadline expiry.
-
-After updating App source, stop the running App gracefully and launch again with
-your usual `bun run start:app` command, then reload the browser. A running server
-does not adopt newly built assets or backend code automatically.
-
-To smoke-test the feature:
-
-1. Select a worktree, open Files, and invoke the search shortcut with the editor
-   focused. Search for text in a nested file whose folder is still collapsed.
-2. Toggle case-sensitive/whole-word matching and narrow the include/exclude
-   filters. Open a match and check the selected text and editor position.
-3. Leave unsaved edits in a file, search again, and open a result for that file.
-   Verify the local edits remain intact and search still reports saved contents.
-4. Switch worktrees while a search is pending. Results from the old worktree
-   must not appear or open files in the new one.
-5. Open a matching file from the filtered sidebar, navigate its matches, and
-   return with All results. Verify the query and results remain available and
-   switching to Files restores the ordinary tree.
-6. Verify Escape moves focus out of the search controls without discarding the
-   search, and unrelated editor, chat, and terminal shortcuts retain their behavior.
+For performance captures and science timing logs, see [PROFILING.md](PROFILING.md).
