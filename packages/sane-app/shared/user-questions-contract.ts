@@ -14,7 +14,7 @@ export interface UserQuestionsRecord {
   version: 1;
   id: string;
   sessionId: string;
-  native: { harness: "cc" | "oc"; authorityId: string; nativeId: string };
+  native: { harness: "cc" | "oc" | "gk"; authorityId: string; nativeId: string };
   anchor: { runId: string; toolCallId: string; messageId: string | null; invocationId: string; wrapper: "execute" | null };
   workspaceId: string;
   worktreeId: string;
@@ -26,7 +26,7 @@ export interface UserQuestionsRecord {
   answers: UserQuestionAnswer[];
   status: "presented" | "submitted" | "dismissed";
   submission: null | { id: string; requestId: string; submittedAt: string; answers: UserQuestionAnswer[] };
-  delivery: null | { id: string; state: "pending" | "claimed" | "accepted" | "unknown" | "paused"; runId: string | null; nativeCommandId: string | null; reason?: string };
+  delivery: null | { id: string; state: "pending" | "claimed" | "accepted" | "wrapper-completed" | "unknown" | "paused"; runId: string | null; nativeCommandId: string | null; reason?: string };
   dismissal: null | { requestId: string; at: string };
 }
 export interface UserQuestionsReceipt { form_id: string; status: "presented" }
@@ -129,11 +129,13 @@ export function isUserQuestionsRecord(value: unknown): value is UserQuestionsRec
       && typeof v.cwd === "string" && v.cwd.startsWith("/") && v.cwd.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(v.cwd)
       && time(v.createdAt) && Number.isSafeInteger(v.revision) && (v.revision as number) >= 1, "Invalid form identity");
     const native = object(v.native, ["harness", "authorityId", "nativeId"]);
-    requireValue((native.harness === "cc" || native.harness === "oc") && token(native.authorityId) && token(native.nativeId), "Invalid native identity");
+    requireValue((native.harness === "cc" || native.harness === "oc" || native.harness === "gk") && token(native.authorityId) && token(native.nativeId), "Invalid native identity");
+    if (native.harness === "gk") requireValue(/^sane-native-v1:gk:[a-f0-9]{64}$/.test(native.authorityId)
+      && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(native.nativeId), "Invalid Grok identity");
     const anchor = object(v.anchor, ["runId", "toolCallId", "messageId", "invocationId", "wrapper"]);
     requireValue([anchor.runId, anchor.toolCallId, anchor.invocationId].every(token) && nullableToken(anchor.messageId)
       && (anchor.wrapper === null || anchor.wrapper === "execute"), "Invalid invocation anchor");
-    requireValue(native.harness === "cc" ? anchor.wrapper === null && anchor.invocationId === anchor.toolCallId
+    requireValue(native.harness !== "oc" ? anchor.wrapper === null && anchor.invocationId === anchor.toolCallId
       : anchor.messageId !== null && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(anchor.invocationId as string), "Invalid native invocation");
     const input = parsePresentQuestionsInput(v.input), answers = parseUserQuestionAnswers(input, v.answers);
     requireValue(v.revision !== 1 || v.status === "presented" && answers.every(answer => answer === null), "Initial form must be unanswered");
@@ -142,12 +144,13 @@ export function isUserQuestionsRecord(value: unknown): value is UserQuestionsRec
       requireValue(token(submission.id) && token(submission.requestId) && time(submission.submittedAt)
         && equalAnswers(answers, parseUserQuestionAnswers(input, submission.answers)), "Invalid immutable submission");
       const delivery = object(v.delivery, ["id", "state", "runId", "nativeCommandId"], ["reason"]);
-      requireValue(token(delivery.id) && ["pending", "claimed", "accepted", "unknown", "paused"].includes(delivery.state as string)
+      requireValue(token(delivery.id) && ["pending", "claimed", "accepted", "wrapper-completed", "unknown", "paused"].includes(delivery.state as string)
         && nullableToken(delivery.runId) && nullableToken(delivery.nativeCommandId), "Invalid delivery");
       if (delivery.state === "pending") requireValue(delivery.runId === null && delivery.nativeCommandId === null, "Unclaimed delivery cannot have a native run");
-      if (["claimed", "accepted", "unknown"].includes(delivery.state as string)) requireValue(token(delivery.runId), "Native delivery must retain its original run");
+      if (["claimed", "accepted", "wrapper-completed", "unknown"].includes(delivery.state as string)) requireValue(token(delivery.runId), "Native delivery must retain its original run");
+      if (delivery.state === "wrapper-completed") requireValue(native.harness === "gk" && delivery.nativeCommandId === null, "Wrapper completion requires a Grok run");
       requireValue(delivery.runId === null ? delivery.nativeCommandId === null
-        : native.harness === "cc" ? delivery.nativeCommandId === null : token(delivery.nativeCommandId), "Delivery command differs from its harness");
+        : native.harness === "oc" ? token(delivery.nativeCommandId) : delivery.nativeCommandId === null, "Delivery command differs from its harness");
       if (Object.hasOwn(delivery, "reason")) text(delivery.reason, 4096);
       requireValue(v.dismissal === null, "Submitted form cannot be dismissed");
     } else {

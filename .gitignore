@@ -11,3 +11,6 @@ dist/
 /.sane-app-dev/
 packages/sane-app/.data-fresh/
 /.verification/offline/
+
+# Local user-context experiment captures; keep curated implementation reports.
+/reports/user-context-*/

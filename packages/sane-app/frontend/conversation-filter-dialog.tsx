@@ -100,7 +100,7 @@ export function ConversationFilterDialog({ value, onChange, workspaces, navigati
         ...worktreeChoices.map(t => ({ value: t.worktreeId, label: t.alias || t.branch || t.root })),
       ]} />
       <FilterDropdown label="Harness" value={value.harness} onChange={next => set({ harness: next as ConversationFilterState["harness"] })} options={[
-        { value: "all", label: "All harnesses" }, { value: "claude-code", label: "Claude Code" }, { value: "opencode", label: "OpenCode" },
+        { value: "all", label: "All harnesses" }, { value: "claude-code", label: "Claude Code" }, { value: "opencode", label: "OpenCode" }, { value: "grok", label: "Grok" },
       ]} />
       <FilterDropdown label="Phase" value={assignmentValue(value.phase)} onChange={next => set({ phase: next })} options={[
         { value: "all", label: "All phases" },

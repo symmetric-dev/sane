@@ -4,12 +4,12 @@ import type { ModelChoice } from "./types";
 import "./model-picker.css";
 
 // Split only the provider prefix: model IDs can themselves contain slashes.
-export function groupModels(models: ModelChoice[]) {
+export function groupModels(models: ModelChoice[], ungroupedProvider?: string) {
   const groups = new Map<string, ModelChoice[]>();
   for (const model of models) {
     const slash = model.id.indexOf("/");
-    if (slash < 1 || slash === model.id.length - 1) continue;
-    const provider = model.id.slice(0, slash);
+    const provider = slash > 0 && slash < model.id.length - 1 ? model.id.slice(0, slash) : ungroupedProvider;
+    if (!provider) continue;
     const list = groups.get(provider) ?? [];
     list.push(model); groups.set(provider, list);
   }
@@ -25,15 +25,18 @@ function navigateList(event: KeyboardEvent<HTMLElement>) {
   event.preventDefault(); buttons[next]?.focus();
 }
 
-export function ModelPicker({ id, models, value, defaultLabel, disabled = false, loading = false, onChange }: {
+export function ModelPicker({ id, models, value, defaultLabel, disabled = false, loading = false, onChange,
+  allowCustom = false, allowEmpty = true, label = "Choose OpenCode model", ungroupedProvider }: {
   id: string; models: ModelChoice[]; value: string; defaultLabel: string; disabled?: boolean; loading?: boolean; onChange: (id: string) => void;
+  allowCustom?: boolean; allowEmpty?: boolean; label?: string; ungroupedProvider?: string;
 }) {
   const panelId = useId();
   const trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
   const providerSearch = useRef<HTMLInputElement>(null), modelSearch = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false), [provider, setProvider] = useState("");
+  const [custom, setCustom] = useState(false);
   const [providerQuery, setProviderQuery] = useState(""), [modelQuery, setModelQuery] = useState("");
-  const groups = useMemo(() => groupModels(models), [models]);
+  const groups = useMemo(() => groupModels(models, ungroupedProvider), [models, ungroupedProvider]);
   const providers = groups.filter(group => group.id.toLowerCase().includes(providerQuery.trim().toLowerCase()));
   const selectedGroup = groups.find(group => group.id === provider);
   const visibleModels = (selectedGroup?.models ?? []).filter(model => `${model.name} ${model.id}`.toLowerCase().includes(modelQuery.trim().toLowerCase()));
@@ -46,7 +49,7 @@ export function ModelPicker({ id, models, value, defaultLabel, disabled = false,
 
   useLayoutEffect(() => {
     if (!open) return;
-    if (disabled) { setOpen(false); return; }
+    if (disabled || allowCustom && (custom || !models.length)) { setOpen(false); return; }
     const element = panel.current!;
     // A native top-layer popover escapes the agent editor's scrolling/clipping.
     element.showPopover();
@@ -87,7 +90,7 @@ export function ModelPicker({ id, models, value, defaultLabel, disabled = false,
       window.removeEventListener("resize", position);
       window.removeEventListener("scroll", scroll, true);
     };
-  }, [open, disabled]);
+  }, [open, disabled, allowCustom, custom, models.length]);
   useLayoutEffect(() => { if (open && provider) modelSearch.current?.focus(); }, [provider, open]);
 
   const searchKey = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -95,6 +98,11 @@ export function ModelPicker({ id, models, value, defaultLabel, disabled = false,
       event.preventDefault(); event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(".model-picker-list button")?.focus();
     }
   };
+  if (allowCustom && (custom || !models.length)) return <>
+    <input id={id} value={value} maxLength={200} disabled={disabled} placeholder={defaultLabel} aria-label={`${label} · model ID`}
+      onChange={event => { setCustom(true); onChange(event.target.value); }} />
+    <button type="button" className="text-button" disabled={disabled || !models.length} onClick={() => setCustom(false)}>Browse models</button>
+  </>;
   return <>
     <button ref={trigger} id={id} type="button" className="model-picker-trigger" disabled={disabled} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onClick={() => {
       if (open) { dismiss(); return; }
@@ -102,9 +110,10 @@ export function ModelPicker({ id, models, value, defaultLabel, disabled = false,
     }} onKeyDown={event => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); if (!open) show(); } }}>
       <span><span>{selected?.name || value || defaultLabel}</span>{value && <small>{selected ? value : `${value} · not in catalog`}</small>}</span><FiChevronDown aria-hidden="true" />
     </button>
-    <div ref={panel} id={panelId} popover="manual" role="dialog" aria-label="Choose OpenCode model" className="model-picker-popover" data-step={provider ? "models" : "providers"}>
+    {allowCustom && <button type="button" className="text-button" disabled={disabled} onClick={() => { dismiss(false); setCustom(true); }}>Enter model ID manually</button>}
+    <div ref={panel} id={panelId} popover="manual" role="dialog" aria-label={label} className="model-picker-popover" data-step={provider ? "models" : "providers"}>
       {open && <>
-        <div className="model-picker-defaults"><button type="button" aria-pressed={!value} onClick={() => choose("")}>{defaultLabel}{!value && <FiCheck aria-hidden="true" />}</button></div>
+        {allowEmpty && <div className="model-picker-defaults"><button type="button" aria-pressed={!value} onClick={() => choose("")}>{defaultLabel}{!value && <FiCheck aria-hidden="true" />}</button></div>}
         <div className="model-picker-columns">
           <section className="model-picker-providers" aria-label="Providers">
             <label htmlFor={`${panelId}-providers`}>Provider</label>

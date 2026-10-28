@@ -5,7 +5,9 @@ import { isConversationUpdateFeedRequest, isConversationUpdatePage } from "../sh
 import { nativeNotificationSource } from "./notification-source";
 import { SESSION_REFRESH_ERROR } from "./notification-presentation";
 import { pendingInputClient } from "./pending-input-client";
+import { grokSessionView } from "./grok-presentation";
 import { normalizeSessionTitle, SESSION_TITLE_SOURCES } from "../shared/conversation/session-title";
+import { decodeAppAdmissionEnvelope, decodeAppAdmissionKey, decodeAppAdmissionReceipt, decodeAppAdmissionReceiptForIntent, type AppAdmissionEnvelope, type AppAdmissionKey, type AppAdmissionLookup } from "../shared/conversation/app-admission-contract";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
@@ -52,6 +54,53 @@ async function updateSessionTitle(id: string, input: { title?: string; expectedR
   return { title: result.title, titleSource: result.titleSource, titleRevision: result.titleRevision };
 }
 export const conversationClient: ConversationClient = {
+  async grokTurn(input, signal) {
+    // Exactly one POST. A lost response permits only an exact session GET.
+    return grokSessionView(await request("/api/grok/turns", { method: "POST", body: JSON.stringify(input), signal }), input.sessionId);
+  },
+  async grokSession(id, signal) {
+    return grokSessionView(await request(`/api/grok/sessions/${encodeURIComponent(id)}`, { signal }), id);
+  },
+  async grokStop(id) {
+    const result = await request(`/api/grok/sessions/${encodeURIComponent(id)}/stop`, { method: "POST", body: "{}" });
+    if (typeof result.interrupted !== "boolean" || !["not-attempted", "unproven"].includes(result.nativeCancellation)
+      || typeof result.wrapperClosed !== "boolean" || typeof result.reason !== "string") throw new Error("Grok Stop status is unconfirmed; native cancellation is not proven.");
+    return result;
+  },
+  async submitAdmission(envelope: AppAdmissionEnvelope, signal?: AbortSignal) {
+    const frozen = decodeAppAdmissionEnvelope(envelope);
+    // Exactly one POST. Neither transport failure nor an absent GET permits a retry.
+    const response = await fetch("/api/submissions", { method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(frozen), signal: signal ?? AbortSignal.timeout(25000) });
+    const value: unknown = await response.json();
+    if (!response.ok) {
+      // A failure body is not a rejection receipt and never authorizes resending.
+      throw new ApiError(`App admission could not be confirmed (${response.status}). Check its exact request status.`, response.status);
+    }
+    const receipt = decodeAppAdmissionReceiptForIntent(value, frozen);
+    if (receipt.storeId !== frozen.storeId || receipt.clientRequestId !== frozen.clientRequestId || receipt.payloadSha256 !== frozen.payloadSha256) throw new Error("App admission receipt identity mismatch");
+    return receipt;
+  },
+  async lookupAdmission(input: AppAdmissionKey, signal?: AbortSignal): Promise<AppAdmissionLookup> {
+    const key = decodeAppAdmissionKey(input);
+    const response = await fetch(`/api/submissions/${encodeURIComponent(key.clientRequestId)}?${new URLSearchParams({ storeId: key.storeId, payloadSha256: key.payloadSha256 })}`,
+      { credentials: "same-origin", cache: "no-store", signal: signal ?? AbortSignal.timeout(25000) });
+    const value: unknown = await response.json();
+    if (!response.ok) throw new ApiError(`App admission status is unavailable (${response.status}); the original request remains unresolved.`, response.status);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid App admission lookup");
+    const result = value as Record<string, unknown>;
+    if (result.kind === "found" && Object.keys(result).length === 2 && Object.hasOwn(result, "receipt")) {
+      const receipt = decodeAppAdmissionReceipt(result.receipt);
+      if (receipt.storeId !== key.storeId || receipt.clientRequestId !== key.clientRequestId || receipt.payloadSha256 !== key.payloadSha256) throw new Error("App admission lookup identity mismatch");
+      return { kind: "found", receipt };
+    }
+    if (result.kind === "absent" && Object.keys(result).length === 2 && Object.hasOwn(result, "key")) {
+      const absent = decodeAppAdmissionKey(result.key);
+      if (absent.storeId !== key.storeId || absent.clientRequestId !== key.clientRequestId || absent.payloadSha256 !== key.payloadSha256) throw new Error("App admission lookup identity mismatch");
+      return { kind: "absent", key: absent };
+    }
+    throw new Error("Invalid App admission lookup");
+  },
   scienceSubmissions: async (id, signal) => (await request(`/api/sessions/${encodeURIComponent(id)}/science-submissions`, { signal })).submissions,
   scienceSubmission: async (id, requestId, signal) => (await request(`/api/sessions/${encodeURIComponent(id)}/science-submissions/${encodeURIComponent(requestId)}`, { signal })).submission,
   ...pendingInputClient,
@@ -109,6 +158,7 @@ export const conversationClient: ConversationClient = {
     const data = await request(`/api/harnesses/opencode/models?cwd=${encodeURIComponent(cwd)}`, { signal });
     return data.models ?? [];
   },
+  grokModels: (cwd, signal, refresh = false) => request(`/api/harnesses/grok/models?cwd=${encodeURIComponent(cwd)}${refresh ? "&refresh=true" : ""}`, { signal }),
   async interactions(id, signal) { return (await request(`/api/sessions/${encodeURIComponent(id)}/interactions`, { signal })).interactions ?? []; },
   reply: (id, interactionId, reply) => request(`/api/sessions/${encodeURIComponent(id)}/interactions/${encodeURIComponent(interactionId)}/reply`, { method: "POST", body: JSON.stringify(reply) }),
   async handoffApprovals(id, signal) {

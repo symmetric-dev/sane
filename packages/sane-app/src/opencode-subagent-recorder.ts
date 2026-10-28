@@ -13,12 +13,13 @@ export class OpenCodeSubagentRecorder {
   private stopped = false;
   constructor(private readonly oc: OpenCodeAdapter, private readonly events: (runId: string) => readonly Event[],
     private readonly emit: (run: Run, kind: Event["kind"], data: unknown) => Promise<void>, private readonly closing: () => boolean,
-    private readonly catalogVisible: (session: Session) => boolean = () => true) {
+    private readonly catalogVisible: (session: Session) => boolean = () => true,
+    private readonly appendEligible: (run: Run) => boolean = () => true) {
     this.observations = new OpenCodeObservationService(oc);
   }
   /** Routine callers respect final captures and backoff; force is user initiated. */
   refresh(session: Session, run: Run, toolId?: string, force = false) {
-    if (this.stopped || this.closing() || !this.catalogVisible(session) || session.harness !== "opencode" || !session.nativeSessionId) return;
+    if (this.stopped || this.closing() || !this.catalogVisible(session) || !this.appendEligible(run) || session.harness !== "opencode" || !session.nativeSessionId) return;
     for (const child of projectNativeSubagents(session, run, this.events(run.runId))) {
       const { parentToolUseId, nativeSessionId } = child.summary;
       if (toolId && toolId !== parentToolUseId) continue;
@@ -37,7 +38,7 @@ export class OpenCodeSubagentRecorder {
       }
       const checked = this.checked.get(key);
       const pinned = { ...session };
-      const current = () => !this.stopped && !this.closing() && this.catalogVisible(session) && session.harness === pinned.harness && session.nativeSessionId === pinned.nativeSessionId && session.cwd === pinned.cwd && session.authorityId === pinned.authorityId;
+      const current = () => !this.stopped && !this.closing() && this.catalogVisible(session) && this.appendEligible(run) && session.harness === pinned.harness && session.nativeSessionId === pinned.nativeSessionId && session.cwd === pinned.cwd && session.authorityId === pinned.authorityId;
       const retry = () => {
         if (current() && projectNativeSubagents(session, run, this.events(run.runId)).some(child => child.summary.parentToolUseId === parentToolUseId && child.summary.nativeSessionId === nativeSessionId)) {
           this.refresh(session, run, parentToolUseId, force);
@@ -93,7 +94,7 @@ export class OpenCodeSubagentRecorder {
     await Promise.all(this.flights.values());
   }
   resume(session: Session, run: Run) {
-    if (!this.catalogVisible(session)) return;
+    if (!this.catalogVisible(session) || !this.appendEligible(run)) return;
     for (const child of projectNativeSubagents(session, run, this.events(run.runId))) {
       if (!child.summary.nativeSessionId || ["running", "unknown"].includes(child.summary.status)) this.refresh(session, run, child.summary.parentToolUseId);
     }

@@ -241,6 +241,7 @@ export type ThreadProps = {
 
 export function Thread({ state, active: isActive = true, navigation, reviewRequest, reviewRequestHandled, scienceIntegration, transcriptTarget, transcriptVisible = true, paired = false, onOpenChatFlow }: ThreadProps) {
   const searchRoot = useRef<HTMLDivElement>(null);
+  const grok = store.harness() === "grok";
   const projection = useWorkers(state.selected);
   const parentForStatus = workerReference(state.selected)?.parent.sessionId;
   useWorkerPolling(parentForStatus && parentForStatus !== state.selected ? parentForStatus : null);
@@ -262,7 +263,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const harness = store.harness();
   const workspace = store.workspace();
   const modelUnavailable = store.modelUnavailable();
-  useEffect(() => { if (capabilities.listModels && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) { const timer = setTimeout(() => void store.loadModels(harness), 300); return () => clearTimeout(timer); } }, [harness, capabilities.listModels, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
+  useEffect(() => { if (harness !== "grok" && capabilities.listModels && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) { const timer = setTimeout(() => void store.loadModels(harness), 300); return () => clearTimeout(timer); } }, [harness, capabilities.listModels, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
    const appRunning = state.runs.some(run => active(run.status));
    const running = appRunning || active(conversation?.status ?? "completed");
    const busyInput = running && !liveInputReady(conversation, state.availability) || !!state.availability.nativeQueue || !!state.availability.queueAfterRunId;
@@ -271,7 +272,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const nativeQueueWaiting = active(latestRun?.status ?? "completed") && latestRun?.nativeDelivery === "queue"
     && !state.messages.some(message => message.id === latestRun.nativeCommandId && message.normalized);
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
-  const messages = useMemo(() => claudeReplyPresentation(withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), harness), [state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands, harness]);
+  const messages = useMemo(() => grok ? state.messages : claudeReplyPresentation(withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), harness), [grok, state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands, harness]);
   const codeShares = useCodeShares(state.selected, { enabled: isActive && state.connected, refreshKey: messages, running });
   const loadedWorkers = useMemo(() => loadedTranscriptWorkers({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, exchanges, handoffs: handoffs.handoffs, nativeRuns: state.runs, nativeHarness: harness, codeShares: codeShares.shares }), [state.selected, messages, workers, projection.deliveries, exchanges, handoffs.handoffs, state.runs, harness, codeShares.shares]);
   const workerRefreshScope = JSON.stringify([state.config?.storeId, state.selected, harness, conversation?.nativeSessionId, conversation?.authorityId, conversation?.cwd]);
@@ -356,7 +357,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     <CompactionMarkers records={readingDocument ? state.transcript ? state.compactions?.filter(record => state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind === "tail")) : state.transcriptPaged ? undefined : state.compactions : undefined} />
     {latestRun?.operation !== "compact" && latestRun?.status === "failed" && <p className="notice error" role="alert">Run failed{latestRun.nativeReason ? `: ${latestRun.nativeReason}` : ". See the conversation for details."}</p>}
   </>;
-  const statusActions = pendingInputStopAction({ chainLocked, appRunning, cancelRun: capabilities.cancelRun === true, nativeQueueWaiting,
+  const statusActions = pendingInputStopAction({ chainLocked, appRunning: grok ? state.grokView?.active === true : appRunning, cancelRun: capabilities.cancelRun === true, nativeQueueWaiting,
     disabled: !isActive || state.actionBusy || state.sending || (chainLocked ? state.phase !== "ready" || state.config?.authenticated !== true : !state.connected),
     cancel: () => void store.cancel() });
   const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} paired={paired} onOpenChatFlow={onOpenChatFlow} flowPresentation={flowPresentation} onFlowPresentationChange={changeFlowPresentation} questions={userQuestions} questionsReadOnlyReason={questionsReadOnlyReason} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={paired ? undefined : review} science={paired ? undefined : science} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;

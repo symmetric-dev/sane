@@ -1,4 +1,4 @@
-import type { RunStatus } from "./types";
+import type { Harness, RunStatus } from "./types";
 
 /** Opt in with summary=1 and limit. Omitted/null workspace and worktree mean all.
  * "unavailable" selects unregistered workspaces / unrecorded worktrees, not
@@ -7,7 +7,7 @@ export type SessionCatalogQuery = {
   mode?: "chat" | "history";
   workspaceId?: string | null;
   worktreeId?: string | null;
-  harness?: "all" | "opencode" | "claude-code";
+  harness?: "all" | Harness;
   status?: "all" | RunStatus;
   workstreamId?: string;
   phase?: string;

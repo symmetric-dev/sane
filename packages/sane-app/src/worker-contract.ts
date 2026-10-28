@@ -41,7 +41,7 @@ export type WorkerCompletion = {
 export type WorkerSettlement = { status: string; at: string; summary: string };
 export type WorkerExchangeDirection = "child-to-parent" | "parent-to-child";
 export type WorkerExchangeKind = "consultation" | "guidance" | "notice";
-export type WorkerExchangeDeliveryState = "queued" | "claimed" | "acceptance-unknown" | "accepted" | "not-submitted";
+export type WorkerExchangeDeliveryState = "queued" | "claimed" | "acceptance-unknown" | "accepted" | "wrapper-completed" | "not-submitted";
 export type WorkerExchangeParty = { sessionId: string; native: ConversationRef };
 /** Not a WorkerResult and not a WorkerDelivery. Unknown acceptance must not be resent. */
 export type WorkerExchange = {

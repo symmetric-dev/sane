@@ -6,7 +6,7 @@ export type { CodeShareHighlight, CodeShareInput, CodeShareSnippetInput, CodeSha
 interface CodeShareIdentity {
   id: string
   sessionId: string
-  native: { harness: "cc" | "oc"; authorityId: string; nativeId: string }
+  native: { harness: "cc" | "oc" | "gk"; authorityId: string; nativeId: string }
   anchor: { runId: string; toolCallId: string; messageId: string | null; invocationId: string; wrapper: "execute" | null }
   workspaceId: string
   worktreeId: string
@@ -47,7 +47,10 @@ export function isCodeShareRecord(value: unknown): value is CodeShareRecord {
   const v = value as CodeShareRecord
   const text = (value: unknown) => typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\u0000-\u001f]/.test(value)
   if ((v.version !== 1 && v.version !== 2 && v.version !== 3) || ![v.id, v.sessionId, v.workspaceId, v.worktreeId, v.bindingRevision, v.createdAt].every(text) || !Number.isFinite(Date.parse(v.createdAt))) return false
-  if (!v.native || !["cc", "oc"].includes(v.native.harness) || ![v.native.authorityId, v.native.nativeId].every(text) || !v.anchor || ![v.anchor.runId, v.anchor.toolCallId, v.anchor.invocationId].every(text) || v.anchor.messageId !== null && !text(v.anchor.messageId) || v.anchor.wrapper !== null && v.anchor.wrapper !== "execute") return false
+  if (!v.native || !["cc", "oc", "gk"].includes(v.native.harness) || ![v.native.authorityId, v.native.nativeId].every(text) || !v.anchor || ![v.anchor.runId, v.anchor.toolCallId, v.anchor.invocationId].every(text) || v.anchor.messageId !== null && !text(v.anchor.messageId) || v.anchor.wrapper !== null && v.anchor.wrapper !== "execute") return false
+  if (v.native.harness === "gk" && (!/^sane-native-v1:gk:[a-f0-9]{64}$/.test(v.native.authorityId)
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(v.native.nativeId)
+    || v.anchor.wrapper !== null || v.anchor.invocationId !== v.anchor.toolCallId)) return false
   if (v.version === 1) return isSnapshot(v)
   if (!Array.isArray(v.snippets) || v.snippets.length < 1 || v.snippets.length > CODE_SHARE_LIMITS.snippets || !v.snippets.every(snippet => isSnapshot(snippet, v.version === 3))) return false
   try {

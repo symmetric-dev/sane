@@ -11,7 +11,7 @@ export type ChatStatusContext = { workspaceReady: boolean; handoffLoading?: bool
 const priorities: Record<string, number> = {
   connection: 100, "submission-error": 95, "interaction-error": 95,
   "handoffs-error": 85, "workers-error": 85, execution: 85, models: 80,
-  availability: 80, "input-request": 88, "compact-request": 75, sending: 70, "followup-queue": 65,
+  availability: 80, "input-request": 88, "compact-request": 75, "app-admission": 72, sending: 70, "followup-queue": 65,
   run: 60, "native-queue": 55, "history-refresh": 45, action: 40,
   conversation: 25, workspace: 25, "history-page": 20,
   handoffs: 15, workers: 15, "worker-protocol": 62, "native-subagents": 15, "missing-model": 10, "action-notice": 5,
@@ -56,6 +56,15 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
   const queuedFollowup = conversation?.queuedFollowups?.find(receipt => receipt.state === "queued" && receipt.sessionId === state.selected);
 
   if (state.submissionError) add("submission-error", "Message submission needs attention", state.submissionError);
+  const unresolvedAdmissions = Object.values(state.appAdmissionRecoveries ?? {}).filter(record => record.draftKey === store.draftKey(state.selected)
+    && (!record.receipt || record.receipt.state === "pending"));
+  const admissionPending = state.availability.code === "app-admission-pending";
+  if (!state.sending && (unresolvedAdmissions.length || admissionPending)) {
+    const recorded = unresolvedAdmissions.every(record => record.receipt?.state === "pending");
+    add("app-admission", !unresolvedAdmissions.length ? "Original message needs a status check" : recorded ? "Message recorded · awaiting status…" : "Checking message status…",
+      unresolvedAdmissions.length ? "Native acceptance is not yet confirmed. Message receipts below retain the original request and provide an exact status check, without resending."
+        : "An original request is unresolved. Check Message receipts in the browser that sent it; do not resend it.", !!unresolvedAdmissions.length);
+  }
   if (state.interactionError) add("interaction-error", "Conversation action needs attention", state.interactionError);
   if (state.workerLoading && state.selected) add("workers", "Loading background workers…", undefined, true);
   if (context.nativeSubagentLoading) add("native-subagents", "Loading recorded native subagents…", undefined, true);
@@ -107,8 +116,9 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
   if (executionUnavailable) add("execution", "Execution workspace unavailable", executionUnavailable);
   // This local send restriction is not a separate availability problem. Its
   // higher priority otherwise hides the animated sending status with a static dot.
-  const submitting = state.sending && !state.availability.code && state.availability.reason === "Submitting…";
-  if (!state.availability.canSend && state.availability.reason && !submitting) {
+  const submitting = state.sending && !state.availability.code
+    && (state.availability.reason === "Submitting…" || state.availability.reason === "Recording App admission…");
+  if (!state.availability.canSend && state.availability.reason && !submitting && !admissionPending) {
     // Compatibility with an older bridge is limited to this exact known busy
     // reason; arbitrary restrictions/errors must never be hidden as progress.
     const ordinaryBusy = state.availability.code === "conversation-busy" || (!state.availability.code

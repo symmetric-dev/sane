@@ -2,11 +2,14 @@ import { isStoredSlot } from "sane-core/contracts";
 import { createHash } from "node:crypto";
 import { isStoredAssistantAgentId, isWorkerAgentId } from "sane-core/agent-catalog";
 import { validateAdmissions } from "./app-store";
-import { nativeMessageId, uuid, validProfileId, validModel, validEffort, validVariant } from "./history";
+import { nativeMessageId, uuid, validProfileId } from "./history";
 import { isPendingInputRemovalRequest, isPendingInputRemovalResult, isPendingInputRequest, isPendingInputResumeRequest, isPendingInputSubmissionResult } from "../shared/conversation/pending-input-contract";
-import { canonicalJSON, canonicalPath, decodePreparedUserInput, equal, fingerprint, immutable, positive, requireRecord, shape, timestamp, validateBinding, validateConfiguration } from "./prepared-input-codec";
+import { canonicalJSON, canonicalPath, decodePreparedUserInput, equal, fingerprint, immutable, positive, requireRecord, shape, timestamp, validateBinding, validateConfiguration, validPreparedModel, validPreparedEffort } from "./prepared-input-codec";
 import { PendingInputCodecError, type PendingInputAuthorization, type PendingInputLaunchSnapshot, type PendingInputPins, type PendingInputRecords } from "./pending-input-contract";
 import type { DispatchIdentity, DispatchSource } from "../shared/conversation/dispatch-contract";
+import { toSessionHarness } from "./harness-names";
+import { isHarness } from "../shared/conversation/harness-capabilities";
+import { isNativeHarness } from "sane-core/native-source-contract";
 
 export const PAUSE_CODES = ["stopped", "failed", "hidden", "restart", "source-changed", "configuration-changed", "context-changed", "admission-unavailable", "acceptance-unknown", "reconciliation-required"] as const;
 /** Original user intent, not today's mutable preparation/admission/context.
@@ -27,8 +30,8 @@ export function dispatchSource(snapshot: PendingInputLaunchSnapshot): DispatchSo
 }
 function ref(v: unknown) {
   shape(v, ["harness", "authorityId", "nativeId"]);
-  requireRecord(["cc", "oc"].includes(v.harness));
-  validateBinding({ conversationId: "00000000-0000-4000-8000-000000000001", harness: v.harness === "cc" ? "claude-code" : "opencode", authorityId: v.authorityId, nativeSessionId: v.nativeId, cwd: "/codec" });
+  requireRecord(isNativeHarness(v.harness));
+  validateBinding({ conversationId: "00000000-0000-4000-8000-000000000001", harness: toSessionHarness(v.harness), authorityId: v.authorityId, nativeSessionId: v.nativeId, cwd: "/codec" });
 }
 function checkout(v: unknown) {
   shape(v, ["path", "commonDir", "gitDir", "device", "inode", "commonDevice", "commonInode", "gitDevice", "gitInode"]);
@@ -50,13 +53,17 @@ export function validateAuthorization(v: unknown): asserts v is PendingInputAuth
 export function decodePendingInputPins(v: unknown): PendingInputPins {
   canonicalJSON(v); shape(v, ["admission", "catalog", "configuration", "launch", "context"]);
   try { validateAdmissions({ version: 1, admissions: [v.admission] }); } catch { throw new PendingInputCodecError("Invalid pending admission pin"); }
-  const a = v.admission, b = a.binding, harness = a.source.descriptor.harness === "cc" ? "claude-code" : "opencode";
+  const a = v.admission, b = a.binding;
+  requireRecord(isNativeHarness(a.source.descriptor.harness));
+  const harness = toSessionHarness(a.source.descriptor.harness);
   requireRecord(a.state === "ready" && a.nativeId !== null && canonicalPath(b.executionCheckout));
   if (a.parent !== null) ref(a.parent);
-  requireRecord(canonicalPath(a.source.descriptor.harness === "cc" ? a.source.descriptor.profileRoot : a.source.descriptor.registrationFile));
+  requireRecord(canonicalPath(a.source.descriptor.harness === "cc" ? a.source.descriptor.profileRoot : a.source.descriptor.harness === "oc" ? a.source.descriptor.registrationFile : a.source.descriptor.homeRoot));
   const descriptor = a.source.descriptor.harness === "cc"
     ? { version: 1, harness: "cc", kind: "local-profile", profileRoot: a.source.descriptor.profileRoot }
-    : { version: 1, harness: "oc", kind: "local-registration", registrationFile: a.source.descriptor.registrationFile };
+    : a.source.descriptor.harness === "oc"
+      ? { version: 1, harness: "oc", kind: "local-registration", registrationFile: a.source.descriptor.registrationFile }
+      : { version: 1, harness: "gk", kind: "local-home", homeRoot: a.source.descriptor.homeRoot };
   requireRecord(a.source.authorityId === `sane-native-v1:${descriptor.harness}:${createHash("sha256").update(JSON.stringify(descriptor)).digest("hex")}`, "Native authority does not match its configured descriptor");
   if (b.checkoutPin !== null) checkout(b.checkoutPin);
   if (b.domain.mode === "repository") requireRecord(canonicalPath(b.domain.primaryCheckout));
@@ -102,9 +109,9 @@ export function decodePendingInputPins(v: unknown): PendingInputPins {
 export function decodePendingInputSnapshot(v: unknown): PendingInputLaunchSnapshot {
   shape(v, ["prepared", "pins"]);
   const prepared = decodePreparedUserInput(v.prepared), b = prepared.binding;
-  requireRecord(prepared.resume && prepared.expectedPrior && b.nativeSessionId && !prepared.stagedUpgrade && !prepared.nativeLaunch, "Queue requires an established resume without a staged upgrade");
+  requireRecord(prepared.resume && prepared.expectedPrior && b.nativeSessionId && !prepared.stagedUpgrade && !prepared.nativeLaunch && !prepared.canonicalActivation, "Queue requires an established resume without a staged upgrade");
   const pins = decodePendingInputPins(v.pins), a = pins.admission;
-  requireRecord(b.conversationId === a.sessionId && b.nativeSessionId === a.nativeId && b.authorityId === a.source.authorityId && b.harness === (a.source.descriptor.harness === "cc" ? "claude-code" : "opencode") && b.cwd === a.binding.executionCheckout, "Prepared/admission source mismatch");
+  requireRecord(b.conversationId === a.sessionId && b.nativeSessionId === a.nativeId && b.authorityId === a.source.authorityId && b.harness === toSessionHarness(a.source.descriptor.harness) && b.cwd === a.binding.executionCheckout, "Prepared/admission source mismatch");
   requireRecord(equal(prepared.expectedPrior.configuration, pins.configuration) && equal(prepared.configuration, pins.launch), "Prepared configuration/chain pin mismatch");
   const selection = prepared.associationSelection;
   requireRecord((selection.workspaceId === undefined || selection.workspaceId === pins.catalog.workspaceId) && (selection.worktreeId === undefined || selection.worktreeId === pins.catalog.worktreeId));
@@ -112,11 +119,11 @@ export function decodePendingInputSnapshot(v: unknown): PendingInputLaunchSnapsh
   return immutable({ prepared, pins });
 }
 export function validateRequest(v: unknown) {
-  requireRecord(isPendingInputRequest(v), "Invalid pending input request");
+  requireRecord(isPendingInputRequest(v, { validateHarnessId: isHarness }), "Invalid pending input request");
   requireRecord(uuid(v.conversationId) && uuid(v.requestId));
   validateSource({ harnessId: v.source.harnessId, sessionId: v.source.conversationId, authorityId: v.source.authorityId, nativeSessionId: v.source.nativeSessionId, cwd: v.source.cwd });
   const c = v.configuration;
-  requireRecord(canonicalPath(c.cwd) && validProfileId(c.profileId) && (!("model" in c) || validModel(c.model)) && (!("effort" in c) || (v.source.harnessId === "opencode" ? validVariant(c.effort) && !/\x7f/.test(c.effort) : validEffort(c.effort))) && (!("agent" in c) || isStoredAssistantAgentId(c.agent) || isWorkerAgentId(c.agent)));
+  requireRecord(canonicalPath(c.cwd) && validProfileId(c.profileId) && (!("model" in c) || validPreparedModel(v.source.harnessId, c.model)) && (!("effort" in c) || validPreparedEffort(v.source.harnessId, c.effort)) && (!("agent" in c) || isStoredAssistantAgentId(c.agent) || isWorkerAgentId(c.agent)));
 }
 export function validateRequestSnapshot(request: unknown, snapshot: PendingInputLaunchSnapshot) {
   validateRequest(request); const r = request as Record<string, any>, p = snapshot.prepared;

@@ -243,12 +243,12 @@ export class UserQuestionsStore {
       if (change.id !== undefined && change.id !== current.delivery.id) conflict("Delivery attempt changed");
     } catch (error) { if (error instanceof UserQuestionsError) throw error; badRequest(error); }
     const transitions: Record<NonNullable<UserQuestionsRecord["delivery"]>["state"], readonly string[]> = {
-      pending: ["pending", "claimed", "paused"], claimed: ["claimed", "accepted", "unknown", "paused"],
-      accepted: ["accepted"], unknown: ["unknown", "accepted", "paused"], paused: ["paused"],
+      pending: ["pending", "claimed", "paused"], claimed: ["claimed", "accepted", "wrapper-completed", "unknown", "paused"],
+      accepted: ["accepted"], "wrapper-completed": ["wrapper-completed"], unknown: ["unknown", "accepted", "wrapper-completed", "paused"], paused: ["paused"],
     };
     const target = { ...current.delivery, ...structuredClone(change) };
     if (!transitions[current.delivery.state].includes(target.state)) conflict("Invalid delivery state transition");
-    if (current.delivery.state === "accepted" && canonicalJSON(target) !== canonicalJSON(current.delivery)) conflict("Accepted delivery is immutable");
+    if (["accepted", "wrapper-completed"].includes(current.delivery.state) && canonicalJSON(target) !== canonicalJSON(current.delivery)) conflict("Completed delivery is immutable");
     if (current.delivery.nativeCommandId !== null && target.nativeCommandId !== current.delivery.nativeCommandId) conflict("Native delivery command is immutable once assigned");
     if (current.delivery.runId !== null && target.runId !== current.delivery.runId) conflict("Delivery run is immutable once assigned");
     if (canonicalJSON(target) === canonicalJSON(current.delivery)) return current;

@@ -11,6 +11,7 @@ import { body, json } from "./bridge-http";
 import { WorkspaceError } from "./workspace";
 import { scienceSpan, scienceTimed, scienceTiming } from "sane-science/timing";
 import { timeScienceRun } from "./science-timing";
+import { isNativeHarness, toSessionHarness } from "./harness-names";
 
 type AppIdentity = { sessionId: string; cwd: string; nativeSessionId?: string; authorityId?: string; harness?: string };
 type NativeInput<T = ScienceChatNativeRequest> = T extends ScienceChatNativeRequest ? Omit<T, "bindingRevision"> : never;
@@ -58,7 +59,7 @@ export class ScienceChatService {
   }
   private identity(workspaceId: string, worktreeId: string, id: string) {
     const a = this.admissions.get(id), s = this.session(id), association = this.catalog.association(id);
-    if (!a || a.state !== "ready" || !s || a.sessionId !== s.sessionId || a.nativeId !== s.nativeSessionId || a.source.authorityId !== s.authorityId || (a.source.descriptor.harness === "cc" ? "claude-code" : "opencode") !== s.harness || a.binding.executionCheckout !== s.cwd || a.binding.workspaceId !== workspaceId || a.binding.worktreeId !== worktreeId || association.workspaceId !== workspaceId || association.worktreeId !== worktreeId) scienceFail(409, "Conversation admission and selected workspace identity differ");
+    if (!a || a.state !== "ready" || !s || a.sessionId !== s.sessionId || a.nativeId !== s.nativeSessionId || a.source.authorityId !== s.authorityId || !isNativeHarness(a.source.descriptor.harness) || toSessionHarness(a.source.descriptor.harness) !== s.harness || a.binding.executionCheckout !== s.cwd || a.binding.workspaceId !== workspaceId || a.binding.worktreeId !== worktreeId || association.workspaceId !== workspaceId || association.worktreeId !== worktreeId) scienceFail(409, "Conversation admission and selected workspace identity differ");
     return a;
   }
   /** Backend send integration: freeze these returned IDs/texts into its own dispatch intent.

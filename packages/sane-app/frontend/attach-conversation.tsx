@@ -10,6 +10,7 @@ export function AttachConversation({ onChoose }: { onChoose: (id: string) => voi
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [harness, setHarness] = useState<Harness>("opencode");
   const capabilities = store.capabilities(harness);
+  const attachable = (["opencode", "claude-code", "grok"] as const).filter(id => store.capabilities(id).attachHistory);
   const descriptor = getHarnessDescriptor(harness);
   const [attached, setAttached] = useState<{ sessionId: string; cwd: string } | null>(null);
   const intent = useRef(0);
@@ -24,7 +25,7 @@ export function AttachConversation({ onChoose }: { onChoose: (id: string) => voi
       if (epoch === intent.current) setError(`Attachment succeeded. Opening the conversation failed: ${e instanceof Error ? e.message : "Navigation unavailable"}. Retry opening below; do not attach again.`);
     } finally { setBusy(false); }
   };
-  return <><button type="button" className="new-chat" disabled={busy || store.state.sending || !store.capabilities("opencode").attachHistory && !store.capabilities("claude-code").attachHistory} onClick={() => { intent.current++; setError(""); setOpen(true); }}>Attach native conversation…</button>{open && <ShellDialog title="Attach native conversation" close={() => { intent.current++; setOpen(false); }}>
+  return <><button type="button" className="new-chat" disabled={busy || store.state.sending || !attachable.length} onClick={() => { intent.current++; setError(""); if (!attachable.includes(harness) && attachable[0]) setHarness(attachable[0]); setOpen(true); }}>Attach native conversation…</button>{open && <ShellDialog title="Attach native conversation" close={() => { intent.current++; setOpen(false); }}>
     {attached ? <section>
       <p role="status">Attached successfully. App conversation ID: <code>{attached.sessionId}</code></p>
       <p>Execution checkout: {attached.cwd}</p>
@@ -46,7 +47,7 @@ export function AttachConversation({ onChoose }: { onChoose: (id: string) => voi
       if (epoch !== intent.current) { setBusy(false); return; }
       await openAttached(result, epoch);
     }}>
-      <label>Native harness<select disabled={busy} value={harness} onChange={e => setHarness(e.target.value as Harness)}><option value="opencode" disabled={!store.capabilities("opencode").attachHistory}>OpenCode</option><option value="claude-code" disabled={!store.capabilities("claude-code").attachHistory}>Claude Code</option></select></label>
+      <label>Native harness<select disabled={busy} value={harness} onChange={e => setHarness(e.target.value as Harness)}>{attachable.map(id => <option key={id} value={id}>{getHarnessDescriptor(id)?.label}</option>)}</select></label>
       <label>Native session ID<input name="nativeSessionId" required disabled={busy} placeholder={descriptor?.nativeHarness === "oc" ? "ses_…" : descriptor?.nativeHarness === "cc" ? "Session UUID" : "Native session ID"} /></label>
       <label>Actual execution checkout<input name="cwd" required disabled={busy} defaultValue={store.workspace()} placeholder="/absolute/repository/root" /></label>
       <p>Reads existing native history through this server’s configured native authority. Does not send a prompt, create a replacement session or move its execution directory. Finish native work first; never use both clients concurrently for the same conversation.</p>

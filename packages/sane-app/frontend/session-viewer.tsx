@@ -21,6 +21,7 @@ import { CodeShareStatus } from "./shared-code-card";
 import { getHarnessDescriptor } from "../shared/conversation/harness-capabilities";
 import { claudeReplyPresentation } from "./claude-reply-presentation";
 import { pollWhileVisible } from "./visibility";
+import { grokRuns, grokSessionView } from "./grok-presentation";
 
 function Viewer({ root }: { root: WorkerRecord }) {
   const [trail, setTrail] = useState([root]);
@@ -38,6 +39,17 @@ function Viewer({ root }: { root: WorkerRecord }) {
     setWaiting(0);
     return pollWhileVisible(async signal => {
       try {
+        if (selected.launch.harness === "grok") {
+          if (!conversationClient.grokSession) throw new Error("Grok session status is unavailable on this bridge.");
+          const [capture, children, parents] = await Promise.all([conversationClient.grokSession(selected.sessionId, signal), workerClient.list(selected.sessionId, signal), workerClient.list(selected.parent.sessionId, signal)]);
+          if (signal.aborted) return 60_000;
+          const session = grokSessionView(capture, selected.sessionId);
+          const currentWorker = parents.workers.find(record => record.id === selected.id) ?? selected;
+          publishWorkers(selected.sessionId, children); publishWorkers(selected.parent.sessionId, parents);
+          inFlight = session.active || workerInFlight(currentWorker) || workerProjectionInFlight(children);
+          setView({ sessionId: selected.sessionId, runs: grokRuns(session), messages: session.messages, compactions: [], error: "", loading: false });
+          return inFlight ? 3000 : 60_000;
+        }
         const [metadata, children, parents, interactions] = await Promise.all([conversationClient.runs(selected.sessionId, signal), workerClient.list(selected.sessionId, signal), workerClient.list(selected.parent.sessionId, signal), store.capabilities(selected.launch.harness).listInteractions && conversationClient.interactions ? conversationClient.interactions(selected.sessionId, signal) : Promise.resolve([])]);
         if (signal.aborted) return 60_000;
         setWaiting(interactions.length);

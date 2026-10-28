@@ -142,8 +142,10 @@ function boundedJson(value: unknown): boolean {
 
 export function isConversationUpdateSource(value: unknown): value is ConversationUpdateSource {
   return object(value) && keys(value, ["harness", "authorityId", "nativeSessionId", "incarnation"])
-    && (value.harness === "claude-code" || value.harness === "opencode")
-    && text(value.authorityId) && text(value.nativeSessionId) && optional(value, "incarnation", text);
+    && (value.harness === "claude-code" || value.harness === "opencode" || value.harness === "grok")
+    && text(value.authorityId) && text(value.nativeSessionId) && optional(value, "incarnation", text)
+    && (value.harness !== "grok" || /^sane-native-v1:gk:[a-f0-9]{64}$/.test(value.authorityId)
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.nativeSessionId));
 }
 
 /** Canonical tuple, not delimiter concatenation or a process-local hash. */

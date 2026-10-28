@@ -234,8 +234,8 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
       // A send already admitted to this captured conversation may finish while
       // another app view is open. Apply its result only to that same review.
       if (guard.current.epoch !== epoch || current.current.scope !== openedScope.current || scopeOf(store.state) !== openedScope.current) return;
-      if ((result.status === "accepted" || result.status === "queued") && result.conversationId === value.identity.sessionId) { setFlow(null); currentFlow.current = null; }
-      else update({ error: store.state.submissionError || (result.status === "blocked" ? "Sending is currently unavailable. Your review is preserved." : "Review was not confirmed as sent. Check conversation history before trying again."), unknown: result.status === "unknown" || result.status === "accepted" });
+      if ((result.status === "accepted" || result.status === "queued" || result.status === "recorded") && result.conversationId === value.identity.sessionId) { setFlow(null); currentFlow.current = null; }
+      else update({ error: store.state.submissionError || (result.status === "blocked" ? "Sending is currently unavailable. Your review is preserved." : "Review submission is unresolved. Check its exact App receipt; your feedback is preserved and will not be resent."), unknown: result.status === "recorded" || result.status === "unknown" || result.status === "accepted" });
     } catch (error) {
       if (valid(epoch) || sendAttempted && guard.current.epoch === epoch && current.current.scope === openedScope.current) update({ error: failure(error), unknown: sendAttempted });
     }

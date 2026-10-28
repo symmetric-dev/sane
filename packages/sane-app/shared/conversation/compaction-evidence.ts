@@ -54,6 +54,7 @@ export function projectCompactions(
   const current = new Map<string, CompactionRecord>(), requested = new Map<string, CompactionRecord>();
   const runMap = new Map(runs.filter(r => r.sessionId === session.sessionId).map(r => [r.runId, r]));
   const nonadmissions = new Map<string, { rejected: boolean; failed: boolean; error?: unknown; observedAt: string }>();
+  const grokBuffers = new Map<string, string>();
 
   function create(run: Run | undefined, id: string, metadata: CompactionMetadata, observedAt?: string) {
     const record: CompactionRecord = { id, sessionId: session.sessionId, harness, ...(run ? { runId: run.runId } : {}), ...metadata, contextReset: metadata.lifecycle === "completed", ...(observedAt ? { observedAt } : {}) };
@@ -108,6 +109,14 @@ export function projectCompactions(
     if (run && (!known || !current.has(run.runId) || current.get(run.runId) === record)) current.set(run.runId, record);
   }
 
+  function grokCompaction(run: Run, event: Event, metadata: CompactionMetadata) {
+    const record = attempt(run, event, metadata.lifecycle === "running" ? "start" : "end", metadata.trigger, undefined, metadata.lifecycle === "failed");
+    // Grok's per-line stdout UUID is not a native compaction identity. Keep the
+    // App request/run anchor without inventing a provider boundary ID.
+    const { nativeId: _nativeId, ...facts } = metadata;
+    update(record, facts, event.time);
+  }
+
   for (const run of runMap.values()) {
     if (run.operation === "compact" && run.compact) {
       const request = run.compact;
@@ -147,6 +156,29 @@ export function projectCompactions(
           previous.failed ||= row.status === "failed";
           previous.error ??= row.error ?? row.reason;
           previous.observedAt = event.time;
+        }
+        continue;
+      }
+      if (harness === "grok") {
+        if (event.kind === "context" && object(event.data) && event.data.type === "grok-compaction"
+          && event.data.nativeSessionId === nativeSessionId && object(event.data.compaction)
+          && ["requested", "running", "completed", "failed", "skipped", "unconfirmed"].includes(String(event.data.compaction.lifecycle))) {
+          grokCompaction(run, event, { ...event.data.compaction, trigger: trigger(event.data.compaction.trigger) } as CompactionMetadata);
+        } else if (event.kind === "stdout") {
+          const observe = (row: unknown) => {
+            if (!object(row) || row.session_id !== nativeSessionId || row.parent_tool_use_id !== undefined && row.parent_tool_use_id !== null
+              || row.type !== "system" || row.subtype !== "compact_boundary") return;
+            const metadata = object(row.compact_metadata) ? row.compact_metadata : {};
+            grokCompaction(run, event, { trigger: trigger(metadata.trigger), lifecycle: "completed", ...metrics(metadata), nativeMetadata: metadata });
+          };
+          if (object(event.data)) observe(event.data);
+          else if (typeof event.data === "string") {
+            const lines = ((grokBuffers.get(run.runId) ?? "") + event.data).split("\n");
+            let pending = lines.pop() ?? "";
+            for (const line of lines) { try { observe(JSON.parse(line)); } catch { /* Not a complete native record. */ } }
+            try { observe(JSON.parse(pending)); pending = ""; } catch { /* Keep partial stdout until the next chunk. */ }
+            grokBuffers.set(run.runId, pending);
+          }
         }
         continue;
       }

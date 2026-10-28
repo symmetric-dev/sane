@@ -84,7 +84,7 @@ export function profileForSnapshot(profiles: AgentProfiles, snapshot: AgentSnaps
 /** Editable fields accepted by POST/PUT /api/agents. */
 export type AgentProfileInput = Partial<Pick<AgentProfile, "label" | "description" | "harness" | "model" | "effort" | "icon" | "color" | "hidden" | "workerProfiles">>;
 
-export const BASE_PROFILE_IDS: Record<Harness, string> = { "claude-code": "base:cc", opencode: "base:oc" };
+export const BASE_PROFILE_IDS: Record<Harness, string> = { "claude-code": "base:cc", opencode: "base:oc", grok: "base:gk" };
 export const templateProfileId = (role: AssistantAgentId) => `template:${role}`;
 /** Current configuration reference only; never apply to historical snapshots or native identity. */
 export const currentConfigProfileId = (id: string): string => id === LEGACY_KNOWLEDGE_PROFILE.id ? templateProfileId("curation") : id;
@@ -106,12 +106,12 @@ const TEMPLATE_VISUALS: Record<AssistantAgentId, { icon: AgentIconId; color: Age
 export function builtinProfiles(now = new Date().toISOString()): AgentProfile[] {
   const base = (harness: Harness, order: number): AgentProfile => ({
     id: BASE_PROFILE_IDS[harness], kind: "base", role: null, harness, model: "", effort: "",
-    label: harness === "opencode" ? "Base · OpenCode" : "Base · Claude Code",
+    label: ({ "claude-code": "Base · Claude Code", opencode: "Base · OpenCode", grok: "Base · Grok" } satisfies Record<Harness, string>)[harness],
     description: "Harness defaults. No SANE instructions.",
     icon: "circle", color: "slate", builtin: true, locked: false, order, updatedAt: now,
   });
   return [
-    base("claude-code", 0), base("opencode", 1),
+    base("claude-code", 0), base("opencode", 1), base("grok", 2),
     ...ASSISTANT_AGENT_IDS.map((role, i): AgentProfile => ({
       id: templateProfileId(role), kind: "assistant", role, harness: "claude-code", model: "", effort: "",
       label: ASSISTANT_AGENT_LABELS[role], description: ASSISTANT_AGENT_DESCRIPTIONS[role],
@@ -171,11 +171,22 @@ export function resolveAssistantProfile(profiles: AgentProfiles, destination: st
   const id = templateProfileId(role);
   const profile = profiles.profiles.find(p => p.id === id);
   if (!profile || profile.kind !== "assistant" || profile.role !== role) throw new AgentProfileResolutionError(`Assistant ${role} requires its configured profile ${id}`);
-  return resolveAgentLaunch(profile);
+  return resolveConfiguredLaunch(profiles, profile);
+}
+/** Capture Grok's configured Base defaults in the profile itself so persisted
+ * preparation can replay its launch without consulting today's configuration.
+ * Other harnesses and the builtin Base profile retain their default semantics. */
+export function resolveProfileDefaults(profiles: AgentProfiles, profile: AgentProfile): AgentProfile {
+  if (profile.harness !== "grok" || profile.id === BASE_PROFILE_IDS.grok) return profile;
+  const defaults = profiles.profiles.find(candidate => candidate.id === BASE_PROFILE_IDS.grok && candidate.kind === "base" && candidate.harness === "grok");
+  return { ...profile, model: profile.model || defaults?.model || "", effort: profile.effort || defaults?.effort || "" };
+}
+function resolveConfiguredLaunch(profiles: AgentProfiles, profile: AgentProfile): ResolvedAgentLaunch {
+  return resolveAgentLaunch(resolveProfileDefaults(profiles, profile));
 }
 /** Snapshot a profile without inheriting any parent model or effort. */
 export function resolveAgentLaunch(profile: AgentProfile): ResolvedAgentLaunch {
-  if (profile.harness !== "opencode" && profile.harness !== "claude-code") throw new AgentProfileResolutionError(`Invalid harness for profile ${profile.id}`);
+  if (profile.harness !== "opencode" && profile.harness !== "claude-code" && profile.harness !== "grok") throw new AgentProfileResolutionError(`Invalid harness for profile ${profile.id}`);
   let identity: SaneAgentIdentity | undefined;
   if (profile.kind === "assistant" && isAssistantAgentId(profile.role)) identity = { kind: "assistant", role: profile.role };
   else if (profile.kind === "worker" && isWorkerAgentId(profile.role)) identity = { kind: "worker", role: profile.role };
@@ -190,7 +201,7 @@ export function resolveUtilityProfile(profiles: AgentProfiles, role: UtilityAgen
   const id = utilityTemplateProfileId(role);
   const profile = profiles.profiles.find(p => p.id === id);
   if (!profile || !profile.builtin || profile.kind !== "utility" || profile.role !== role) throw new AgentProfileResolutionError(`Utility ${role} requires its configured builtin profile ${id}`);
-  return resolveAgentLaunch(profile);
+  return resolveConfiguredLaunch(profiles, profile);
 }
 /** Caller mapping wins by presence. An invalid mapping never falls back. */
 export function resolveWorkerProfile(profiles: AgentProfiles, role: WorkerAgentId, callerProfileId?: string): ResolvedAgentLaunch {
@@ -203,5 +214,5 @@ export function resolveWorkerProfile(profiles: AgentProfiles, role: WorkerAgentI
   const profile = profiles.profiles.find(p => p.id === id);
   if (!profile) throw new AgentProfileResolutionError(`Worker ${role} maps to missing profile ${id}`);
   if (profile.kind !== "worker" || profile.role !== role) throw new AgentProfileResolutionError(`Worker ${role} requires a worker profile for that role; ${id} is incompatible`);
-  return resolveAgentLaunch(profile);
+  return resolveConfiguredLaunch(profiles, profile);
 }

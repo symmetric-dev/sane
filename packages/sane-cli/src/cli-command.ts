@@ -19,7 +19,7 @@ export const USAGE = `Usage: sane <command> [--repo PATH] [--workstream ID] [--j
     Merge opencode output into opencode.json; Claude uses both MCP and settings outputs.
   init [--dry-run] | upgrade [--dry-run] | inspect | list
     upgrade is local/human only: back up the store and stop other SANE processes first.
-    Upgrades sane-domain stores to v5 explicitly; rerun locally to finish an interrupted upgrade.
+    Upgrades sane-domain stores to v6 explicitly; rerun locally to finish an interrupted upgrade.
   create --name ID --type feature|foundation|issue|maintenance [--title TEXT] [--dry-run]
   select --workstream ID [--dry-run]
   view|detail|status [ID] | audit | sessions [--slot SLOT]
@@ -30,12 +30,12 @@ export const USAGE = `Usage: sane <command> [--repo PATH] [--workstream ID] [--j
   research unregister --topic SLUG
   default-checkout --workstream ID --checkout PATH|--clear
   authority declare --repo PATH --source JSON
-  conversation register --repo PATH --harness cc|oc --authority ID --native-id ID --checkout PATH
-    [--parent-harness cc|oc --parent-authority ID --parent-native-id ID]
-  conversation get|context|associate|unassign --repo PATH --harness cc|oc --authority ID --native-id ID
+  conversation register --repo PATH --harness cc|oc|gk --authority ID --native-id ID --checkout PATH
+    [--parent-harness cc|oc|gk --parent-authority ID --parent-native-id ID]
+  conversation get|context|associate|unassign --repo PATH --harness cc|oc|gk --authority ID --native-id ID
     (associate requires --workstream ID)
-  phase assign SLOT --repo PATH --harness cc|oc --authority ID --native-id ID
-  phase target SLOT --repo PATH --workstream ID [--harness cc|oc --authority ID --native-id ID]
+  phase assign SLOT --repo PATH --harness cc|oc|gk --authority ID --native-id ID
+  phase target SLOT --repo PATH --workstream ID [--harness cc|oc|gk --authority ID --native-id ID]
   phase end --repo PATH --assignment-id ID
 Slots: design, engineering, planning, execution (lifecycle);
   research, research:<safe-topic>, curation, experimentation (support tracks).
@@ -61,7 +61,8 @@ export interface CliRuntime {
 
 /** Snapshot signals without treating present-but-empty evidence as absent. */
 export function callerSignals(env: NodeJS.ProcessEnv = process.env): CallerSignals {
-  return { SANE_CALLER_CONTEXT: env.SANE_CALLER_CONTEXT, SANE_SESSION_ID: env.SANE_SESSION_ID, OPENCODE_SESSION_ID: env.OPENCODE_SESSION_ID }
+  return { SANE_CALLER_CONTEXT: env.SANE_CALLER_CONTEXT, SANE_SESSION_ID: env.SANE_SESSION_ID, OPENCODE_SESSION_ID: env.OPENCODE_SESSION_ID,
+    SANE_UNQUALIFIED_NATIVE: env.SANE_UNQUALIFIED_NATIVE, GROK_SESSION_ID: env.GROK_SESSION_ID }
 }
 function ready(path: string): RepositoryContext {
   const state = inspectRepositoryStore(discoverRepository(path))
@@ -69,7 +70,7 @@ function ready(path: string): RepositoryContext {
   return state.context
 }
 function reference(options: CliIntent["options"], prefix = ""): ConversationRef {
-  return { harness: options[`${prefix}harness`] as "cc" | "oc", authorityId: options[`${prefix}authority`] as string, nativeId: options[`${prefix}native-id`] as string }
+  return { harness: options[`${prefix}harness`] as ConversationRef["harness"], authorityId: options[`${prefix}authority`] as string, nativeId: options[`${prefix}native-id`] as string }
 }
 
 /** Full domain result. Programmatic callers that need complete evidence use

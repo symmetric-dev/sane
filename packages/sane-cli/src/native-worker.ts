@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import { DomainError } from "../../sane-core/src/server.ts"
-import { openNativeCaller, type NativeCaller } from "./native-caller.ts"
+import { nativeRuntimeHeaders, openNativeCaller, type NativeCaller } from "./native-caller.ts"
 import { nativeWorkerInput, nativeWorkerInvocation, nativeWorkerOperationRequestId, nativeWorkerRequestId, parseNativeWorkerRequest, projectNativeWorkerReply, type NativeWorkerOperation } from "./native-worker-contract.ts"
 
 export async function workerNativeCaller(caller: NativeCaller, operation: NativeWorkerOperation, input: unknown, connectionFile: string, signal?: AbortSignal) {
@@ -24,7 +24,7 @@ export async function workerNativeCaller(caller: NativeCaller, operation: Native
     const transportSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
     let response: Response, result: unknown
     try {
-      response = await fetch(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json", authorization: `Bearer ${connection.token}` }, body: JSON.stringify(request), signal: transportSignal })
+      response = await fetch(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json", authorization: `Bearer ${connection.token}`, ...nativeRuntimeHeaders(caller) }, body: JSON.stringify(request), signal: transportSignal })
       result = await response.json()
     } catch {
       throw new DomainError("UNAVAILABLE", operation === "start" ? "Worker admission acknowledgment is unknown. Inspect sane_worker_status before another start; a new tool invocation may launch duplicate work. Only the same trusted invocation and payload may recover admission. No automatic retry was attempted." : operation === "acknowledge" ? "Worker acknowledgement receipt is unknown. Inspect status or explicitly acknowledge the same exact references again to recover arbitration state. No automatic retry was attempted." : "App worker transport interrupted or unavailable; workers continue independently. No automatic retry was attempted.")

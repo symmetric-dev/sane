@@ -31,7 +31,7 @@ const rowKey = (row: WorkstreamConversation) => row.sessionId ?? refKey(row.ref)
 const rawError = (error: unknown) => error instanceof Error ? error.message : String(error);
 function harnessLabel(row: WorkstreamConversation, metadata?: SessionMetadata) {
   const harness = row.ref?.harness ?? row.conversation?.ref.harness ?? metadata?.admission?.source.descriptor.harness ?? metadata?.harness;
-  return harness === "cc" || harness === "claude-code" ? "Claude Code" : harness === "oc" || harness === "opencode" ? "OpenCode" : "Harness unavailable";
+  return harness === "cc" || harness === "claude-code" ? "Claude Code" : harness === "oc" || harness === "opencode" ? "OpenCode" : harness === "gk" || harness === "grok" ? "Grok" : "Harness unavailable";
 }
 function friendlyTitle(row: WorkstreamConversation, metadata?: SessionMetadata) {
   const title = row.title.trim();

@@ -9,6 +9,8 @@ import { sentHandoffs } from "../shared/conversation/handoff-matching";
 import type { Message, Run as DisplayRun, RunMetadata } from "../shared/conversation/types";
 import type { Event, Run, Session } from "./history";
 import type { ReconciledHistory } from "../shared/conversation/native-history-contract";
+import { GrokOutputProjection } from "./grok-output";
+import { decodeContextMessageSubmission } from "./context-message-evidence";
 import { TRANSCRIPT_MAX_MESSAGES, TRANSCRIPT_PAGE_BYTES, type TranscriptCompaction, type TranscriptMessage, type TranscriptMetadataItem, type TranscriptMetadataPage, type TranscriptPage, type TranscriptRefresh, type TranscriptRefreshRequest, type TranscriptRunMetadata, type TranscriptSendAnchor, type TranscriptSummary, type TranscriptUsage } from "./transcript-contract";
 
 export class TranscriptError extends Error {
@@ -68,6 +70,35 @@ type Projection = {
 };
 type Cursor = { session: string; identity: string; epoch: string; kind: "older" | "newer" | "meta"; anchor?: string; revision?: string; offset?: number };
 
+/** A provider response ID can anchor the display of an App turn; the fresh UUID
+ * on a streaming-messages-json line cannot. In an exactly response-anchored turn,
+ * display the standard submission's authored body instead of the native wire's
+ * bootstrap/context prefix. This is not a user-message acceptance receipt and
+ * never changes the imported history or assigns nativeCommandId/coveredRunIds. */
+function grokAuthoredHistory(history: ReconciledHistory | undefined, runs: DisplayRun[]) {
+  if (!history) return history;
+  const aliases = new Map<string, Set<string>>();
+  for (const run of runs) for (const message of run.messages) {
+    if (message.role !== "assistant") continue;
+    for (const id of message.nativeIds ?? []) {
+      const owners = aliases.get(id) ?? new Set<string>(); owners.add(run.id); aliases.set(id, owners);
+    }
+  }
+  const messages = [...history.messages];
+  for (let start = 0; start < messages.length;) {
+    let end = start + 1;
+    while (end < messages.length && messages[end]!.role !== "user") end++;
+    const owners = new Set(messages.slice(start, end).filter(message => message.role === "assistant").flatMap(message => [...aliases.get(message.messageId) ?? []]));
+    if (messages[start]!.role === "user" && owners.size === 1) {
+      const run = runs.find(run => run.id === [...owners][0]);
+      const authored = run?.messages.find(message => message.role === "user");
+      if (authored) messages[start] = { ...messages[start]!, parts: authored.parts.flatMap((part, index) => part.type === "text" ? [{ id: `${authored.id}:${index}`, type: "text" as const, text: part.text }] : []) };
+    }
+    start = end;
+  }
+  return { ...history, messages };
+}
+
 /** Reducers consume each appended event once, seeded from the bridge's existing
  * startup decode. Polling unchanged evidence never replays event logs or rebuilds
  * the transcript. Dirty projections reuse the existing exact merge/usage helpers. */
@@ -76,6 +107,7 @@ export class TranscriptService {
   private processId = randomBytes(12).toString("base64url");
   private serial = 0;
   private runs = new Map<string, DisplayRun>();
+  private grok = new Map<string, { projection: GrokOutputProjection; stderr: string; finished: boolean }>();
   private usageEvidence = new Map<string, Event[]>();
   private compactEvidence = new Map<string, Event[]>();
   private usageBuffers = new Map<string, string>();
@@ -100,9 +132,45 @@ export class TranscriptService {
     if (!display) { display = createRun(this.metadata(run, session)); this.runs.set(run.runId, display); }
     Object.assign(display, this.metadata(run, session));
     const appended = events.filter(event => !display!.seen.has(event.seq));
-    consume(display, appended);
+    if (session.harness === "grok") this.ingestGrok(display, appended);
+    else consume(display, appended);
     for (const event of appended) this.evidence(run, event);
     if (appended.some(event => event.kind !== "stderr")) this.generations.set(run.sessionId, (this.generations.get(run.sessionId) ?? 0) + 1);
+  }
+  private ingestGrok(display: DisplayRun, events: Event[]) {
+    for (const event of events) {
+      if (event.runId !== display.id || event.sessionId !== display.conversationId || display.seen.has(event.seq)) continue;
+      display.seen.add(event.seq); display.events.push(event);
+      let cached = this.grok.get(display.id);
+      if (!cached && event.kind === "submission") {
+        try {
+          const submission = decodeContextMessageSubmission(event.data), range = submission.composition.body.range;
+          const body = Buffer.from(submission.text, "utf8").subarray(range.offset, range.offset + range.length).toString("utf8");
+          cached = { projection: new GrokOutputProjection({ id: display.id, conversationId: display.conversationId, cwd: display.cwd,
+            createdAt: display.createdAt, endedAt: display.endedAt, status: display.status, harness: "grok", nativeSessionId: display.nativeSessionId,
+            model: display.model, effort: display.effort, agent: display.agent, agentKind: display.agentKind, profileId: display.profileId,
+            nativeAgentSelected: display.nativeAgentSelected, saneContextVersion: display.saneContextVersion }, body), stderr: "", finished: false };
+          this.grok.set(display.id, cached);
+          // Normally submission precedes stdout. Preserve replay correctness if
+          // diagnostics were journaled before the standard submission evidence.
+          for (const previous of display.events) if (previous !== event) this.feedGrok(cached, previous);
+        } catch { /* Nonstandard evidence is not permission to display wire text. */ }
+      }
+      if (cached) this.feedGrok(cached, event);
+    }
+    this.snapshotGrok(display);
+  }
+  private feedGrok(cached: { projection: GrokOutputProjection; stderr: string }, event: { kind: string; data: unknown }) {
+    if (event.kind === "stdout") cached.projection.feed(typeof event.data === "string" ? event.data : JSON.stringify(event.data) + "\n");
+    if (event.kind === "stderr" && typeof event.data === "string") cached.stderr = (cached.stderr + event.data).slice(-8_000);
+  }
+  private snapshotGrok(display: DisplayRun) {
+    const cached = this.grok.get(display.id);
+    if (!cached) return;
+    cached.projection.run.endedAt = display.endedAt;
+    const terminal = display.status !== "starting" && display.status !== "running";
+    if (terminal && !cached.finished) { cached.projection.finish(); cached.finished = true; }
+    display.messages = cached.projection.snapshot(display.status, cached.stderr).messages;
   }
   /** Retain small authoritative evidence, not tool outputs/prompts, for pure
    * usage/compaction projection. Raw chunk parsing happens once at ingestion. */
@@ -110,6 +178,7 @@ export class TranscriptService {
     const usage = this.usageEvidence.get(run.runId) ?? [], compact = this.compactEvidence.get(run.runId) ?? [];
     this.usageEvidence.set(run.runId, usage); this.compactEvidence.set(run.runId, compact);
     const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
+    if (event.kind === "context" && object(event.data) && event.data.type === "grok-compaction") { compact.push(event); return; }
     if (event.kind === "message" && object(event.data)) {
       const { parts: _parts, error: _error, ...snapshot } = event.data;
       const small = { ...snapshot, parts: [] };
@@ -129,10 +198,10 @@ export class TranscriptService {
       const { message, content: _content, result: _result, ...rest } = value;
       const small = { ...rest, ...(object(message) ? { message: { model: message.model, usage: message.usage } } : {}) };
       if (value.type === "assistant" || value.type === "result" || value.type === "system") usage.push({ ...event, data: small });
+      if (value.type === "system" && ["compact_boundary", "status"].includes(value.subtype)) compact.push({ ...event, data: small });
     };
     if (object(event.data)) {
       record(event.data);
-      if (event.data.type === "system" && ["compact_boundary", "status"].includes(event.data.subtype)) compact.push(event);
     } else if (typeof event.data === "string") {
       const text = (this.usageBuffers.get(run.runId) ?? "") + event.data;
       const lines = text.split("\n"); let buffer = lines.pop() ?? "";
@@ -190,9 +259,11 @@ export class TranscriptService {
     const runs = stored.map(run => {
       let display = this.runs.get(run.runId);
       if (!display) { display = createRun(this.metadata(run, session)); this.runs.set(run.runId, display); }
-      Object.assign(display, this.metadata(run, session)); return display;
+      Object.assign(display, this.metadata(run, session));
+      if (session.harness === "grok") this.snapshotGrok(display);
+      return display;
     });
-    const merged = transcriptMessages(history, runs);
+    const merged = transcriptMessages(session.harness === "grok" ? grokAuthoredHistory(history, runs) : history, runs);
     const structural = !old || old.identity !== identity(session) || old.history !== history && !history?.observation || old.messages.length > merged.length || old.messages.some((entry, index) => entry.message.id !== merged[index]?.id);
     const epoch = structural ? `${this.processId}:e${++this.serial}` : old.epoch;
     const messages = merged.map(message => this.materialize(message));

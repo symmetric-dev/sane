@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { atomicAppRecord } from "./app-store";
 import { uuid } from "./history";
 import { isWorkerAgentId, workerJobsProblem, workerSubjectProblem } from "sane-core/agent-catalog";
+import { validNativeAuthorityId } from "sane-core/native-source-contract";
+import type { ConversationRef } from "sane-core/contracts";
 import type { SessionListDelivery, SessionListWorker, WorkerAttention, WorkerCompletion, WorkerExchange, WorkerOperationReceipt, WorkerProtocolPin, WorkerRecord, WorkerRecords, WorkerDelivery, WorkerWait } from "./worker-contract";
 import { workerResults } from "./worker-contract";
 import { completionBlockers, sameProtocolPin, validProtocolPin, workerBlocksParentGate, type CompletionBlocker } from "./worker-protocol";
@@ -28,7 +30,7 @@ export function workerSelection(worker: WorkerRecord): WorkerSelection {
 }
 
 const PROTOCOL_OPS = ["complete", "notify", "message-parent", "message-child"];
-const EXCHANGE_STATES = ["queued", "claimed", "acceptance-unknown", "accepted", "not-submitted"];
+const EXCHANGE_STATES = ["queued", "claimed", "acceptance-unknown", "accepted", "wrapper-completed", "not-submitted"];
 const CLOSED_EXCHANGE_RECIPIENT = "Recipient assignment is no longer open; the exchange remains queued";
 function descendants(workers: WorkerRecord[], sessionId: string) {
   const parents = new Set([sessionId]), result: WorkerRecord[] = [];
@@ -41,8 +43,13 @@ function descendants(workers: WorkerRecord[], sessionId: string) {
 function bounded(value: unknown, max = 100000): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= max && value.trim().length > 0 && !value.includes("\u0000");
 }
+function nativeRef(value: ConversationRef | undefined | null) {
+  if (!value?.nativeId || !value.authorityId) return false;
+  // Preserve legacy CC/OC records; Grok enters with a qualified UUID identity.
+  return value.harness === "gk" ? validNativeAuthorityId("gk", value.authorityId) && uuid(value.nativeId) : value.harness === "cc" || value.harness === "oc";
+}
 function party(value: WorkerExchange["sender"] | undefined) {
-  return !!value && uuid(value.sessionId) && !!value.native?.nativeId && !!value.native.authorityId && ["cc", "oc"].includes(value.native.harness);
+  return !!value && uuid(value.sessionId) && nativeRef(value.native);
 }
 function validWorkerProtocol(worker: WorkerRecord) {
   const explicit = worker.protocol?.id === "explicit-v1";
@@ -174,7 +181,8 @@ export class WorkerStore {
       const key = JSON.stringify([w.parent?.sessionId, w.input?.requestId]);
       // Older v1 records predate jobs. Validate assignments when present;
       // WorkerService.start still requires them for new Implementer launches.
-      if (!uuid(w.id) || !uuid(w.sessionId) || ids.has(w.id) || sessions.has(w.sessionId) || requests.has(key) || !uuid(w.parent?.sessionId) || !uuid(w.parent?.runId) || !w.parent.toolCallId || !w.parent.native?.nativeId || !w.parent.native.authorityId || !["cc", "oc"].includes(w.parent.native.harness) || !isWorkerAgentId(w.input?.worker) || typeof w.input.prompt !== "string" || !w.input.requestId || w.input.jobs !== undefined && workerJobsProblem(w.input.worker, w.input.jobs) !== undefined || !w.checkout?.startsWith("/") || !w.launch?.agent || !["claude-code", "opencode"].includes(w.launch.harness) || !["reserved", "launching", "running", "waiting", "idle", "uncertain", "cancelling", "completed", "failed", "interrupted"].includes(w.state) || !Number.isFinite(Date.parse(w.createdAt)) || !Number.isFinite(Date.parse(w.updatedAt)) || w.runId !== null && !uuid(w.runId)) fail();
+      if (!uuid(w.id) || !uuid(w.sessionId) || ids.has(w.id) || sessions.has(w.sessionId) || requests.has(key) || !uuid(w.parent?.sessionId) || !uuid(w.parent?.runId) || !w.parent.toolCallId || !nativeRef(w.parent.native) || !isWorkerAgentId(w.input?.worker) || typeof w.input.prompt !== "string" || !w.input.requestId || w.input.jobs !== undefined && workerJobsProblem(w.input.worker, w.input.jobs) !== undefined || !w.checkout?.startsWith("/") || !w.launch?.agent || !["claude-code", "opencode", "grok"].includes(w.launch.harness) || !["reserved", "launching", "running", "waiting", "idle", "uncertain", "cancelling", "completed", "failed", "interrupted"].includes(w.state) || !Number.isFinite(Date.parse(w.createdAt)) || !Number.isFinite(Date.parse(w.updatedAt)) || w.runId !== null && !uuid(w.runId)) fail();
+      if (w.child?.harness === "gk" && (!nativeRef(w.child) || w.launch.harness !== "grok")) fail();
       if (workerSubjectProblem(w.input.subject)) fail();
       if (w.outcome && (!["completed", "failed", "interrupted"].includes(w.outcome.status) || !w.notification?.id)) fail();
       if (w.coordination !== undefined && !(w.coordination === "scouts" && w.input.worker === "scout-crew" || w.coordination === "workers" && (w.input.worker === "implementer" || w.input.worker === "verification-crew"))) fail();
@@ -190,6 +198,7 @@ export class WorkerStore {
     const deliveryIds = new Set<string>(), activeParents = new Set<string>();
     for (const d of r.deliveries ?? []) {
       if (!uuid(d.id) || deliveryIds.has(d.id) || !uuid(d.parentSessionId) || !uuid(d.run?.runId) || d.run.sessionId !== d.parentSessionId || !d.commandId || !d.native?.nativeId || !Array.isArray(d.workerIds) || !d.workerIds.length || d.workerIds.length > 8 || new Set(d.workerIds).size !== d.workerIds.length || !["claimed", "acceptance-unknown", "delivered", "not-submitted"].includes(d.state)) fail();
+      if (d.native?.harness === "gk" && !nativeRef(d.native)) fail();
       if (["claimed", "acceptance-unknown"].includes(d.state)) { if (activeParents.has(d.parentSessionId)) fail(); activeParents.add(d.parentSessionId); }
       if (!d.resultRefs?.length || d.resultRefs.length > 8 || new Set(d.resultRefs.map(ref => ref.notificationId)).size !== d.resultRefs.length) fail();
       for (const ref of d.resultRefs ?? []) { const w = r.workers.find(w => w.id === ref.workerId), result = w?.results?.find(r => r.revision === ref.revision && r.notification.id === ref.notificationId); if (!result || !d.workerIds.includes(ref.workerId) || w?.parent.sessionId !== d.parentSessionId || d.state !== "not-submitted" && (result.notification.deliveryId !== d.id || result.notification.state !== d.state)) fail(); }
@@ -487,7 +496,7 @@ export class WorkerStore {
     const located = next.workers.flatMap(worker => (worker.exchanges ?? []).map(exchange => ({ worker, exchange }))).find(item => item.exchange.id === exchangeId);
     if (!located) throw new Error("Unknown worker exchange");
     const { worker, exchange } = located;
-    if (exchange.delivery.state === "accepted") return structuredClone(exchange);
+    if (exchange.delivery.state === "accepted" || exchange.delivery.state === "wrapper-completed") return structuredClone(exchange);
     if (state === "not-submitted") exchange.delivery = { state: "queued", error, retryAfter: new Date(Date.now() + 30000).toISOString() };
     else exchange.delivery = { ...exchange.delivery, state, error };
     worker.updatedAt = new Date().toISOString();

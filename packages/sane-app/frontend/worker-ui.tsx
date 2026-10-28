@@ -200,12 +200,12 @@ export function WorkerOutcomeReport({ delivery, workers }: { delivery: WorkerDel
 }
 
 export function WorkerExchangeMessage({ exchange, renderMessage }: { exchange: WorkerExchange; renderMessage: (text: string) => ReactNode }) {
-  const status = { queued: "Queued", claimed: "Sending", "acceptance-unknown": "Acceptance unconfirmed", accepted: "Accepted", "not-submitted": "Not sent" }[exchange.delivery.state];
+  const status = { queued: "Queued", claimed: "Sending", "acceptance-unknown": "Acceptance unconfirmed", accepted: "Accepted", "wrapper-completed": "Delivered", "not-submitted": "Not sent" }[exchange.delivery.state];
   const kind = { consultation: "Consultation", guidance: "Guidance", notice: "Notice" }[exchange.kind];
   return <section className="worker-exchange-card" aria-label="Worker exchange">
     <header><FiArrowRight className="worker-direction" size={16} aria-hidden="true" /><strong>Worker exchange</strong><span className="worker-exchange-route">{exchangeSenderLabel(exchange)} → {exchangeRecipientLabel(exchange)}</span><span>{kind}</span><time dateTime={exchange.createdAt} title={new Date(exchange.createdAt).toLocaleString()}>{new Date(exchange.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></header>
     <details className="worker-exchange-content"><summary><FiChevronRight size={13} aria-hidden="true" />Show message</summary><div>{renderMessage(exchange.text)}</div></details>
-    <footer><span className={`worker-status${exchange.delivery.state === "not-submitted" ? " is-error" : exchange.delivery.state === "acceptance-unknown" ? " is-uncertain" : ""}`} title="Native acceptance, not comprehension or task completion">{status}</span></footer>
+    <footer><span className={`worker-status${exchange.delivery.state === "not-submitted" ? " is-error" : exchange.delivery.state === "acceptance-unknown" ? " is-uncertain" : ""}`} title={exchange.delivery.state === "wrapper-completed" ? "App delivery run completed; not a native acceptance receipt or task completion" : "Native acceptance, not comprehension or task completion"}>{status}</span></footer>
     {exchange.delivery.error && <p className="notice error" role="alert">{exchange.delivery.error}</p>}
   </section>;
 }

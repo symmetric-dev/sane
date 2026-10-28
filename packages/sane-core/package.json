@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./contracts": "./src/contracts.ts",
+    "./native-source-contract": "./src/native-source-contract.ts",
     "./agent-catalog": "./src/agent-catalog.ts",
     "./sane-context": "./src/sane-context.ts",
     "./sane-framework": "./src/sane-framework.ts",

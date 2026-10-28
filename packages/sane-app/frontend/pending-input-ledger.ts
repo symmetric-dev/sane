@@ -1,5 +1,6 @@
 import { isPendingInputRemovalRequest, isPendingInputRequest, isPendingInputResumeRequest, type PendingInputRemovalRequest, type PendingInputRequest, type PendingInputResumeRequest } from "../shared/conversation/pending-input-contract";
 import type { PendingInputOperation } from "./pending-input-presentation";
+import { isHarness } from "../shared/conversation/harness-capabilities";
 
 export type PendingInputRecord = {
   operation: PendingInputOperation; body: PendingInputRequest | PendingInputRemovalRequest | PendingInputResumeRequest;
@@ -13,7 +14,7 @@ const valid = (v: unknown): v is PendingInputRecord => {
     && ["pending", "unknown"].includes(o.state) && (o.text === undefined || typeof o.text === "string")
     && (o.error === undefined || typeof o.error === "string") && (r.draftKey === undefined || typeof r.draftKey === "string")
     && (r.draftText === undefined || typeof r.draftText === "string")
-    && (o.kind === "enqueue" ? isPendingInputRequest(r.body, o) && r.body.text === o.text
+    && (o.kind === "enqueue" ? isPendingInputRequest(r.body, { ...o, validateHarnessId: isHarness }) && r.body.text === o.text
       : o.kind === "remove" ? isPendingInputRemovalRequest(r.body, o) : o.kind === "resume" && isPendingInputResumeRequest(r.body, o));
 };
 /** Only unresolved intents live here. Never silently evict one to admit another.

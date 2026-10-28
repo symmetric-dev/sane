@@ -158,6 +158,7 @@ export function startDispatchLifecycle<O extends RunOwner>(adapter: HarnessDispa
   } catch (error) { hooks.failClosed(error); finished.resolve(); throw error; }
   let healthy = true, reconciled = false, processingFinished = false;
   const installedRun = owner.run, installedDone = owner.done, installedBeforeSend = owner.beforeSend;
+  const installedMessages = owner.contextMessages, installedContextIdentity = owner.contextIdentity, installedMetadataProof = owner.assertMetadataCommitted;
   const coreConfiguration = () => JSON.stringify([owner.run.createdAt, owner.run.operation, owner.run.nativeDelivery,
     owner.run.queuedFollowupId, owner.workerDeliveryId, owner.native, owner.nativeDeliveryPolicy, owner.nativeQueuedHandoff]);
   const configuration = () => JSON.stringify([owner.run.profileId, owner.run.model, owner.run.effort,
@@ -189,10 +190,20 @@ export function startDispatchLifecycle<O extends RunOwner>(adapter: HarnessDispa
     if (!healthy && (error === identityFailure || error === nativeAdmissionFailure)) return;
     healthy = false; hooks.failClosed(error);
   };
+  const assertObservationIdentity = () => {
+    if (owner.run !== installedRun || owner.done !== installedDone || owner.run.runId !== identity.runId
+      || owner.run.sessionId !== source.sessionId || owner.run.cwd !== source.cwd || (owner.run.nativeCommandId ?? null) !== identity.nativeCommandId) {
+      failClosed(identityFailure); throw identityFailure;
+    }
+  };
   const assertIdentity = () => {
-    if (owner.run !== installedRun || owner.done !== installedDone || owner.beforeSend !== installedBeforeSend || coreConfiguration() !== installedCoreConfiguration
-      || owner.run.runId !== identity.runId || owner.run.sessionId !== source.sessionId || owner.run.cwd !== source.cwd
-      || (owner.run.nativeCommandId ?? null) !== identity.nativeCommandId) { failClosed(identityFailure); throw identityFailure; }
+    assertObservationIdentity();
+    if (owner.beforeSend !== installedBeforeSend
+      || owner.contextMessages !== installedMessages || owner.contextIdentity !== installedContextIdentity || coreConfiguration() !== installedCoreConfiguration
+      || owner.assertMetadataCommitted !== installedMetadataProof
+      || installedContextIdentity && (!sameDispatchSource(installedContextIdentity.source, source) || installedContextIdentity.runId !== identity.runId
+        || installedContextIdentity.nativeCommandId !== identity.nativeCommandId || installedContextIdentity.requestId !== identity.requestId)
+      ) { failClosed(identityFailure); throw identityFailure; }
   };
   const assertConfiguration = (allowObservedWithholding = false) => {
     const current = configuration();
@@ -226,7 +237,14 @@ export function startDispatchLifecycle<O extends RunOwner>(adapter: HarnessDispa
     beforeNative: () => { assertNativeAdmission(true); evidence.beforeNative(); assertNativeAdmission(); },
     // Current launch pins cannot suppress original accepted/unknown observations.
     // They still close terminal proof after those observations are journaled.
-    outcome: (submission, acceptance) => { assertIdentity(); if (!queuedBoundary) assertConfiguration(); evidence.outcome(submission, acceptance); assertIdentity(); },
+    outcome: (submission, acceptance) => {
+      assertObservationIdentity();
+      // Launch-setting drift still closes admission/settlement, but cannot erase
+      // an original accepted/unknown observation after possible native execution.
+      evidence.outcome(submission, acceptance);
+      assertIdentity();
+      if (!queuedBoundary) assertConfiguration();
+    },
     withheld: evidence.withheld,
   };
   let admitted: boolean | undefined;

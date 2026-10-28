@@ -100,6 +100,7 @@ function DeliveryStatus({ form }: { form: UserQuestionsRecord }) {
   if (form.status !== "submitted") return null;
   const delivery = form.delivery;
   const status = delivery?.state === "accepted" ? "Answers delivered to the conversation."
+    : delivery?.state === "wrapper-completed" ? "Answers delivered to Grok. The App execution completed."
     : delivery?.state === "paused" ? "Answers saved. Delivery is paused."
     : delivery?.state === "pending" ? "Answers saved. Waiting to send."
     : delivery?.state === "claimed" ? "Sending answers. Waiting for delivery confirmation."
@@ -221,6 +222,7 @@ function questionsStatus(draft: UserQuestionsDraft) {
   if (draft.form.status === "dismissed") return "Dismissed";
   switch (draft.form.delivery?.state) {
     case "accepted": return "Delivered";
+    case "wrapper-completed": return "Delivered to Grok";
     case "pending": return "Waiting to send";
     case "claimed": return "Sending…";
     case "paused": return "Delivery paused";
@@ -236,7 +238,7 @@ export function UserQuestionsPanel({ questions, readOnlyReason }: { questions: U
   const waiting = questions.forms.find(item => item.form.status === "presented" && item.form.id !== draft.form.id);
   const status = waiting ? "New questions waiting" : questions.error ? "Refresh needed" : questionsStatus(draft);
   const submitted = draft.form.status === "submitted";
-  const RequestIcon = submitted ? draft.form.delivery?.state === "accepted" ? FiCheck : FiArrowRight : FiHelpCircle;
+  const RequestIcon = submitted ? draft.form.delivery?.state === "accepted" || draft.form.delivery?.state === "wrapper-completed" ? FiCheck : FiArrowRight : FiHelpCircle;
   return <ComposerRequest id={id} className={draft.form.status !== "presented" ? "user-questions-outcome" : ""} icon={<RequestIcon size={16} />} label={submitted ? "Answer delivery" : "Assistant questions"} title={draft.form.input.title} status={status} expanded={questions.expanded} toggle={questions.toggle}
     tools={<>
       {questions.forms.length > 1 && <FilterDropdown label="Question sets" value={draft.form.id} onChange={questions.open} options={questions.forms.map(({ form }) => ({ value: form.id, label: `${form.input.title} · ${form.status === "presented" ? "Awaiting answers" : form.status}` }))} />}

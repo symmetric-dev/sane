@@ -1,5 +1,5 @@
 /** Static integration support, not connection state or per-conversation eligibility. */
-export type Harness = "claude-code" | "opencode";
+export type Harness = "claude-code" | "opencode" | "grok";
 export const FIXED_EFFORT_VALUES = Object.freeze(["low", "medium", "high", "xhigh", "max"] as const);
 
 export type HarnessOperation = "prompt" | "readHistory" | "attachHistory" | "compact" | "branch" | "cancelOwnedRun" | "listInteractions" | "permissionReply" | "questionReply" | "listHandoffApprovals" | "handoffReply" | "listModels" | "recoverRun";
@@ -38,9 +38,9 @@ export type HarnessCapabilities = { -readonly [Key in keyof Omit<HarnessPolicies
 type StaticCapabilities = Readonly<Omit<HarnessCapabilities, "effortValues"> & { effortValues: readonly string[] }>;
 export type HarnessDescriptor = {
   readonly id: Harness;
-  readonly nativeHarness: "cc" | "oc";
+  readonly nativeHarness: "cc" | "oc" | "gk";
   readonly label: string;
-  readonly shortLabel: "CC" | "OC";
+  readonly shortLabel: "CC" | "OC" | "GK";
   readonly operations: Readonly<Record<HarnessOperation, HarnessOperationSupport>>;
   readonly policies: HarnessPolicies;
   readonly capabilities: StaticCapabilities;
@@ -97,10 +97,30 @@ export const HARNESS_DESCRIPTORS: Readonly<Record<Harness, HarnessDescriptor>> =
       branchRequiresPrompt: false, attachedSendRequiresNativeStopped: false,
     },
   }),
+  grok: descriptor({
+    id: "grok", nativeHarness: "gk", label: "Grok", shortLabel: "GK",
+    operations: {
+      prompt: supported,
+      readHistory: supported, attachHistory: supported,
+      compact: supported, branch: supported,
+      cancelOwnedRun: supported,
+      listInteractions: unsupported("Grok does not expose an interaction inbox"),
+      permissionReply: unsupported("Grok does not support permission replies"),
+      questionReply: unsupported("Grok does not support question replies"),
+      listHandoffApprovals: supported, handoffReply: supported,
+      listModels: supported,
+      recoverRun: unsupported("Grok process ownership cannot be recovered after an App restart"),
+    },
+    policies: {
+      modelInput: "live-catalog", catalogRequiredForSend: false, effortMode: "model-variant", effortValues: Object.freeze([] as const),
+      compactionInstructions: false, branchFromNativeMessage: false, branchAttachedConversation: false,
+      branchRequiresPrompt: false, attachedSendRequiresNativeStopped: true,
+    },
+  }),
 });
 
 export function isHarness(value: unknown): value is Harness {
-  return value === "claude-code" || value === "opencode";
+  return value === "claude-code" || value === "opencode" || value === "grok";
 }
 
 /** Callers must apply any explicit legacy missing-harness default outside this registry. */

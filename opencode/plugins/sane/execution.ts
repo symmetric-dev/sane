@@ -1,6 +1,8 @@
 import type { Plugin } from "@opencode/plugin"
 import type { OpenCodeExecutionConfiguration as Configuration, OperationModel, OperationPermission } from "../../../packages/sane-app/src/canonical-agent-operations.ts"
 import { SaneExecution } from "./execution-rpc.ts"
+import { fileURLToPath } from "node:url"
+import { resolve } from "node:path"
 
 type Context = Parameters<Parameters<typeof Plugin.define>[0]["setup"]>[0]
 type Binding = { schema: 2; state: "pending" | "ready"; configuration: Configuration; legacyRecovered?: boolean }
@@ -170,6 +172,20 @@ export async function registerExecutionOperations(ctx: Context) {
   }
   const receipt = (input: Configuration) => ({ sessionID: input.sessionID, agent: input.executionAgent, executionAgent: input.executionAgent, nativeChildren: input.nativeChildren.map(child => child.id) })
   const registration = await ctx.rpc.register(SaneExecution, {
+    runtime: async () => {
+      // Read-only, authenticated service observation; no session, permission,
+      // storage or model mutation. Report this LOADED instance's actual options.
+      const registrationFile = ctx.options.registrationFile, appConnectionFile = ctx.options.appConnectionFile
+      if (typeof registrationFile !== "string" || typeof appConnectionFile !== "string") throw new Error("Explicit native runtime routing is unavailable")
+      // Newer V2 services expose a read-only effective tool inventory. Keep
+      // compatibility with the older installed plugin type surface, but refuse
+      // qualification if the running service cannot independently enumerate it.
+      const toolDomain = ctx.tool as typeof ctx.tool & { list?: () => Promise<readonly { id: string }[]> }
+      if (typeof toolDomain.list !== "function") throw new Error("Selected service does not expose a read-only tool inventory")
+      const tools = await toolDomain.list()
+      return { schema: 1 as const, directory: ctx.location.directory, pluginDirectory: resolve(fileURLToPath(new URL(".", import.meta.url))),
+        registrationFile, appConnectionFile, tools: tools.map(tool => tool.id) }
+    },
     configure: async (raw, call) => {
       const { readOnly = false, ...configuration } = structuredClone(raw) as Configuration & { readOnly?: boolean }
       let input = configuration as Configuration

@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { CODE_SHARE_LIMITS, codeShareInputSnippets, codeShareSnippetRange, isInlineCodeShareSnippet, normalizeCodeShareText, parseCodeShareInput, resolveCodeShareLanguage, type CodeShareFileSnapshot, type CodeShareRecord, type CodeShareSnapshot, type NativeCodeShareRequest, type CodeShareReceipt } from "../shared/code-share-contract";
 import { exact } from "./app-store";
-import { canonicalJSON } from "./prepared-input-codec";
+import { canonicalJSON, canonicalPath } from "./prepared-input-codec";
+import { assertSourceDescriptor } from "./app-sources";
+import { isNativeHarness, validNativeAuthorityId } from "sane-core/native-source-contract";
+import { uuid } from "./history";
 import { body } from "./bridge-http";
 import { CodeShareError, CodeShareStore, codeShareId, codeShareKey } from "./code-share-store";
 import type { WorkspaceService } from "./workspace";
@@ -12,12 +15,18 @@ export function parseCodeShareRequest(value: unknown): NativeCodeShareRequest {
     exact(value, ["version", "caller", "invocation", "input"]);
     exact(value.caller, ["source", "authorityId", "nativeId", "cwd"]);
     exact(value.invocation, ["toolCallId", "invocationId"], ["messageId", "wrapper"]);
+    if (!isNativeHarness(value.caller.source?.harness)) throw new Error();
+    assertSourceDescriptor(value.caller.source, value.caller.source.harness);
     if (value.version !== 1 || ![value.caller.authorityId, value.caller.nativeId, value.caller.cwd, value.invocation.toolCallId, value.invocation.invocationId].every(token)
       || value.invocation.messageId !== undefined && !token(value.invocation.messageId) || value.invocation.wrapper !== undefined && value.invocation.wrapper !== "execute"
-      || !value.caller.source || !["cc", "oc"].includes(value.caller.source.harness)
       || value.caller.source.harness === "oc" && !token(value.invocation.messageId)
       || value.caller.source.harness === "oc" && !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value.invocation.invocationId)
-      || value.caller.source.harness === "cc" && (value.invocation.wrapper !== undefined || value.invocation.invocationId !== value.invocation.toolCallId)) throw new Error();
+      || value.caller.source.harness !== "oc" && (value.invocation.wrapper !== undefined || value.invocation.invocationId !== value.invocation.toolCallId)) throw new Error();
+    if (value.caller.source.harness === "gk") {
+      const descriptor = { version: 1, harness: "gk", kind: "local-home", homeRoot: value.caller.source.homeRoot };
+      if (!canonicalPath(descriptor.homeRoot) || !validNativeAuthorityId("gk", value.caller.authorityId) || !uuid(value.caller.nativeId)
+        || value.caller.authorityId !== `sane-native-v1:gk:${createHash("sha256").update(JSON.stringify(descriptor)).digest("hex")}`) throw new Error();
+    }
     return { version: 1, caller: { source: value.caller.source, authorityId: value.caller.authorityId, nativeId: value.caller.nativeId, cwd: value.caller.cwd }, invocation: { toolCallId: value.invocation.toolCallId, invocationId: value.invocation.invocationId, ...(value.invocation.messageId !== undefined ? { messageId: value.invocation.messageId } : {}), ...(value.invocation.wrapper !== undefined ? { wrapper: value.invocation.wrapper } : {}) }, input: parseCodeShareInput(value.input) };
   } catch { throw new CodeShareError(400, "invalid-code-share", "Invalid code share request"); }
 }

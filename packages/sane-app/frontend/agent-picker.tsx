@@ -23,7 +23,7 @@ export function AgentPicker({ close, restoreFocus }: { close: () => void; restor
   const choose = (profile: AgentProfile) => { if (store.state.selected && store.pendingInputChainLocked()) return; store.pickProfile(profile.id); close(); };
   const section = (title: string, list: AgentProfile[]) => !!list.length && <section className="agent-section" aria-label={title}>
     <h3>{title}</h3>
-    <div className="agent-grid">{list.map(profile => { const check = store.assignable(profile); return <AgentCard key={profile.id} profile={profile} selected={profile.id === currentId} disabled={chainLocked || !check.ok} reason={chainLocked ? "Agent settings are fixed while the pending-input chain is active." : check.ok ? undefined : check.reason} onSelect={() => choose(profile)} />; })}</div>
+    <div className="agent-grid">{list.map(profile => { const check = store.assignable(profile); return <AgentCard key={profile.id} profile={profile} choices={store.profileChoices(profile)} selected={profile.id === currentId} disabled={chainLocked || !check.ok} reason={chainLocked ? "Agent settings are fixed while the pending-input chain is active." : check.ok ? undefined : check.reason} onSelect={() => choose(profile)} />; })}</div>
   </section>;
   return <ShellDialog title={assign ? "Assign an assistant" : "Choose an agent"} close={close} restoreFocus={restoreFocus}>
     <div className="agent-picker">

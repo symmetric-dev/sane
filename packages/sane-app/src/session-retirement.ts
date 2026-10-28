@@ -6,6 +6,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { atomicAppRecord } from "./app-store";
 import { uuid, type Run, type Session } from "./history";
 import type { OpenCodeAdapter } from "./opencode";
+import { toNativeHarness } from "./harness-names";
 
 const FILE = "session-retirements.json", WEEK = 7 * 86400_000, MAX_BATCH = 24, OPERATION_MS = 45_000;
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -110,7 +111,7 @@ export class SessionRetirements {
     if (raw !== undefined) this.registryPin = this.fingerprint(join(deps.dataDir, FILE));
   }
   private validIdentity(x: unknown): x is Identity {
-    return object(x) && keys(x, ["sessionId", "harness", "nativeSessionId", "authorityId", "cwd"]) && uuid(x.sessionId) && ["claude-code", "opencode"].includes(x.harness) && typeof x.nativeSessionId === "string" && (x.harness === "claude-code" ? uuid(x.nativeSessionId) : /^ses[a-zA-Z0-9_-]+$/.test(x.nativeSessionId)) && typeof x.authorityId === "string" && new RegExp(`^sane-native-v1:${x.harness === "opencode" ? "oc" : "cc"}:[a-f0-9]{64}$`).test(x.authorityId) && typeof x.cwd === "string" && isAbsolute(x.cwd) && !x.cwd.includes("\0");
+    return object(x) && keys(x, ["sessionId", "harness", "nativeSessionId", "authorityId", "cwd"]) && uuid(x.sessionId) && ["claude-code", "opencode", "grok"].includes(x.harness) && typeof x.nativeSessionId === "string" && (x.harness === "opencode" ? /^ses[a-zA-Z0-9_-]+$/.test(x.nativeSessionId) : uuid(x.nativeSessionId)) && typeof x.authorityId === "string" && new RegExp(`^sane-native-v1:${toNativeHarness(x.harness)}:[a-f0-9]{64}$`).test(x.authorityId) && typeof x.cwd === "string" && isAbsolute(x.cwd) && !x.cwd.includes("\0");
   }
   private validResponse(x: unknown): x is Response {
     const outcomes = ["eligible", "retired", "already-retired", "restored", "reactivated", "already-active", "recent", "active", "unknown", "inflight", "identity-changed"];
@@ -440,11 +441,11 @@ export class SessionRetirements {
         budget.check();
         const s = sessions.get(id), a = approval.approved.get(id)!;
         const finish = (outcome: Outcome, lastActivity: string | null, reason?: string) => results.push({ sessionId: id, outcome, lastActivity, ...(reason ? { reason } : {}) });
-        if (!s || s.harness !== a.harness || s.nativeSessionId !== a.native_id || s.cwd !== a.workspace || s.authorityId !== approval.sources[s.harness === "opencode" ? "oc" : "cc"]?.authorityId || !this.validIdentity(identity(s)) || !this.deps.authorityCurrent(s)) { finish("identity-changed", null, "Approved App/native/source identity no longer matches"); continue; }
+        if (!s || s.harness !== a.harness || s.nativeSessionId !== a.native_id || s.cwd !== a.workspace || !this.validIdentity(identity(s)) || s.authorityId !== approval.sources[toNativeHarness(s.harness!)]?.authorityId || !this.deps.authorityCurrent(s)) { finish("identity-changed", null, "Approved App/native/source identity no longer matches"); continue; }
         if (request.operation === "restore") { finish(this.isRetired(s) ? "restored" : "already-active", this.byId.get(id)?.lastActivity ?? null); continue; }
         const local = await this.local(s, budget); budget.check(); observations.set(id, local);
         if (local.error) { finish("unknown", local.last === null ? null : new Date(local.last).toISOString(), local.error); continue; }
-        const n = natives.get(s.nativeSessionId!);
+        const n = s.harness === "opencode" ? natives.get(s.nativeSessionId!) : undefined;
         if (n) {
           local.native = n;
           const dates = [n.time.updated, n.time.idle].filter((v): v is number => typeof v === "number");
@@ -472,10 +473,11 @@ export class SessionRetirements {
         if (local.last !== null && local.last >= cutoff) { finish("recent", lastActivity, "Activity is within the rolling seven-day window"); continue; }
         const busy = initiallyBusy.get(id) ?? this.deps.busy(id);
         if (busy) { finish("inflight", lastActivity, busy); continue; }
-        if (active?.[s.nativeSessionId!]) { finish("active", lastActivity, "Native foreground execution is positively active"); continue; }
+        if (s.harness === "opencode" && active?.[s.nativeSessionId!]) { finish("active", lastActivity, "Native foreground execution is positively active"); continue; }
         if (local.last === null || s.harness === "opencode" && !n) { finish("unknown", lastActivity, "Current native activity date is unavailable"); continue; }
         finish(this.isRetired(s) ? "already-retired" : "eligible", lastActivity,
           s.harness === "claude-code" ? "Approved age-only catalog unregistration; external Claude execution idleness remains unverified. Native history is preserved."
+            : s.harness === "grok" ? "Approved age-only catalog unregistration from App activity; external Grok activity remains unverified. Native history is preserved."
             : !active ? "Native foreground execution observation unavailable; execution state remains unverified despite valid old activity dates" : undefined);
       }
       // Mutations are bounded to 24 exact approved identities, four native reads

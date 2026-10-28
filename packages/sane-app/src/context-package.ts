@@ -100,7 +100,7 @@ export function renderContextDelivery(bundle: ContextPackage, binding: ContextBi
 
 export function validateContextBinding(binding: ContextBinding): void {
   if (!binding || ![binding.sessionId, binding.authorityId, binding.nativeSessionId, binding.cwd].every(v => typeof v === "string" && v.trim())
-    || !["opencode", "claude-code"].includes(binding.harness)) throw new Error("Context delivery requires an exact native binding");
+    || !["opencode", "claude-code", "grok"].includes(binding.harness)) throw new Error("Context delivery requires an exact native binding");
 }
 
 /** Structural integrity only. Dispatch must also verify against trusted package inputs. */

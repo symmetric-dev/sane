@@ -136,7 +136,12 @@ export const SanePlugin = Plugin.define({
       try {
         const caller = await qualify({ sessionID: event.sessionID, messageID: event.messageID, id: event.id, agent: event.agent })
         reference = JSON.stringify(nativeShellCaller(caller))
-      } catch { reference = "unavailable" }
+      } catch (error) {
+        // Refusal carries the cause (e.g. a stale runtime rejecting a newer schema)
+        // instead of a generic caller error; it is never an identity.
+        const code = (error as { code?: unknown })?.code
+        reference = JSON.stringify({ version: 1, unavailable: `${typeof code === "string" ? `${code}: ` : ""}${error instanceof Error ? error.message : "qualification failed"}` })
+      }
       const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
       event.input = { ...input, command: `export SANE_CALLER_CONTEXT=${quote(reference)}\nunset SANE_SESSION_ID OPENCODE_SESSION_ID\n${input.command}` }
     })

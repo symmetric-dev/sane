@@ -7,7 +7,7 @@ export type { Slot, StoredSlot, SupportTrack, ParsedSlot } from "./slots.ts"
 export type * from "./lifecycle.ts"
 export { SUPPORTED_WORKSTREAM_TYPES, isSupportedWorkstreamType } from "./workstream-type.ts"
 export type { WorkstreamType } from "./workstream-type.ts"
-export type Harness = "cc" | "oc"
+export type Harness = "cc" | "oc" | "gk"
 export interface ConversationRef { harness: Harness; authorityId: string; nativeId: string }
 export type HandoffStatus = "awaiting_approval" | "queued" | "acceptance_unknown" | "accepted" | "running" | "completed" | "failed"
 export interface HandoffInput { requestId: string; to: Phase; message: string; target?: ConversationRef; createNew?: boolean; checkout?: string; kickoff?: HandoffKickoff }
@@ -16,16 +16,17 @@ export interface HandoffKickoff { workstream: string; title: string; type: Works
 /** Destination profile snapshot; absent only on pre-snapshot rows or existing recipients. */
 export interface HandoffExecutionConfig { profileId: string; agent: string; model?: string; effort?: string }
 export interface HandoffRecipient { ownerId: string; sessionId: string; ref: ConversationRef | null; harness: Harness; authorityId: string; checkout: CheckoutPin; executionConfig?: HandoffExecutionConfig }
-export interface Handoff { id: string; repositoryId: string; sender: ConversationRef; workstreamId: string; input: HandoffInput; recipient: HandoffRecipient; status: HandoffStatus; revision: number; attemptId: string | null; nativeCommandId: string | null; runId: string | null; evidence: string | null; createdAt: string; updatedAt: string; origin?: { kind: "kickoff"; sender: ConversationRef; requestId: string } }
+export interface Handoff { id: string; repositoryId: string; sender: ConversationRef; workstreamId: string; input: HandoffInput; recipient: HandoffRecipient; status: HandoffStatus; revision: number; attemptId: string | null; nativeCommandId: string | null; /** App-owned Grok attempt correlation, never a provider message ID. */ dispatchId?: string; runId: string | null; evidence: string | null; createdAt: string; updatedAt: string; origin?: { kind: "kickoff"; sender: ConversationRef; requestId: string } }
 /** Independent sender delivery; never reopens or dispatches the denied handoff. */
-export interface HandoffDenialNotification { state: "claimed" | "accepted" | "not-submitted"; sessionId: string; runId: string; commandId: string; updatedAt: string }
-export type NativeSourceDescriptor = { version: 1; harness: "cc"; kind: "local-profile"; profileRoot: string } | { version: 1; harness: "oc"; kind: "local-registration"; registrationFile: string }
-export interface NativeAuthority { descriptor: NativeSourceDescriptor; authorityId: string }
+export interface HandoffDenialNotification { state: "claimed" | "accepted" | "wrapper-completed" | "not-submitted"; sessionId: string; runId: string; commandId: string; updatedAt: string }
+export type NativeSourceDescriptor = { version: 1; harness: "cc"; kind: "local-profile"; profileRoot: string } | { version: 1; harness: "oc"; kind: "local-registration"; registrationFile: string } | GrokSourceDescriptor
+export type GrokSourceDescriptor = { version: 1; harness: "gk"; kind: "local-home"; homeRoot: string }
+export type NativeAuthority = { descriptor: Exclude<NativeSourceDescriptor, GrokSourceDescriptor>; authorityId: string } | { descriptor: GrokSourceDescriptor; authorityId: string }
 /** Compatibility name for conversation assignments, not lifecycle approval phases. */
 export type Phase = StoredSlot
 export interface CheckoutPin { path: string; commonDir: string; gitDir: string; device: number; inode: number; commonDevice: number; commonInode: number; gitDevice: number; gitInode: number }
 export interface RepositoryDiscovery { primaryCheckout: string; commonDir: string; stateRoot: string; databasePath: string; primaryPin: CheckoutPin; invocationCheckout: CheckoutPin }
-export interface RepositoryContext extends RepositoryDiscovery { repositoryId: string; schemaVersion: 1 | 2 | 3 | 4 | 5 }
+export interface RepositoryContext extends RepositoryDiscovery { repositoryId: string; schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 }
 export type StoreAvailability = { state: "ready"; context: RepositoryContext } | { state: "uninitialized" | "unsupported" | "corrupt" | "unavailable" | "stale-binding"; code: DomainErrorCode; message: string; path: string }
 export type MutationActor = { kind: "local" | "human" | "system" } | { kind: "native"; repositoryId: string; ref: ConversationRef }
 export interface MutationContext { actor: MutationActor; correlationId: string; expectedRevision?: number }

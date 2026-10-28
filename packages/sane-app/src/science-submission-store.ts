@@ -4,6 +4,7 @@ import { atomicAppRecord, exact } from "./app-store";
 import { uuid } from "./history";
 import { canonicalJSON, fingerprint, immutable } from "./prepared-input-codec";
 import { synchronousDispatchHook } from "./dispatch-evidence";
+import { composeContextMessage, validateContextMessageBinding, type ContextMessageBinding, type ContextMessageInput } from "./context-message";
 import { SCIENCE_SHARE_MAX_CHARS } from "../shared/science-share";
 import type { ScienceJson } from "../shared/science-contract";
 
@@ -22,7 +23,7 @@ export type ScienceSubmissionIntent = {
   requestId: string;
   text: string;
   snapshots: SciencePreparedSnapshotReference[];
-} & ({ version: 1 } | { version: 2; rolePrefix: string });
+} & ({ version: 1 } | { version: 2; rolePrefix: string } | { version: 3; binding: ContextMessageBinding });
 export interface ScienceSubmissionKey { conversationId: string; requestId: string }
 export interface ScienceSubmissionAssociation { runId: string; nativeCommandId: string | null }
 export type ScienceSubmissionState = "prepared" | "unknown" | "submitted" | "not-submitted";
@@ -69,9 +70,13 @@ function jsonObject(value: unknown) {
 }
 function validateIntent(value: unknown, storeId: string): asserts value is ScienceSubmissionIntent {
   const version = (value as ScienceSubmissionIntent | null)?.version;
-  shape(value, ["version", "storeId", "conversationId", "requestId", "text", "snapshots", ...(version === 2 ? ["rolePrefix"] : [])]);
-  check((value.version === 1 || value.version === 2) && value.storeId === storeId && uuid(value.storeId) && uuid(value.conversationId) && uuid(value.requestId));
+  shape(value, ["version", "storeId", "conversationId", "requestId", "text", "snapshots", ...(version === 2 ? ["rolePrefix"] : version === 3 ? ["binding"] : [])]);
+  check((value.version === 1 || value.version === 2 || value.version === 3) && value.storeId === storeId && uuid(value.storeId) && uuid(value.conversationId) && uuid(value.requestId));
   if (value.version === 2) check(typeof value.rolePrefix === "string" && value.rolePrefix.length <= 1_000);
+  if (value.version === 3) {
+    validateContextMessageBinding(value.binding);
+    check(value.binding.sessionId === value.conversationId && ["opencode", "claude-code"].includes(value.binding.harnessId), "Science source must match the conversation and a supported harness");
+  }
   check(typeof value.text === "string" && value.text.length <= 8_000);
   check(Array.isArray(value.snapshots) && value.snapshots.length >= 1 && value.snapshots.length <= 4);
   const ids = new Set<string>();
@@ -83,8 +88,30 @@ function validateIntent(value: unknown, storeId: string): asserts value is Scien
     jsonObject(snapshot.provenance);
   }
   check(Buffer.byteLength(canonicalJSON(value), "utf8") <= MAX_INTENT_BYTES, "Science send exceeds the payload budget");
+  // Validate shared framing (including lossless UTF-8) before entering a write.
+  // Legacy receipts deliberately keep their original encoding and limits.
+  if (value.version === 3) check(Buffer.byteLength(dispatchText(value as ScienceSubmissionIntent), "utf8") <= MAX_INTENT_BYTES, "Science send exceeds the payload budget");
+}
+/** Reconstruct only from the backend's freshly verified, frozen intent, NEVER
+ * from candidate composition metadata or by parsing receipt.dispatchText. Live
+ * snapshot/source authority remains the responsibility of validateLive. */
+export function scienceContextMessageInput(intent: Extract<ScienceSubmissionIntent, { version: 3 }>): ContextMessageInput {
+  return immutable({
+    body: intent.text, binding: { ...intent.binding }, origin: "user" as const,
+    placement: { kind: "selected" as const, purpose: "sharing" as const },
+    selections: intent.snapshots.map((snapshot, index) => ({
+      kind: "fragment" as const,
+      fragment: {
+        id: `science-share.${index}`, category: "shared" as const,
+        text: `Science block ${JSON.stringify(snapshot.blockId)} / snapshot ${JSON.stringify(snapshot.snapshotId)}:\n${snapshot.agentText}`,
+        source: `science-snapshot:${snapshot.snapshotId}`, revision: fingerprint(snapshot),
+        reason: "Frozen backend snapshot sharing",
+      },
+    })),
+  });
 }
 function dispatchText(intent: ScienceSubmissionIntent): string {
+  if (intent.version === 3) return composeContextMessage(scienceContextMessageInput(intent)).transport.text;
   return (intent.version === 2 ? intent.rolePrefix : "") + [intent.text, ...intent.snapshots.map(snapshot => `Science block ${JSON.stringify(snapshot.blockId)} / snapshot ${JSON.stringify(snapshot.snapshotId)}:\n${snapshot.agentText}`)].filter(Boolean).join("\n\n");
 }
 function validateAssociation(value: unknown): asserts value is ScienceSubmissionAssociation {
@@ -205,6 +232,8 @@ export class ScienceSubmissionStore {
     const hash = fingerprint(intent), key = { conversationId: intent.conversationId, requestId: intent.requestId };
     const old = this.find(this.records, key);
     if (old) { if (old.fingerprint !== hash) deny("science-submission-id-conflict", "Request ID reused with different science intent"); return clone(old); }
+    // v1/v2 are decode/lookup-only: no migration, rewriting or new legacy sends.
+    check(intent.version === 3, "New science submissions require version 3");
     return this.change(records => {
       if (records.items.length >= MAX_ITEMS) deny("science-submission-full", "Science submission ledger capacity reached", 429);
       const receipt: ScienceSubmissionReceipt = { intent, fingerprint: hash, dispatchText: dispatchText(intent), state: "prepared", association: null, nativeAttempted: false };

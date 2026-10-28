@@ -53,7 +53,7 @@ export class CodeShareStore {
       if (share.version !== 1) for (const snippet of share.snippets) exact(snippet, ["sourceRevision", "language", "input", "code"]);
       exact(share.native, ["harness", "authorityId", "nativeId"]);
       exact(share.anchor, ["runId", "toolCallId", "messageId", "invocationId", "wrapper"]);
-      if (codeSharePages(share).some(snippet => snippet.code.includes("\0")) || (share.native.harness === "cc"
+      if (codeSharePages(share).some(snippet => snippet.code.includes("\0")) || (share.native.harness !== "oc"
         ? share.anchor.wrapper !== null || share.anchor.invocationId !== share.anchor.toolCallId
         : share.anchor.messageId === null || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(share.anchor.invocationId))) throw new Error("Invalid code share invocation");
       if (share.id !== codeShareId(identity(share)) || codeSharePages(share).some(snippet => !/^[a-f0-9]{64}$/.test(snippet.sourceRevision)) || ids.has(share.id) || keys.has(identity(share))) throw new Error("Conflicting code share identity");

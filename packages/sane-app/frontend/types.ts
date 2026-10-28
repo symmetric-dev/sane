@@ -3,7 +3,7 @@ import type { CompactRequest, CompactResponse, CompactState, HandoffApprovalRepl
 import type { DiagnosticEvent, Harness, ModelChoice, Run, RunMetadata, RunStatus } from "../shared/conversation/types";
 import type { ScienceSnapshotReference, ScienceSubmissionView, ScienceSubmissionDetail } from "../shared/conversation/types";
 export type { ScienceSnapshotReference, ScienceSubmissionView, ScienceSubmissionDetail } from "../shared/conversation/types";
-import type { HarnessCapabilities } from "../shared/conversation/harness-capabilities";
+import { getHarnessDescriptor, type HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 export type { HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 export type { RunStatus, Harness, ModelChoice, TextPart, ToolPart, Message, UsageSnapshot, DiagnosticEvent, Run, RunMetadata } from "../shared/conversation/types";
 export { active } from "../shared/conversation/types";
@@ -20,13 +20,16 @@ import type { SessionCatalogQuery, SessionCatalogPageInfo, SessionCatalogGroup, 
 export type { SessionCatalogQuery, SessionCatalogPageInfo, SessionCatalogGroup, SessionCatalogGroupsResponse } from "../shared/conversation/session-catalog";
 import type { PendingInputCapability, PendingInputRemovalRequest, PendingInputRemovalResult, PendingInputRequest, PendingInputResumeRequest, PendingInputSubmissionResult } from "../shared/conversation/pending-input-contract";
 import type { PendingInputResumeResult, PendingInputStatus, PendingInputView } from "./pending-input-presentation";
+import type { AppAdmissionEnvelope, AppAdmissionKey, AppAdmissionLookup, AppAdmissionReceipt } from "../shared/conversation/app-admission-contract";
+import type { GrokCapability, GrokTurnInput, GrokSessionView, GrokStopView } from "../shared/conversation/grok-contract";
+export type { GrokCapability, GrokTurnInput, GrokSessionView, GrokStopView } from "../shared/conversation/grok-contract";
 export type { ConversationUpdateCursor, ConversationUpdateFeedRequest, ConversationUpdatePage, ConversationUpdateSource } from "../shared/conversation/conversation-updates";
 export type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agent-profiles-contract";
 export type { Interaction, InteractionReply, FormField, HandoffApprovalReply } from "../shared/conversation/native-contract";
 export type WorkerSessionMetadata = { id: string; parent: { sessionId: string; runId: string; toolCallId: string } };
 export type { WorkerProtocolStatus };
-export const harnessName = (harness: Harness) => harness === "opencode" ? "OpenCode" : "Claude Code";
-export const harnessShort = (harness: Harness): "OC" | "CC" => harness === "opencode" ? "OC" : "CC";
+export const harnessName = (harness: Harness) => getHarnessDescriptor(harness)?.label ?? "Unknown harness";
+export const harnessShort = (harness: Harness) => getHarnessDescriptor(harness)?.shortLabel ?? "?";
 export type AgentChoice = { id: string; label: string; description: string };
 export type Conversation = { id: string; harness: Harness; authorityId?: string; nativeSessionId?: string; updateSource?: ConversationUpdateSource; activity?: ConversationActivity; nativeActivity?: "active" | "idle" | "unknown"; nativeActivityReason?: string; updatedAt?: string | null; cwd: string; lastRunId: string | null; lastRunStatus?: RunStatus; lastRunOperation?: "prompt" | "compact"; lastRunEndedAt?: string; status: RunStatus; title?: string; titleSource?: SessionTitleSource; titleRevision?: number; hidden?: boolean; model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; availability?: Availability; queuedFollowups?: QueuedFollowup[]; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; workerProtocol?: WorkerProtocolStatus; directWorkerCount?: number; branchOrigin?: string; branchDraft?: string; replacedBy?: string } & Partial<Association>;
 export type Capabilities = {
@@ -35,9 +38,9 @@ export type Capabilities = {
   attachments: boolean; modelSelection: boolean; effortValues: string[];
 };
 /** Local submission, retained after acknowledgement only until its recorded user turn arrives. */
-export type PendingTurn = { id: string; conversationId: string; runId?: string; messageId?: string; text: string; time: string };
+export type PendingTurn = { id: string; conversationId: string; runId?: string; messageId?: string; nativeMessageId?: string; text: string; time: string };
 export type HarnessInfo = { id: Harness; available: boolean; connected: boolean; state: string; reason?: string; capabilities: Partial<HarnessCapabilities> };
-export type Config = { authRequired: boolean; authenticated: boolean; storeId?: string; conversationUpdates?: boolean; pendingInputCapability?: PendingInputCapability; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
+export type Config = { authRequired: boolean; authenticated: boolean; storeId?: string; grokCapability?: GrokCapability; appAdmissionCapability?: { protocol: "app-admission"; version: 1; state: "enabled" | "requires-initialization" }; conversationUpdates?: boolean; pendingInputCapability?: PendingInputCapability; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
 export type Availability = { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string; nativeQueue?: boolean; liveInputRunId?: string };
 export function liveInputReady(conversation: Conversation | undefined, availability: Availability): boolean {
   return availability.canSend && conversation?.harness === "claude-code" && !!availability.liveInputRunId
@@ -49,6 +52,11 @@ export type ConversationGroupDirectory = { queryKey: string; groups: SessionCata
 export type CompletionVerificationTarget = { sessionId: string; runId: string; nativeSessionId: string; nativeCommandId: string };
 export type CompletionVerificationRequest = { requestId: string; nativeSessionId: string; nativeCommandId: string; confirm: true; reason: string };
 export interface ConversationClient {
+  grokTurn?(input: GrokTurnInput, signal?: AbortSignal): Promise<GrokSessionView>;
+  grokSession?(id: string, signal?: AbortSignal): Promise<GrokSessionView>;
+  grokStop?(id: string): Promise<GrokStopView>;
+  submitAdmission?(envelope: AppAdmissionEnvelope, signal?: AbortSignal): Promise<AppAdmissionReceipt>;
+  lookupAdmission?(key: AppAdmissionKey, signal?: AbortSignal): Promise<AppAdmissionLookup>;
   scienceSubmissions?(id: string, signal?: AbortSignal): Promise<ScienceSubmissionView[]>;
   scienceSubmission?(id: string, requestId: string, signal?: AbortSignal): Promise<ScienceSubmissionDetail>;
   verifyCompletion?(id: string, runId: string, input: CompletionVerificationRequest): Promise<{ status: RunStatus; evidence?: unknown }>;
@@ -73,6 +81,7 @@ export interface ConversationClient {
   workers?(id: string, signal?: AbortSignal): Promise<import("./worker-client").WorkerProjection>;
   events(run: Run, signal?: AbortSignal): Promise<{ events: DiagnosticEvent[]; nextCursor: number; status: RunStatus }>;
    models(cwd: string, signal?: AbortSignal): Promise<ModelChoice[]>;
+   grokModels?(cwd: string, signal?: AbortSignal, refresh?: boolean): Promise<import("../shared/conversation/model-catalog").ModelCatalog>;
    interactions(id: string, signal?: AbortSignal): Promise<Interaction[]>;
    reply(id: string, interactionId: string, reply: InteractionReply): Promise<void>;
    /** Sender-session handoff approvals. Attached to the sender sessionId that

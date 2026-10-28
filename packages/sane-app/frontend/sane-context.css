@@ -1,0 +1,11 @@
+.shell-dialog.sane-context-dialog { width:min(960px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); overflow:hidden; }
+.sane-context-dialog .shell-dialog-content { display:flex; flex-direction:column; max-height:calc(100dvh - 34px); min-width:0; padding:0; }
+.sane-context-dialog .shell-dialog-content > header { flex-shrink:0; margin:0; padding:16px 20px; border-bottom:1px solid var(--border); }
+.sane-context-dialog .shell-dialog-subtitle { overflow-wrap:anywhere; }
+.sane-context-inspection { display:grid; gap:12px; overflow:auto; min-height:0; min-width:0; padding:20px; }
+.sane-context-inspection :is(p, h3) { margin:0; }
+.sane-context-inspection select { width:100%; min-width:0; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--background); color:var(--foreground); font:inherit; }
+.sane-context-inspection :is(section, details[open]) { display:grid; gap:10px; min-width:0; }
+.sane-context-inspection .facts dd { overflow-wrap:anywhere; }
+.sane-context-inspection pre { margin:0; max-height:50dvh; overflow:auto; padding:12px; border:1px solid var(--border); border-radius:6px; white-space:pre-wrap; overflow-wrap:anywhere; font:11px/1.7 var(--font-mono, monospace); }
+.sane-context-inspection :is(summary, select, button, pre):focus-visible { outline:2px solid var(--focus-ring); outline-offset:3px; }

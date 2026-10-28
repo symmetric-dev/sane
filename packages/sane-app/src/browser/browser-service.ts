@@ -793,7 +793,7 @@ export class BrowserService {
       check(); await this.client().sendSession(state.cdpSessionId, "Input.dispatchMouseEvent", { type: "mouseWheel", ...position, deltaX, deltaY });
     }, input.documentId);
   }
-  async handleNativeBroker(req: Request, hostToken: string, resolveCaller?: (caller: BrowserNativeCaller) => BrowserSessionIdentity): Promise<Response> {
+  async handleNativeBroker(req: Request, hostToken: string, resolveCaller?: (caller: BrowserNativeCaller, tool: BrowserMcpToolName, args: Record<string, unknown>) => BrowserSessionIdentity): Promise<Response> {
     try {
       if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
       if (req.headers.has("origin")) return json({ error: "Forbidden", code: "browser-auth" }, 403);
@@ -803,27 +803,15 @@ export class BrowserService {
       const input = record(await body(req));
       if (input.version !== 1 || !(BROWSER_MCP_TOOLS as readonly unknown[]).includes(input.tool)) fail(400, "browser-input", "Expected a version 1 browser tool request");
       const tool = input.tool as BrowserMcpToolName, args = record(input.arguments ?? {});
-      const scope: BrowserGrantScope = ["browser_navigate", "browser_click", "browser_type", "browser_scroll"].includes(tool) ? "control" : "observe";
       let session: BrowserSessionIdentity, target: BrowserGrantTarget | undefined;
       if (credential) {
         if (this.sessionCredentials.get(token) !== credential) fail(401, "browser-auth", "Authentication revoked");
         session = credential.session; target = credential.target;
-      } else if (host && Object.hasOwn(input, "caller")) {
-        if (!resolveCaller) throw new BrowserGrantError(403, "browser-session-unverified", "This conversation is not an admitted SANE session");
-        session = resolveCaller(input.caller as BrowserNativeCaller);
+      } else if (host && Object.hasOwn(input, "caller") && resolveCaller) {
+        session = resolveCaller(input.caller as BrowserNativeCaller, tool, args);
       } else {
-        const active = new Map<string, ReturnType<BrowserGrantRegistry["listForTab"]>[number]>();
-        for (const tab of this.tabs.values()) for (const grant of this.grants.listForTab(tab.workspaceId, tab.tabId)) {
-          if (this.grants.check(grant, scope, grant)) active.set(grantKey(grant, grant.sessionId), grant);
-        }
-        for (const entry of this.sessionCredentials.values()) for (const grant of this.grants.listForSession(entry.session.sessionId)) {
-          if (this.grants.check(grant, scope, grant)) active.set(grantKey(grant, grant.sessionId), grant);
-        }
-        if (!active.size) fail(403, "browser-grant-required", `An explicit browser ${scope} grant is required`);
-        if (active.size > 1) fail(409, "browser-target-ambiguous", "Multiple browser sessions are granted; use a session-bound credential");
-        const grant = active.values().next().value!;
-        session = { sessionId: grant.sessionId, harness: grant.harness, authorityId: grant.authorityId, nativeSessionId: grant.nativeSessionId };
-        target = { workspaceId: grant.workspaceId, tabId: grant.tabId };
+        // The shared handoff bearer is not a qualified native invocation. Omitting caller must not impersonate a unique grant.
+        throw new BrowserGrantError(403, "browser-session-unverified", "This conversation is not an admitted SANE session");
       }
       let result: unknown;
       switch (tool) {

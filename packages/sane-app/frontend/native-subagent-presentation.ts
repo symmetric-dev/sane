@@ -4,6 +4,9 @@ import type { Harness, Message, Run, ToolPart } from "./types";
 export const nativeSubagentId = (key: NativeSubagentKey) => JSON.stringify([key.parentSessionId, key.runId, key.parentToolUseId]);
 
 export function nativeSubagentKey(sessionId: string, source: Message, part: ToolPart, runs: Run[], harness: Harness): NativeSubagentKey | null {
+  // Grok's native delegation evidence is rendered as ordinary transcript tool
+  // activity. Its tool IDs are not CC/OC child-history API identities.
+  if (harness === "grok") return null;
   if (source.role !== "assistant" || (harness === "opencode" ? part.name !== "subagent" : part.name !== "Agent" && part.name !== "Task")) return null;
   const run = runs.find(run => run.id === source.runId && run.conversationId === sessionId);
   if (!run || run.harness && run.harness !== harness) return null;

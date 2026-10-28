@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { isStoredAssistantAgentId, isWorkerAgentId, nativeAgentId, type StoredSaneAgentIdentity, type WorkerAgentId } from "sane-core/agent-catalog";
-import { frameworkContext, sessionContext, workerContext } from "sane-core/sane-context";
+import { assignmentContext, frameworkContext, sessionContext, workerContext } from "sane-core/sane-context";
 import type { RepositoryDomain } from "sane-core/server";
 import type { ConversationRef } from "sane-core/contracts";
 import type { AgentSnapshot, CanonicalAgentSnapshot, Run, SaneSessionContext, Session } from "./history";
@@ -29,6 +29,16 @@ export function saneSessionContext(identity: StoredSaneAgentIdentity | undefined
 /** Resolve a new worker's procedure, roots and assigned jobs from its enrolled identity. An
  * implementer starts its planned job (a free-mode implementer has none); other roles never change job state. Throws when unusable. */
 export function workerAssignment(domain: RepositoryDomain, child: ConversationRef, parent: ConversationRef, role: WorkerAgentId, jobIds: readonly string[], correlationId: string, procedure?: string): string {
+  const { roots, jobs } = resolveWorkerAssignment(domain, child, parent, role, jobIds, correlationId);
+  return workerContext(role, roots, jobs, procedure);
+}
+/** New selective bootstrap supplies the pinned procedure as its own segment.
+ * Persist only paths here; never infer assignment boundaries from prose. */
+export function workerAssignmentOnly(domain: RepositoryDomain, child: ConversationRef, parent: ConversationRef, role: WorkerAgentId, jobIds: readonly string[], correlationId: string): string {
+  const { roots, jobs } = resolveWorkerAssignment(domain, child, parent, role, jobIds, correlationId);
+  return assignmentContext(roots, jobs);
+}
+function resolveWorkerAssignment(domain: RepositoryDomain, child: ConversationRef, parent: ConversationRef, role: WorkerAgentId, jobIds: readonly string[], correlationId: string) {
   const context = domain.resolveContext(child);
   const roots = { workstreamRoot: context.artifactsRoot, implementationRoot: context.executionCheckout };
   const workstream = context.workstream;
@@ -40,7 +50,7 @@ export function workerAssignment(domain: RepositoryDomain, child: ConversationRe
     return { jobId, status: job.job.status, specPath: job.job.specPath, reportPath: job.job.reportPath, reportTemplatePath: job.reportTemplate };
   });
   if (role === "implementer") for (const job of jobs) if (job.status === "planned") domain.updateJob(workstream!.id, job.jobId, "running", { actor: { kind: "native", repositoryId: domain.repositoryId, ref: parent }, correlationId });
-  return workerContext(role, roots, jobs.map(({ status: _, ...job }) => job), procedure);
+  return { roots, jobs: jobs.map(({ status: _, ...job }) => job) };
 }
 /** The text delivered once into history when the native session is created. */
 export function saneContextText(context: SaneSessionContext): string {

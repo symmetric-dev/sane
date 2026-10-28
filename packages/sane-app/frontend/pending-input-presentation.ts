@@ -1,4 +1,5 @@
 import { isPendingInputRequest, isPendingInputSnapshot, isPendingInputSubmissionResult, isPendingInputResumeRequest, type PendingInputConfiguration, type PendingInputEnqueueReceipt, type PendingInputResumeRequest, type PendingInputSnapshot, type PendingInputSource } from "../shared/conversation/pending-input-contract";
+import { isHarness } from "../shared/conversation/harness-capabilities";
 
 export type PendingInputClassification = "waiting" | "claimed" | "run-linked" | "removed" | "settled" | "uncertain";
 export type PendingInputView = {
@@ -31,11 +32,11 @@ const sameFields = (a: Record<string, unknown>, b: Record<string, unknown>) => O
 const integer = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
 const classification = (v: unknown): v is PendingInputClassification => ["waiting", "claimed", "run-linked", "removed", "settled", "uncertain"].includes(v as string);
 const assertions = (v: unknown, id: string) => object(v) && exact(v, ["source", "configuration"])
-  && isPendingInputRequest({ version: 1, conversationId: id, requestId: "inspection", text: "inspection", ...v }, { conversationId: id });
+  && isPendingInputRequest({ version: 1, conversationId: id, requestId: "inspection", text: "inspection", ...v }, { conversationId: id, validateHarnessId: isHarness });
 
 /** GET is a bare server projection. Never infer policy from native/staged UI settings. */
 export function isPendingInputView(value: unknown, conversationId: string): value is PendingInputView {
-  if (!object(value) || !exact(value, ["snapshot", "presentation"]) || !isPendingInputSnapshot(value.snapshot, { conversationId }) || !object(value.presentation)) return false;
+  if (!object(value) || !exact(value, ["snapshot", "presentation"]) || !isPendingInputSnapshot(value.snapshot, { conversationId, validateHarnessId: isHarness }) || !object(value.presentation)) return false;
   const p = value.presentation, s = value.snapshot;
   if (!exact(p, ["maxWaiting", "waitingCount", "chainLocked", "chainId", "source", "configuration", "currentAssertions", "removals", "unresolved", "pauseCode", "enqueue", "removalAllowed", "resumeAllowed", "automation", "hidden"])
     || p.maxWaiting !== 3 || p.waitingCount !== s.items.filter(i => i.state === "waiting").length

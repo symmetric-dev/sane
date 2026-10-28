@@ -4,6 +4,7 @@ import type { CompactionLifecycle, CompactionMetadata, FormField, HarnessModel, 
 import { nativeMessageId, validModel, validVariant } from "./history";
 import { settleCommandInterval, type CommandSettlement } from "./opencode-command-settlement";
 import { matchesOpenCodeWorkerPart, type NativeWorkerInvocation } from "../../sane-cli/src/native-worker-contract";
+import { synchronousDispatchHook } from "./dispatch-evidence";
 
 // HTTP shapes from https://opencode.ai/v2/openapi.json and the V2 client guide.
 // Discovery connects to a registered service; this adapter never manages its process.
@@ -25,6 +26,16 @@ export type OpenCodeLaunch = { agent?: string; model?: ModelRef };
 type NativeSession = { id: string; parentID?: string; location?: { directory?: string }; agent?: string; permissions?: unknown; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; revert?: unknown; metadata?: Record<string, unknown>; time: { created: number; updated: number; idle?: number } };
 type NativeInput = { id: string; sessionID?: string; type?: string; delivery?: string; time?: { created: number }; payload?: { metadata?: Record<string, unknown> } };
 export type NativeQueuedHandoffAdmission = { id: string; sessionID: string; type: "user"; delivery: "queue"; time: { created: number } };
+/** The string is the actual HTTP body, serialized once before any admission hook. */
+export type OpenCodePromptPacket = Readonly<{ sessionId: string; body: string }>;
+export type OpenCodePromptAdmission = Readonly<{ id: string; time: { created: number } }>;
+/** Opaque authenticated generation; single-use, without discovery at send time. */
+export type OpenCodePreparedPrompt = Readonly<{
+  send: (beforeSubmit: (body: string) => void) => Promise<OpenCodePromptAdmission>;
+}>;
+export function prepareOpenCodePrompt(sessionId: string, commandId: string, text: string, delivery?: "queue"): OpenCodePromptPacket {
+  return Object.freeze({ sessionId, body: JSON.stringify({ id: commandId, text, ...(delivery === undefined ? {} : { delivery }) }) });
+}
 /** Only the actual inbox/ack DTO proves delivery policy. Committed User messages
  * omit sessionID/delivery in V2 and cannot reconstruct a lost queue receipt. */
 export function isQueuedHandoffAdmission(value: unknown, sessionId: string, commandId: string): value is NativeQueuedHandoffAdmission {
@@ -290,10 +301,21 @@ export class OpenCodeAdapter {
     return { info: options => client.server.info(options), events: options => client.event.subscribe(options), log: (input, options) => client.session.log(input, options), session: (input, options) => client.session.get(input, options) };
   }
   async request<T>(path: string, method = "GET", data?: unknown, beforeSend?: () => void, timeoutMs = 10000): Promise<T> {
+    // Even a toJSON hook must run before the synchronous admission boundary.
+    const body = data === undefined ? undefined : JSON.stringify(data);
+    return this.requestEncoded<T>(path, method, body, beforeSend, timeoutMs);
+  }
+  private async requestEncoded<T>(path: string, method: string, encoded: string | undefined, beforeSend?: (body: string | undefined) => void, timeoutMs = 10000): Promise<T> {
     const connection = await this.endpoint();
-    beforeSend?.(); // Synchronous admission gate after discovery, immediately before the HTTP mutation.
+    return this.requestEncodedAt<T>(connection, path, method, encoded, beforeSend, timeoutMs);
+  }
+  /** No discovery or await before the synchronous gate and its one fetch. */
+  private async requestEncodedAt<T>(connection: Connection, path: string, method: string, encoded: string | undefined, beforeSend?: (body: string | undefined) => void, timeoutMs = 10000): Promise<T> {
+    const wireBody = encoded;
+    // Reject thenable hooks as well as synchronous failures before HTTP dispatch.
+    synchronousDispatchHook(() => beforeSend?.(wireBody));
     let response: Response;
-    try { response = await fetch(connection.base + path, { method, headers: connection.headers, ...(data === undefined ? {} : { body: JSON.stringify(data) }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" }); }
+    try { response = await fetch(connection.base + path, { method, headers: connection.headers, ...(wireBody === undefined ? {} : { body: wireBody }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" }); }
     catch { this.invalidate(connection); throw new OpenCodeUnavailableError("OpenCode connection unavailable; execution state remains unconfirmed"); }
     // Refresh on the next request only. In particular, never replay mutations.
     if (!response.ok) {
@@ -378,15 +400,52 @@ export class OpenCodeAdapter {
     const ref = model ? this.model(model, effort) : { id: current!.id, providerID: current!.providerID, variant: effort };
     await this.request(this.path(id) + "/model", "POST", { model: ref });
   }
-  async prompt(id: string, commandId: string, text: string, beforeSubmit?: () => void, delivery?: "queue") {
-    const { data } = await this.request<{ data: { id: string; time: { created: number } } }>(this.path(id) + "/prompt", "POST", { id: commandId, text, ...(delivery === undefined ? {} : { delivery }) }, beforeSubmit);
+  private promptPacket(id: string, commandId: string, text: string, delivery: "queue" | undefined, packet?: OpenCodePromptPacket) {
+    const prepared = packet ?? prepareOpenCodePrompt(id, commandId, text, delivery);
+    const body = prepared.body, actual = JSON.parse(body);
+    if (prepared.sessionId !== id || actual.id !== commandId || actual.text !== text || actual.delivery !== delivery
+      || Object.keys(actual).some(key => !["id", "text", "delivery"].includes(key))) throw new OpenCodeSourceMismatchError("Native prompt packet differs from the pinned submission");
+    return body;
+  }
+  /** Preparation never submits a prompt. Keep the discovered URL and its own
+   * credentials together in this private generation, not in evidence or DTOs. */
+  async preparePromptSubmission(id: string, commandId: string, text: string, delivery: "queue" | undefined, packet: OpenCodePromptPacket, handoff = false): Promise<OpenCodePreparedPrompt> {
+    if (handoff && delivery !== "queue") throw new OpenCodeSourceMismatchError("Native handoff requires explicit queue delivery");
+    const body = this.promptPacket(id, commandId, text, delivery, packet);
+    const connection = await this.endpoint();
+    const path = this.path(id) + "/prompt";
+    let used = false;
+    return Object.freeze({
+      send: (beforeSubmit: (body: string) => void) => {
+        if (used) throw new OpenCodeError("Prepared native prompt already consumed; replay forbidden", 409);
+        used = true;
+        // requestEncodedAt enters beforeSubmit and fetch synchronously. Validation
+        // after its promise resolves is observation, never a second admission.
+        return this.requestEncodedAt<unknown>(connection, path, "POST", body, encoded => beforeSubmit(encoded!)).then(response => {
+          if (handoff) {
+            if (!response || typeof response !== "object" || Array.isArray(response) || !("data" in response)
+              || !isQueuedHandoffAdmission(response.data, id, commandId)) throw new OpenCodeQueuedHandoffProtocolError("Native queue acknowledgement protocol mismatch; retain ownership for operator reconciliation; do not resend");
+            return response.data;
+          }
+          const data = (response as { data?: OpenCodePromptAdmission } | null | undefined)?.data;
+          if (data?.id !== commandId || !Number.isFinite(data.time?.created)) throw new OpenCodeError("OpenCode prompt acknowledgement mismatch; execution state unconfirmed");
+          return data;
+        });
+      },
+    });
+  }
+  async prompt(id: string, commandId: string, text: string, beforeSubmit?: (body: string) => void, delivery?: "queue", packet?: OpenCodePromptPacket) {
+    const body = this.promptPacket(id, commandId, text, delivery, packet);
+    const response = await this.requestEncoded<{ data: { id: string; time: { created: number } } }>(this.path(id) + "/prompt", "POST", body, encoded => beforeSubmit?.(encoded!));
+    const data = response?.data;
     if (data?.id !== commandId || !Number.isFinite(data.time?.created)) throw new OpenCodeError("OpenCode prompt acknowledgement mismatch; execution state unconfirmed");
     return data;
   }
   /** Existing prompt endpoint, once, with explicit delivery. No idle lease,
    * selection, synthetic context, fallback or mutation retry. */
-  async promptQueuedHandoff(id: string, commandId: string, text: string, beforeSubmit?: () => void): Promise<NativeQueuedHandoffAdmission> {
-    const response = await this.request<unknown>(this.path(id) + "/prompt", "POST", { id: commandId, text, delivery: "queue" }, beforeSubmit);
+  async promptQueuedHandoff(id: string, commandId: string, text: string, beforeSubmit?: (body: string) => void, packet?: OpenCodePromptPacket): Promise<NativeQueuedHandoffAdmission> {
+    const body = this.promptPacket(id, commandId, text, "queue", packet);
+    const response = await this.requestEncoded<unknown>(this.path(id) + "/prompt", "POST", body, encoded => beforeSubmit?.(encoded!));
     // Validate the complete received envelope, including an empty 204 result.
     // Transport/body-read failures escape unchanged as uncertain availability.
     if (!response || typeof response !== "object" || Array.isArray(response) || !("data" in response)
@@ -399,42 +458,41 @@ export class OpenCodeAdapter {
     const session = await this.session(id);
     if (session?.id !== id || session.location?.directory !== cwd) throw new OpenCodeSourceMismatchError("Native session identity or execution directory differs from the claimed conversation");
   }
-  /** Once, at creation and before the first prompt. Native holds it pending without a run and commits
-   * it ahead of that prompt; the caller's stable ID makes a retried creation deliver it once. */
-  async deliverSaneFramework(id: string, messageId: string, text: string) {
-    const { data } = await this.request<{ data: NativeInput }>(this.path(id) + "/synthetic", "POST", { id: messageId, text, description: "SANE framework", metadata: saneFrameworkMetadata, resume: false });
-    if (data?.id !== messageId || data.sessionID !== id || data.type !== "synthetic") throw new OpenCodeError("OpenCode SANE framework acknowledgement mismatch; delivery unconfirmed");
-  }
-  /** Separate startup context, queued after the framework and immediately before the first prompt. */
-  async deliverSaneSession(id: string, messageId: string, text: string) {
-    const { data } = await this.request<{ data: NativeInput }>(this.path(id) + "/synthetic", "POST", { id: messageId, text, description: "SANE Session", metadata: { sane: "session" }, resume: false });
-    if (data?.id !== messageId || data.sessionID !== id || data.type !== "synthetic") throw new OpenCodeError("OpenCode SANE Session acknowledgement mismatch; delivery unconfirmed");
-  }
-  /** Storage acceptance only. Entries apply at native step boundaries, not to an
-   * already in-flight request. Queued dispatch may read matching bytes, not edit. */
-  async deliverContextEntry(id: string, text: string, allowMutation: boolean, guard: () => void) {
-    if (!/^ses[a-zA-Z0-9_-]+$/.test(id) || Buffer.byteLength(JSON.stringify(text), "utf8") > 256 * 1024) throw new OpenCodeError("Invalid or oversized canonical context entry", 400);
-    const path = `/api/experimental/session/${encodeURIComponent(id)}/instructions/entries`;
-    const read = async () => {
-      guard();
-      const result = await this.request<{ data: { key: string; value: unknown }[] }>(path);
-      guard();
-      if (!Array.isArray(result?.data) || result.data.some(entry => !entry || typeof entry.key !== "string" || !("value" in entry))) throw new OpenCodeError("Unsupported instruction-entry response");
-      const entries = result.data.filter(entry => entry.key === "sane.context");
-      if (entries.length > 1) throw new OpenCodeError("Duplicate canonical context entry");
-      return entries[0]?.value;
-    };
-    if (await read() === text) return;
-    if (!allowMutation) throw new OpenCodeError("Canonical context changed; wait for native idle before sending this prompt", 409);
-    guard();
-    await this.request(path + "/sane.context", "PUT", { value: text }, guard);
-    if (await read() !== text) throw new OpenCodeError("Canonical context readback differs; prompt withheld");
+  /** Migration proof only: never deletes, clears, or rewrites native context.
+   * A missing/unsupported endpoint is not proof that an old entry is absent. */
+  async assertUserContextChannelClean(id: string, cwd: string): Promise<void> {
+    await this.preflightNativeSession(id, cwd);
+    let result: { data: { key: string; value: unknown }[] };
+    try {
+      // This is the existing instruction-entry list/read endpoint used by the
+      // historical standing-context delivery, not a new deletion protocol.
+      result = await this.request(`/api/experimental/session/${encodeURIComponent(id)}/instructions/entries`);
+    } catch (error) {
+      if (error instanceof OpenCodeError && error.status === 404) throw new OpenCodeError("Native instruction-entry absence cannot be verified: read endpoint unavailable; user-context migration refused", 409);
+      throw error;
+    }
+    if (!result || !Array.isArray(result.data) || result.data.some(entry => !entry || typeof entry !== "object" || Array.isArray(entry)
+      || typeof entry.key !== "string" || !Object.hasOwn(entry, "value"))) throw new OpenCodeError("Native instruction-entry read is malformed; user-context migration refused", 409);
+    if (result.data.some(entry => entry.key === "sane.context")) throw new OpenCodeError("Legacy native sane.context entry remains present; user-context migration refused without explicit supported cleanup", 409);
   }
   async configureCanonicalExecution(input: import("./canonical-agent-operations").OpenCodeExecutionConfiguration, guard: () => void, readOnly = false) {
     const response = await this.request<{ output?: { sessionID: string; agent: string; nativeChildren: string[] } }>(`/api/rpc/sane-execution/configure?location%5Bdirectory%5D=${encodeURIComponent(input.directory)}`, "POST", { input: { ...input, ...(readOnly ? { readOnly: true } : {}) } }, guard);
     guard();
     if (response?.output?.sessionID !== input.sessionID || response.output.agent !== input.agent || JSON.stringify(response.output.nativeChildren) !== JSON.stringify(input.nativeChildren.map(child => child.id))) throw new OpenCodeError("Canonical execution acknowledgement mismatch; prompt withheld");
     return response.output;
+  }
+  /** Disk configuration alone cannot establish which plugin/options the selected
+   * service actually loaded. This RPC is observational and never creates a turn. */
+  async assertSelectedWorkerRuntime(directory: string, selected: import("../../sane-cli/src/install-sane-agent-context-packages").SelectedNativeRuntime) {
+    if (selected.registrationFile !== this.registrationFile || this.explicit) throw new OpenCodeSourceMismatchError("Selected worker runtime belongs to another managed source");
+    const response = await this.request<{ output?: { schema: number; directory: string; pluginDirectory: string; registrationFile: string; appConnectionFile: string; tools: string[] } }>(
+      `/api/rpc/sane-execution/runtime?location%5Bdirectory%5D=${encodeURIComponent(directory)}`, "POST", { input: {} });
+    const actual = response?.output;
+    if (!actual || actual.schema !== 1 || actual.directory !== directory || actual.pluginDirectory !== selected.pluginDirectory
+      || actual.registrationFile !== selected.registrationFile || actual.appConnectionFile !== selected.appConnectionFile
+      || !Array.isArray(actual.tools) || !["complete", "notify", "message_parent", "message"].every(op => actual.tools.includes(`sane_worker_${op}`))) {
+      throw new OpenCodeSourceMismatchError("Loaded OpenCode worker runtime or App routing differs from the selected installation");
+    }
   }
   /** Explicit user-requested, idle-only admission. Caller owns the idle gate and
    * persists request ID before this mutation and returned ID before observation.
@@ -472,22 +530,6 @@ export class OpenCodeAdapter {
     if (!("text" in current) || typeof current.text !== "string") throw new OpenCodeError("Native SANE session binding is malformed", 409);
     return current.text;
   }
-  /** Legacy metadata binding, no longer consumed by the plugin. PATCH replaces metadata wholesale, so other
-   * keys are kept; null removes the binding. Unchanged bindings are not rewritten; returns whether it changed. */
-  async bindSaneSession(id: string, text: string | null): Promise<boolean> {
-    const { saneContext: current, ...metadata } = (await this.session(id)).metadata ?? {};
-    const next = text === null ? undefined : { sessionID: id, text };
-    if (JSON.stringify(current) === JSON.stringify(next)) return false;
-    await this.request(this.path(id), "PATCH", { metadata: { ...metadata, ...(next ? { saneContext: next } : {}) } });
-    return true;
-  }
-  /** Legacy helper for inherited metadata; startup context now follows forked native history. */
-  async rebindSaneSession(id: string) {
-    const current = (await this.session(id)).metadata?.saneContext as { text?: unknown } | undefined;
-    if (current === undefined) return;
-    if (typeof current?.text !== "string") throw new OpenCodeError("Inherited SANE session binding is malformed", 409);
-    await this.bindSaneSession(id, current.text);
-  }
   async fork(id: string, cwd: string, boundary: string, before?: string, beforeSend?: () => void) {
     const { data } = await this.request<{ data: NativeSession & { fork?: { sessionID: string; boundary: { type: string; messageID: string } } } }>(this.path(id) + "/fork", "POST", before ? { before } : {}, beforeSend);
     if (!data || !/^ses[a-zA-Z0-9_-]+$/.test(data.id) || data.id === id || data.location?.directory !== cwd || data.fork?.sessionID !== id || data.fork.boundary.type !== (before ? "before" : "through") || data.fork.boundary.messageID !== (before ?? boundary)) throw new OpenCodeError("Native fork acknowledgement mismatch; do not retry creation", 409);
@@ -518,8 +560,9 @@ export class OpenCodeAdapter {
     const state = await this.activity(id, cwd);
     if (state.active || state.pending) throw new OpenCodeError("Native conversation is active or has pending input; reconcile and finish it in its native harness before sending", 409);
   }
-  async history(id: string, cwd: string) {
+  async history(id: string, cwd: string, options?: { requireUnreverted?: true }) {
     const before = await this.activity(id, cwd);
+    if (options?.requireUnreverted && before.session.revert != null) throw new OpenCodeUnavailableError("Native history is reverted; unreverted context prefix cannot be qualified");
     const messages: NativeMessage[] = []; let cursor: string | undefined;
     const deadline = Date.now() + 15000;
     for (let page = 0; page < 100; page++) {
@@ -531,6 +574,7 @@ export class OpenCodeAdapter {
       cursor = result.cursor.next ?? undefined;
       if (!cursor) {
         const after = await this.activity(id, cwd);
+        if (options?.requireUnreverted && after.session.revert != null) throw new OpenCodeUnavailableError("Native history is reverted; unreverted context prefix cannot be qualified");
         // Pagination is not a transactional native snapshot. Report activity and
         // reject a moving transcript rather than importing a mixed history.
         if (before.session.time.updated !== after.session.time.updated) throw new OpenCodeError("Native history changed during reconciliation; retry after native activity settles", 409);
@@ -689,16 +733,18 @@ export class OpenCodeAdapter {
     ]);
     return [...permissions.data.map(p => ({ id: p.id, type: "permission" as const, title: p.action, description: [p.message, ...p.resources].filter(Boolean).join("\n"), options: [{ id: "once", name: "Allow once" }, { id: "always", name: "Always allow" }, { id: "reject", name: "Reject" }] })), ...forms.data.map(f => ({ id: f.id, type: "question" as const, title: f.title, fields: f.fields }))];
   }
-  async reply(id: string, interactionId: string, reply: InteractionReply) {
+  /** Optional conversation admission guard runs through request's synchronous
+   * hook after discovery/encoding, immediately before either native mutation. */
+  async reply(id: string, interactionId: string, reply: InteractionReply, beforeReply?: () => void) {
     if (!reply || (reply.type !== "permission" && reply.type !== "question")) throw new OpenCodeError("Invalid interaction reply type", 400);
     const pending = (await this.interactions(id)).find(i => i.id === interactionId && i.type === reply.type);
     if (!pending) throw new OpenCodeError("Unknown pending interaction", 404);
     if (reply.type === "permission") {
       if (!["once", "always", "reject"].includes(reply.decision) || (reply.message !== undefined && typeof reply.message !== "string")) throw new OpenCodeError("Invalid permission decision", 400);
-      await this.request(this.path(id) + `/permission/${encodeURIComponent(interactionId)}/reply`, "POST", { decision: reply.decision, ...(reply.message === undefined ? {} : { message: reply.message }) });
+      await this.request(this.path(id) + `/permission/${encodeURIComponent(interactionId)}/reply`, "POST", { decision: reply.decision, ...(reply.message === undefined ? {} : { message: reply.message }) }, beforeReply);
     } else if (reply.type === "question") {
       if (!reply.answer || typeof reply.answer !== "object" || Array.isArray(reply.answer)) throw new OpenCodeError("Invalid form answer", 400);
-      await this.request(this.path(id) + `/form/${encodeURIComponent(interactionId)}/reply`, "POST", { answer: reply.answer });
+      await this.request(this.path(id) + `/form/${encodeURIComponent(interactionId)}/reply`, "POST", { answer: reply.answer }, beforeReply);
     }
   }
 }

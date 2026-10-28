@@ -1,5 +1,7 @@
 import { isStoredSlot } from "../../sane-core/src/slots.ts"
 import { LIFECYCLE_PHASES } from "../../sane-core/src/lifecycle.ts"
+import { isNativeHarness, nativeSourceFormat } from "../../sane-core/src/native-source-contract.ts"
+import type { Harness as NativeHarness, NativeSourceDescriptor } from "../../sane-core/src/contracts.ts"
 
 /** Pure syntax boundary. No ambient environment, filesystem, or native core access.
  * SANE_CALLER_CONTEXT is JSON: either the full envelope {version:1,
@@ -12,10 +14,8 @@ import { LIFECYCLE_PHASES } from "../../sane-core/src/lifecycle.ts"
  * syntactically absolute; canonicalization, digest agreement and
  * repository/pin validation belong to core.
  */
-export type Harness = "cc" | "oc"
-export type SourceInput =
-  | { version: 1; harness: "cc"; kind: "local-profile"; profileRoot: string }
-  | { version: 1; harness: "oc"; kind: "local-registration"; registrationFile: string }
+export type Harness = NativeHarness
+export type SourceInput = NativeSourceDescriptor
 export type QualifiedRef = { harness: Harness; authorityId: string; nativeId: string }
 export type CallerEnvelope = { version: 1; repository: string; source: SourceInput; authorityId: string; nativeId: string }
 /** C11 Phase 4 minimal per-shell-call reference. No paths, no authority digest. */
@@ -23,7 +23,7 @@ export type CallerReference = { version: 1; harness: Harness; nativeId: string }
 /** Hook-qualified identity before enrollment; permits repository bootstrap only. */
 export type CallerBootstrap = CallerEnvelope & { bootstrap: true; executionCheckout: string }
 export type CallerClassification = { actorKind: "local" } | { actorKind: "native"; envelope: CallerEnvelope } | { actorKind: "native-ref"; ref: CallerReference } | { actorKind: "native-bootstrap"; envelope: CallerBootstrap }
-export type CallerSignals = Readonly<Partial<Record<"SANE_CALLER_CONTEXT" | "SANE_SESSION_ID" | "OPENCODE_SESSION_ID", string>>>
+export type CallerSignals = Readonly<Partial<Record<"SANE_CALLER_CONTEXT" | "SANE_SESSION_ID" | "OPENCODE_SESSION_ID" | "SANE_UNQUALIFIED_NATIVE" | "GROK_SESSION_ID", string>>>
 export type CliIntent = {
   operation: string
   repository?: string
@@ -54,15 +54,18 @@ function exact(value: Record<string, unknown>, keys: string[]): void {
 function json(value: string): unknown { try { return JSON.parse(value) } catch { return nativeFail() } }
 export function parseSourceInput(value: unknown): SourceInput {
   const source = object(value)
-  if (source.harness !== "cc" && source.harness !== "oc") nativeFail()
-  const locator = source.harness === "cc" ? "profileRoot" : "registrationFile"
+  if (!isNativeHarness(source.harness)) nativeFail()
+  const format = nativeSourceFormat(source.harness)!
+  const locator = format.locatorKey
   exact(source, ["version", "harness", "kind", locator])
   if (source.version !== 1 ||
-    source.kind !== (source.harness === "cc" ? "local-profile" : "local-registration") ||
+    source.kind !== format.kind ||
     !nonempty(source[locator]) || !(source[locator] as string).startsWith("/")) nativeFail()
   return source.harness === "cc"
     ? { version: 1, harness: "cc", kind: "local-profile", profileRoot: source[locator] as string }
-    : { version: 1, harness: "oc", kind: "local-registration", registrationFile: source[locator] as string }
+    : source.harness === "oc"
+      ? { version: 1, harness: "oc", kind: "local-registration", registrationFile: source[locator] as string }
+      : { version: 1, harness: "gk", kind: "local-home", homeRoot: source[locator] as string }
 }
 function envelope(value: unknown): CallerEnvelope {
   const input = object(value)
@@ -74,17 +77,23 @@ function envelope(value: unknown): CallerEnvelope {
 function reference(value: unknown): CallerReference {
   const input = object(value)
   exact(input, ["version", "harness", "nativeId"])
-  if (input.version !== 1 || (input.harness !== "cc" && input.harness !== "oc") || !nonempty(input.nativeId)) nativeFail()
+  if (input.version !== 1 || !isNativeHarness(input.harness) || !nonempty(input.nativeId)) nativeFail()
   return { version: 1, harness: input.harness, nativeId: input.nativeId }
 }
 const callerFlags = ["caller-repo", "caller-source", "caller-authority", "caller-native-id"]
 export function classifyCaller(signals: CallerSignals, flags: Readonly<Record<string, string | boolean>> = {}): CallerClassification {
+  // Inherited native refusal, not an OS sandbox: a hostile process can clear its environment.
+  // An explicit unqualified marker cannot be overridden by any envelope or flag.
+  if (signals.SANE_UNQUALIFIED_NATIVE !== undefined) nativeFail()
   let caller: CallerEnvelope | undefined
   let ref: CallerReference | undefined
   let bootstrap: CallerBootstrap | undefined
   if (signals.SANE_CALLER_CONTEXT !== undefined) {
     const parsed = json(signals.SANE_CALLER_CONTEXT)
     const keys = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? Object.keys(parsed) : []
+    // Hook-reported qualification refusal: diagnostic only, never an identity.
+    const refusal = keys.length === 2 && keys.includes("version") && keys.includes("unavailable") ? (parsed as Record<string, unknown>).unavailable : undefined
+    if (typeof refusal === "string") throw new ParseFailure("NATIVE_CONTEXT_UNAVAILABLE", `Native caller qualification failed: ${refusal.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 500)}`)
     if (keys.length === 3 && keys.includes("version") && keys.includes("harness") && keys.includes("nativeId")) ref = reference(parsed)
     else if (keys.includes("bootstrap")) {
       const input = object(parsed)
@@ -105,8 +114,8 @@ export function classifyCaller(signals: CallerSignals, flags: Readonly<Record<st
   }
   const nativeId = caller?.nativeId ?? ref?.nativeId
   const harness = caller ? caller.source.harness : ref?.harness
-  for (const key of ["SANE_SESSION_ID", "OPENCODE_SESSION_ID"] as const) {
-    if (signals[key] !== undefined && (!nativeId || !nonempty(signals[key]) || signals[key] !== nativeId || (key === "OPENCODE_SESSION_ID" && harness !== "oc"))) nativeFail()
+  for (const key of ["SANE_SESSION_ID", "OPENCODE_SESSION_ID", "GROK_SESSION_ID"] as const) {
+    if (signals[key] !== undefined && (!nativeId || !nonempty(signals[key]) || signals[key] !== nativeId || (key === "OPENCODE_SESSION_ID" && harness !== "oc") || (key === "GROK_SESSION_ID" && harness !== "gk"))) nativeFail()
   }
   if (bootstrap) return { actorKind: "native-bootstrap", envelope: bootstrap }
   if (caller) return { actorKind: "native", envelope: caller }
@@ -135,6 +144,7 @@ export function parseCliCommand(args: readonly string[], signals: CallerSignals 
   if (!command || command === "help" || args.includes("--help") || args.includes("-h")) return { kind: "help", command }
   if (retired.has(command)) return { kind: "unavailable", code: "FEATURE_UNAVAILABLE", command }
   try {
+    if (signals.SANE_UNQUALIFIED_NATIVE !== undefined) nativeFail()
     // Even invalid explicit targets cannot turn bare native signals into local calls.
     const options: Record<string, string | boolean> = {}
     const positionals: string[] = []
@@ -167,7 +177,7 @@ export function parseCliCommand(args: readonly string[], signals: CallerSignals 
     const count = (min: number, max = min) => { if (positionals.length < min || positionals.length > max) fail("Unexpected or missing positional arguments.") }
     const ref = (prefix = "") => {
       requireFlags(`${prefix}harness`, `${prefix}authority`, `${prefix}native-id`)
-      if (!["cc", "oc"].includes(options[`${prefix}harness`] as string)) fail("Invalid harness.")
+      if (!isNativeHarness(options[`${prefix}harness`])) fail("Invalid harness.")
     }
     let operation: string = command
     switch (command) {

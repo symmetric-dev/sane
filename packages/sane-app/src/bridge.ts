@@ -1,15 +1,18 @@
-import { readFile, writeFile, rename, appendFile, stat, readdir, realpath, open, mkdir } from "node:fs/promises";
+import { readFile, writeFile, appendFile, stat, readdir, realpath, open } from "node:fs/promises";
 import { constants, readFileSync, statSync, writeFileSync, lstatSync, realpathSync } from "node:fs";
 import { resolve, dirname, join, isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { BridgeAuth, validateBridgeAuthOptions } from "./bridge-auth";
 import { body, json, loopback } from "./bridge-http";
 import { withApiCompression } from "./api-compression";
 import { requireNativeBearer, requireStartupReady } from "./bridge-native-auth";
 import { CodeShareStore, CodeShareError } from "./code-share-store";
 import { BrowserPairStore, BrowserPairError } from "./browser-pair-store";
-import { isBrowserPairTarget, isBrowserPairWrite, sameBrowserPairSession } from "../shared/browser-pair-contract";
+import { createBrowserPairRoute } from "./browser-pair-routes";
+import { sameBrowserPairSession } from "../shared/browser-pair-contract";
 import { ResourcePairStore, ResourcePairError } from "./resource-pair-store";
 import { isPairLinkedSnapshot, isPairTarget, isPairWrite, type PairSession, type PairTarget } from "../shared/resource-pair-contract";
 import { CodeShareService } from "./code-share-service";
@@ -22,25 +25,30 @@ import { denyUserQuestionsIdentity, matchesUserQuestionsTool, matchesUserQuestio
 import { UserQuestionsDelivery, UserQuestionsDeliveryDeferred, UserQuestionsDeliverySuperseded, type UserQuestionsDeliveryDenial } from "./user-questions-delivery";
 import { httpErrorResponse, toHttpError } from "./bridge-errors";
 import { newDispatchRun, newNativeCommandId } from "./dispatch-run";
+import { preparedAdmissionNativeCommandId } from "./prepared-admission-command";
 import { toNativeHarness, toSessionHarness } from "./harness-names";
 import { createPoller } from "./poller";
 import { createPresentationSnapshot } from "./presentation-snapshot";
+import { copyPreparationTimings, createSubmissionTimingArchive } from "./submission-timing-archive";
 import { SessionRetirements, SessionRetirementError } from "./session-retirement";
 import { SessionNamingService, SessionNamingError, regenerationNamingTranscript } from "./session-naming";
 import { MAX_SESSION_TITLE_LENGTH, normalizeSessionTitle } from "../shared/conversation/session-title";
 import { runSessionNamingUtility } from "./utility-execution";
 import { ClaudeRunService, hookEvents } from "./claude-run-service";
 import { projectClaudeFollowups } from "./claude-followup-projection";
-import { resolveAppConfig } from "./app-config";
+import { explicitGrokExecutable, resolveAppConfig } from "./app-config";
 import { AssetBuildError, buildAssets, validateAssets } from "./asset-build";
+import { createAssetRoute } from "./asset-routes";
+import { createAgentProfileRoute } from "./agent-profile-routes";
 import { acquireInstallation, acquireData, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
 import { claudeSourceRoot } from "./claude-source";
 import { decodeLog, lastJournalSeq, validCompactRequest, uuid, efforts, type SaneSessionContext, type Session, type Run, type Event, type Metadata, type TerminationUncertainty } from "./history";
 import { projectCompactions } from "./compaction";
-import type { CompactEligibility, CompactRequest, CompactResponse, MessageSnapshot } from "./oc-contract";
+import type { CompactEligibility, CompactRequest, CompactResponse, MessageSnapshot, Harness } from "./oc-contract";
+import type { OpenCodeLaunch } from "./opencode";
 import { OpenCodeAdapter, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeUnavailableError, openCodePermissionAllows, permissionPatternMatches } from "./opencode";
 import { readOpenCodeWorkerContinuation, type OpenCodeWorkerContinuation } from "./opencode-worker-continuation";
-import { OpenCodeRunService, type FrameworkDelivery } from "./opencode-run-service";
+import { OpenCodeRunService } from "./opencode-run-service";
 import { OpenCodeObservationService } from "./opencode-observation-service";
 import { OC_REPLY_ACTIVATION_BLOCKED, OpenCodeReplyIntegration } from "./opencode-reply-integration";
 import type { OpenCodeReplyQualification } from "./opencode-reply-observer";
@@ -51,15 +59,34 @@ import { conversationUpdateRoute } from "./conversation-update-routes";
 import { ChromePushService } from "./chrome-push";
 import { isConversationUpdateSource, updateOccurrenceId, updateSourceKey, type ConversationUpdatePage } from "../shared/conversation/conversation-updates";
 import type { RunOwner as Owner } from "./run-owner";
+import { bindRunControls, requestRunCancellation } from "./run-controls";
 import { ConversationCoordinator, type ConversationAdmissionLease, type ConversationOperationIntent, type ConversationReadinessOptions } from "./conversation-coordinator";
 import { sessionListProjection, SessionListReadinessScope, type SessionListProjection } from "./session-list-projection";
-import { sessionDisplayTitle, sessionListResponse, type SessionListRow } from "./session-list-response";
-import { SessionCatalog, SessionCatalogError, sessionCatalogGroupsQuery, sessionCatalogQuery, sessionSummaryIds, type SessionCatalogMembership } from "./session-catalog";
+import { sessionDisplayTitle, type SessionListRow } from "./session-list-response";
+import { SessionCatalog, SessionCatalogError } from "./session-catalog";
+import { createSessionCatalogRoute, matchesSessionCatalogRoute } from "./session-catalog-routes";
 import { workerObservationEvidence } from "./worker-observation-evidence";
 import { HarnessDispatchRegistry, HarnessDispatchError, DispatchProofUnavailableError, createClaudeDispatchAdapter, createOpenCodeDispatchAdapter, sameDispatchSource, type DispatchLifecycleHooks } from "./harness-dispatch";
 import type { DispatchOrigin, DispatchSource, DispatchIdentity, DispatchEvidenceHooks } from "../shared/conversation/dispatch-contract";
 import type { PreparedAdmissionContext, PreparedAdmissionOptions, PreparedInputAdmission } from "./prepared-input-admission";
-import { synchronousDispatchHook } from "./dispatch-evidence";
+import { createDispatchEvidence, synchronousDispatchHook } from "./dispatch-evidence";
+import { RunJournalWriter } from "./run-journal";
+import { MetadataPublisher, MetadataCommitProofError, captureMetadataDispatchBinding, type MetadataDispatchBinding, type CommittedMetadataReceipt } from "./metadata-publication";
+import { PendingActivationJournals, type PendingActivationPreparation } from "./pending-activation-journal";
+import { prepareActivationWhileAdmitted, prepareRunJournalInstallation } from "./run-journal-installation";
+import { createDispatchContextBinding } from "./dispatch-context-binding";
+import { createExecutionPreparationService } from "./execution-preparation-service";
+import { createDispatchSource } from "./dispatch-source";
+import { createSessionMessageSource } from "./session-context-source";
+import { createPrepareOwnedMessage, type SubmissionMessageIntent } from "./owned-message-preparation";
+import type { OwnedSubmissionPublication } from "./context-message-transport";
+import { AppAdmissionAuthorizationError, AppAdmissionService, assertAppAdmissionEligibility, type OriginalAppAdmission } from "./app-admission-service";
+import { AppAdmissionRequestError, AppAdmissionStorageError, type AppAdmissionConversationBinding, type AppAdmissionPending } from "./app-admission-store";
+import { captureOriginalAppAdmissionRootProof, readAppAdmissionFeature, initializeAppAdmissionFeature, type OriginalAppAdmissionRootProof } from "./app-admission-feature";
+import { appAdmissionExpectedSourceMatches, decodeAppAdmissionEnvelope, decodeAppAdmissionKey, decodeAppAdmissionTarget, type AppAdmissionEnvelope, type AppAdmissionIntent } from "../shared/conversation/app-admission-contract";
+import { decodeContextMessageSubmission } from "./context-message-evidence";
+import type { ContextMessageActivationPairing } from "./context-message-activation";
+import { ContextMessageJournalReader } from "./context-message-reader";
 import { PendingInputService, pendingInputRoute, type PendingInputPreflight } from "./pending-input-service";
 import { createPendingInputRecovery, createOriginalRecoveryJournal, type PendingInputRecovery } from "./pending-input-recovery";
 import { PendingInputDomainError, PendingInputStorageError, type PendingInputPins, type PendingInputStoredItem } from "./pending-input-contract";
@@ -69,56 +96,68 @@ import { createPendingInputControls } from "./pending-input-controls";
 import { assertPendingInputDomainMutation, assertDomainInitializationIdle, chainInRepository } from "./pending-input-domain-guard";
 import { equal as equalPendingPin } from "./prepared-input-codec";
 import { decodePendingInputPins } from "./pending-input-codec";
-import { prepareUserInput, revalidatePreparedUserInput, assertPreparedUserInputCurrent, UserInputPreparationError, createCanonicalActivation, validateCanonicalActivation, reserveActivation, type ActivationSnapshot, type PreparedUserInput } from "./user-input-preparation";
-import { ScienceSubmissionStore, ScienceSubmissionError, ScienceSubmissionStorageError, type SciencePreparedSnapshotReference, type ScienceSubmissionReceipt } from "./science-submission-store";
+import { prepareUserInput, revalidatePreparedUserInput, assertPreparedUserInputCurrent, UserInputPreparationError, createCanonicalActivation, validateCanonicalActivation, type ActivationSnapshot, type PreparedUserInput } from "./user-input-preparation";
+import { ScienceSubmissionStore, ScienceSubmissionError, ScienceSubmissionStorageError, scienceContextMessageInput, type SciencePreparedSnapshotReference, type ScienceSubmissionReceipt } from "./science-submission-store";
 import { canonicalJSON } from "./prepared-input-codec";
 import type { ScienceSnapshotReference, ScienceSubmissionView } from "../shared/conversation/types";
-import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
+import { WorkspaceService, WorkspaceError } from "./workspace";
+import { createWorkspaceRoute, matchesWorkspaceRoute } from "./workspace-routes";
 import { GitOperationsService } from "./git-operations";
 import { CatalogService } from "./catalog";
 import { WorkspaceCreationService } from "./workspace-creation";
 import { TerminalService, type TerminalSocketData } from "./terminal";
+import { createTerminalRoute, matchesTerminalRoute } from "./terminal-routes";
 import { BrowserService, type BrowserSocketData } from "./browser/browser-service";
 import { BrowserGrantError } from "./browser/browser-grant-registry";
 import { BROWSER_MCP_TOOLS } from "../shared/browser-host-contract";
 import { ScienceService, scienceRoute } from "./science";
 import { ScienceChatService, scienceChatRoute } from "./science-chat-service";
 import { ScienceStore } from "./science-store";
-import { RepositoryRouter, RepositoryStoreError, WorkstreamAdapterError, authenticatedWorkstreamRoute, validateWorkstreamInput, flushAndCloseWorkstreams } from "./workstreams";
-import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult, WorkstreamCompleteInput, WorkstreamCompleteResult } from "./workstreams-contract";
+import { RepositoryRouter, RepositoryStoreError, WorkstreamAdapterError, flushAndCloseWorkstreams } from "./workstreams";
+import { createWorkstreamRoute, matchesWorkstreamRoute } from "./workstream-routes";
+import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult, WorkstreamCompleteResult } from "./workstreams-contract";
 import { validateAppStore, assertSourceConfiguration, atomicAppRecord, atomicNativeHistory, loadAgentProfiles, validateAgentProfiles, AppStoreError, type Admission, type SourceConfiguration } from "./app-store";
-import { builtinProfiles, genericSessionTitle, legacyProfileId, storedAssistantLabel, resolveAssistantProfile, BASE_PROFILE_IDS, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
+import { genericSessionTitle, legacyProfileId, resolveAssistantProfile, resolveAgentLaunch, resolveProfileDefaults, type AgentProfiles } from "./agent-profiles-contract";
 import { AdmissionService } from "./admission";
+import { beginConversationCreation, completeConversationCreation, type NativeConversationCreation } from "./conversation-creation";
+import { claudeConversationCreation, openCodeConversationCreation } from "./native-conversation-creation";
 import { HandoffService, handoffRecipientTitle, nextSlotSessionIndex, projectHandoffEnqueue, projectHandoffStatus, slotSessionIndex } from "./handoff";
 import { DomainError, canonicalSlot, equivalentSlots, normalizeNativeSource, revalidateCheckout, discoverRepository, inspectRepositoryStore } from "sane-core/server";
-import type { Handoff } from "sane-core/contracts";
+import type { Handoff, NativeSourceDescriptor } from "sane-core/contracts";
 import { WorkerStorageError, WorkerStore } from "./worker-store";
 import { WorkerService, type WorkerParent } from "./workers";
 import type { ExplicitWorkerOperations } from "./native-workers";
 import { createNativeWorkerHandler, NativeWorkerRequestError, type NativeWorkerCallerResolver } from "./native-workers";
 import { matchesOpenCodeWorkerPart, nativeWorkerInput, projectNativeWorkerReply, type NativeWorkerInvocation } from "../../sane-cli/src/native-worker-contract";
-import { proveInstalledExplicitWorkerRuntime } from "../../sane-cli/src/install-sane-agent-context-packages";
+import { installedRuntimeSchemaDrift, proveInstalledExplicitWorkerRuntime, type NativeRuntimeSelection, type SelectedNativeRuntime } from "../../sane-cli/src/install-sane-agent-context-packages";
+import { GROK_RUNTIME_HEADER, grokRuntimeInputDigest, verifyGrokRuntimeProof } from "../../sane-cli/src/native-grok-binding";
 import { workerTerminationUncertainty } from "./worker-recovery";
 import { hasVerifiedSettledTermination } from "./settled-journal-reconciliation";
-import { exchangeDeliveryEvidence, workerDeliveryEvidence, workerExchangePrompt, workerReportPrompt } from "./worker-outbox";
+import { exchangeDeliveryEvidence, grokWrapperCompletion, workerDeliveryEvidence, workerExchangePrompt, workerReportPrompt } from "./worker-outbox";
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, WORKER_STATE_BATCH_LIMIT, workerResults, type WorkerDelivery, type WorkerProtocolOperation, type WorkerProtocolPin, type WorkerRecord, type WorkerStateBatch, type WorkerStateSnapshot } from "./worker-contract";
 import { explicitObservationChange, isExplicitWorker } from "./worker-protocol";
 import { managedWorkerCoordination, managedWorkerRoles, managedWorkerWaiting } from "./managed-worker-lifecycle";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, WORKER_AGENT_CATALOG, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
-import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneContextText, saneFrameworkMessageId, saneSessionContext, saneSessionText, sha256, workerAssignment } from "./agent-launch";
+import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneSessionContext, workerAssignmentOnly, snapshotIdentity } from "./agent-launch";
 import { ContextPackageStore } from "./context-package-store";
-import { renderContextDelivery, validateContextComposition, validateContextDelivery, type ContextComposition, type ContextDelivery, type ContextPackage } from "./context-package";
-import type { ContextProvider } from "./context-delivery";
-import { systemPromptSnapshot } from "./system-prompt";
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 import { BranchStore, type BranchOperation } from "./branches";
-import { branchContextDynamic } from "./branch-context";
-import { CanonicalExecutionStore, type CanonicalExecutionRef, type CanonicalExecutionSnapshot } from "./canonical-execution-store";
-import { isWorkerAgentId } from "sane-core/agent-catalog";
+import { CanonicalExecutionStore, type CanonicalExecutionRef } from "./canonical-execution-store";
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
-import { NativeSubagentError, NativeSubagentService } from "./native-subagent-service";
-import { SessionRunPreviewError, SessionRunPreviewService } from "./session-run-preview";
+import { NativeSubagentService } from "./native-subagent-service";
+import { GrokAppService } from "./grok-app-service";
+import { GrokModelCatalog } from "./grok-model-catalog";
+import { GrokOutputProjection } from "./grok-output";
+import { GrokRunService } from "./grok-run-service";
+import { proveInstalledGrokWorkerRuntime } from "./grok-native-runtime";
+import { grokSessionExists, prepareGrokFork, readGrokHistory, verifyGrokFork } from "./grok-native-history";
+import { forkGrokSession, GrokAcpForkError, type GrokAcpCloseEvidence, type GrokAcpSpawnInfo } from "./grok-acp";
+import { composeContextMessage } from "./context-message";
+import type { GrokSessionView, GrokTurnInput } from "../shared/conversation/grok-contract";
+import { SessionRunPreviewService } from "./session-run-preview";
+import { createNativeSubagentEvidenceRoute, createTranscriptEvidenceRoute, createRunEvidenceRoute, createConversationSearchRoute,
+  matchesNativeSubagentEvidenceRoute, matchesTranscriptEvidenceRoute, matchesRunEvidenceRoute, matchesConversationSearchRoute } from "./conversation-evidence-routes";
 import { OpenCodeSubagentRecorder } from "./opencode-subagent-recorder";
 import { capabilitiesFor, getHarnessDescriptor, isHarness } from "../shared/conversation/harness-capabilities";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
@@ -126,22 +165,29 @@ import { HarnessOperationError, dispatchHarness, dispatchOwnedOperation, require
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export { hookEvents };
-export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; contextDelivery?: "startup" | "canonical"; agentModelConfig?: string; /** Internal deterministic fixture dependency; never parsed from CLI/config/HTTP. */ pendingInputWakeClock?: PendingInputWakeClock; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
+export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; nativeRuntime?: NativeRuntimeSelection; /** Saved absolute Grok executable. Omitted unless explicit; never a PATH name. */ grokExecutable?: string; grokHomeRoot?: string; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; initializeAppAdmissions?: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; contextDelivery?: "startup" | "canonical"; agentModelConfig?: string; /** Internal deterministic fixture dependency; never parsed from CLI/config/HTTP. */ pendingInputWakeClock?: PendingInputWakeClock; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
+type BridgeMessageIntent = SubmissionMessageIntent;
+type SubmissionPublicationFactory = (owner: Owner) => OwnedSubmissionPublication;
+type OriginalSubmission = { original: OriginalAppAdmission; envelope: AppAdmissionEnvelope; binding: AppAdmissionConversationBinding };
 export function parseOptions(args: string[]): Options {
   return runtimeOptions(resolveAppConfig(args, { packageDir: root, invocationCwd: process.cwd() }));
 }
 export function runtimeOptions(resolved: ReturnType<typeof resolveAppConfig>): Options {
   const { config: c, operational } = resolved;
+  const grokExecutable = explicitGrokExecutable(c);
   return { host: c.server.host, port: c.server.port, cwd: c.defaultExecutionCwd, dataDir: c.dataDir,
     claudeBin: c.native.claude.executable, allowRemote: c.server.allowRemote, publicOrigin: c.server.publicOrigin ?? undefined,
-    maxConcurrentRuns: c.maxConcurrentRuns, maxWorkersPerCheckout: c.maxWorkersPerCheckout, reconcileInterrupted: operational.reconcileInterrupted, noBuild: operational.noBuild, contextDelivery: c.contextDelivery, agentModelConfig: c.agentModelConfig,
+    maxConcurrentRuns: c.maxConcurrentRuns, maxWorkersPerCheckout: c.maxWorkersPerCheckout, reconcileInterrupted: operational.reconcileInterrupted, initializeAppAdmissions: operational.initializeAppAdmissions, noBuild: operational.noBuild, contextDelivery: c.contextDelivery, agentModelConfig: c.agentModelConfig,
+    ...(c.nativeRuntime ? { nativeRuntime: c.nativeRuntime } : {}),
+    ...(grokExecutable ? { grokExecutable } : {}),
+    ...(c.native.grok ? { grokHomeRoot: c.native.grok.homeRoot } : {}),
     nativeSources: { cc: { version: 1, harness: "cc", kind: "local-profile", profileRoot: c.native.claude.profileRoot },
       oc: { version: 1, harness: "oc", kind: "local-registration", registrationFile: c.native.opencode.registrationFile } } };
 }
 export function startupSummary(o: Options): string {
   return ["SANE App startup configuration:", `  Invocation cwd: ${process.cwd()}`, `  Default execution cwd: ${o.cwd}`, `  App data: ${o.dataDir}`,
     `  Native mode: Claude executable ${o.claudeBin}; configured managed OpenCode registration`,
-    `  New SANE context delivery: ${o.contextDelivery ?? "startup"}`,
+    `  SANE context delivery: shared user messages`,
     `  Listener: ${o.host}:${o.port}; public origin: ${o.publicOrigin ?? "listener origin"}`,
     "  Workstreams: explicit per-workspace inspect/init; no implicit project initialization",
   ].join("\n");
@@ -189,6 +235,7 @@ export async function start(options: Options) {
   // release after a successful write. No later cleanup attempt may unlatch it.
   let retentionRequired = false;
   let storageOwnershipHeld = false;
+  let publishingOwnershipFailure = false;
   const retain = () => {
     retentionRequired = true;
     try { data?.retain(); } finally { installation.retain(); }
@@ -201,8 +248,20 @@ export async function start(options: Options) {
   const failOwnershipPublication = () => {
     // Fence the actual inner writer before cleanup; neither a broken fence hook
     // nor failed retained-state writes may clear the outer ownership latch.
-    try { bridge?.failOwnershipPublication(); } catch { /* Preserve the publication error. */ }
-    try { retain(); } catch { /* Both handles were attempted; the latch survives. */ }
+    // Latch BEFORE invoking a hook, which may itself reenter a storage guard.
+    retentionRequired = true;
+    if (publishingOwnershipFailure) return;
+    publishingOwnershipFailure = true;
+    try {
+      try { bridge?.failOwnershipPublication(); } catch { /* Preserve the publication error. */ }
+      try { retain(); } catch { /* Both handles were attempted; the latch survives. */ }
+    } finally { publishingOwnershipFailure = false; }
+  };
+  // Only original-root capture/proof and its ownership assertion enter this
+  // guard. Expected pre-mutation setup refusals are NOT retention failures.
+  const guardOriginalAppRoot = <T>(proof: () => T): T => {
+    try { return proof(); }
+    catch (error) { failOwnershipPublication(); throw error; }
   };
   const publishOwnership = (phase: "serving" | "draining", listener?: { host: string; port: number }) => {
     try {
@@ -214,13 +273,26 @@ export async function start(options: Options) {
     data = acquireData(installation, { phase: "starting", reconcileInterrupted: options.reconcileInterrupted });
     storageOwnershipHeld = true;
     options = { ...options, dataDir: paths.dataDir! };
-    assertSourceConfiguration(validateAppStore(options.dataDir).sources, options.nativeSources);
+    const startingStore = validateAppStore(options.dataDir);
+    assertSourceConfiguration(startingStore.sources, options.nativeSources);
+    const assertStorageOwnership = () => {
+      if (!storageOwnershipHeld || retentionRequired || !data) throw new Error("App storage ownership unavailable");
+      installation.assertOwned(); data.assertOwned();
+    };
+    // ONE original capability, after data ownership + synchronous validation and
+    // before asset building or ANY startup await. Never repin inside startOwned.
+    const originalAppAdmissionRoot = guardOriginalAppRoot(() => captureOriginalAppAdmissionRootProof(options.dataDir, startingStore.manifest.storeId, assertStorageOwnership));
+    const assertOriginalAppRoot = () => guardOriginalAppRoot(() => { assertStorageOwnership(); originalAppAdmissionRoot.assertCurrent(); });
     installation.update("build");
     let assets: ReturnType<typeof validateAssets> | undefined;
     if (!options.noBuild) { try { assets = validateAssets({ packageDir: paths.packageDir }); } catch (error) { if (!(error instanceof AssetBuildError)) throw error; } }
     assets ??= options.noBuild ? validateAssets({ packageDir: paths.packageDir }) : await buildAssets({ packageDir: paths.packageDir, ownership: installation });
     installation.update("starting");
-    bridge = await startOwned(options, assets.assetsDir, paths.packageDir, retain, () => storageOwnershipHeld && !retentionRequired);
+    bridge = await startOwned(options, assets.assetsDir, paths.packageDir, retain, () => storageOwnershipHeld && !retentionRequired,
+      assertOriginalAppRoot, originalAppAdmissionRoot);
+    // The await itself is a final startup gap, even if inner classification had
+    // no recovered work. Verify the ORIGINAL cap before publishing serving.
+    assertOriginalAppRoot();
     const listener = { host: options.host, port: bridge.port! };
     publishOwnership("serving", listener);
     // Trusted activation only after classification, dependencies, timers and BOTH
@@ -247,14 +319,34 @@ export async function start(options: Options) {
     release(); throw error;
   }
 }
-async function startOwned(options: Options, assetsDir: string, packageDir: string, retainOwnership: () => void, ownsStorage: () => boolean) {
+async function startOwned(options: Options, assetsDir: string, packageDir: string, retainOwnership: () => void, ownsStorage: () => boolean,
+  assertOriginalAppRoot: () => void, originalAppAdmissionRoot: OriginalAppAdmissionRootProof) {
+  // Keep the cap private, outside Options/config/serialization. Existing storage
+  // assertions use the OUTER guarded proof, so even the earliest calls retain
+  // both ownership handles without touching uninitialized inner failure state.
+  let failInitializedStorage: ((error: unknown) => void) | undefined;
+  let handlingOriginalRootFailure = false;
+  const assertStorageOwned = () => {
+    try { assertOriginalAppRoot(); }
+    catch (error) {
+      if (!handlingOriginalRootFailure) {
+        handlingOriginalRootFailure = true;
+        try { failInitializedStorage?.(error); } catch { /* Preserve the original proof failure. */ }
+        finally { handlingOriginalRootFailure = false; }
+      }
+      throw error;
+    }
+  };
+  assertStorageOwned();
   const assetManifest = JSON.parse(await readFile(join(assetsDir, "manifest.json"), "utf8")) as ReturnType<typeof validateAssets>["manifest"];
+  assertStorageOwned();
   const maxConcurrentRuns = options.maxConcurrentRuns ?? 24;
   if (!Number.isSafeInteger(maxConcurrentRuns) || maxConcurrentRuns < 1 || maxConcurrentRuns > 256) throw new Error("max-concurrent-runs must be an integer from 1 to 256");
   const maxWorkersPerCheckout = options.maxWorkersPerCheckout ?? DEFAULT_MAX_WORKERS_PER_CHECKOUT;
   if (!Number.isSafeInteger(maxWorkersPerCheckout) || maxWorkersPerCheckout < 1 || maxWorkersPerCheckout > 256) throw new Error("maxWorkersPerCheckout must be an integer from 1 to 256");
   const store = validateAppStore(options.dataDir);
-  // Capture the original lock-owned App directory/manifest before startup awaits.
+  assertStorageOwned();
+  // Journal proof is additionally fenced by the pre-await OUTER App-root cap.
   const originalJournals = createOriginalRecoveryJournal(options.dataDir, store.manifest.storeId);
   assertSourceConfiguration(store.sources, options.nativeSources);
   if (options.nativeSources.cc.harness !== "cc" || options.nativeSources.oc.harness !== "oc") throw new Error("Invalid configured native harnesses");
@@ -262,25 +354,51 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   if (process.env.CLAUDE_CONFIG_DIR !== undefined && claudeSourceRoot() !== claudeRoot) throw new Error("Contradictory native selector: CLAUDE_CONFIG_DIR");
   if (process.env.CLAUDE_CODE_PROJECT_DIR_NAME) throw new Error("Unsupported native selector: CLAUDE_CODE_PROJECT_DIR_NAME");
   const oc = new OpenCodeAdapter(undefined, undefined, options.nativeSources.oc.registrationFile);
+  // Diagnostic only: CC/OC native tools run the installed vendored closure, so a
+  // stale installed schema otherwise surfaces later as generic caller failures.
+  if (options.nativeRuntime) void installedRuntimeSchemaDrift(options.nativeRuntime.pluginDirectory)
+    .then(drift => { if (drift) console.warn("[SANE native runtime drift]", drift); }, () => {});
   // Historical App sessions may omit the harness; no unknown value defaults.
   const sessionHarness = (session: Session) => validateHarness(session.harness, { defaultHarness: "claude-code" });
-  const nativeSource = (harness?: string) => store.sources[getHarnessDescriptor(validateHarness(harness, { defaultHarness: "claude-code" }))!.nativeHarness].authorityId ?? "unavailable";
+  const pairSessionHarness = (session: Session): Harness => sessionHarness(session);
+  const nativeSource = (harness?: string) => {
+    const native = getHarnessDescriptor(validateHarness(harness, { defaultHarness: "claude-code" }))!.nativeHarness;
+    const source = native === "gk" ? store.sources.version === 2 ? store.sources.gk : undefined : store.sources[native];
+    return source?.authorityId ?? "unavailable";
+  };
+  function grokHistoryHome() {
+    const source = store.sources.version === 2 ? store.sources.gk : undefined;
+    if (!source || source.descriptor.homeRoot !== options.grokHomeRoot || normalizeNativeSource(source.descriptor).authorityId !== source.authorityId)
+      throw new WorkstreamAdapterError(409, "grok-source-mismatch", "Grok history requires its exact configured native home and source authority");
+    return source.descriptor.homeRoot;
+  }
   function readNativeHistory(harness: unknown, nativeId: string, cwd: string) {
     const descriptor = requireOperation(harness, "readHistory");
     return dispatchHarness(descriptor.id, {
       "claude-code": async () => ({ messages: await readClaudeHistory(nativeId, cwd, claudeRoot), activity: "unknown" as const }),
       opencode: () => oc.history(nativeId, cwd),
+      grok: async () => ({ messages: await readGrokHistory(nativeId, cwd, grokHistoryHome()), activity: "unknown" as const }),
     });
   }
   const forbidden = Object.keys(process.env).filter(k => /^(ANTHROPIC_|CLAUDE_CODE_USE_|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_API_KEY|CLAUDE_CODE_BASE_URL|CLAUDE_CODE_CUSTOM_MODEL_OPTION|AWS_BEARER_TOKEN_BEDROCK|OPENAI_API_KEY|OPENAI_BASE_URL)/.test(k));
   if (forbidden.length) throw new Error(`Remove API/provider overrides: ${forbidden.join(", ")}`);
   try { if (!(await stat(options.cwd)).isDirectory()) throw new Error(); }
   catch { throw new Error(`Execution cwd must be an existing directory: ${options.cwd}. Set --cwd to the intended checkout.`); }
+  assertStorageOwned();
   const password = process.env.SANE_APP_PASSWORD;
   const authOptions = { ...options, password };
   validateBridgeAuthOptions(authOptions);
   let retainOwner = false;
   let closing = false, storageFailed = false, startupReady = false;
+  let appAdmissions: AppAdmissionService | undefined;
+  let originalAdmissionScope: OriginalAppAdmission | undefined;
+  const appAdmissionLeases = new WeakMap<ConversationAdmissionLease, OriginalAppAdmission>();
+  function withOriginalAdmission<T>(original: OriginalAppAdmission, action: () => T): T {
+    if (originalAdmissionScope) throw new Error("Original App admission readiness scope reentered");
+    originalAdmissionScope = original;
+    try { let value!: T; synchronousDispatchHook(() => { value = action(); return value; }); return value; }
+    finally { originalAdmissionScope = undefined; }
+  }
   let pendingInputs: PendingInputService | undefined;
   let pendingInputBridge: PendingInputBridge | undefined;
   let pendingInputRecovery: PendingInputRecovery | undefined;
@@ -307,6 +425,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let drainStartupExecution: (() => Promise<void>) | undefined;
   let stopStartupConsumers: (() => void) | undefined;
   let stopPresentationReads: (() => void) | undefined;
+  let stopGrokForks: (() => void) | undefined;
   async function boundedStartupCleanup(cleanup: () => unknown | Promise<unknown>) {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const completed = await Promise.race([
@@ -318,6 +437,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   let router: RepositoryRouter | undefined;
   let science: ScienceService | undefined;
+  let grokApp: GrokAppService | undefined;
+  let grokModelCatalog: GrokModelCatalog | undefined;
   let updateService: ConversationUpdates<ClaudeConversationUpdateState> | undefined;
   let replyIntegration: OpenCodeReplyIntegration | undefined;
   let chromePush: ChromePushService | undefined;
@@ -326,6 +447,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let gitOperations: GitOperationsService | undefined;
   async function abortStartup() {
     closing = true;
+    stopGrokForks?.();
     stopPresentationReads?.();
     const repositoryReadDrain = router?.stopReads();
     pendingInputWake?.close();
@@ -341,6 +463,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await boundedStartupCleanup(() => queueDrain);
     await Promise.all([
       () => chromePush?.close(), () => workspaceCreations?.close(), () => gitOperations?.close(), () => science?.close(),
+      async () => { if (grokApp && !(await grokApp.close()).drained) retainOwner = true; },
+      async () => { if (grokModelCatalog && !await grokModelCatalog.close()) retainOwner = true; },
       () => replyIntegration?.close(), () => updateService?.close(), () => searches.close(), () => sessionNaming?.close(),
     ].map(cleanup => boundedStartupCleanup(cleanup)));
     await boundedStartupCleanup(() => router?.close());
@@ -350,14 +474,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (retainOwner) retainOwnership();
   }
   try {
-  const metadataPath = join(options.dataDir, "metadata.json");
   const meta: Metadata = store.metadata;
   const retirements = new SessionRetirements({ dataDir: options.dataDir, storeId: store.manifest.storeId, claudeRoot, nativeControlPaths: [options.nativeSources.oc.registrationFile],
     sessions: () => meta.sessions, runs: () => meta.runs, oc,
     healthy: () => startupStorageHealthy(), flush: () => serial,
     busy: id => retirementBusy(id), coordinationActivity: id => retirementCoordinationActivity(id),
     authorityCurrent: session => {
-      try { const source = store.sources[session.harness === "opencode" ? "oc" : "cc"]; return source.authorityId === session.authorityId && normalizeNativeSource(source.descriptor).authorityId === session.authorityId; }
+      try {
+        const harness = toNativeHarness(sessionHarness(session));
+        const source = harness === "gk" ? store.sources.version === 2 ? store.sources.gk : undefined : store.sources[harness];
+        return !!source && source.authorityId === session.authorityId && normalizeNativeSource(source.descriptor).authorityId === session.authorityId;
+      }
       catch { return false; }
     },
     storageFailed: error => failClosed(error, "session-retirement-storage"),
@@ -378,8 +505,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let agentProfiles: AgentProfiles = loadAgentProfiles(options.dataDir);
   const catalog = new CatalogService(options.dataDir, activeSessions);
   for (const session of meta.sessions) if (session.attachment && session.attachment.source !== nativeSource(session.harness)) throw new Error("Attached native authority source changed; restore the original native store/service configuration");
+  assertStorageOwned();
   await catalog.load();
+  assertStorageOwned();
   workspaceCreations = await WorkspaceCreationService.open(options.dataDir, catalog, [options.dataDir, join(packageDir, ".runtime"), claudeRoot]);
+  assertStorageOwned();
   // Artifacts are readable only through the domain API, even when its state is
   // outside App data. Use a canonical root for both ordinary Code entry points.
   router = new RepositoryRouter(catalog, store.sources, {
@@ -404,6 +534,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   });
   science = new ScienceService(catalog, router);
   const admissions = new AdmissionService(options.dataDir, store.admissions, store.sources, catalog, router);
+  function conversationCreation(harness: Harness, cwd: string, launch: () => OpenCodeLaunch): NativeConversationCreation {
+    return dispatchHarness(harness, {
+      "claude-code": () => claudeConversationCreation(),
+      opencode: () => openCodeConversationCreation(oc, cwd, launch),
+      grok: () => ({ harness: "gk", kind: "allocated", allocate: () => crypto.randomUUID() }),
+    });
+  }
   const scienceChats = new ScienceChatService(new ScienceStore(options.dataDir, store.manifest.storeId), science, catalog, admissions, id => meta.sessions.find(s => s.sessionId === id), async (id, messageId) => {
     const session = meta.sessions.find(s => s.sessionId === id);
     if (!session) return false;
@@ -417,151 +554,26 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const workerStore = new WorkerStore(options.dataDir);
   const branches = new BranchStore(options.dataDir);
   const branchRequests = new Set<string>();
-  const executionContext = async (sessionId: string) => { assertCatalogActive(meta.sessions.find(s => s.sessionId === sessionId)); const a = admissions.get(sessionId); if (!a) throw new WorkstreamAdapterError(409, "admission-missing", "Conversation has no durable admission"); return router!.execution(a); };
+  const grokForkProcesses = new Map<string, { sourceId: string; controller: AbortController; done: Promise<void>; spawned?: GrokAcpSpawnInfo; observation?: GrokAcpCloseEvidence }>();
+  stopGrokForks = () => { for (const fork of grokForkProcesses.values()) fork.controller.abort(); };
+  const resolveExecution = async (sessionId: string) => {
+    assertCatalogActive(meta.sessions.find(s => s.sessionId === sessionId));
+    const admission = admissions.get(sessionId);
+    if (!admission) throw new WorkstreamAdapterError(409, "admission-missing", "Conversation has no durable admission");
+    return { admission, ...await router!.resolveExecution(admission) };
+  };
+  const executionContext = async (sessionId: string) => (await resolveExecution(sessionId)).roots;
   const execution = async (sessionId: string) => (await executionContext(sessionId)).executionCheckout;
-  const saneSession = async (sessionId: string) => saneSessionText(meta.sessions.find(s => s.sessionId === sessionId)!, await executionContext(sessionId));
   const contextPackages = new ContextPackageStore(resolve(root, "../.."), join(options.dataDir, "context-packages"));
-  const canonicalContextEnabled = options.contextDelivery === "canonical";
+  // The legacy option is accepted as a configuration compatibility alias only;
+  // it no longer selects an alternate native context delivery channel.
   const executionPackages = new CanonicalExecutionStore(resolve(root, "../.."), join(options.dataDir, "execution-packages"), options.agentModelConfig);
   const activationStores = { execution: executionPackages, context: contextPackages };
-  const executionReservation = async (sessionId: string, identity: NonNullable<Parameters<typeof saneSessionContext>[0]>, create?: () => Promise<ActivationSnapshot>) => {
-    if (!uuid(sessionId)) throw new Error("Invalid execution reservation identity");
-    const directory = join(options.dataDir, "activations", sessionId), name = "activation.json";
-    return reserveActivation(identity, {
-      read: async () => {
-        let text: string;
-        try { text = await readFile(join(directory, name), "utf8"); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
-        return JSON.parse(text);
-      },
-      write: async record => {
-        await mkdir(directory, { recursive: true, mode: 0o700 });
-        if (await realpath(directory) !== resolve(directory)) throw new Error("Activation reservation directory cannot contain symbolic links");
-        atomicAppRecord(directory, name, record);
-      },
-      create,
-      validate: async pair => {
-        if (pair.saneExecution) {
-          if (!pair.saneContext) throw new Error("Reserved execution requires its pinned context");
-          await validateCanonicalActivation({ saneExecution: pair.saneExecution, saneContext: pair.saneContext }, identity, activationStores);
-        } else if (pair.saneContext?.package) throw new Error("Unpaired canonical context reservation requires reconciliation");
-      },
-    });
-  };
-  const prepareCanonicalExecution = async (role: import("sane-core/agent-catalog").AssistantAgentId) => {
-    const pair = await createCanonicalActivation({ kind: "assistant", role }, activationStores);
-    const { policy } = await executionPackages.load(pair.saneExecution);
-    return { ...pair, ...(policy.model ? { model: `${policy.model.providerID}/${policy.model.id}`, effort: policy.model.variant } : {}) };
-  };
-  const canonicalExecution = async (sessionId: string): Promise<CanonicalExecutionSnapshot | null> => {
-    const session = meta.sessions.find(s => s.sessionId === sessionId);
-    if (!session?.saneExecution) return null;
-    // Titles are independently editable while execution is being prepared.
-    const executionPin = (value: Session) => JSON.stringify({ ...value, title: undefined, titleSource: undefined, titleRevision: undefined, titleAutoEligible: undefined, titleGeneration: undefined });
-    const pin = executionPin(session);
-    const assertBinding = () => {
-      const current = meta.sessions.find(s => s.sessionId === sessionId), a = admissions.get(sessionId);
-      if (!current || executionPin(current) !== pin || !a || a.state !== "ready" || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || a.binding.executionCheckout !== session.cwd || a.source.descriptor.harness !== (session.harness === "opencode" ? "oc" : "cc")) throw new Error("Canonical execution requires an exact ready admission");
-    };
-    assertBinding();
-    if (!session.saneContext) throw new Error("Canonical execution requires paired context");
-    const identity = session.agentKind === "worker" && isWorkerAgentId(session.agent) ? { kind: "worker" as const, role: session.agent } : isStoredAssistantAgentId(session.agent) ? { kind: "assistant" as const, role: session.agent } : undefined;
-    if (!identity) throw new Error("Canonical execution requires a valid identity");
-    const snapshot = await validateCanonicalActivation({ saneExecution: session.saneExecution, saneContext: session.saneContext }, identity, activationStores);
-    if (snapshot.policy.spec.name !== `sane/${session.agentKind}/${session.agent}`) throw new Error("Execution policy role differs from its conversation");
-    await executionContext(sessionId);
-    assertBinding();
-    return snapshot;
-  };
-  const prepareSaneContext = async (...args: Parameters<typeof saneSessionContext>) => {
-    const result: ReturnType<typeof saneSessionContext> & { saneExecution?: CanonicalExecutionRef } = saneSessionContext(...args);
-    if (result.saneContext && args[0] && args[0].role !== "knowledge" && canonicalContextEnabled) {
-      return createCanonicalActivation(args[0], activationStores);
-    }
-    return result;
-  };
-  const historicalRuntimeText = new Map<string, string>();
-  const runtimeInstruction = (session: Session, bundle: ContextPackage, name: "worker-protocol" | "branch-continuation"): string => {
-    const asset = bundle.assets.find(asset => asset.id === `framework.${name}` && asset.kind === "framework");
-    if (asset) return asset.text;
-    // Pre-file packages have no runtime assets. Preserve their recorded wording,
-    // including inherited branch notices, rather than reading today's source.
-    const key = `${session.sessionId}:${bundle.revision}:${name}`;
-    const cached = historicalRuntimeText.get(key);
-    if (cached) return cached;
-    const visited = new Set<string>(), operations = branches.list();
-    let candidate: Session | undefined = session;
-    while (candidate && !visited.has(candidate.sessionId)) {
-      visited.add(candidate.sessionId);
-      if (candidate.saneContext?.package?.revision !== bundle.revision) break;
-      for (const run of meta.runs.toReversed()) {
-        if (run.sessionId !== candidate.sessionId) continue;
-        for (const event of journalEvents(run.runId).toReversed()) {
-          const data = event.data as { type?: string; stage?: string; delivery?: ContextDelivery } | null;
-          const delivery = data?.delivery;
-          if (event.kind !== "context" || data?.type !== "canonical-context" || data.stage !== "prepared" || !delivery
-            || delivery.packageRevision !== bundle.revision || delivery.binding?.sessionId !== candidate.sessionId
-            || delivery.binding.nativeSessionId !== candidate.nativeSessionId || delivery.binding.authorityId !== candidate.authorityId) continue;
-          validateContextDelivery(delivery);
-          const match = name === "worker-protocol"
-            ? /\nWaiting: [^\n]*\n(?:Message correlation: [^\n]*\n)?([\s\S]+)$/.exec(delivery.dynamic)
-            : /\n\n(This is a branch continuation\.[\s\S]*?)(?=\n\nWorker protocol:|$)/.exec(delivery.dynamic);
-          if (match?.[1]) {
-            historicalRuntimeText.set(key, match[1]);
-            return match[1];
-          }
-        }
-      }
-      const branch = operations.find(operation => operation.destinationId === candidate!.sessionId && operation.canonicalActivation && operation.state === "completed");
-      candidate = branch && meta.sessions.find(source => source.sessionId === branch.sourceId);
-    }
-    throw new Error(`Historical ${name} instructions are unavailable; reconcile the session before resuming`);
-  };
-  const explicitProtocolDynamic = (sessionId: string, dynamic: string, instructions: () => string): string => {
-    const worker = workerStore.getBySession(sessionId);
-    if (worker?.protocol?.id !== "explicit-v1") return dynamic;
-    const waiting = worker.wait?.reason ?? "none";
-    const correlation = worker.wait?.correlationId;
-    return `${dynamic}\n\nWorker protocol: explicit-v1.\nWaiting: ${waiting}.${correlation ? `\nMessage correlation: ${correlation}.` : ""}\n${instructions()}`;
-  };
-  const canonicalComposition = async (sessionId: string): Promise<ContextComposition | null> => {
-    const session = meta.sessions.find(s => s.sessionId === sessionId);
-    if (!session?.saneContext?.package) return null;
-    const pin = JSON.stringify([session.harness, session.authorityId, session.nativeSessionId, session.cwd, session.agent, session.agentKind, session.nativeAgentSelected, session.saneContext, session.saneExecution]);
-    const assertAdmission = () => {
-      const admission = admissions.get(sessionId);
-      if (!admission || admission.state !== "ready" || admission.nativeId !== session.nativeSessionId || admission.source.authorityId !== session.authorityId
-        || admission.binding.executionCheckout !== session.cwd || admission.source.descriptor.harness !== (session.harness === "opencode" ? "oc" : "cc")) throw new Error("Canonical context requires an exact ready admission");
-    };
-    assertAdmission();
-    const { bundle, paths } = await contextPackages.load(session.saneContext.package);
-    if (bundle.identity.role !== session.agent || bundle.identity.kind !== session.agentKind) throw new Error("Context package role differs from its conversation");
-    if (bundle.identity.kind === "worker" && !session.saneContext.assignment) throw new Error("Canonical worker context requires its persisted assignment");
-    const context = await executionContext(sessionId);
-    const current = meta.sessions.find(s => s.sessionId === sessionId);
-    if (!current || pin !== JSON.stringify([current.harness, current.authorityId, current.nativeSessionId, current.cwd, current.agent, current.agentKind, current.nativeAgentSelected, current.saneContext, current.saneExecution])) throw new Error("Context binding changed during preparation");
-    assertAdmission();
-    const branched = branchContextDynamic(sessionId, saneSessionText(session, context) ?? `# SANE Session\n\nWorkstream: none\nImplementation root: ${context.executionCheckout}`, branches.list(), meta.sessions, () => runtimeInstruction(session, bundle, "branch-continuation"));
-    const dynamic = explicitProtocolDynamic(sessionId, branched, () => runtimeInstruction(session, bundle, "worker-protocol"));
-    return { bundle, binding: { sessionId, harness: session.harness!, authorityId: session.authorityId!, nativeSessionId: session.nativeSessionId!, cwd: session.cwd }, paths, dynamic, assignment: session.saneContext.assignment, injectRole: !!session.saneExecution || session.harness === "opencode" && !session.nativeAgentSelected };
-  };
-  const canonicalContext: ContextProvider = async sessionId => {
-    const expected = await canonicalComposition(sessionId);
-    return expected ? renderContextDelivery(expected.bundle, expected.binding, expected.paths, expected.dynamic, expected.assignment, expected.injectRole) : null;
-  };
-  canonicalContext.validate = async delivery => {
-    const expected = await canonicalComposition(delivery.binding.sessionId);
-    if (!expected) throw new Error("Canonical context activation is unavailable");
-    validateContextComposition(delivery, expected);
-  };
-  // Acknowledged at OC creation, before any run exists; the session's first run journals it.
-  const frameworkDeliveries = new Map<string, FrameworkDelivery>();
-  const deliverSaneFramework = async (nativeId: string, sessionId: string, context: SaneSessionContext) => {
-    if (context.package) return;
-    const messageId = saneFrameworkMessageId(sessionId), text = saneContextText(context);
-    await oc.deliverSaneFramework(nativeId, messageId, text);
-    frameworkDeliveries.set(sessionId, { messageId, sha256: sha256(text), chars: text.length });
-  };
+  const { executionReservation, prepareCanonicalExecution, canonicalExecution, prepareSaneContext } = createExecutionPreparationService({
+    dataDir: options.dataDir, executionPackages, contextPackages,
+    getSession: sessionId => meta.sessions.find(s => s.sessionId === sessionId),
+    getAdmission: sessionId => admissions.get(sessionId), executionContext,
+  });
   const domainProtectedPaths: string[] = [];
   const workspace = new WorkspaceService(async (id, operation) => {
     const session = meta.sessions.find(session => session.sessionId === id);
@@ -600,6 +612,29 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   });
   gitOperations = new GitOperationsService(catalog, worktrees, options.dataDir, () => domainProtectedPaths);
   const events = new Map<string, Event[]>();
+  const runJournalDirectory = options.dataDir;
+  const runJournals = new RunJournalWriter(options.dataDir, {
+    assertStorage: () => { assertStorageOwned(); if (storageFailed) throw new Error("Run journal storage ownership unavailable"); },
+    failClosed: error => failClosed(error, "run-journal"),
+  });
+  const metadataPublisher = new MetadataPublisher(options.dataDir, store.manifest.storeId, {
+    assertStorage: () => { assertStorageOwned(); if (storageFailed) throw new Error("Metadata storage ownership unavailable"); },
+    failClosed: error => failClosed(error, "metadata-publication"),
+  });
+  let committedMetadata: CommittedMetadataReceipt | undefined;
+  const ownerMetadata = new WeakMap<Owner, { identity: DispatchIdentity; binding: MetadataDispatchBinding; receipt?: CommittedMetadataReceipt }>();
+  const pendingActivations = new PendingActivationJournals(options.dataDir, store.manifest.storeId, runJournals, {
+    assertStorage: () => { assertStorageOwned(); if (storageFailed) throw new Error("Activation storage ownership unavailable"); },
+    failClosed: error => failClosed(error, "pending-activation-journal"),
+  });
+  const contextHistory = new ContextMessageJournalReader(options.dataDir, store.manifest.storeId, {
+    assertStorage: () => { assertStorageOwned(); if (storageFailed) throw new Error("Context evidence storage unavailable"); },
+  });
+  const boundContextAssociations = new WeakMap<Owner, ContextMessageActivationPairing>();
+  const contextJournalSource = (runId: string) => `app:${store.manifest.storeId}/run:${runId}/context-messages`;
+  // Discover original anchors before any generic log repair. Discovery never
+  // installs a Run or replays a prompt; pending preparation is explicit-only.
+  const anchoredActivationRuns = pendingActivations.anchoredRunIds();
   const deferredJournals = new Set<string>();
   let materializeDeferred: ((runId: string) => Event[]) | undefined;
   function journalEvents(id: string): Event[] {
@@ -649,7 +684,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     shouldRun: () => presentationReadsEnabled() && (Date.now() < nativeConnectionDemandUntil || Date.now() < nativeActivityDemandUntil),
   });
   stopPresentationReads = () => { presentationPoller.stop(); nativeConnectionSnapshot.close(); nativeActivitySnapshot.close(); };
-  const nativeSubagentRecorder = new OpenCodeSubagentRecorder(oc, id => events.get(id) ?? [], emit, () => closing || storageFailed, session => !retirementPaused(session.sessionId));
+  const nativeSubagentRecorder = new OpenCodeSubagentRecorder(oc, id => events.get(id) ?? [], emit, () => closing || storageFailed,
+    session => !retirementPaused(session.sessionId), run => runJournals.canAppend(run.runId));
   // An explicit archived-history read may observe native history if no persisted
   // snapshot exists. This does not restart routine/background polling, and keeps
   // native-only messages accessible without changing or deleting native history.
@@ -674,6 +710,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // reserved before awaits, then retained until the selected owner's lifecycle ends.
   const startupObservations = new Map<string, Run>();
   const sessionListReadiness = new SessionListReadinessScope();
+  // One physical receipt read for a synchronous presentation response. Actual
+  // admission/dispatch never receives this response-scoped projection.
+  const presentationAdmissions = new WeakMap<SessionListProjection, readonly AppAdmissionPending[]>();
   const coordinator: ConversationCoordinator<Owner> = new ConversationCoordinator<Owner>({
     maxConcurrentRuns,
     isClosing: () => closing,
@@ -682,7 +721,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     observationAdmission: owner => {
       if (storageFailed) return { ready: false, code: "storage-unavailable", reason: "Storage unavailable; operator reconciliation required" };
       const run = owner.run, session = meta.sessions.find(s => s.sessionId === run.sessionId), a = admissions.get(run.sessionId);
-      if (startupObservations.get(run.sessionId) !== run || !owner.native || run.status !== "running" || !run.nativeCommandId
+      if (startupObservations.get(run.sessionId) !== run || owner.controls?.source.harnessId !== "opencode" || run.status !== "running" || !run.nativeCommandId
         || !["preparing", "sending", "accepted"].includes(run.nativePhase ?? "") || session?.harness !== "opencode"
         || !session.nativeSessionId || session.authorityId !== nativeSource("opencode") || session.cwd !== run.cwd
         || !a || a.source.descriptor.harness !== "oc" || a.nativeId !== session.nativeSessionId
@@ -699,7 +738,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       ...workerStore.deliveriesToReconcile().filter(d => !retiredId(d.parentSessionId)).map(d => d.parentSessionId),
     ],
     policy: options => readinessPolicy(options, sessionListReadiness.current),
-    canRetainPredecessor: owner => claudeRuns.canQueueFollowup(owner),
+    canRetainPredecessor: owner => {
+      const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
+      if (session?.harness === "grok") return false;
+      return claudeRuns.canQueueFollowup(owner);
+    },
     wake: { dispatch: () => {
       // A failed private queue claim releases its transient lease. Do not feed
       // that notification back into its own scheduler. Foreign changes during
@@ -718,6 +761,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return result.lease;
   }
   function installOwner(lease: ConversationAdmissionLease, owner: Owner) {
+    bindOwnerControls(owner);
     const result = coordinator.installOwner(lease, owner);
     if (!result.ready) throw new WorkstreamAdapterError(result.code === "capacity" ? 429 : 409, result.code, result.reason);
   }
@@ -810,8 +854,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Workers inherit their parent's repository even before child admission exists.
     if ([...busy].some(sessionId => relevant(sessionId)) || workers.executionOccupants().some(worker => relevant(worker.parent.sessionId) || relevant(worker.sessionId, false))) throw new WorkstreamAdapterError(409, "bridge-busy", `${scope.phaseRelevant ? "Selected phase" : "Repository"} has active or unconfirmed App execution; wait for runs and workers to finish`);
   }
+  const preparationTimingArchive = createSubmissionTimingArchive();
+  function readOwnerPreparationTiming(owner: Owner) {
+    try { return copyPreparationTimings(owner.controls?.readPreparationTiming?.()); }
+    catch { return undefined; } // Optional diagnostics never gate lifecycle or HTTP handling.
+  }
   function releaseOwner(owner: Owner) {
     if (owner.completionTerminalization && owner.completionTerminalization.state !== "committed") return;
+    // Capture before the original owner reference is discarded. A snapshot is
+    // not release proof, and metrics failure cannot delay or prevent release.
+    try { preparationTimingArchive.retain(owner.run.runId, readOwnerPreparationTiming(owner)); }
+    catch { /* Optional bounded diagnostics; no authoritative writes or gates. */ }
     // A delayed native interrupt must finish before a replacement can acquire
     // this conversation, even if terminal observation arrived first.
     coordinator.releaseOwner(owner);
@@ -899,12 +952,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     closing: () => closing, storageFailed: () => storageFailed, retained: () => retainOwner,
     requireReconciliation: () => { retainOwner = true; meta.reconciliationRequired = true; },
     failClosed, emit, persist, enqueue, execution, executionContext, compactExecution,
-    refreshCompactHistory, assertWorkerDeliverySubmission, saneSession, canonicalContext, canonicalExecution,
+    refreshCompactHistory, assertWorkerDeliverySubmission, canonicalExecution,
     explicitProtocol: sessionId => workerStore.getBySession(sessionId)?.protocol,
     browserMcp: async (sessionId, runId) => {
       const session = meta.sessions.find(s => s.sessionId === sessionId), admission = admissions.get(sessionId);
       if (!session || !admission || admission.state !== "ready" || session.agentKind === "worker" || !session.nativeSessionId || !session.authorityId) return null;
-      const token = browsers.issueSessionCredential({ sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId, nativeSessionId: session.nativeSessionId });
+      // Credential issuance is Claude-only and must not default an omitted harness to Claude Code.
+      try {
+        if (validateHarness(session.harness) !== "claude-code" || toSessionHarness(admission.source.descriptor.harness) !== "claude-code"
+          || admission.nativeId !== session.nativeSessionId || admission.source.authorityId !== session.authorityId
+          || admission.binding.executionCheckout !== session.cwd) return null;
+      } catch { return null; }
+      const token = browsers.issueSessionCredential({ sessionId: session.sessionId, harness: "claude-code", authorityId: session.authorityId, nativeSessionId: session.nativeSessionId });
       const credPath = join(options.dataDir, `${runId}.browser-credential.json`);
       await writeFile(credPath, JSON.stringify({ version: 1, url: `http://127.0.0.1:${hookServer.port}/native/browser`, token, pid: process.pid, sessionId: session.sessionId }), { mode: 0o600 });
       const mcpConfigPath = join(options.dataDir, `${runId}.browser-mcp.json`);
@@ -914,15 +973,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   });
   const handoffs = new HandoffService(admissions, catalog, router, store.sources, () => meta.sessions, () => {
     if (closing || storageFailed || meta.reconciliationRequired) throw new WorkstreamAdapterError(503, "handoff-owner-unavailable", "App execution owner is unavailable");
+    grokHandoffAuthorization.getStore()?.();
   }, store.manifest.storeId, async (to, cwd) => {
     const launch = resolveAssistantProfile(agentProfiles, to);
     const descriptor = requireOperation(launch.harness, "prompt");
-    const canonical = canonicalContextEnabled && launch.identity && isAssistantAgentId(launch.identity.role) ? await prepareCanonicalExecution(launch.identity.role) : undefined;
+    const canonical = launch.identity && isAssistantAgentId(launch.identity.role) ? await prepareCanonicalExecution(launch.identity.role) : undefined;
     const native = launch.harness === "opencode" ? await oc.resolveLaunch(cwd, canonical ? { ...launch, agent: "build", model: launch.model ?? canonical.model, effort: launch.effort ?? (!launch.model ? canonical.effort : undefined) } : launch) : undefined;
     const model = native ? native.model ? `${native.model.providerID}/${native.model.id}` : undefined : launch.model;
     const effort = native ? native.model?.variant : launch.effort;
+    const repositoryHarness = descriptor.nativeHarness;
     return {
-      harness: descriptor.nativeHarness,
+      harness: repositoryHarness,
       executionConfig: { profileId: launch.profileId, agent: launch.agent!, ...(model ? { model } : {}), ...(effort ? { effort } : {}) },
     };
   }, id => !retirementPaused(id));
@@ -940,19 +1001,65 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
   }
   const handoffToken = crypto.randomUUID();
+  const grokBindingDirectory = join(options.dataDir, "native-tools", "grok", "bindings");
+  // One immutable proof per incoming HTTP request. Async continuations inherit
+  // only their own scope; a concurrent request can never replace this evidence.
+  const grokRequestProof = new AsyncLocalStorage<string | undefined>();
+  const grokHandoffAuthorization = new AsyncLocalStorage<() => void>();
+  function authorizeGrokInvocation(caller: { authorityId: string; nativeId: string; source: unknown; cwd?: string; repository?: string },
+    toolName: string, input: unknown, invocation?: { toolCallId: string; messageId?: string; wrapper?: unknown }) {
+    const proof = grokRequestProof.getStore();
+    const deny = (): never => { throw new WorkstreamAdapterError(409, "grok-tool-identity", "Grok tools require the exact signed native invocation in their original live App-owned run"); };
+    let binding: ReturnType<typeof verifyGrokRuntimeProof>;
+    try { binding = verifyGrokRuntimeProof({ bindingDirectory: grokBindingDirectory, proof, caller, invocation, toolName, input }); }
+    catch { return deny(); }
+    const session = meta.sessions.find(row => row.sessionId === binding.appSessionId), owner = owners.get(binding.appSessionId);
+    const admission = admissions.get(binding.appSessionId);
+    const assertCurrent = () => {
+      let current: ReturnType<typeof verifyGrokRuntimeProof>;
+      try { current = verifyGrokRuntimeProof({ bindingDirectory: grokBindingDirectory, proof, caller, invocation, toolName, input }); }
+      catch { return deny(); }
+      if (!startupReady || closing || storageFailed || retainOwner || !ownsStorage() || meta.reconciliationRequired
+        || !session || !owner || !admission || current.bindingId !== binding.bindingId || !isDeepStrictEqual(current, binding)
+        || meta.sessions.find(row => row.sessionId === binding.appSessionId) !== session || owners.get(binding.appSessionId) !== owner
+        || owner.run.runId !== binding.runId || owner.run.sessionId !== binding.appSessionId || !meta.runs.includes(owner.run)
+        || owner.run.cwd !== binding.cwd || owner.run.operation === "compact" || owner.run.status !== "running"
+        || owner.settled || owner.stopRequested || owner.cancelling || owner.stopping || !owner.nativeDispatched
+        || session.harness !== "grok" || session.nativeSessionId !== binding.nativeSessionId || session.authorityId !== binding.authorityId
+        || session.cwd !== binding.cwd || session.hidden || session.attachment || retirementPaused(session.sessionId)
+        || branches.pending(session.sessionId) || branches.replaced(session.sessionId)
+        || !owner.contextIdentity || owner.contextIdentity.runId !== binding.runId || !sameDispatchSource(owner.contextIdentity.source, {
+          harnessId: "grok", sessionId: binding.appSessionId, authorityId: binding.authorityId, nativeSessionId: binding.nativeSessionId, cwd: binding.cwd })
+        || !isDeepStrictEqual(admissions.get(binding.appSessionId), admission) || admission.state !== "ready"
+        || admission.nativeId !== binding.nativeSessionId || admission.source.authorityId !== binding.authorityId
+        || !isDeepStrictEqual(admission.source.descriptor, binding.source) || nativeSource("grok") !== binding.authorityId
+        || admission.binding.executionCheckout !== binding.cwd
+        || binding.repository !== (admission.binding.domain.mode === "repository" ? admission.binding.domain.primaryCheckout : undefined)
+        || caller.repository !== undefined && binding.repository !== undefined && caller.repository !== binding.repository) return deny();
+      catalog.assertBinding(admission.binding.workspaceId, admission.binding.worktreeId, binding.cwd, admission.binding.bindingRevision);
+    };
+    assertCurrent();
+    return { binding, session: session!, owner: owner!, admission: admission!, assertCurrent };
+  }
   async function nativeHandoff(req: Request) {
+    return grokRequestProof.run(req.headers.get(GROK_RUNTIME_HEADER) ?? undefined, () => nativeHandoffRequest(req));
+  }
+  async function nativeHandoffRequest(req: Request) {
     const denied = requireNativeBearer(req, handoffToken) ?? requireStartupReady(startupReady);
     if (denied) return denied;
     try {
       if (closing || storageFailed || meta.reconciliationRequired) return json({ error: "App execution owner unavailable" }, 503);
       const input = await body(req);
+      const grok = input?.caller?.source?.harness === "gk"
+        ? authorizeGrokInvocation(input.caller, input.operation === "status" ? "sane_handoff_status" : "sane_handoff",
+          input.operation === "status" ? { requestId: input.requestId } : input.input) : undefined;
       if (input?.operation === "enqueue") {
         const caller = input.caller;
-        const sender = meta.sessions.find(s => s.authorityId === caller?.authorityId && s.nativeSessionId === caller?.nativeId && (s.harness === "opencode" ? "oc" : "cc") === caller?.source?.harness);
+        const sender = meta.sessions.find(s => s.authorityId === caller?.authorityId && s.nativeSessionId === caller?.nativeId && toNativeHarness(sessionHarness(s)) === caller?.source?.harness);
         assertCatalogActive(sender);
       }
-      if (input?.operation === "enqueue") return json({ handoff: projectHandoffEnqueue(await handoffs.enqueue(input.caller, input.input)) }, 202);
-      if (input?.operation === "status") { const handoff = await handoffs.status(input.caller, input.requestId); return json({ handoff: handoff ? projectHandoffStatus(handoff) : handoff, ...(handoff && handoffProblems.has(handoff.id) ? { problem: handoffProblems.get(handoff.id) } : {}) }); }
+      if (input?.operation === "enqueue") return grokHandoffAuthorization.run(() => grok?.assertCurrent(), async () => json({ handoff: projectHandoffEnqueue(await handoffs.enqueue(input.caller, input.input)) }, 202));
+      if (input?.operation === "status") { const handoff = await handoffs.status(input.caller, input.requestId); grok?.assertCurrent(); return json({ handoff: handoff ? projectHandoffStatus(handoff) : handoff, ...(handoff && handoffProblems.has(handoff.id) ? { problem: handoffProblems.get(handoff.id) } : {}) }); }
       return json({ error: "Unknown handoff operation" }, 400);
     } catch (error) { return httpErrorResponse(error, "Handoff admission unavailable"); }
   }
@@ -974,11 +1081,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         predictedTitle = await handoffContextTitle(h, workspaceId);
         const sessionId = h.recipient.sessionId, cwd = h.recipient.checkout.path, harness = toSessionHarness(h.recipient.harness);
         if (sessionId !== selected.recipient.sessionId || !coordinator.holdsAdmission(lease!, sessionId)) throw new WorkstreamAdapterError(409, "recipient-unavailable", "Recipient admission changed");
+        let launch: OpenCodeLaunch | undefined;
+        const native = conversationCreation(harness, cwd, () => launch!);
         let a = admissions.get(sessionId);
         const freshAdmission = !a;
         if (!a) {
           const association = await catalog.register(cwd);
-          a = await admissions.begin({ sessionId, operation: "create", harness: h.recipient.harness, cwd, nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: association.workspaceId, worktreeId: association.worktreeId });
+          a = await beginConversationCreation(admissions, { sessionId, cwd, workspaceId: association.workspaceId, worktreeId: association.worktreeId }, native);
         }
         if (a.source.authorityId !== h.recipient.authorityId || a.binding.executionCheckout !== cwd || a.binding.domain.mode !== "repository" || a.binding.domain.repositoryId !== h.repositoryId) throw new WorkstreamAdapterError(409, "recipient-mismatch", "Reserved recipient binding changed");
         if (closing || storageFailed) throw new WorkstreamAdapterError(503, "recipient-unavailable", "App execution owner unavailable");
@@ -997,25 +1106,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (policy && policy.spec.name !== `sane/assistant/${role}`) throw new Error("Reserved execution policy role changed");
         const model = config?.model ?? (policy?.model ? `${policy.model.providerID}/${policy.model.id}` : undefined);
         const effort = config?.effort ?? (!config?.model ? policy?.model?.variant : undefined);
-        let launch = a.state === "intent" && harness === "opencode"
+        launch = a.state === "intent" && harness === "opencode"
           ? config ? { agent: nativeAgent, ...(model ? { model: oc.model(model, effort) } : {}) }
             : await oc.resolveLaunch(cwd, { agent: nativeAgent, model, effort })
           : undefined;
-        if (a.state === "intent") a = await admissions.createNative(sessionId, async () => (await oc.createResolved(cwd, launch!)).id);
-        if (!a.nativeId || a.state === "native_creation_unknown") throw new WorkstreamAdapterError(409, "native_creation_unknown", "Reconcile recipient creation before retry");
-        if (!meta.sessions.some(s => s.sessionId === sessionId)) {
-          if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId, cwd, nativeAgent);
-          if (harness === "opencode" && sane.saneContext) await deliverSaneFramework(a.nativeId, sessionId, sane.saneContext);
-          meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, title: predictedTitle, titleSource: "handoff", titleRevision: 0, titleAutoEligible: false,
-            ...(config ? { profileId: config.profileId, ...(harness === "claude-code" ? { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}) } : {}) } : {}),
-            ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: !sane.saneExecution || harness !== "opencode", ...sane } : {}),
-            ...(launch?.model ? { model: `${launch.model.providerID}/${launch.model.id}`, ...(launch.model.variant ? { effort: launch.model.variant } : {}) } : {}),
-          });
-          await persist();
-        }
-        await catalog.associate(sessionId, cwd, a.binding.workspaceId, a.binding.worktreeId);
-        await admissions.register(sessionId);
-        if (a.state !== "ready") admissions.ready(sessionId);
+        await completeConversationCreation(admissions, a, native, async a => {
+          if (!meta.sessions.some(s => s.sessionId === sessionId)) {
+            if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId!, cwd, nativeAgent);
+            meta.sessions.push({ sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, title: predictedTitle, titleSource: "handoff", titleRevision: 0, titleAutoEligible: false,
+              ...(config ? { profileId: config.profileId, ...(harness !== "opencode" ? { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}) } : {}) } : {}),
+              ...(harness !== "opencode" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: harness === "claude-code" || harness === "opencode" && !sane.saneExecution, ...sane } : {}),
+              ...(launch?.model ? { model: `${launch.model.providerID}/${launch.model.id}`, ...(launch.model.variant ? { effort: launch.model.variant } : {}) } : {}),
+            });
+            await persist();
+          }
+          await catalog.associate(sessionId, cwd, a.binding.workspaceId, a.binding.worktreeId);
+        });
         replyIntegration?.requestRefresh();
       });
       const session = meta.sessions.find(s => s.sessionId === handoff.recipient.sessionId);
@@ -1040,6 +1146,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   function readinessPolicy(options: Readonly<ConversationReadinessOptions<Owner>>, read?: SessionListProjection) {
     const { conversationId: sessionId, intent, phase, lease } = options;
+    if (sessionId && appAdmissions) {
+      const original = intent.kind === "user-prompt" ? originalAdmissionScope
+        ?? (lease && coordinator.holdsAdmission(lease, sessionId) ? appAdmissionLeases.get(lease) : undefined) : undefined;
+      const own = original ? appAdmissions.key(original) : undefined;
+      const pending = read ? presentationAdmissions.get(read) ?? appAdmissions.readPending() : appAdmissions.readPending();
+      if (pending.some(row => row.conversationId === sessionId
+        && (!own || row.receipt.clientRequestId !== own.clientRequestId || row.receipt.payloadSha256 !== own.payloadSha256 || row.receipt.storeId !== own.storeId))) {
+        return { ready: false as const, code: "app-admission-pending", reason: "An original App submission is unresolved; check its exact request receipt without resending" };
+      }
+    }
     if (sessionId && retiredId(sessionId)) return { ready: false as const, code: "session-retired", reason: "Conversation is retired from the active catalog. Restore it explicitly before sending." };
     if (sessionId && retirements.isPaused(sessionId)) return { ready: false as const, code: "session-retirement-pending", reason: "Conversation catalog operation is in progress" };
     // Enqueue refills waiting text only; it is not an execution exemption. In
@@ -1075,7 +1191,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (sessionId && !(intent.kind === "worker-exchange" && phase === "dispatch" && lease) && workerStore.hasActiveExchange(sessionId)) return { ready: false as const, reason: "Worker exchange delivery is reserved or acceptance is unconfirmed; it will not be resent", code: "worker-exchange-pending" };
     if (sessionId && !delivery && (handoffReservations.has(sessionId) || handoffDispatches.has(sessionId))) return { ready: false as const, reason: "Recipient has an active or uncertain handoff", code: "handoff-pending" };
     const admission = sessionId ? admissions.get(sessionId) : undefined;
-    if (admission && admission.state !== "ready" && !(preparation && (["retry-admission", "enroll", "attach"].includes(intent.kind) || admission.state === "identity_known" && admission.nativeId))) return { ready: false as const, reason: "Admission pending; explicit known-identity retry is required", code: "admission-pending" };
+    const sourceHarness: string | undefined = admission?.source.descriptor.harness;
+    const grokCreate = sourceHarness === "gk" && admission?.state === "identity_known" && intent.kind === "user-prompt";
+    if (admission && admission.state !== "ready" && !grokCreate && !(preparation && (["retry-admission", "enroll", "attach"].includes(intent.kind) || admission.state === "identity_known" && admission.nativeId))) return { ready: false as const, reason: "Admission pending; explicit known-identity retry is required", code: "admission-pending" };
     if (sessionId && intent.kind !== "attach" && meta.sessions.find(s => s.sessionId === sessionId)?.attachment?.state === "pending") return { ready: false as const, reason: "Attachment incomplete. Retry Attach with the same harness, native ID and execution directory; no run is permitted.", code: "attachment-pending" };
     // Request IDs/origins are not capabilities. Keep every other policy above,
     // and ordinary callers, unchanged even when they copy the head request ID.
@@ -1093,18 +1211,34 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!result.ready && result.code === "conversation-busy" && sessionId && inputMode === "user"
       && !coordinator.hasAdmission(sessionId) && !coordinator.hasReconciliation(sessionId) && !pendingInputs?.hasChain(sessionId)) {
       const owner = owners.get(sessionId);
-      const inspectEnqueue = () => coordinator.inspectReadiness({ conversationId: sessionId, intent: { kind: "user-prompt" }, phase: "enqueue" });
-      const policy = read ? sessionListReadiness.inspect(read, inspectEnqueue) : inspectEnqueue();
-      if (policy.ready && owner && claudeRuns.canSendInput(owner)) return { canSend: true, liveInputRunId: owner.run.runId };
+      const session = meta.sessions.find(s => s.sessionId === sessionId);
+      // Live input stays unavailable for Grok. Do not ask Claude whether this owner can send.
+      if (session?.harness !== "grok") {
+        const inspectEnqueue = () => coordinator.inspectReadiness({ conversationId: sessionId, intent: { kind: "user-prompt" }, phase: "enqueue" });
+        const policy = read ? sessionListReadiness.inspect(read, inspectEnqueue) : inspectEnqueue();
+        if (policy.ready && owner && claudeRuns.canSendInput(owner)) return { canSend: true, liveInputRunId: owner.run.runId };
+      }
     }
     return result.ready ? { canSend: true, ...(result.queueAfterRunId ? { queueAfterRunId: result.queueAfterRunId } : {}) } : { canSend: false, reason: result.reason, code: result.code };
   }
   let serial = Promise.resolve();
+  function publishMetadata(snapshot: string) {
+    const receipt = metadataPublisher.commitSerialized(snapshot);
+    committedMetadata = receipt;
+    // Original observation association is captured INSIDE actual publication,
+    // not reconstructed later from mutable launch settings or native eligibility.
+    for (const owner of owners.values()) {
+      const original = ownerMetadata.get(owner);
+      if (!original || original.receipt) continue;
+      try { metadataPublisher.assertOriginalAssociation(receipt, original.identity); original.receipt = receipt; }
+      catch (error) { if (!(error instanceof MetadataCommitProofError)) throw error; }
+    }
+  }
   function persist() {
     // Capture at enqueue time. A later concurrent admission must not leak into
     // an earlier metadata write before its first log record reaches the queue.
     const snapshot = JSON.stringify(meta);
-    return enqueue(async () => { await writeFile(`${metadataPath}.tmp`, snapshot, { mode: 0o600 }); await rename(`${metadataPath}.tmp`, metadataPath); }).then(() => {
+    return enqueue(async () => { publishMetadata(snapshot); }).then(() => {
       try { replyIntegration?.metadataPublished(snapshot); } catch { /* Optional capture never delays or fails primary publication. */ }
     });
   }
@@ -1114,15 +1248,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     agentProfiles = validateAgentProfiles(next);
     const snapshot = structuredClone(next);
     return enqueue(async () => atomicAppRecord(options.dataDir, "agents.json", snapshot));
-  }
-  const profileInputKeys = ["label", "description", "harness", "model", "effort", "icon", "color", "hidden", "workerProfiles"];
-  function applyProfileInput(profile: AgentProfile, input: Record<string, unknown>): AgentProfile {
-    const bad = Object.keys(input).find(k => !profileInputKeys.includes(k));
-    if (bad) throw new AppStoreError("APP_STORE_CORRUPT", `Unknown agent profile field: ${bad}`);
-    const next = { ...profile, ...Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined)), updatedAt: new Date().toISOString() } as AgentProfile;
-    if (typeof next.label === "string") next.label = next.label.trim();
-    if (next.hidden === false) delete next.hidden;
-    return next;
   }
   const sessionProfileId = (s: Session) => s.profileId ?? legacyProfileId(s.harness ?? "claude-code", s.agent);
   function failClosed(error?: unknown, stage = "unspecified") {
@@ -1142,11 +1267,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       } catch { /* Diagnostics must never prevent ownership retention. */ }
     }
     storageFailed = true; retainOwner = true; meta.reconciliationRequired = true;
+    void grokApp?.close().catch(() => {});
     pendingInputWake?.close();
     // Ownership records are the durable sentinel even if every later disk
     // write fails. Reopening requires process exit and explicit reconciliation.
-    for (const owner of owners.values()) if (owner.child) void terminate(owner);
+    for (const owner of owners.values()) {
+      // Original cleanup must not rediscover a transport or cancel remote work.
+      try { void cleanupOwner(owner).catch(() => {}); } catch { /* Retention is already latched. */ }
+    }
   }
+  // All failClosed dependencies are initialized here. Earlier proof failures
+  // already latched OUTER retention; later ones also fence the actual writer.
+  failInitializedStorage = error => failClosed(error, "original-app-root-proof");
   function startupStorageHealthy() {
     return startupReady && ownsStorage() && !storageFailed && !closing && !retainOwner && !meta.reconciliationRequired;
   }
@@ -1189,15 +1321,220 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     serial = next.catch(error => { failClosed(error, "serialized-storage-write"); });
     return next;
   }
-  function groupAlive(owner: Owner): boolean {
+  const grokManagedProjections = new Map<string, { projection: GrokOutputProjection; through: number; stderr: string; reason?: string; finished: boolean }>();
+  class GrokManagedSubmissionResponse extends Error {
+    constructor(readonly response: Response) { super("Original Grok science submission response"); }
+  }
+  function grokAuthoredBody(run: Run): string | undefined {
+    for (const event of journalEvents(run.runId)) {
+      if (event.kind !== "submission") continue;
+      try {
+        const submitted = decodeContextMessageSubmission(event.data), range = submitted.composition.body.range;
+        return Buffer.from(submitted.text, "utf8").subarray(range.offset, range.offset + range.length).toString("utf8");
+      } catch { /* Other submission evidence does not contain authored text. */ }
+    }
+  }
+  async function grokManagedView(sessionId: string): Promise<GrokSessionView | null> {
+    const session = meta.sessions.find(row => row.sessionId === sessionId && row.harness === "grok");
+    const history = meta.runs.filter(run => run.sessionId === sessionId);
+    if (!session) return null;
+    const projections = history.slice(-32).map(run => {
+      const records = journalEvents(run.runId);
+      const prompt = grokAuthoredBody(run);
+      let cached = grokManagedProjections.get(run.runId);
+      if (!cached) {
+        cached = { projection: new GrokOutputProjection({ id: run.runId, conversationId: sessionId, cwd: run.cwd,
+        createdAt: run.createdAt, endedAt: run.endedAt, status: run.status, harness: "grok", nativeSessionId: session.nativeSessionId,
+        operation: run.operation, ...(run.compact ? { compact: { requestId: run.compact.requestId } } : {}),
+        model: run.model, effort: run.effort, agent: run.agent, agentKind: run.agentKind,
+        profileId: run.profileId, nativeAgentSelected: run.nativeAgentSelected, saneContextVersion: run.saneContextVersion }, prompt ?? ""),
+          through: 0, stderr: "", finished: false };
+        if (prompt !== undefined) grokManagedProjections.set(run.runId, cached);
+      }
+      for (const event of records.slice(cached.through)) {
+        if (event.kind === "stdout") cached.projection.feed(typeof event.data === "string" ? event.data : JSON.stringify(event.data) + "\n");
+        if (event.kind === "stderr" && typeof event.data === "string") cached.stderr = (cached.stderr + event.data).slice(-8_000);
+        if (event.kind === "status" && event.data && typeof event.data === "object" && typeof (event.data as { reason?: unknown }).reason === "string") cached.reason = (event.data as { reason: string }).reason;
+      }
+      cached.through = records.length;
+      cached.projection.run.endedAt = run.endedAt;
+      if (run.status !== "running" && !cached.finished) { cached.projection.finish(); cached.finished = true; }
+      return cached.projection.snapshot(run.status, [cached.reason, cached.stderr].filter(Boolean).join("\n"));
+    });
+    const admission = admissions.get(sessionId), active = owners.has(sessionId);
+    const base = agentProfiles.profiles.find(profile => profile.id === "base:gk");
+    const ready = availability(sessionId, true, false, false, "user");
+    return { protocol: "grok-capture", version: 1, sessionId, nativeSessionId: session.nativeSessionId!, authorityId: session.authorityId!,
+      cwd: session.cwd, model: session.model ?? base?.model ?? "", effort: session.effort ?? base?.effort ?? "",
+      profileId: session.profileId, agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected,
+      title: session.title, workspaceId: admission?.binding.workspaceId, worktreeId: admission?.binding.worktreeId,
+      phase: active ? "running" : ready.canSend ? "idle" : "blocked", nextTurnIndex: history.length, active,
+      blocked: !active && !ready.canSend, availability: ready, ...(ready.reason ? { reason: ready.reason } : {}),
+      nativeAcceptance: "unknown", acceptedMessageId: null, messages: projections.flatMap(projection => projection.messages),
+      runs: projections.map(projection => projection.run) };
+  }
+  grokModelCatalog = new GrokModelCatalog({ dataDir: options.dataDir, executable: options.grokExecutable, homeRoot: options.grokHomeRoot,
+    authorityId: () => admissions.getGrokSourcePin()?.authorityId ?? undefined,
+    assertOpen: () => { assertStorageOwned(); if (closing || storageFailed) throw new Error("App is unavailable for model discovery"); },
+  });
+  grokApp = new GrokAppService({
+    dataDir: options.dataDir, admissions, catalog,
+    executable: options.grokExecutable, homeRoot: options.grokHomeRoot,
+    appConnectionFile: join(options.dataDir, "native-handoff.json"), bindingDirectory: grokBindingDirectory,
+    readSession: id => meta.sessions.find(session => session.sessionId === id),
+    resolveProfile: async (input, stored) => {
+      if (stored && (!input.profileId || input.profileId === stored.profileId)) return { profileId: stored.profileId ?? "base:gk", agent: stored.agent, agentKind: stored.agentKind,
+        nativeAgentSelected: stored.nativeAgentSelected, saneExecution: stored.saneExecution, saneContext: stored.saneContext };
+      const profile = agentProfiles.profiles.find(profile => profile.id === (input.profileId ?? "base:gk"));
+      if (!profile || profile.harness !== "grok") throw new WorkstreamAdapterError(409, "grok-profile-unavailable", "Select a configured Grok profile");
+      const launch = resolveAgentLaunch(profile);
+      if (stored && (stored.agent || launch.identity?.kind !== "assistant")) throw new WorkstreamAdapterError(409, "invalid-profile-upgrade", "An existing Base chat can select an assistant on the same harness");
+      if (launch.identity?.kind === "utility" || launch.identity?.kind === "worker") throw new WorkstreamAdapterError(409, "invalid-profile", "Worker and utility profiles use their normal App launch actions");
+      const snapshot = agentLaunchSnapshot(launch);
+      const context = launch.identity ? await executionReservation(input.sessionId, launch.identity, () => prepareSaneContext(launch.identity!)) : {};
+      return { profileId: launch.profileId, agent: snapshot.agent, agentKind: snapshot.agentKind,
+        ...(snapshot.agent ? { nativeAgentSelected: false } : {}), ...context };
+    },
+    preparePrompt: async (session, owner, prompt, firstTurn) => {
+      if (!firstTurn || !session.saneContext?.package) return prompt;
+      const current = () => {
+        assertStorageOwned();
+        if (owner.stopRequested || closing) throw new WorkstreamAdapterError(409, "grok-stopped", "Grok was stopped before sending");
+      };
+      const pinned = await contextPackages.load(session.saneContext.package);
+      const roots = await sessionMessageSource(session, current);
+      current(); roots.check();
+      const source = owner.contextIdentity!.source;
+      return composeContextMessage({ body: prompt,
+        binding: { ...source, authorityId: session.authorityId!, nativeSessionId: session.nativeSessionId! },
+        origin: "activation", placement: { kind: "bootstrap" }, context: pinned, session: roots.fragment }).transport.text;
+    },
+    managedView: grokManagedView,
+    managedSubmit: async input => {
+      const current = await grokManagedView(input.sessionId);
+      const existing = meta.sessions.find(session => session.sessionId === input.sessionId);
+      if (existing && existing.harness !== "grok") throw new WorkstreamAdapterError(409, "grok-session-conflict", "This App conversation belongs to a different harness");
+      if (input.scienceSnapshots !== undefined) {
+        if (!current) throw new WorkstreamAdapterError(409, "science-send-invalid", "Science sharing requires an existing admitted Grok conversation");
+        if (input.cwd !== undefined && input.cwd !== current.cwd || input.workspaceId != null && input.workspaceId !== current.workspaceId
+          || input.worktreeId != null && input.worktreeId !== current.worktreeId) throw new WorkstreamAdapterError(409, "grok-binding-conflict", "Science sharing must retain the original Grok execution source");
+        const prior = uuid(input.requestId) ? scienceSubmissions.get({ conversationId: input.sessionId, requestId: input.requestId }) : undefined;
+        if ((!prior || prior.state === "prepared") && input.turnIndex !== current.nextTurnIndex) throw new WorkstreamAdapterError(409, "grok-turn-conflict", "Grok turn index changed; refresh before sharing");
+        // Domain receipts compare the entire frozen snapshot/settings payload.
+        // Never deduplicate science sends using just the visible comment text.
+        const response = await submitUserInput({ sessionId: input.sessionId, prompt: input.prompt, model: input.model, effort: input.effort,
+          ...(input.profileId ? { profileId: input.profileId } : {}), ...(input.nativeStopped !== undefined ? { nativeStopped: input.nativeStopped } : {}),
+          requestId: input.requestId, scienceSnapshots: input.scienceSnapshots });
+        const result = await response.clone().json() as { scienceSubmission?: ScienceSubmissionView; error?: unknown };
+        if (!response.ok || result.error) throw new GrokManagedSubmissionResponse(response);
+        const view = await grokManagedView(input.sessionId);
+        if (!view) throw new GrokManagedSubmissionResponse(response);
+        return { ...view, ...(result.scienceSubmission ? { scienceSubmission: result.scienceSubmission } : {}) };
+      }
+      if (current && input.turnIndex < current.nextTurnIndex) {
+        const prior = meta.runs.filter(run => run.sessionId === input.sessionId)[input.turnIndex];
+        if (!prior || grokAuthoredBody(prior) !== input.prompt || prior.model !== input.model || prior.effort !== input.effort) throw new WorkstreamAdapterError(409, "grok-turn-conflict", "This turn already identifies a different message");
+        return current;
+      }
+      if (input.turnIndex !== (current?.nextTurnIndex ?? 0)) throw new WorkstreamAdapterError(409, "grok-turn-conflict", "Grok turn index changed; refresh this conversation");
+      const prepared = await prepareUserInput({ ...(existing ? { sessionId: input.sessionId } : { harness: "grok", cwd: input.cwd,
+        workspaceId: input.workspaceId, worktreeId: input.worktreeId }), prompt: input.prompt, model: input.model, effort: input.effort,
+        ...(input.nativeStopped !== undefined ? { nativeStopped: input.nativeStopped } : {}),
+        ...(input.profileId ? { profileId: input.profileId } : {}) }, { ...preparationState(), defaultCwd: options.cwd,
+        conversationId: () => input.sessionId, selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
+        ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) });
+      const lease = reserve({ kind: "user-prompt" }, input.sessionId);
+      try { await admitPreparedInput(prepared, lease); } finally { coordinator.releaseAdmission(lease); }
+      return (await grokManagedView(input.sessionId))!;
+    },
+    managedStop: async sessionId => {
+      const forks = [...grokForkProcesses.values()].filter(fork => fork.sourceId === sessionId);
+      for (const fork of forks) fork.controller.abort();
+      const owner = pendingInputControls.stop(sessionId);
+      if (owner) await cancelOwner(owner);
+      await Promise.all(forks.map(fork => fork.done));
+      return { interrupted: false, nativeCancellation: owner || forks.length ? "unproven" : "not-attempted",
+        wrapperClosed: !owners.has(sessionId) && forks.every(fork => !fork.spawned || fork.observation?.closeObserved && fork.observation.processGroupGone),
+        reason: owner || forks.length ? "Stopped the owned Grok process; provider cancellation remains unproven." : "No active Grok process." };
+    },
+    assertOpen: () => {
+      assertStartupReady();
+      if (!startupStorageHealthy()) throw new WorkstreamAdapterError(503, "bridge-unavailable", "App storage or execution is unavailable");
+      assertStorageOwned();
+    },
+    admit: async <T>(sessionId: string, work: () => Promise<T>): Promise<T> => {
+      const lease = reserve({ kind: "user-prompt" }, sessionId);
+      try { return await work(); } finally { coordinator.releaseAdmission(lease); }
+    },
+    reserveTurn: sessionId => {
+      const lease = reserve({ kind: "user-prompt" }, sessionId);
+      return () => { coordinator.releaseAdmission(lease); };
+    },
+    persistSession: async session => {
+      assertStorageOwned();
+      const existing = meta.sessions.find(row => row.sessionId === session.sessionId);
+      if (!existing) {
+        Object.assign(meta, { version: 2 });
+        meta.sessions.push(session);
+        await persist();
+      } else if (existing.harness === "grok" && existing.nativeSessionId === session.nativeSessionId && existing.authorityId === session.authorityId && existing.cwd === session.cwd) {
+        Object.assign(existing, session);
+        await persist();
+      }
+    },
+    changed: () => { replyIndexedSessionCount = -1; },
+  });
+  function claudeGroupAlive(owner: Owner): boolean {
+    const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
+    if (session?.harness === "grok") throw new HarnessOperationError("Grok is not observed through Claude process groups", 501, "unsupported-harness-operation");
     return claudeRuns.groupAlive(owner);
   }
-  function terminate(owner: Owner): Promise<boolean> {
-    return claudeRuns.terminate(owner);
+  function bindOwnerControls(owner: Owner) {
+    const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
+    if (!session) throw new HarnessOperationError("Run owner conversation is unavailable", 409, "owner-harness-mismatch");
+    const source = dispatchSource(session);
+    const controls = dispatchHarness(source.harnessId, {
+      "claude-code": () => claudeRuns.controls(owner),
+      opencode: () => ocRuns.controls(owner),
+      grok: () => grokRuns.controlOperations(owner),
+    });
+    bindRunControls(owner, source, controls);
   }
-  function emit(run: Run, kind: Event["kind"], data: unknown) {
+  function cleanupOwner(owner: Owner): Promise<boolean> {
+    // Cleanup targets original resources even when launch identity has failed.
+    if (!owner.controls) throw new HarnessOperationError("Run owner controls are unavailable", 409, "owner-harness-mismatch");
+    return owner.controls.cleanup();
+  }
+  function reserveJournalEvent(run: Run, kind: Event["kind"], data: unknown) {
     if (!events.has(run.runId) && deferredJournals.has(run.runId)) journalEvents(run.runId);
     const list = events.get(run.runId)!;
+    const session = meta.sessions.find(session => session.sessionId === run.sessionId);
+    let captured: { session: Session; run: Run; event: Event } | undefined;
+    const reservation = runJournals.reserve(run, list, kind, data, event => {
+      replyJournalThrough.set(run.runId, event.seq);
+      // Projection callbacks run outside the writer's synchronous I/O/publication
+      // section. A recorder may itself reserve a later event, never reenter a
+      // flush or delay its durable native-boundary return.
+      queueMicrotask(() => {
+        if (captured) { try {
+          updates.primaryJournalCommitted(captured.session, captured.run, captured.event);
+          replyIntegration?.correlateCommitted(captured.session, captured.run, captured.event);
+        } catch { /* optional update coverage */ } }
+        if (captured) { try { chromePush?.journalCommitted(captured.session, captured.run, captured.event); } catch { /* optional device delivery */ } }
+        if (session && kind === "message" && !retirementPaused(session.sessionId)) {
+          try { nativeSubagentRecorder.refresh(session, run); }
+          catch (error) { failClosed(error, "native-subagent-journal-projection"); }
+        }
+      });
+    });
+    const event = reservation.event;
+    list.push(event);
+    transcripts.ingest(run, [event]);
+    try { if (session && updateEligible(session, run)) captured = structuredClone({ session, run, event }); }
+    catch { /* Optional evidence indexing cannot interfere with journal ownership. */ }
+    return reservation;
+  }
+  function emit(run: Run, kind: Event["kind"], data: unknown) {
     let namingText: string | undefined;
     if (kind === "submission" && namingSubmissions.has(run)) {
       const original = namingSubmissions.get(run)!;
@@ -1205,28 +1542,29 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // Only live first-submission evidence qualifies. Never backfill a name
       // from a later send, even if an earlier automatic attempt was unavailable.
       try {
-        if (!list.some(event => event.kind === "submission") && !meta.runs.some(previous => previous.sessionId === run.sessionId && previous.runId !== run.runId
+        const list = events.get(run.runId);
+        if (list && !list.some(event => event.kind === "submission") && !meta.runs.some(previous => previous.sessionId === run.sessionId && previous.runId !== run.runId
           && previous.operation !== "compact" && journalEvents(previous.runId).some(event => event.kind === "submission"))) namingText = original;
       } catch { /* Optional naming cannot interfere with submission. */ }
     }
-    const event: Event = { seq: (list.at(-1)?.seq ?? 0) + 1, time: new Date().toISOString(), runId: run.runId, sessionId: run.sessionId, kind, data };
-    list.push(event);
-    transcripts.ingest(run, [event]);
-    const session = meta.sessions.find(session => session.sessionId === run.sessionId);
-    let captured: { session: Session; run: Run; event: Event } | undefined;
-    try { if (session && updateEligible(session, run)) captured = structuredClone({ session, run, event }); }
-    catch { /* Optional evidence indexing cannot interfere with journal ownership. */ }
-    const committed = enqueue(async () => {
-      await appendFile(join(options.dataDir, `${run.runId}.jsonl`), JSON.stringify(event) + "\n", { mode: 0o600 });
-      replyJournalThrough.set(run.runId, event.seq);
-      // Derived storage/projection must never escape into execution failClosed.
-      if (captured) { try {
-        updates.primaryJournalCommitted(captured.session, captured.run, captured.event);
-        replyIntegration?.correlateCommitted(captured.session, captured.run, captured.event);
-      } catch { /* optional update coverage */ } }
-      if (captured) { try { chromePush?.journalCommitted(captured.session, captured.run, captured.event); } catch { /* optional device delivery */ } }
-      if (session && kind === "message" && !retirementPaused(session.sessionId)) nativeSubagentRecorder.refresh(session, run);
-    });
+    const reservation = reserveJournalEvent(run, kind, data);
+    // Preserve the global metadata/write queue. Only the physical run-log append
+    // changes implementation; there is no asynchronous append left in flight for
+    // this live writer. A future synchronous fence consumes the same reservations.
+    const committed = enqueue(async () => { runJournals.commit(reservation); });
+    const owner = owners.get(run.sessionId), association = owner?.run === run ? boundContextAssociations.get(owner) : undefined;
+    if (kind === "submission" && association && (data as { messageId?: unknown })?.messageId === association.messageId) {
+      // The pairing follows its ONE actual standard submission in the same log.
+      // onBound only staged these immutable source facts; it certified no send.
+      boundContextAssociations.delete(owner!);
+      const paired = reserveJournalEvent(run, "context", association);
+      const contextCommitted = enqueue(async () => { runJournals.commit(paired); });
+      if (namingText !== undefined) {
+        const original = namingText;
+        void contextCommitted.then(() => { setTimeout(() => sessionNaming?.submitted(run.sessionId, run, original), 0); }).catch(() => {});
+      }
+      return contextCommitted;
+    }
     if (namingText !== undefined) {
       const original = namingText;
       // Both harnesses commit submissions here. Generation runs on a later
@@ -1262,7 +1600,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     generate: (transcript, signal) => {
       const profile = agentProfiles.profiles.find(profile => profile.id === "utility:session-namer");
       if (!profile || profile.kind !== "utility" || profile.role !== "session-namer") throw new SessionNamingError(503, "title-profile-unavailable", "Session naming utility profile is unavailable");
-      return runSessionNamingUtility({ sourceRoot: resolve(root, "../.."), dataDir: options.dataDir, claudeBin: options.claudeBin, claudeRoot, oc, profile: structuredClone(profile), transcript, signal, agentModelConfig: options.agentModelConfig });
+      return runSessionNamingUtility({ sourceRoot: resolve(root, "../.."), dataDir: options.dataDir, claudeBin: options.claudeBin, claudeRoot, oc,
+        grokExecutable: options.grokExecutable, grokHomeRoot: options.grokHomeRoot,
+        profile: structuredClone(resolveProfileDefaults(agentProfiles, profile)), transcript, signal, agentModelConfig: options.agentModelConfig });
     },
   });
   const followupSessions = new Set(meta.runs.filter(run => run.queuedFollowupId).map(run => run.sessionId));
@@ -1278,6 +1618,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const decoded = decodeLog(raw, run);
       if (decoded.repaired !== undefined) {
         if (retiredId(run.sessionId)) throw new Error("Archived journal requires explicit repair; no history was modified");
+        if (anchoredActivationRuns.has(runId)) throw new Error("Anchored activation journal requires explicit reconciliation; no history was modified");
+        runJournals.assertUnclaimed(runId);
         writeFileSync(logPath, decoded.repaired, { mode: 0o600 });
       }
       events.set(run.runId, decoded.events);
@@ -1326,7 +1668,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     let raw: string;
     try { raw = await readFile(logPath, "utf8"); } catch (e: any) { throw new Error(`Cannot load historical event log for ${run.runId}: ${e.code === "ENOENT" ? "missing file" : "read failed"}`); }
     const decoded = decodeLog(raw, run); const list = decoded.events;
-    if (decoded.repaired !== undefined) await enqueue(() => writeFile(logPath, decoded.repaired!, { mode: 0o600 }));
+    if (decoded.repaired !== undefined) await enqueue(async () => {
+      if (anchoredActivationRuns.has(run.runId)) throw new Error("Anchored activation journal requires explicit reconciliation; no history was modified");
+      runJournals.assertUnclaimed(run.runId);
+      writeFileSync(logPath, decoded.repaired!, { mode: 0o600 });
+    });
     events.set(run.runId, list);
     replyJournalThrough.set(run.runId, list.at(-1)?.seq ?? 0);
     transcripts.ingest(run, list);
@@ -1366,12 +1712,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
     validateSession: (target, identity) => {
       const session = meta.sessions.find(session => session.sessionId === identity.sessionId), admission = admissions.get(identity.sessionId);
+      let sessionHarnessId: Harness;
+      try { sessionHarnessId = validateHarness(session?.harness); }
+      catch { throw new BrowserGrantError(409, "browser-grant-identity", "Conversation identity or workspace changed; reconnect before granting browser access"); }
       if (!session || !admission || admission.state !== "ready" || admission.binding.workspaceId !== target.workspaceId
-        || identity.harness !== sessionHarness(session) || identity.authorityId !== session.authorityId || identity.nativeSessionId !== session.nativeSessionId) throw new BrowserGrantError(409, "browser-grant-identity", "Conversation identity or workspace changed; reconnect before granting browser access");
+        || identity.harness !== sessionHarnessId || identity.authorityId !== session.authorityId || identity.nativeSessionId !== session.nativeSessionId) throw new BrowserGrantError(409, "browser-grant-identity", "Conversation identity or workspace changed; reconnect before granting browser access");
       const association = catalog.association(session.sessionId);
+      let admittedHarness: Harness;
+      try { admittedHarness = toSessionHarness(admission.source.descriptor.harness); }
+      catch { throw new BrowserGrantError(409, "browser-grant-identity", "Conversation admission or workspace changed; reconnect before granting browser access"); }
       if (association.association !== "resolved" || association.workspaceId !== target.workspaceId || association.worktreeId !== admission.binding.worktreeId
         || admission.nativeId !== session.nativeSessionId || admission.source.authorityId !== session.authorityId
-        || (admission.source.descriptor.harness === "cc" ? "claude-code" : "opencode") !== sessionHarness(session)
+        || admittedHarness !== sessionHarnessId
         || admission.binding.executionCheckout !== session.cwd) throw new BrowserGrantError(409, "browser-grant-identity", "Conversation admission or workspace changed; reconnect before granting browser access");
       assertCatalogActive(session);
       if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || session.attachment?.state === "pending"
@@ -1386,7 +1738,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   async function branchDomain(source: Session, enroll = false) {
     const admission = admissions.get(source.sessionId);
     if (!admission || admission.state !== "ready") throw new Error("Source admission is not ready");
-    if (source.nativeSessionId !== admission.nativeId || source.authorityId !== admission.source.authorityId || source.harness !== (admission.source.descriptor.harness === "cc" ? "claude-code" : "opencode") || source.cwd !== admission.binding.executionCheckout) throw new Error("Source identity or execution checkout differs from its admission");
+    if (source.nativeSessionId !== admission.nativeId || source.authorityId !== admission.source.authorityId || source.harness !== toSessionHarness(admission.source.descriptor.harness) || source.cwd !== admission.binding.executionCheckout) throw new Error("Source identity or execution checkout differs from its admission");
     await router!.execution(admission);
     if (admission.binding.domain.mode === "app-only" && (await catalog.get(admission.binding.workspaceId)).kind === "repository") {
       const inspected = await router!.inspect(admission.binding.workspaceId);
@@ -1468,13 +1820,26 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (native.at(-1)?.messageId !== latest.uuid || !native.some(m => m.messageId === selected.uuid)) throw new Error("Native history differs from SANE's completed run evidence; external activity must be reconciled");
         return { boundary: selected.uuid as string, before: undefined, sourceFingerprint: branchFingerprint(native) };
       },
+      grok: async () => {
+        if (!run || source.lastRunId !== run.runId || source.lastStatus !== "completed"
+          || meta.runs.filter(candidate => candidate.sessionId === source.sessionId).at(-1) !== run
+          || source.attachment || !source.nativeSessionId || !source.authorityId) throw new Error("Grok can fork only its latest App-recorded completed native history");
+        const snapshot = dispatchSnapshot(source);
+        await serial;
+        if (storageFailed || !grokWrapperCompletion({ harness: "gk", authorityId: source.authorityId, nativeId: source.nativeSessionId }, run, journalEvents(run.runId)))
+          throw new Error("Grok latest-turn fork requires the exact completed wrapper and drained output");
+        const native = await readGrokHistory(source.nativeSessionId, source.cwd, grokHistoryHome());
+        assertDispatchSnapshot(source.sessionId, snapshot);
+        if (!native.length || source.lastRunId !== run.runId || source.lastStatus !== "completed" || owners.has(source.sessionId)) throw new Error("Grok latest native history is unavailable or changed during branch selection");
+        return { boundary: native.at(-1)!.messageId, before: undefined, sourceFingerprint: branchFingerprint(native) };
+      },
     });
   }
   async function enrollBranch(op: BranchOperation, source: Session) {
     if (!op.nativeId) throw new Error("Native destination identity is unknown; no creation retry is permitted");
     if (meta.sessions.some(s => s.sessionId !== op.destinationId && s.authorityId === source.authorityId && s.nativeSessionId === op.nativeId)) throw new Error("Native fork identity is already associated with another App conversation");
     const original = admissions.get(source.sessionId)!;
-    if (!admissions.get(op.destinationId)) await admissions.begin({ sessionId: op.destinationId, operation: "create", harness: source.harness === "opencode" ? "oc" : "cc", cwd: source.cwd, nativeId: op.nativeId, workspaceId: original.binding.workspaceId, worktreeId: original.binding.worktreeId, parent: original.binding.domain.mode === "repository" ? { harness: original.source.descriptor.harness, authorityId: original.source.authorityId, nativeId: source.nativeSessionId! } : null });
+    if (!admissions.get(op.destinationId)) await admissions.begin({ sessionId: op.destinationId, operation: "create", harness: toNativeHarness(source.harness as Harness), cwd: source.cwd, nativeId: op.nativeId, workspaceId: original.binding.workspaceId, worktreeId: original.binding.worktreeId, parent: original.binding.domain.mode === "repository" ? { harness: original.source.descriptor.harness, authorityId: original.source.authorityId, nativeId: source.nativeSessionId! } : null });
     const admission = admissions.get(op.destinationId)!;
     if (admission.nativeId !== op.nativeId || !["identity_known", "ready"].includes(admission.state)) throw new Error("Destination admission differs from the confirmed branch identity");
     const sourceDomain = original.binding.domain, destinationDomain = admission.binding.domain;
@@ -1542,10 +1907,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!op.nativeId) throw new Error("Fork creation is uncertain. Destination is unknown; creation will not be retried. Original memberships are unchanged.");
       const adapter = await branchDomain(source);
       if (!adapter?.domain.branchCompleted(adapter.reference(source), op.id)) {
-        const sourceHistory = await dispatchHarness(sessionHarness(source), { opencode: () => oc.history(source.nativeSessionId!, source.cwd), "claude-code": async () => ({ messages: await readClaudeHistory(source.nativeSessionId!, source.cwd, claudeRoot) }) });
+        const sourceHistory = await dispatchHarness(sessionHarness(source), {
+          opencode: () => oc.history(source.nativeSessionId!, source.cwd),
+          "claude-code": async () => ({ messages: await readClaudeHistory(source.nativeSessionId!, source.cwd, claudeRoot) }),
+          grok: async () => ({ messages: await readGrokHistory(source.nativeSessionId!, source.cwd, grokHistoryHome()) }),
+        });
         if ("activity" in sourceHistory && sourceHistory.activity !== "idle" || branchFingerprint("rawMessages" in sourceHistory ? sourceHistory.rawMessages : sourceHistory.messages) !== op.sourceFingerprint) throw new Error("Source native history changed or became active during branching. Transfer is blocked; the confirmed native destination is retained for inspection.");
       }
       if (source.harness === "claude-code") await verifyClaudeFork(op.nativeId, source.cwd, source.nativeSessionId!, op.boundary, claudeRoot);
+      if (source.harness === "grok") await verifyGrokFork(op.nativeId, source.cwd, source.nativeSessionId!, grokHistoryHome());
       const native = await readNativeHistory(sessionHarness(source), op.nativeId, source.cwd);
       if (source.harness === "opencode" && native.activity !== "idle") throw new Error("The branch destination is active or has pending input. Wait for it to finish before restarting the App.");
       if (closing || storageFailed) throw new Error("Branch completion paused while the App shuts down");
@@ -1566,6 +1936,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const descriptor = getHarnessDescriptor(session.harness);
     if (!descriptor) return "Compaction requires a known native harness";
     if (!descriptor.operations.compact.supported) return descriptor.operations.compact.reason;
+    if (snapshotIdentity(session)) return "SANE compaction requires qualified activation-retention proof; shared context will not be silently bootstrapped again";
+    if (!meta.runs.some(row => row.sessionId === session.sessionId) && pendingActivations.hasPending(session.sessionId)) return "Send the original pending activation before compacting; its preparation journal cannot be replaced";
     if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId)) return "Worker conversations cannot be compacted manually";
     if (workers.hasBlockingDescendants(session.sessionId) || workerStore.hasActiveDelivery(session.sessionId) || workerStore.hasActiveExchange(session.sessionId)) return "Finish outstanding workers and worker report deliveries before compacting";
     if (!session.nativeSessionId || !session.harness) return "Compaction requires an existing native conversation";
@@ -1638,6 +2010,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
   }
   const compactAdmissions = new Map<string, { instructions?: string; promise: Promise<CompactResponse> }>();
+  const grokCompactEvidence = new WeakMap<Owner, ReturnType<typeof createDispatchEvidence>>();
   async function admitCompact(session: Session, input: CompactRequest): Promise<CompactResponse> {
     const descriptor = requireOperation(session.harness, "compact");
     const available = availability(session.sessionId), blocked = compactBlocked(session);
@@ -1659,49 +2032,146 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
       const finished = Promise.withResolvers<void>();
       const owner: Owner = { run, native: session.harness === "opencode", nativeDispatched: false, done: finished.promise, settled: false };
-      installOwner(lease, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
+      const initialEvents = prepareRunJournalInstallation({ directory: runJournalDirectory, run, runs: meta.runs,
+        hasEvents: id => events.has(id), isDeferred: id => deferredJournals.has(id), hasPendingActivation: id => pendingActivations.hasPending(id), claimNew: target => runJournals.claimNew(target) });
+      installOwner(lease, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, initialEvents);
+      if (session.harness === "grok") {
+        const snapshot = dispatchSnapshot(session);
+        const identity: DispatchIdentity = Object.freeze({ source: Object.freeze(dispatchSource(session)), runId: run.runId, nativeCommandId: null, requestId: input.requestId });
+        owner.contextIdentity = identity;
+        ownerMetadata.set(owner, { identity, binding: captureMetadataDispatchBinding(session, run, identity) });
+        const original = () => {
+          assertStorageOwned();
+          if (storageFailed || owner.run !== run || !meta.runs.includes(run) || run.runId !== identity.runId || run.sessionId !== identity.source.sessionId
+            || run.cwd !== identity.source.cwd || run.nativeCommandId != null) throw new Error("Original Grok compact journal association changed");
+        };
+        owner.assertMetadataCommitted = () => {
+          original(); assertDispatchSnapshot(session.sessionId, snapshot);
+          const published = ownerMetadata.get(owner);
+          if (!published?.receipt) throw new Error("Original Grok compact metadata is not durably published");
+          metadataPublisher.assertCommitted(published.receipt, published.binding);
+        };
+        owner.beforeSend = () => {
+          original(); assertStartupReady(); assertDispatchSnapshot(session.sessionId, snapshot);
+          if (closing || storageFailed || retainOwner || meta.reconciliationRequired || owners.get(session.sessionId) !== owner
+            || owner.settled || owner.stopRequested || owner.cancelling || owner.stopping) throw new WorkstreamAdapterError(409, "compact-unavailable", "Original Grok compact owner is no longer current");
+        };
+        const record = (fact: import("../shared/conversation/dispatch-contract").DispatchSubmissionEvidence) => {
+          original();
+          // Native RPC dispatch facts, not a submitted context/user message.
+          runJournals.commit(reserveJournalEvent(run, "context", { type: "grok-compact-dispatch", ...fact }));
+        };
+        const evidence = createDispatchEvidence(identity, { beforeNative: fact => { owner.beforeSend!(); owner.assertMetadataCommitted!(); record(fact); }, outcome: record }, error => failClosed(error, "grok-compact-evidence"));
+        owner.dispatchEvidence = evidence; grokCompactEvidence.set(owner, evidence);
+      }
       // Stable App and native request IDs reach disk before any native mutation.
       try {
         await emit(run, "status", { status: "running", operation: "compact", compactionLifecycle: "requested" });
         await persist();
       } catch (error) { owner.settled = true; finished.resolve(); throw error; }
-      void executeCompact(owner, input.instructions).catch(async error => { failClosed(error, "compaction"); await terminate(owner); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
+      void executeCompact(owner, input.instructions).catch(async error => { failClosed(error, "compaction"); await cleanupOwner(owner); }).finally(() => {
+        owner.settled = true;
+        if (session.harness === "grok" && owner.streamsDrained !== true) { retainOwner = true; meta.reconciliationRequired = true; }
+        else releaseOwner(owner);
+        finished.resolve();
+      });
       return { sessionId: session.sessionId, runId: run.runId, operation: projectCompactions(session, [run], journalEvents(run.runId))[0]! };
     } finally { coordinator.releaseAdmission(lease); }
   }
   function ownedSession(owner: Owner) {
     const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
     if (!session) throw new HarnessOperationError("Run owner conversation is unavailable", 409, "owner-harness-mismatch");
-    return { sessionId: session.sessionId, harness: sessionHarness(session) };
+    return { sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId, nativeSessionId: session.nativeSessionId, cwd: session.cwd };
   }
   async function executeCompact(owner: Owner, instructions?: string) {
     return dispatchOwnedOperation(ownedSession(owner), owner, "compact", {
       "claude-code": () => claudeRuns.execute(owner, `/compact${instructions ? ` ${instructions}` : ""}`, true, () => {}),
       opencode: () => ocRuns.executeNativeCompact(owner),
+      grok: async () => {
+        let result: Awaited<ReturnType<typeof grokRuns.executeCompact>>;
+        try { result = await grokRuns.executeCompact(owner, instructions); }
+        finally { grokCompactEvidence.get(owner)?.finish(); }
+        if (result.refreshHistory && owner.streamsDrained === true) await refreshCompactHistory(owner);
+        return result;
+      },
     });
   }
   const ocRuns = new OpenCodeRunService({
     oc, closing: () => closing, storageFailed: () => storageFailed,
+    failClosed: error => failClosed(error, "run-submission-invariant"),
     currentOwner: sessionId => owners.get(sessionId),
     session: sessionId => meta.sessions.find(s => s.sessionId === sessionId)!,
     events: runId => journalEvents(runId), emit, persist, execution, executionContext,
-    takeFrameworkDelivery: sessionId => { const delivery = frameworkDeliveries.get(sessionId); frameworkDeliveries.delete(sessionId); return delivery; },
     compactExecution, refreshCompactHistory, assertWorkerDeliverySubmission,
-    workerHasRun: runId => workerStore.hasExecutionRun(runId), sleep: ms => Bun.sleep(ms), saneSession, canonicalContext, canonicalExecution,
+    workerHasRun: runId => workerStore.hasExecutionRun(runId), sleep: ms => Bun.sleep(ms), canonicalExecution,
     explicitProtocol: sessionId => workerStore.getBySession(sessionId)?.protocol,
     completionInboxEmpty: async id => {
       const result = await oc.request<{ data: unknown[] }>(oc.path(id) + "/inbox");
       return Array.isArray(result?.data) && result.data.length === 0;
     },
   });
-  function dispatchSource(session: Session): DispatchSource {
-    return Object.freeze({ harnessId: sessionHarness(session), sessionId: session.sessionId,
-      authorityId: session.authorityId ?? nativeSource(sessionHarness(session)), nativeSessionId: session.nativeSessionId ?? null, cwd: session.cwd });
-  }
-  function dispatchSnapshot(session: Session) {
-    return JSON.stringify([dispatchSource(session), session.profileId, session.model, session.effort, session.agent,
-      session.agentKind, session.nativeAgentSelected, session.saneContext, session.saneExecution, session.attachment]);
-  }
+  const grokRuns = new GrokRunService<Owner>({
+    executable: options.grokExecutable, homeRoot: options.grokHomeRoot ?? "",
+    promptDirectory: join(options.dataDir, "grok-prompts"),
+    appConnectionFile: join(options.dataDir, "native-handoff.json"), bindingDirectory: grokBindingDirectory,
+    toolPath: grokApp.capability().configured ? grokApp.nativeToolPath() : undefined,
+    session: id => meta.sessions.find(session => session.sessionId === id), owner: id => owners.get(id), admissions,
+    append: emit, persist,
+    assertOpen: () => { assertStartupReady(); if (!startupStorageHealthy()) throw new WorkstreamAdapterError(503, "bridge-unavailable", "App execution is unavailable"); },
+    failClosed: error => failClosed(error, "grok-managed-run"),
+    updateStatus: async (owner, status, reason) => {
+      const session = meta.sessions.find(session => session.sessionId === owner.run.sessionId);
+      if (session?.lastRunId === owner.run.runId) session.lastStatus = status;
+      const observed = grokRuns.observation(owner);
+      const identity = owner.contextIdentity;
+      if (session && identity && identity.runId === owner.run.runId
+        && identity.nativeCommandId === null && sameDispatchSource(identity.source, dispatchSource(session))
+        && owners.get(session.sessionId) === owner && meta.runs.includes(owner.run)
+        && observed?.submission === "submitted" && observed.wrapperCompletion === "closed" && owner.streamsDrained) {
+        const completed = status === "completed" && observed.exitCode === 0 && observed.exitSignal === null;
+        await emit(owner.run, "context", { type: completed ? "grok-wrapper-completion" : "grok-wrapper-termination", status, runId: owner.run.runId,
+          source: identity.source, nativeCommandId: null, ...(identity.requestId ? { requestId: identity.requestId } : {}),
+          submission: "submitted", nativeAcceptance: "unknown", wrapperCompletion: "closed", streamsDrained: true,
+          exitCode: observed.exitCode, exitSignal: observed.exitSignal });
+      }
+      await emit(owner.run, "status", { status, ...(reason ? { reason } : {}) });
+    },
+    assertBinding: admission => catalog.assertBinding(admission.binding.workspaceId, admission.binding.worktreeId,
+      admission.binding.executionCheckout, admission.binding.bindingRevision),
+  });
+  const { dispatchSource, dispatchSnapshot, contextBinding } = createDispatchSource({ sessionHarness, nativeSource });
+  const sessionMessageSource = createSessionMessageSource({ storeId: store.manifest.storeId,
+    resolveExecution, catalog });
+  const assertQualifiedContinuation = (session: Session, activeRun: Run) => {
+    // Lifecycle compatibility, not a claim about the current native prefix.
+    // Existing metadata is validated when loaded; do not reconstruct journals
+    // or native history just to send an ordinary body-only continuation.
+    if (!session.saneExecution || !session.saneContext?.package) throw new WorkstreamAdapterError(409, "context-activation-unproven", "Legacy SANE context requires explicit lifecycle qualification; ordinary input cannot activate or migrate it");
+    const admission = admissions.get(session.sessionId);
+    if (activeRun.sessionId !== session.sessionId || !admission || admission.state !== "ready"
+      || admission.nativeId !== session.nativeSessionId || admission.source.authorityId !== session.authorityId
+      || admission.binding.executionCheckout !== session.cwd || toSessionHarness(admission.source.descriptor.harness) !== session.harness) throw new WorkstreamAdapterError(409, "context-source-unavailable", "Continuation requires its original ready native admission");
+    if (branches.list().some(op => op.destinationId === session.sessionId)) throw new WorkstreamAdapterError(409, "context-branch-prefix-unproven", "Inherited shared context has no qualified branch lifecycle");
+    for (const run of meta.runs) {
+      if (run.sessionId !== session.sessionId) continue;
+      let compactNotSubmitted = false;
+      for (const event of events.get(run.runId) ?? []) {
+        const data = event.data as { contextReset?: boolean; compaction?: unknown; operation?: string; compactNotSubmitted?: boolean } | null;
+        if (data?.contextReset || event.kind === "message" && data?.compaction) throw new WorkstreamAdapterError(409, "context-retention-unproven", "Observed context reset or compaction requires explicit qualification before continuing");
+        if (event.kind === "status" && event.runId === run.runId && event.sessionId === session.sessionId
+          && data?.operation === "compact" && data.compactNotSubmitted === true) compactNotSubmitted = true;
+      }
+      // A failed status alone proves nothing. Only the original explicit local
+      // non-submission fact exempts an attempt, never an accepted/native reset.
+      if (run.operation === "compact" && (!compactNotSubmitted || run.nativePhase === "accepted"
+        || run.nativeAcceptedAt !== undefined || run.compact?.nativeAdmittedId !== undefined)) throw new WorkstreamAdapterError(409, "context-retention-unproven", "Compaction retention requires explicit qualification before continuing");
+    }
+  };
+  const prepareOwnedMessage = createPrepareOwnedMessage({ storeId: store.manifest.storeId,
+    contextPackages, activationStores, assertQualifiedContinuation, sessionMessageSource, contextBinding,
+    readWorker: id => workerStore.get(id),
+    assertCleanContextChannel: (id, cwd) => oc.assertUserContextChannelClean(id, cwd),
+  });
   function assertDispatchSnapshot(sessionId: string, snapshot: string) {
     const session = meta.sessions.find(s => s.sessionId === sessionId);
     if (!session || dispatchSnapshot(session) !== snapshot) throw new WorkstreamAdapterError(409, "dispatch-source-mismatch", "Conversation configuration changed during dispatch preflight");
@@ -1718,6 +2188,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!session) return { source, readiness: { ready: false as const, reason: "Conversation unavailable", code: "conversation-unavailable" } };
     const current = dispatchSource(session);
     if (!sameDispatchSource(current, source)) return { source: current, readiness: { ready: false as const, reason: "Conversation native source changed", code: "dispatch-source-mismatch" } };
+    if (source.harnessId === "grok") return grokRuns.readiness(source, "queued-user");
+    if (source.harnessId !== "opencode") return { source, readiness: { ready: false as const, reason: "This harness needs its exact local lifecycle readiness", code: "dispatch-proof-unproven" } };
     const activity = await readOnlyDispatchProof(() => oc.activity(source.nativeSessionId!, source.cwd));
     const live = meta.sessions.find(s => s.sessionId === source.sessionId), observed = live ? dispatchSource(live) : current;
     return { source: observed, readiness: !live || !sameDispatchSource(observed, source)
@@ -1740,7 +2212,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     settlementEvidence: (owner, source) => {
       const session = meta.sessions.find(s => s.sessionId === source.sessionId);
       return { childPresent: !!owner.child && !!session && sameDispatchSource(source, dispatchSource(session)),
-        exitCode: owner.child?.exitCode ?? null, groupAlive: !!owner.child && groupAlive(owner), streamsDrained: owner.streamsDrained === true };
+        exitCode: owner.child?.exitCode ?? null, groupAlive: !!owner.child && claudeGroupAlive(owner), streamsDrained: owner.streamsDrained === true };
     },
   }));
   dispatchRegistry.register(createOpenCodeDispatchAdapter({
@@ -1765,15 +2237,24 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
     nativeReadiness: pinnedNativeReadiness,
   }));
+  dispatchRegistry.register(grokRuns.adapter);
   function executePrompt(lease: ConversationAdmissionLease, session: Session, run: Run, prompt: string, resume: boolean, origin: DispatchOrigin,
-    options: { requestId?: string; coordinatorIntent?: ConversationOperationIntent["kind"]; validate?: () => void; link?: () => void; configure?: () => void; evidence?: DispatchEvidenceHooks; delivery?: PreparedAdmissionContext["delivery"]; nativeQueuedHandoff?: DispatchIdentity; publish?: PreparedAdmissionOptions["publish"]; workerDeliveryId?: string; beforeSend?: () => void; reconciliation?: Omit<NonNullable<DispatchLifecycleHooks<Owner>["reconciliation"]>, "begin"> } = {}) {
+    options: { requestId?: string; coordinatorIntent?: ConversationOperationIntent["kind"]; validate?: () => void; link?: () => void; configure?: () => void; evidence?: DispatchEvidenceHooks; delivery?: PreparedAdmissionContext["delivery"]; nativeQueuedHandoff?: DispatchIdentity; publish?: PreparedAdmissionOptions["publish"]; submissionPublication?: SubmissionPublicationFactory; workerDeliveryId?: string; beforeSend?: () => void; messageIntent?: BridgeMessageIntent; activationPreparation?: { preparation: PendingActivationPreparation; assertCurrent: () => void }; reconciliation?: Omit<NonNullable<DispatchLifecycleHooks<Owner>["reconciliation"]>, "begin"> } = {}) {
     let snapshot = dispatchSnapshot(session);
     requireOperation(sessionHarness(session), "prompt");
     let published = false;
+    let contextEvidence: DispatchEvidenceHooks | undefined;
+    let contextSourceCheck = () => {};
+    const originalEvidence = pendingInputControls.evidence(options.evidence) ?? {};
     const lifecycle = dispatchRegistry.start({ source: dispatchSource(session), prompt, resume, origin, requestId: options.requestId }, {
       install: done => {
         assertStartupReady();
         synchronousDispatchHook(() => options.validate?.());
+        const preparation = options.activationPreparation?.preparation;
+        const initialEvents = prepareRunJournalInstallation({ directory: runJournalDirectory, run, runs: meta.runs,
+          hasEvents: id => events.has(id), isDeferred: id => deferredJournals.has(id), hasPendingActivation: id => pendingActivations.hasPending(id),
+          claimNew: target => runJournals.claimNew(target),
+          preparation, assertPreparation: options.activationPreparation?.assertCurrent });
         synchronousDispatchHook(() => options.link?.());
         assertDispatchSnapshot(session.sessionId, snapshot);
         const claim = options.nativeQueuedHandoff;
@@ -1781,25 +2262,86 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const owner: Owner = { run, native: session.harness === "opencode", nativeDispatched: false, done, settled: false,
           ...(options.delivery ? { nativeDeliveryPolicy: options.delivery } : {}),
           ...(claim ? { nativeQueuedHandoff: Object.freeze({ runId: run.runId, nativeCommandId: run.nativeCommandId!, requestId: claim.requestId!, origin: "queued-user" as const, source: dispatchSource(session) }) } : {}),
-          ...(options.workerDeliveryId ? { workerDeliveryId: options.workerDeliveryId } : {}), beforeSend: () => {
+          ...(options.workerDeliveryId ? { workerDeliveryId: options.workerDeliveryId } : {}),
+          assertMetadataCommitted: () => {
+            // Representation proof is separate from execution eligibility. Stop
+            // and shutdown cannot suppress original accepted/unknown evidence;
+            // live coordinator/cancellation gates still control native admission.
+            if (storageFailed) throw new Error("Original metadata storage is unavailable");
+            assertDispatchSnapshot(session.sessionId, snapshot);
+            const original = ownerMetadata.get(owner);
+            if (!committedMetadata || !original?.receipt) throw new Error("Original Run metadata has not been durably published");
+            metadataPublisher.assertCommitted(original.receipt, original.binding);
+          }, beforeSend: () => {
             assertStartupReady();
             if (closing || storageFailed || retainOwner || meta.reconciliationRequired) throw new WorkstreamAdapterError(409, "dispatch-unavailable", "Execution unavailable before dispatch");
-            assertDispatchSnapshot(session.sessionId, snapshot); synchronousDispatchHook(() => options.beforeSend?.());
+            assertDispatchSnapshot(session.sessionId, snapshot); synchronousDispatchHook(() => options.beforeSend?.()); contextSourceCheck();
           } };
+        synchronousDispatchHook(() => options.activationPreparation?.assertCurrent());
         installOwner(lease, owner);
         published = true;
         options.configure?.(); snapshot = dispatchSnapshot(session);
-        session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
+        session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run);
+        events.set(run.runId, initialEvents);
+        if (preparation) {
+          replyJournalThrough.set(run.runId, initialEvents.at(-1)!.seq);
+          transcripts.ingest(run, initialEvents);
+        }
+        const capturedIdentity: DispatchIdentity = Object.freeze({ source: Object.freeze(dispatchSource(session)), runId: run.runId,
+          nativeCommandId: run.nativeCommandId ?? null, ...(options.requestId !== undefined ? { requestId: options.requestId } : {}) });
+        owner.contextIdentity = capturedIdentity;
+        ownerMetadata.set(owner, { identity: capturedIdentity, binding: captureMetadataDispatchBinding(session, run, capturedIdentity) });
+        if (options.submissionPublication) owner.submissionPublication = options.submissionPublication(owner);
+        const observeCurrent = () => {
+          assertStorageOwned();
+          if (storageFailed || owner.run !== run || !meta.runs.includes(run) || run.runId !== capturedIdentity.runId
+            || (run.nativeCommandId ?? null) !== capturedIdentity.nativeCommandId || run.sessionId !== capturedIdentity.source.sessionId
+            || run.cwd !== capturedIdentity.source.cwd) throw new Error("Original context message journal association changed");
+        };
+        const launchCurrent = () => {
+          observeCurrent(); assertStartupReady();
+          if (!coordinator.owns(owner) || owner.settled || owner.stopRequested || owner.cancelling || owner.stopping
+            || closing || storageFailed || retainOwner || meta.reconciliationRequired) throw new WorkstreamAdapterError(409, "context-owner-unavailable", "Original context message owner cannot submit new input");
+          assertDispatchSnapshot(session.sessionId, snapshot);
+          if (!sameDispatchSource(dispatchSource(session), capturedIdentity.source)) throw new WorkstreamAdapterError(409, "context-source-changed", "Original native source changed before new context submission");
+          const a = admissions.get(session.sessionId);
+          if (!a || a.state !== "ready" || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId
+            || a.binding.executionCheckout !== session.cwd || toSessionHarness(a.source.descriptor.harness) !== session.harness) throw new WorkstreamAdapterError(409, "context-source-unavailable", "Context message source differs from its ready native admission");
+        };
+        const assertAdmissionMetadata = owner.assertMetadataCommitted!;
+        const messages = createDispatchContextBinding({ identity: capturedIdentity, session, readIntent: () => options.messageIntent,
+          originalHooks: originalEvidence, writer: runJournals, readEvents: () => events.get(run.runId) ?? [],
+          assertObservationCurrent: observeCurrent, assertLaunchCurrent: launchCurrent, assertAdmissionMetadata,
+          assertOriginalMetadataAssociation: () => {
+            const original = ownerMetadata.get(owner);
+            if (!original?.receipt) throw new Error("Original dispatch metadata association was never durably published");
+            metadataPublisher.assertOriginalAssociation(original.receipt, original.identity);
+          },
+          reserveObservation: observation => {
+            const reserved = reserveJournalEvent(run, "context", observation);
+            void enqueue(async () => { runJournals.commit(reserved); }).catch(() => {});
+            return reserved;
+          }, prepare: (request, assertCurrent, publishSourceCheck) => prepareOwnedMessage(session, owner.run, prompt, origin, options.messageIntent, request,
+            assertCurrent, publishSourceCheck),
+          contextBinding, contextJournalSource: () => contextJournalSource(run.runId),
+          stageActivationPairing: pairing => { boundContextAssociations.set(owner, pairing); },
+          evidenceFailed: error => failClosed(error, "context-message-evidence"),
+          messageFailed: error => failClosed(error, "owned-context-message") });
+        contextSourceCheck = messages.assertSourceCurrent;
+        owner.contextMessages = messages.transport; contextEvidence = messages.hooks;
         return owner;
       },
-      evidence: pendingInputControls.evidence(options.evidence),
+      evidence: { beforeNative: fact => {
+        if (!contextEvidence) throw new Error("Shared message evidence was not installed");
+        return contextEvidence.beforeNative?.(fact);
+      }, outcome: fact => (contextEvidence ?? originalEvidence).outcome?.(fact) },
       owns: owner => coordinator.owns(owner), settle: owner => { owner.settled = true; }, release: releaseOwner,
       failClosed: error => {
         // A final validation refusal before publication is definite non-launch,
         // not a storage failure. Partial publication still retains ownership.
         // After-release source errors are still post-publication failures.
         if (published || coordinator.hasOwner(run.sessionId) || !(error instanceof UserInputPreparationError || error instanceof WorkstreamAdapterError)) failClosed();
-      }, terminate,
+      }, terminate: cleanupOwner,
       guards: owner => ({ settled: owner.settled, released: !coordinator.owns(owner), status: owner.run.status,
         cancelling: !!owner.cancelling, stopRequested: !!owner.stopRequested, stopping: !!owner.stopping,
         closing, storageFailed, reconciliationRequired: !!meta.reconciliationRequired || retainOwner }),
@@ -1866,7 +2408,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   async function ensureDirectory(cwd: string) {
     if (!(await stat(cwd)).isDirectory()) throw new Error("Execution directory unavailable");
   }
-  const preparationState = () => ({ getSession: (id: string) => meta.sessions.find(s => s.sessionId === id), profiles: agentProfiles, sourceAuthorityId: nativeSource, ...(canonicalContextEnabled ? { prepareCanonicalExecution } : {}) });
+  const preparationState = () => ({ getSession: (id: string) => meta.sessions.find(s => s.sessionId === id), profiles: agentProfiles, sourceAuthorityId: nativeSource, prepareCanonicalExecution });
   // Ordinary-send science authority. Preview data never enters this resolver.
   function scienceReferences(conversationId: string, refs: ScienceSnapshotReference[], settings: Record<string, any>): SciencePreparedSnapshotReference[] {
     const snapshots = scienceChats.resolveShareSnapshots(conversationId, refs.map(ref => ref.snapshotId));
@@ -1898,14 +2440,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return { requestId: receipt.intent.requestId, conversationId: receipt.intent.conversationId, state: receipt.state,
       runId: receipt.association?.runId ?? null, snapshots: receipt.intent.snapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) };
   }
-  function ordinaryRolePrefix(prepared: PreparedUserInput): string {
-    const { agent, nativeAgentSelected } = prepared.configuration;
-    return isStoredAssistantAgentId(agent) && prepared.binding.harness === "opencode" && !nativeAgentSelected && !prepared.configuration.saneContext?.package
-      ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n` : "";
-  }
   /** Backend launch authority shared by immediate admission and explicit queue
    * recovery. Ordinary user sends are idle-only. */
-  async function admitPreparedInput(prepared: PreparedUserInput, lease: ConversationAdmissionLease, options: PreparedAdmissionOptions & { scienceSubmission?: { conversationId: string; requestId: string } } = {}) {
+  async function admitPreparedInput(prepared: PreparedUserInput, lease: ConversationAdmissionLease, options: PreparedAdmissionOptions & { scienceSubmission?: { conversationId: string; requestId: string }; messageIntent?: BridgeMessageIntent; submissionPublication?: SubmissionPublicationFactory } = {}) {
     const { conversationId, cwd, harness } = prepared.binding;
     const input = prepared.normalized, { model, effort, agent } = prepared.configuration;
     const { queuedFollowupId, publish } = options;
@@ -1919,7 +2456,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         || receipt.intent.conversationId !== conversationId || context?.intent.requestId !== receipt.intent.requestId
         || context?.runId !== receipt.association?.runId || (context?.nativeCommandId ?? null) !== receipt.association?.nativeCommandId
         || context?.origin !== "user" || context.delivery !== "idle-only" || queuedFollowupId) throw new UserInputPreparationError("Science admission must use its exact reserved text and original dispatch identity", 409);
-      if ((receipt.intent.version === 2 ? receipt.intent.rolePrefix : "") !== ordinaryRolePrefix(prepared)) throw new UserInputPreparationError("Science dispatch role instructions changed", 409);
+      if (receipt.intent.version !== 3) throw new UserInputPreparationError("Historical science dispatch text cannot be converted or replayed through shared context", 409, "science-legacy-context-unproven");
       namingText = receipt.intent.text;
     }
     if (context && (context.delivery !== "idle-only" && context.delivery !== "native-queued-handoff"
@@ -1940,8 +2477,41 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const intent = context?.intent ?? { kind: "user-prompt" as const };
     const origin = context?.origin ?? (queuedFollowupId ? "queued-user" : "user");
     const delivery = context?.delivery ?? (origin === "user" ? "idle-only" : undefined);
-    const runId = context?.runId ?? crypto.randomUUID();
-    const nativeCommandId = harness === "opencode" ? context?.nativeCommandId ?? `msg_${crypto.randomUUID().replaceAll("-", "")}` : null;
+    const priorSession = meta.sessions.find(row => row.sessionId === conversationId);
+    const noPriorRun = !meta.runs.some(row => row.sessionId === conversationId);
+    const anchored = noPriorRun && pendingActivations.hasPending(conversationId);
+    const prepareActivationJournal = !context && !options.scienceSubmission && !queuedFollowupId && !prepared.stagedUpgrade && origin === "user"
+      && ((!prepared.resume && prepared.canonicalActivation !== undefined) || anchored);
+    if (anchored && !prepareActivationJournal) throw new UserInputPreparationError("Pending activation requires explicit original-journal adoption; this delivery path cannot replace it", 409);
+    let activationPreparation: PendingActivationPreparation | undefined;
+    const activationHarness = harness;
+    const activationInput = prepareActivationJournal && activationHarness && isAssistantAgentId(agent) && prepared.configuration.saneExecution && prepared.configuration.saneContext ? {
+      sessionId: conversationId, identity: { kind: "assistant" as const, role: agent },
+      activation: { saneExecution: prepared.configuration.saneExecution, saneContext: prepared.configuration.saneContext },
+      source: { harnessId: activationHarness, authorityId: prepared.binding.authorityId, cwd },
+    } : undefined;
+    const assertPreparationAdmission = () => {
+      if (!coordinator.holdsAdmission(lease, conversationId) || closing || storageFailed || retainOwner || meta.reconciliationRequired
+        || meta.runs.some(row => row.sessionId === conversationId) || coordinator.hasOwner(conversationId) || coordinator.hasReconciliation(conversationId)) throw new UserInputPreparationError("Activation preparation no longer owns its original first-Run admission", 409);
+      assertPreparedUserInputCurrent(prepared, preparationState());
+      if (nativeSource(harness) !== prepared.binding.authorityId) throw new UserInputPreparationError("Activation native authority changed", 409);
+    };
+    if (prepareActivationJournal) {
+      if (!activationInput || priorSession?.lastRunId) throw new UserInputPreparationError("Pending activation lacks its original canonical configuration", 409);
+      assertPreparationAdmission();
+      await revalidatePreparedUserInput(prepared, { ...preparationState(), ensureDirectory, validateBinding: assertPreparationAdmission });
+      let preparationResult: ReturnType<typeof prepareActivationWhileAdmitted<PendingActivationPreparation>> | undefined;
+      await enqueue(async () => { preparationResult = prepareActivationWhileAdmitted(assertPreparationAdmission, () => pendingActivations.prepare(activationInput), error => error instanceof UserInputPreparationError || error instanceof WorkstreamAdapterError); });
+      if (!preparationResult) throw new Error("Activation preparation queue did not complete");
+      if ("refused" in preparationResult) throw preparationResult.refused;
+      activationPreparation = preparationResult.prepared;
+      assertPreparationAdmission();
+    }
+    // Resolve the original preparation identity BEFORE constructing dispatch or
+    // linking any consumer. No replacement attempt is allocated on adoption.
+    const runId = activationPreparation?.runId ?? context?.runId ?? crypto.randomUUID();
+    // Grok throws here, before followup checks, receipts, or admission writes.
+    const nativeCommandId = preparedAdmissionNativeCommandId(harness, activationPreparation?.nativeCommandId ?? context?.nativeCommandId);
     const identity: DispatchIdentity = Object.freeze({ runId, nativeCommandId, ...(intent.requestId !== undefined ? { requestId: intent.requestId } : {}), source: Object.freeze({ harnessId: harness, sessionId: conversationId,
       authorityId: prepared.binding.authorityId, nativeSessionId: prepared.binding.nativeSessionId ?? null, cwd }) });
     if (context && (!prepared.resume || !prepared.binding.nativeSessionId || typeof context.runId !== "string" || !uuid(context.runId)
@@ -1981,29 +2551,32 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const upgradeContext: ActivationSnapshot | undefined = session && !session.agent && isAssistantAgentId(upgradedRole) && prepared.configuration.saneExecution
       ? structuredClone({ saneContext: prepared.configuration.saneContext, saneExecution: prepared.configuration.saneExecution }) : undefined;
     if (upgradeContext?.saneContext?.package) upgradeContext.saneContext.package.activation = "upgrade";
+    if (upgradeContext && (session!.attachment || branches.list().some(op => op.destinationId === conversationId))) throw new UserInputPreparationError("Attached or branched native context cannot be silently migrated by an assistant upgrade", 409, "context-legacy-channel-active");
     if (upgradeContext?.saneExecution && upgradeContext.saneContext && isAssistantAgentId(upgradedRole)) await validateCanonicalActivation({ saneExecution: upgradeContext.saneExecution, saneContext: upgradeContext.saneContext }, { kind: "assistant", role: upgradedRole }, activationStores);
     assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
     if (!session) {
       if (association.association !== "resolved") throw new WorkstreamAdapterError(409, "association-unresolved", "Execution association unavailable");
-      const sane = input.agent !== undefined ? await executionReservation(conversationId, { kind: "assistant", role: input.agent }, async () => prepared.configuration.saneExecution
-        ? structuredClone({ saneContext: prepared.configuration.saneContext, saneExecution: prepared.configuration.saneExecution }) : saneSessionContext({ kind: "assistant", role: input.agent! })) : {};
+      const sane = activationPreparation?.activation ?? (input.agent !== undefined ? await executionReservation(conversationId, { kind: "assistant", role: input.agent }, async () => prepared.configuration.saneExecution
+        ? structuredClone({ saneContext: prepared.configuration.saneContext, saneExecution: prepared.configuration.saneExecution }) : saneSessionContext({ kind: "assistant", role: input.agent! })) : {});
       if (prepared.configuration.saneExecution && (sane.saneExecution?.revision !== prepared.configuration.saneExecution.revision || sane.saneContext?.package?.revision !== prepared.configuration.saneContext?.package?.revision)) throw new Error("Prepared activation differs from its durable reservation");
       assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
-      await admissions.begin({ sessionId: conversationId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd,
-        nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: association.workspaceId, worktreeId: association.worktreeId });
+      const native = conversationCreation(harness, cwd, () => { assertLease(); return prepared.nativeLaunch!; });
+      const admission = await beginConversationCreation(admissions, { sessionId: conversationId, cwd,
+        workspaceId: association.workspaceId, worktreeId: association.worktreeId }, native);
       assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
-      if (harness === "opencode") await admissions.createNative(conversationId, async () => { assertLease(); return (await oc.createResolved(cwd, prepared.nativeLaunch!)).id; });
-      const a = admissions.get(conversationId)!;
-      assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
-      if (harness === "opencode" && sane.saneContext) await deliverSaneFramework(a.nativeId!, conversationId, sane.saneContext);
-      session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
-        title: genericSessionTitle({ agent: input.agent, agentKind: input.agent ? "assistant" : undefined }), titleSource: "fallback", titleRevision: 0, titleAutoEligible: true,
-        ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}),
-        ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: !sane.saneExecution || harness !== "opencode", ...sane } : {}),
-        ...(prepared.selectedProfile ? { profileId: prepared.selectedProfile.id } : {}) };
-      createdSnapshot = structuredClone(session);
-      meta.sessions.push(session); await persist();
-      await admissions.register(conversationId); admissions.ready(conversationId); replyIntegration?.requestRefresh();
+      const created = await completeConversationCreation(admissions, admission, native, async a => {
+        assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
+        const createdSession: Session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
+          title: genericSessionTitle({ agent: input.agent, agentKind: input.agent ? "assistant" : undefined }), titleSource: "fallback", titleRevision: 0, titleAutoEligible: true,
+          ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}),
+          ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: harness === "claude-code" || harness === "opencode" && !sane.saneExecution, ...sane } : {}),
+          ...(prepared.selectedProfile ? { profileId: prepared.selectedProfile.id } : {}) };
+        createdSnapshot = structuredClone(createdSession);
+        meta.sessions.push(createdSession); await persist();
+        return createdSession;
+      });
+      session = created.value;
+      replyIntegration?.requestRefresh();
     }
     let nativeDelivery: "queue" | undefined;
     if (nativeHandoff) {
@@ -2023,7 +2596,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (session.agentKind === "worker" || prepared.stagedUpgrade || input.model !== undefined && input.model !== session.model
           || input.effort !== undefined && input.effort !== session.effort || input.agent !== undefined && input.agent !== session.agent) throw new OpenCodeError("Wait for OpenCode to finish before changing conversation configuration or sending worker input", 409);
         nativeDelivery = "queue";
-      } else await oc.assertIdle(session.nativeSessionId!, cwd);
+      }
     }
     // Final source/profile/default guard AFTER every awaited preflight, including
     // native discovery. No await separates this comparison from installation.
@@ -2044,7 +2617,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       configured.agentKind = "assistant";
       configured.saneContext = upgradeContext.saneContext;
       configured.saneExecution = prepared.configuration.saneExecution ?? upgradeContext.saneExecution;
-      configured.nativeAgentSelected = harness !== "opencode";
+      configured.nativeAgentSelected = harness === "claude-code";
       configured.model = prepared.configuration.model;
       configured.effort = prepared.configuration.effort;
     }
@@ -2056,10 +2629,41 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // it must not normalize preferences or upgrade metadata during a claim.
       profileId: nativeHandoff ? configured.profileId : sessionProfileId(configured), ...saneContextSnapshot(configured), ...(queuedFollowupId ? { queuedFollowupId } : {}) };
     if (harness === "opencode") { run.nativeCommandId = nativeCommandId!; run.nativePhase = "preparing"; }
-    const effectivePrompt = !options.scienceSubmission && isStoredAssistantAgentId(agent) && harness === "opencode" && !session.nativeAgentSelected && !configured.saneContext?.package
-      ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n${prepared.prompt}` : prepared.prompt;
+    const science = options.scienceSubmission && scienceSubmissions.get(options.scienceSubmission);
+    const effectivePrompt = science ? science.intent.text : prepared.prompt;
     const installedSnapshot = structuredClone(configured);
-    // Capture only user-origin input before role/science/context expansion.
+    const assertActivationPreparation = () => {
+      if (!activationPreparation || !activationInput) throw new Error("Activation preparation capability unavailable");
+      assertDispatch(); assertContext();
+      const a = admissions.get(conversationId);
+      if (!a || a.state !== "ready" || a.nativeId !== session!.nativeSessionId || a.source.authorityId !== session!.authorityId
+        || a.source.descriptor.harness !== toNativeHarness(harness) || a.binding.executionCheckout !== cwd
+        || session!.authorityId !== activationInput.source.authorityId || sessionHarness(session!) !== harness
+        || session!.cwd !== cwd || session!.lastRunId !== null || meta.runs.some(row => row.sessionId === conversationId)
+        || canonicalJSON({ saneExecution: session!.saneExecution, saneContext: session!.saneContext }) !== canonicalJSON(activationInput.activation)) throw new UserInputPreparationError("Activation journal has no exact ready original native admission and pinned pair", 409);
+      pendingActivations.assertCurrent(activationPreparation, activationInput);
+    };
+    const messageIntent: BridgeMessageIntent | undefined = science ? {
+      kind: "selected", source: `app:${store.manifest.storeId}/science-submission:${science.intent.requestId}`,
+      assertCurrent: () => {
+        const current = scienceSubmissions.get(options.scienceSubmission!);
+        if (!current || current.fingerprint !== science.fingerprint || current.dispatchText !== prepared.prompt || current.intent.version !== 3) throw new UserInputPreparationError("Original science sharing authority changed", 409);
+        const settings = current.intent.snapshots[0].provenance.settings as Record<string, any>;
+        if (canonicalJSON(scienceReferences(conversationId, current.intent.snapshots, settings)) !== canonicalJSON(current.intent.snapshots)) throw new UserInputPreparationError("Frozen science snapshot sources changed", 409);
+      },
+      readCurrent: () => {
+        const current = scienceSubmissions.get(options.scienceSubmission!);
+        if (!current || current.intent.version !== 3) throw new UserInputPreparationError("Original science sharing intent unavailable", 409);
+        return scienceContextMessageInput(current.intent);
+      },
+    } : options.messageIntent ?? (activationPreparation || upgradeContext ? {
+      kind: upgradeContext ? "assistant-upgrade" : "assistant-activation",
+      source: activationPreparation ? `app:${store.manifest.storeId}/activation-run:${activationPreparation.runId}` : `app:${store.manifest.storeId}/prepared-upgrade:${run.runId}`,
+      assertCurrent: () => {
+        assertPreparedUserInputCurrent(prepared, preparationState(), installedSnapshot);
+        if (run.runId !== runId || !meta.runs.includes(run) || !configured.saneExecution || !configured.saneContext?.package) throw new UserInputPreparationError("Original canonical activation intent is unavailable", 409);
+      },
+    } : undefined);    // Capture only user-origin input before role/science/context expansion.
     // Other dispatch origins and inherited/attached sessions remain ineligible.
     if ((origin === "user" || origin === "queued-user") && session.titleAutoEligible && session.agentKind !== "worker" && !session.attachment) namingSubmissions.set(run, namingText);
     const lifecycle = executePrompt(lease, session, run, effectivePrompt, prepared.resume, origin, {
@@ -2068,6 +2672,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       validate: () => { assertDispatch(); assertContext(); assertPreparedUserInputCurrent(prepared, preparationState(), createdSnapshot); },
       link: context?.link && (() => context.link!(identity)), evidence: context?.evidence, delivery,
       ...(nativeHandoff ? { nativeQueuedHandoff: identity } : {}), publish,
+      messageIntent, submissionPublication: options.submissionPublication,
+      ...(activationPreparation ? { activationPreparation: { preparation: activationPreparation, assertCurrent: assertActivationPreparation } } : {}),
       configure: () => {
         // A prepared dispatch owns execution configuration, not title metadata.
         // Never restore its earlier revision over a concurrent edit/generation.
@@ -2102,7 +2708,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     sessionId: string; runId: string; evidence: OpenCodeWorkerContinuation;
     validate(): void; refresh(): Promise<void>;
   };
-  const qualifiedWorkerInvocations = new WeakMap<NativeWorkerInvocation, { admission: Admission; session: Session; starting: boolean; continuation?: WorkerContinuationAuthorization }>();
+  const qualifiedWorkerInvocations = new WeakMap<NativeWorkerInvocation, { admission: Admission; session: Session; starting: boolean; continuation?: WorkerContinuationAuthorization; grok?: ReturnType<typeof authorizeGrokInvocation> }>();
   const codeShares = new CodeShareStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "code-share-storage"));
   const browserPairs = new BrowserPairStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "browser-pair-storage"));
   const resourcePairs = new ResourcePairStore(options.dataDir, store.manifest.storeId, browserPairs, error => failClosed(error, "resource-pair-storage"));
@@ -2112,7 +2718,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (input.operation === "remove" || input.operation === "clear") return;
     const prefix = PairError === BrowserPairError ? "browser-pair" : "resource-pair";
     const expected = input.session, session = meta.sessions.find(session => session.sessionId === expected.sessionId);
-    if (!session || !sameBrowserPairSession(expected, { sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId ?? "", nativeSessionId: session.nativeSessionId ?? "" })) throw new PairError(409, `${prefix}-identity`, "Conversation identity changed; reconnect before pairing");
+    if (!session || !sameBrowserPairSession(expected, { sessionId: session.sessionId, harness: pairSessionHarness(session), authorityId: session.authorityId ?? "", nativeSessionId: session.nativeSessionId ?? "" })) throw new PairError(409, `${prefix}-identity`, "Conversation identity changed; reconnect before pairing");
     assertCatalogActive(session);
     if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || session.attachment?.state === "pending"
       || branches.replaced(session.sessionId) || branches.pending(session.sessionId) || catalog.association(session.sessionId).association !== "resolved"
@@ -2164,7 +2770,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const session = admission && meta.sessions.find(s => s.sessionId === admission.sessionId);
     if (!admission || admission.state !== "ready" || !session || retirementPaused(session.sessionId) || session.hidden || session.attachment
       || session.nativeSessionId !== caller.nativeId || session.authorityId !== caller.authorityId
-      || session.harness !== (source.descriptor.harness === "cc" ? "claude-code" : "opencode")
+      || session.harness !== toSessionHarness(source.descriptor.harness)
       || session.cwd !== caller.cwd || admission.binding.executionCheckout !== caller.cwd
       || canonicalJSON(admission.source) !== canonicalJSON(source)) return denyCodeShareIdentity();
     return session.sessionId;
@@ -2188,9 +2794,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   };
   const codeShareService = new CodeShareService(codeShares, codeShareFiles, codeShareSession, async (request, old) => {
     const sessionId = codeShareSession(request), session = meta.sessions.find(s => s.sessionId === sessionId)!;
+    const grok = request.caller.source.harness === "gk" ? authorizeGrokInvocation(request.caller, "sane_share_code", request.input,
+      { toolCallId: request.invocation.toolCallId, messageId: request.invocation.messageId, wrapper: request.invocation.wrapper }) : undefined;
     const admission = admissions.get(sessionId)!, binding = admission.binding, admissionPin = JSON.stringify(admission), sessionPin = dispatchSnapshot(session);
     const owner = owners.get(sessionId), protectionPin = JSON.stringify(domainProtectedPaths);
     const available = () => {
+      grok?.assertCurrent();
       if (!startupReady || closing || storageFailed || retainOwner || !ownsStorage() || meta.reconciliationRequired) return denyCodeShareIdentity();
       if (codeShareSession(request) !== sessionId || JSON.stringify(admissions.get(sessionId)) !== admissionPin || dispatchSnapshot(session) !== sessionPin
         || meta.sessions.find(s => s.sessionId === sessionId) !== session || branches.pending(sessionId) || branches.replaced(sessionId)) return denyCodeShareIdentity();
@@ -2198,6 +2807,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     available();
     if (old) {
       if (old.sessionId !== sessionId || old.workspaceId !== binding.workspaceId || old.worktreeId !== binding.worktreeId || old.bindingRevision !== binding.bindingRevision
+        || grok && old.anchor.runId !== grok.binding.runId
         || !meta.runs.some(run => run.sessionId === sessionId && run.runId === old.anchor.runId && run.cwd === binding.executionCheckout && run.operation !== "compact")) return denyCodeShareIdentity();
       return { sessionId, runId: old.anchor.runId, workspaceId: old.workspaceId, worktreeId: old.worktreeId, bindingRevision: old.bindingRevision, assertCurrent: available };
     }
@@ -2219,7 +2829,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (event.kind === "hook") return data?.event === "PreToolUse" && isClaudeRootRecord(data.payload) && data.payload?.session_id === request.caller.nativeId && (!request.invocation.messageId || data.payload?.message_id === request.invocation.messageId) && data.payload?.tool_use_id === request.invocation.toolCallId && matchesCodeShareTool(request, data.payload?.tool_name, data.payload?.tool_input);
             return event.kind === "stdout" && isClaudeRootRecord(data) && data?.type === "assistant" && data.session_id === request.caller.nativeId && (!request.invocation.messageId || data.message?.id === request.invocation.messageId) && Array.isArray(data.message?.content) && data.message.content.some((part: any) => part.type === "tool_use" && part.id === request.invocation.toolCallId && matchesCodeShareTool(request, part.name, part.input));
           });
-        } else if (run.nativeCommandId && run.nativePhase === "accepted") {
+        } else if (request.caller.source.harness === "gk") {
+          grok!.assertCurrent();
+          evidenced = grok!.owner === owner && grok!.binding.appSessionId === sessionId && grok!.binding.runId === run.runId;
+        } else if (request.caller.source.harness === "oc" && run.nativeCommandId && run.nativePhase === "accepted") {
           const snapshot = await oc.snapshot(request.caller.nativeId, run.nativeCommandId, session.cwd);
           current();
           const target = snapshot.messages.findLast(message => message.type === "assistant");
@@ -2272,7 +2885,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   async function nativeCodeShare(req: Request) {
     const denied = requireNativeBearer(req, handoffToken) ?? requireStartupReady(startupReady);
     if (denied) return denied;
-    try { return json(await codeShareService.handle(req)); }
+    try { return json(await grokRequestProof.run(req.headers.get(GROK_RUNTIME_HEADER) ?? undefined, () => codeShareService.handle(req))); }
     catch (error) {
       if (error instanceof CodeShareError || error instanceof WorkspaceError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof OpenCodeError) return json({ error: error.message, code: "code-share-native-evidence" }, error.status);
@@ -2284,9 +2897,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const userQuestionsService = new UserQuestionsService(userQuestions, codeShareSession, async (request, old) => {
     const sessionId = codeShareSession(request), session = meta.sessions.find(s => s.sessionId === sessionId)!;
     if (session.agentKind === "worker") return denyUserQuestionsIdentity();
+    const grok = request.caller.source.harness === "gk" ? authorizeGrokInvocation(request.caller, "present_questions_to_user", request.input,
+      { toolCallId: request.invocation.toolCallId, messageId: request.invocation.messageId, wrapper: request.invocation.wrapper }) : undefined;
     const admission = admissions.get(sessionId)!, binding = admission.binding;
     const admissionPin = JSON.stringify(admission), sessionPin = dispatchSnapshot(session), owner = owners.get(sessionId);
     const available = () => {
+      grok?.assertCurrent();
       if (!startupReady || closing || storageFailed || retainOwner || !ownsStorage() || meta.reconciliationRequired) return denyUserQuestionsIdentity();
       if (codeShareSession(request) !== sessionId || JSON.stringify(admissions.get(sessionId)) !== admissionPin
         || dispatchSnapshot(session) !== sessionPin || meta.sessions.find(s => s.sessionId === sessionId) !== session
@@ -2298,6 +2914,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     available();
     if (old) {
       if (old.sessionId !== sessionId || old.workspaceId !== binding.workspaceId || old.worktreeId !== binding.worktreeId
+        || grok && old.anchor.runId !== grok.binding.runId
         || old.bindingRevision !== binding.bindingRevision || old.cwd !== binding.executionCheckout
         || !meta.runs.some(run => run.sessionId === sessionId && run.runId === old.anchor.runId && run.cwd === old.cwd && run.operation !== "compact")) return denyUserQuestionsIdentity();
       return { identity: identity(old.anchor.runId), assertCurrent: available };
@@ -2322,7 +2939,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
               && (!request.invocation.messageId || data.message?.id === request.invocation.messageId) && Array.isArray(data.message?.content)
               && data.message.content.some((part: any) => part.type === "tool_use" && part.id === request.invocation.toolCallId && matchesUserQuestionsTool(request, part.name, part.input));
           });
-        } else if (run.nativeCommandId && run.nativePhase === "accepted") {
+        } else if (request.caller.source.harness === "gk") {
+          grok!.assertCurrent();
+          evidenced = grok!.owner === owner && grok!.binding.appSessionId === sessionId && grok!.binding.runId === run.runId;
+        } else if (request.caller.source.harness === "oc" && run.nativeCommandId && run.nativePhase === "accepted") {
           const commandId = run.nativeCommandId;
           const snapshot = await oc.snapshot(request.caller.nativeId, commandId, session.cwd);
           current();
@@ -2372,7 +2992,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   async function nativeUserQuestions(req: Request) {
     const denied = requireNativeBearer(req, handoffToken) ?? requireStartupReady(startupReady);
     if (denied) return denied;
-    try { return json(await userQuestionsService.handle(req)); }
+    try { return json(await grokRequestProof.run(req.headers.get(GROK_RUNTIME_HEADER) ?? undefined, () => userQuestionsService.handle(req))); }
     catch (error) {
       if (error instanceof UserQuestionsError || error instanceof CodeShareError || error instanceof WorkspaceError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof OpenCodeError) return json({ error: error.message, code: "user-questions-native-evidence" }, error.status);
@@ -2387,7 +3007,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (retirementPaused(form.sessionId)) throw new UserQuestionsError(409, "session-retired", "Conversation is retired or a catalog operation is pending; restore it before responding");
     if (!session || session.hidden || session.attachment || session.agentKind === "worker" || branches.pending(form.sessionId) || branches.replaced(form.sessionId)
       || session.nativeSessionId !== form.native.nativeId || session.authorityId !== form.native.authorityId || session.cwd !== form.cwd
-      || sessionHarness(session) !== (form.native.harness === "cc" ? "claude-code" : "opencode")
+      || sessionHarness(session) !== toSessionHarness(form.native.harness)
       || nativeSource(session.harness) !== form.native.authorityId
       || !admission || admission.state !== "ready" || admission.nativeId !== form.native.nativeId || admission.source.authorityId !== form.native.authorityId
       || admission.binding.workspaceId !== form.workspaceId || admission.binding.worktreeId !== form.worktreeId
@@ -2409,9 +3029,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (branches.pending(session.sessionId) || branches.replaced(session.sessionId)) return reject();
     qualifiedWorkerInvocations.set(request.invocation, { admission, session, starting: request.operation === "start" });
     const owner = owners.get(session.sessionId);
+    let grok: ReturnType<typeof authorizeGrokInvocation> | undefined;
+    if (e.source.harness === "gk") {
+      try {
+        grok = authorizeGrokInvocation(e, `sane_worker_${request.operation}`, request.input, request.invocation);
+        if (grok.session !== session || grok.owner !== owner || request.invocation.opencode) return reject();
+        qualifiedWorkerInvocations.get(request.invocation)!.grok = grok;
+      } catch { return reject(); }
+    }
     const old = request.operation === "start" ? workerStore.getByRequest(session.sessionId, request.input.requestId) : undefined;
     // A durable reservation is the original binding, even after parent completion.
     if (old && request.operation === "start") {
+      if (grok && old.parent.runId !== grok.binding.runId) return reject();
       if (old.parent.native.harness !== e.source.harness || old.parent.native.authorityId !== e.authorityId || old.parent.native.nativeId !== e.nativeId || old.parent.toolCallId !== request.invocation.toolCallId || old.input.worker !== request.input.worker || old.input.prompt !== request.input.prompt || old.input.context !== request.input.context || old.input.subject !== request.input.subject || JSON.stringify(old.input.jobs) !== JSON.stringify(request.input.jobs)) return reject();
       if (JSON.stringify(old.parent.invocation?.opencode) !== JSON.stringify(request.invocation.opencode)) return reject();
       const invocation = old.parent.invocation ?? request.invocation;
@@ -2420,6 +3049,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
     const current = () => {
       context.assertActive();
+      grok?.assertCurrent();
       if (!owner || owners.get(session.sessionId) !== owner || owner.settled || owner.stopRequested || owner.cancelling || owner.run.status !== "running" || owner.run.operation === "compact" || closing || storageFailed) reject();
     };
     if (owner || e.source.harness !== "oc") current();
@@ -2435,7 +3065,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (event.kind === "hook") return data?.event === "PreToolUse" && isClaudeRootRecord(data.payload) && data.payload?.session_id === e.nativeId && data.payload?.tool_use_id === request.invocation.toolCallId && matchesName(data.payload?.tool_name);
           return event.kind === "stdout" && isClaudeRootRecord(data) && data?.type === "assistant" && data.session_id === e.nativeId && Array.isArray(data.message?.content) && data.message.content.some((part: any) => part.type === "tool_use" && part.id === request.invocation.toolCallId && matchesName(part.name));
         });
-      } else {
+      } else if (e.source.harness === "gk") {
+        grok!.assertCurrent();
+        evidenced = grok!.binding.runId === run.runId && grok!.owner === owner;
+      } else if (e.source.harness === "oc") {
         if (!run.nativeCommandId) return reject();
         // The run journal already contains command-bounded native observations.
         // Fetch another snapshot only when the tool part has not reached it yet.
@@ -2448,6 +3081,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
       }
       if (!evidenced && attempt < 2) await Bun.sleep(150);
+    }
+    if (grok && evidenced && request.operation === "start") {
+      const runtimeCapabilities = proveInstalledGrokWorkerRuntime({ bindingDirectory: grokBindingDirectory, appConnectionFile: join(options.dataDir, "native-handoff.json") });
+      if (!runtimeCapabilities) return reject();
+      await emit(grok.owner.run, "context", { type: "grok-native-worker-invocation", toolName: "sane_worker_start", toolCallId: request.invocation.toolCallId,
+        runId: grok.binding.runId, source: grok.owner.contextIdentity!.source, bindingId: grok.binding.bindingId,
+        inputDigest: grok.binding.proof.inputDigest, runtimeCapabilities: [...runtimeCapabilities] });
+      current();
     }
     if (!evidenced && e.source.harness === "oc") {
       const pin = dispatchSnapshot(session), admissionPin = JSON.stringify(admission);
@@ -2534,6 +3175,25 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const session = meta.sessions.find(s => s.sessionId === parent.sessionId);
     const run = meta.runs.find(r => r.runId === parent.runId && r.sessionId === parent.sessionId);
     const admission = admissions.get(parent.sessionId);
+    if (parent.native.harness === "gk") {
+      const tools = proveInstalledGrokWorkerRuntime({ bindingDirectory: grokBindingDirectory, appConnectionFile: join(options.dataDir, "native-handoff.json") });
+      if (!tools?.includes("sane_worker_message") || !session || !run || !admission || !invocation
+        || invocation.toolCallId !== parent.toolCallId || invocation.messageId || invocation.opencode
+        || session.harness !== "grok" || session.attachment || run.operation === "compact"
+        || session.nativeSessionId !== parent.native.nativeId || session.authorityId !== parent.native.authorityId
+        || nativeSource("grok") !== parent.native.authorityId || admission.state !== "ready" || admission.source.descriptor.harness !== "gk"
+        || admission.nativeId !== parent.native.nativeId || admission.source.authorityId !== parent.native.authorityId
+        || admission.binding.domain.mode !== "repository" || admission.binding.executionCheckout !== session.cwd
+        || worker.checkout !== session.cwd || run.cwd !== session.cwd || branches.pending(parent.sessionId) || branches.replaced(parent.sessionId)) return false;
+      return records.some(event => {
+        const data = event.data as Record<string, any> | null;
+        return event.kind === "context" && event.runId === run.runId && event.sessionId === session.sessionId
+          && data?.type === "grok-native-worker-invocation" && data.toolName === "sane_worker_start" && data.toolCallId === parent.toolCallId
+          && data.runId === run.runId && sameDispatchSource(data.source, dispatchSource(session))
+          && data.inputDigest === grokRuntimeInputDigest("sane_worker_start", worker.input)
+          && Array.isArray(data.runtimeCapabilities) && data.runtimeCapabilities.includes("sane_worker_message");
+      });
+    }
     if (parent.native.harness !== "oc" || !invocation || invocation.toolCallId !== parent.toolCallId || !session || !run || !admission
       || session.harness !== "opencode" || session.attachment || session.saneExecution || run.saneExecution || run.operation === "compact"
       || session.nativeSessionId !== parent.native.nativeId || session.authorityId !== parent.native.authorityId
@@ -2553,12 +3213,21 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const admitExplicitWorker = async (worker: WorkerRecord, pinned: { saneExecution?: CanonicalExecutionRef; saneContext?: SaneSessionContext }): Promise<{ pin?: WorkerProtocolPin; reject?: string }> => {
     const packageRef = pinned.saneContext?.package;
     const executionRevision = pinned.saneExecution?.revision;
-    if (!canonicalContextEnabled || !packageRef || !executionRevision) return {};
+    if (!packageRef || !executionRevision) return {};
     await contextPackages.load(packageRef);
-    const childHarness = worker.launch.harness === "opencode" ? "oc" : "cc";
-    const tools = await proveInstalledExplicitWorkerRuntime(claudeRoot, childHarness);
+    const childHarness = toNativeHarness(worker.launch.harness);
+    const selected: SelectedNativeRuntime | undefined = options.nativeRuntime && options.nativeSources.oc.harness === "oc" ? { ...options.nativeRuntime,
+      registrationFile: options.nativeSources.oc.registrationFile, appConnectionFile: join(options.dataDir, "native-handoff.json") } : undefined;
+    const proveRuntime = async (harness: "cc" | "oc" | "gk", checkout: string) => {
+      if (harness === "gk") return proveInstalledGrokWorkerRuntime({ bindingDirectory: grokBindingDirectory, appConnectionFile: join(options.dataDir, "native-handoff.json") });
+      const tools = await proveInstalledExplicitWorkerRuntime(claudeRoot, harness, selected);
+      if (tools && harness === "oc" && selected) await oc.assertSelectedWorkerRuntime(checkout, selected);
+      return tools;
+    };
+    const tools = await proveRuntime(childHarness, worker.checkout);
     if (!tools) return { reject: "Explicit completion instructions are selected, but the worker's installed runtime is not proven. This launch was not submitted." };
-    if (worker.parent.native.harness !== childHarness && !await proveInstalledExplicitWorkerRuntime(claudeRoot, worker.parent.native.harness)) return { reject: "Explicit completion instructions are selected, but the parent's installed messaging runtime is not proven. This launch was not submitted." };
+    const parentCheckout = meta.sessions.find(session => session.sessionId === worker.parent.sessionId)?.cwd;
+    if (!parentCheckout || worker.parent.native.harness !== childHarness && !await proveRuntime(worker.parent.native.harness, parentCheckout)) return { reject: "Explicit completion instructions are selected, but the parent's installed messaging runtime is not proven. This launch was not submitted." };
     if (!await parentCanMessage(worker)) return { reject: "Explicit completion instructions are selected, but the launching parent's messaging permission is not proven. This launch was not submitted." };
     const operations: WorkerProtocolOperation[] = ["complete"];
     if (worker.input.worker === "implementer" || worker.input.worker === "scout-crew" || worker.input.worker === "verification-crew") operations.push("notify", "message-parent");
@@ -2585,7 +3254,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   async function nativeWorker(req: Request) {
     const denied = requireNativeBearer(req, handoffToken) ?? requireStartupReady(startupReady);
     if (denied) return denied;
-    return workerHandler(req);
+    return grokRequestProof.run(req.headers.get(GROK_RUNTIME_HEADER) ?? undefined, () => workerHandler(req));
   }
   function assertWorkerDeliverySubmission(owner: Owner) {
     if (!owner.workerDeliveryId) return;
@@ -2596,11 +3265,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     async parent(caller) {
       const qualified = caller.invocation && qualifiedWorkerInvocations.get(caller.invocation);
       if (!qualified) throw new WorkstreamAdapterError(409, "worker-parent", "Qualified App-owned native caller required");
-      const { admission: a, session, continuation } = qualified;
+      const { admission: a, session, continuation, grok } = qualified;
       const run = meta.runs.find(r => r.sessionId === session.sessionId && r.runId === caller.runId);
       if (!run || run.operation === "compact" || typeof caller.toolCallId !== "string" || !caller.toolCallId || caller.toolCallId.length > 300
         || continuation && (continuation.sessionId !== session.sessionId || continuation.runId !== run.runId)) throw new WorkstreamAdapterError(409, "worker-parent", "Worker operations require an App-owned repository parent and an evidenced live invocation");
       continuation?.validate();
+      grok?.assertCurrent();
       const native = { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! };
       const domain = (await router!.forAdmission(a))!.domain;
       revalidateCheckout(domain.context, a.binding.checkoutPin!);
@@ -2614,6 +3284,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         await continuation.refresh();
         continuationParents.set(parent, () => continuation.validate());
       }
+      if (grok) { grok.assertCurrent(); continuationParents.set(parent, () => grok.assertCurrent()); }
       return parent;
     },
     assertCurrentParent(parent) {
@@ -2634,7 +3305,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     publishAttention(worker, attention) {
       if (retirementPaused(worker.sessionId) || retiredId(worker.parent.sessionId)) return;
       const child = worker.child;
-      const harness = child?.harness === "oc" || child?.harness === "cc" ? toSessionHarness(child.harness) : undefined;
+      const harness = child ? toSessionHarness(child.harness) : undefined;
       const source = child && harness && { harness, authorityId: child.authorityId, nativeSessionId: child.nativeId };
       if (!child || !isConversationUpdateSource(source)) return;
       const occurrence = updateOccurrenceId(source, attention.occurrenceBoundary);
@@ -2678,14 +3349,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (policy && policy.spec.name !== `sane/${w.launch.identity?.kind}/${w.launch.identity?.role}`) throw new Error("Reserved worker execution policy role changed");
         let nativeLaunch = harness === "opencode" ? await oc.resolveLaunch(w.checkout, { agent: policy ? "build" : w.launch.agent, model: w.launch.model ?? (policy?.model ? `${policy.model.providerID}/${policy.model.id}` : undefined), effort: w.launch.effort ?? (!w.launch.model ? policy?.model?.variant : undefined) }) : undefined;
         if (harness === "claude-code" && !policy) await claudeAgentSettings(claudeRoot, w.launch.identity!);
-        let a = await admissions.begin({ sessionId: w.sessionId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd: w.checkout, nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: parentAdmission.binding.workspaceId, worktreeId: parentAdmission.binding.worktreeId, parent: w.parent.native });
-        if (harness === "opencode") a = await admissions.createNative(w.sessionId, async () => (await oc.createResolved(w.checkout, nativeLaunch!)).id);
-        const launch = { ...w.launch, ...(nativeLaunch?.model ? { model: `${nativeLaunch.model.providerID}/${nativeLaunch.model.id}`, effort: nativeLaunch.model.variant } : {}) };
-        const session: Session = { sessionId: w.sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd: w.checkout, lastStatus: "unknown", lastRunId: null, ...agentLaunchSnapshot(launch), ...pinnedContext, ...(pinnedContext.saneExecution ? { nativeAgentSelected: harness !== "opencode" } : {}), title: genericSessionTitle({ agent: w.input.worker, agentKind: "worker" }), titleSource: "fallback", titleRevision: 0, titleAutoEligible: false };
-        workerStore.update(w.id, { launch, child: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! } });
-        meta.sessions.push(session); await persist();
-        await catalog.associate(w.sessionId, w.checkout, a.binding.workspaceId, a.binding.worktreeId);
-        await admissions.register(w.sessionId); admissions.ready(w.sessionId);
+        const native = conversationCreation(harness, w.checkout, () => nativeLaunch!);
+        const admission = await beginConversationCreation(admissions, { sessionId: w.sessionId, cwd: w.checkout,
+          workspaceId: parentAdmission.binding.workspaceId, worktreeId: parentAdmission.binding.worktreeId, parent: w.parent.native }, native);
+        const { admission: a, value: session } = await completeConversationCreation(admissions, admission, native, async a => {
+          const launch = { ...w.launch, ...(nativeLaunch?.model ? { model: `${nativeLaunch.model.providerID}/${nativeLaunch.model.id}`, effort: nativeLaunch.model.variant } : {}) };
+          const session: Session = { sessionId: w.sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd: w.checkout, lastStatus: "unknown", lastRunId: null, ...agentLaunchSnapshot(launch), ...pinnedContext, ...(pinnedContext.saneExecution ? { nativeAgentSelected: harness === "claude-code" } : {}), title: genericSessionTitle({ agent: w.input.worker, agentKind: "worker" }), titleSource: "fallback", titleRevision: 0, titleAutoEligible: false };
+          workerStore.update(w.id, { launch, child: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! } });
+          meta.sessions.push(session); await persist();
+          await catalog.associate(w.sessionId, w.checkout, a.binding.workspaceId, a.binding.worktreeId);
+          return session;
+        });
         replyIntegration?.requestRefresh();
         if (closing || storageFailed || meta.reconciliationRequired) throw new Error("App unavailable before worker submission; launch remains reserved");
         if (workerStore.get(w.id)!.cancelRequestedAt) {
@@ -2701,8 +3375,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             procedure = bundle.assets.find(asset => asset.id === `worker-procedure.${w.input.worker}` && asset.kind === "procedure")?.text;
             if (!procedure) throw new Error("Worker context package has no matching procedure");
           }
-          saneContext.assignment = workerAssignment((await router!.forAdmission(a))!.domain, child, w.parent.native, w.input.worker, w.input.jobs ?? [], w.id, procedure);
-          if (harness === "opencode") await deliverSaneFramework(a.nativeId!, w.sessionId, saneContext);
+          saneContext.assignment = workerAssignmentOnly((await router!.forAdmission(a))!.domain, child, w.parent.native, w.input.worker, w.input.jobs ?? [], w.id);
           session.saneContext = saneContext;
         } catch (e) {
           const summary = `Worker assignment unavailable: ${e instanceof Error ? e.message : "context resolution failed"}`;
@@ -2726,6 +3399,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         workerStore.update(w.id, { runId: run.runId, state: "running" });
         const prompt = w.input.context === undefined ? w.input.prompt : `${w.input.prompt}\n\nSupplied context:\n${w.input.context}`;
         executePrompt(lease, session, run, prompt, false, "user", {
+          messageIntent: { kind: "worker-launch", source: `app:${store.manifest.storeId}/worker:${w.id}`, workerId: w.id,
+            assertCurrent: () => {
+              const current = workerStore.get(w.id);
+              if (!current || current.sessionId !== session.sessionId || current.runId !== run.runId || current.cancelRequestedAt || canonicalJSON(current.input) !== canonicalJSON(w.input)) throw new WorkstreamAdapterError(409, "context-source-changed", "Original worker launch authority changed");
+            } },
           reconciliation: { order: "after-release", run: async () => { if (!storageFailed) await workers.refresh(workerStore.get(w.id)!); } },
         });
       } catch (e) {
@@ -2837,12 +3515,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       return workerStore.advanceDelivery(d.id, "not-submitted", "Bridge stopped before continuation run publication; outcomes remain pending");
     }
     const evidence = workerDeliveryEvidence(d, run, journalEvents(run.runId));
-    if (evidence === "accepted") {
+    if (evidence === "accepted" || evidence === "wrapper-completed") {
       // Native evidence may arrive while execution continues. The run owner still
       // holds capacity; delivered means accepted, not finished or comprehended.
       await serial;
       if (storageFailed) return d;
-      return workerStore.advanceDelivery(d.id, "delivered");
+      return workerStore.advanceDelivery(d.id, "delivered", evidence === "wrapper-completed" ? "Grok owned wrapper completed with drained output; provider acceptance and comprehension remain unknown" : undefined);
     }
     if (evidence === "not-submitted" && owners.get(d.parentSessionId)?.settled !== false) return workerStore.advanceDelivery(d.id, "not-submitted", "Continuation did not submit; check parent suppression, visibility and executor configuration before retry");
     const problem = run.status === "running" ? "Waiting for correlated native acceptance; continuation will not be resent" : "Run ended without proof of acceptance or non-submission. Inspect the original native command; no automatic resend, even after termination acknowledgement.";
@@ -2960,6 +3638,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
     const evidence = exchangeDeliveryEvidence({ id: delivery.deliveryId, commandId: delivery.commandId, native: exchange.recipient.native, sessionId: exchange.recipient.sessionId, runId: delivery.runId }, run, journalEvents(run.runId));
     if (evidence === "accepted") return workerStore.advanceExchange(exchange.id, "accepted");
+    if (evidence === "wrapper-completed") return workerStore.advanceExchange(exchange.id, "wrapper-completed", "Grok local exchange wrapper completed with drained output; provider acceptance and comprehension remain unknown");
     if (evidence === "not-submitted" && owners.get(exchange.recipient.sessionId)?.settled !== false) return workerStore.advanceExchange(exchange.id, "not-submitted", "Exchange did not submit; it can be retried");
     const problem = run.status === "running" ? "Waiting for correlated native acceptance; exchange will not be resent" : "Run ended without proof of acceptance or non-submission. No automatic resend.";
     if (delivery.state === "acceptance-unknown" && delivery.error === problem) return;
@@ -3026,23 +3705,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
 
   async function cancelOwner(owner: Owner) {
     requireOwnedOperation(ownedSession(owner), owner, "cancelOwnedRun");
-    if (!owner.cancel) {
-      owner.cancelling = true; owner.stopRequested = true;
-      owner.cancel = (async () => {
-        if (owner.run.status !== "running") return { interrupted: false };
-        await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence" });
-        if (owner.native) return ocRuns.interrupt(owner);
-        return { interrupted: await terminate(owner) };
-      })().finally(() => {
-        // Native interruption acknowledges one execution, not future restart
-        // continuations. Coalesce only in-flight requests; an explicit later
-        // Stop must be able to interrupt the still-owned native run again.
-        if (owner.native) owner.cancel = undefined;
-        owner.cancelling = false; releaseOwner(owner);
-      });
-    }
-    const attempt = owner.cancel;
-    try { return await attempt; } catch (e) { if (owner.cancel === attempt) owner.cancel = undefined; throw e; }
+    return requestRunCancellation(owner, "worker", {
+      emitStopping: () => emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence" }),
+      isCurrent: () => owners.get(owner.run.sessionId) === owner,
+      release: releaseOwner,
+    });
   }
   const handoffProblems = new Map<string, string>();
   /** Only actual synchronous writers use this fence; read/native proof failures
@@ -3076,6 +3743,35 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const run = meta.runs.find(r => r.runId === h.runId && r.sessionId === h.recipient.sessionId);
     if (!run || run.operation === "compact") return h;
     const records = journalEvents(run.runId);
+    if (h.recipient.harness === "gk") {
+      // Publish only after the exact original wrapper observation is durable.
+      // Process completion is not provider acceptance or task/user approval.
+      await serial;
+      if (storageFailed) return h;
+      h = domain.getHandoff(id);
+      if (["completed", "failed"].includes(h.status)) { handoffReservations.delete(h.recipient.sessionId); return h; }
+      if (h.status !== "acceptance_unknown" || h.runId !== run.runId || h.dispatchId !== `app:grok:${run.runId}`
+        || h.nativeCommandId !== null || run.nativeCommandId != null || !h.recipient.ref) return h;
+      if (grokWrapperCompletion(h.recipient.ref, run, records, h.id)) {
+        h = handoffMutation(() => domain.advanceHandoff(h.id, h.revision, { status: "completed", wrapperCompleted: true,
+          evidence: `Exact Grok App dispatch ${h.dispatchId} wrapper completed successfully with drained output; provider acceptance, comprehension and task/user approval remain unknown` },
+          { actor: { kind: "system" }, correlationId: h.id }));
+      } else if ((run.status === "failed" || run.status === "interrupted") && records.some(event => {
+        const data = event.data as Record<string, any> | null;
+        return event.kind === "context" && event.runId === run.runId && event.sessionId === run.sessionId
+          && data?.type === "grok-wrapper-termination" && data.runId === run.runId && data.requestId === h.id && data.nativeCommandId === null
+          && data.source?.harnessId === "grok" && data.source.sessionId === h.recipient.sessionId && data.source.cwd === run.cwd
+          && data.source.authorityId === h.recipient.ref!.authorityId && data.source.nativeSessionId === h.recipient.ref!.nativeId
+          && data.submission === "submitted" && data.nativeAcceptance === "unknown" && data.wrapperCompletion === "closed"
+          && data.streamsDrained === true && data.status === run.status;
+      })) {
+        h = handoffMutation(() => domain.advanceHandoff(h.id, h.revision, { status: "failed",
+          evidence: `Exact Grok App dispatch ${h.dispatchId} owned wrapper ${run.status} and output drained; provider acceptance/cancellation remain unknown. No automatic resend.` },
+          { actor: { kind: "system" }, correlationId: h.id }));
+      }
+      if (["completed", "failed"].includes(h.status)) { handoffReservations.delete(h.recipient.sessionId); handoffProblems.delete(h.id); }
+      return h;
+    }
     const accepted = h.recipient.harness === "oc" ? run.nativeCommandId === h.nativeCommandId && run.nativePhase === "accepted" : records.some(e => e.kind === "stdout" && isClaudeRootRecord(e.data) && (e.data as any)?.session_id === h.recipient.ref?.nativeId && ((e.data as any)?.type === "result" || (e.data as any)?.type === "system" && (e.data as any)?.subtype === "init"));
     const advance = (status: typeof h.status, evidence: string) => { h = handoffMutation(() => domain.advanceHandoff(h.id, h.revision, { status, evidence }, { actor: { kind: "system" }, correlationId: h.id })); };
     if (h.status === "acceptance_unknown" && accepted) advance("accepted", `Native acceptance recorded in App run ${run.runId}`);
@@ -3105,10 +3801,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (notification && retirementPaused(notification.sessionId)) return;
     if (h.recipient.ownerId !== store.manifest.storeId || notification?.state !== "claimed") return;
     handoffReservations.add(notification.sessionId);
-    const advance = (state: "accepted" | "not-submitted") => {
+    const advance = (state: "accepted" | "wrapper-completed" | "not-submitted") => {
       handoffMutation(() => domain.recordHandoffDenialNotification(id, { ...notification, state }, { actor: { kind: "system" }, correlationId: id }));
       handoffReservations.delete(notification.sessionId);
-      if (state === "accepted") handoffProblems.delete(id);
+      if (state === "accepted" || state === "wrapper-completed") handoffProblems.delete(id);
     };
     const run = meta.runs.find(r => r.runId === notification.runId && r.sessionId === notification.sessionId);
     if (!run) {
@@ -3133,6 +3829,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (evidence === "accepted") {
       await serial;
       if (!storageFailed) advance("accepted");
+    } else if (evidence === "wrapper-completed" && grokWrapperCompletion(h.sender, run, journalEvents(run.runId), `denial:${id}`)) {
+      await serial;
+      if (!storageFailed) advance("wrapper-completed");
     } else if (evidence === "not-submitted" && owners.get(notification.sessionId)?.settled !== false) advance("not-submitted");
     else await recordHandoffProblem(workspaceId, id, "Denial recorded; sender notification acceptance is unconfirmed. The original notification will not be resent.");
   }
@@ -3140,7 +3839,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const domain = (await router!.forWorkspace(workspaceId)).domain;
     const h = domain.getHandoff(id), notification = domain.getHandoffDenialNotification(id);
     if (h.recipient.ownerId !== store.manifest.storeId || h.status !== "failed" || h.runId
-      || notification?.state === "accepted" || notification?.state === "claimed") return;
+      || notification?.state === "accepted" || notification?.state === "wrapper-completed" || notification?.state === "claimed") return;
     // Only definite non-submission can retry, with a bounded retry cadence.
     if (notification && Date.now() - Date.parse(notification.updatedAt) < 30_000) return;
     const session = meta.sessions.find(s => toNativeHarness(sessionHarness(s)) === h.sender.harness
@@ -3208,7 +3907,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!ready.ready) return;
       assertDispatchSnapshot(session.sessionId, snapshot);
       const { run, commandId } = newDispatchRun({ ...session, cwd });
-      h = handoffMutation(() => domain.advanceHandoff(h.id, h.revision, { status: "acceptance_unknown", attemptId: crypto.randomUUID(), nativeCommandId: commandId, runId: run.runId }, { actor: { kind: "system" }, correlationId: h.id }, current => { handoffs.assertRecipientReady(current); }));
+      const dispatchId = session.harness === "grok" ? `app:grok:${run.runId}` : undefined;
+      h = handoffMutation(() => domain.advanceHandoff(h.id, h.revision, { status: "acceptance_unknown", attemptId: crypto.randomUUID(),
+        ...(dispatchId ? { dispatchId } : { nativeCommandId: commandId }), runId: run.runId }, { actor: { kind: "system" }, correlationId: h.id }, current => { handoffs.assertRecipientReady(current); }));
       handoffReservations.add(session.sessionId);
       if (process.env.SANE_TEST_FAULT === "handoff-drop-run") {
         // Test-only crash simulation (C9): the handoff row above is persisted
@@ -3236,6 +3937,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         "", h.input.message,
       ].join("\n");
       executePrompt(lease, session, run, prompt, resume, "handoff", {
+        requestId: h.id,
+        ...(h.input.createNew && !session.lastRunId ? { messageIntent: { kind: "assistant-activation" as const,
+          source: `handoff:${h.id}/attempt:${h.attemptId}`, assertCurrent: () => {
+            const current = domain.getHandoff(h.id);
+            if (!current.input.createNew || current.attemptId !== h.attemptId || current.runId !== run.runId
+              || (dispatchId ? current.dispatchId !== dispatchId || current.nativeCommandId !== null : current.nativeCommandId !== commandId)) throw new WorkstreamAdapterError(409, "context-source-changed", "Original handoff-created activation changed");
+          } } } : {}),
         reconciliation: { order: "before-release", run: async () => { if (!storageFailed) await reconcileHandoff(workspaceId, h.id); } },
       });
       handoffProblems.delete(h.id);
@@ -3425,7 +4133,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const id = source.sessionId;
     queueSubmissionSafety(id);
     const session = meta.sessions.find(s => s.sessionId === id)!, admission = admissions.get(id);
-    if (source.harnessId !== "claude-code" || !sameDispatchSource(source, dispatchSource(session))) throw new PendingInputDomainError("source-changed", "Current App idle source differs from the captured queue source");
+    if (!["claude-code", "grok"].includes(source.harnessId) || !sameDispatchSource(source, dispatchSource(session))) throw new PendingInputDomainError("source-changed", "Current App idle source differs from the captured queue source");
     const blocked = (reason: string) => ({ ready: false as const, code: "claude-local-unproven" as const, reason });
     const association = catalog.association(id);
     if (!admission || admission.state !== "ready" || !source.nativeSessionId || admission.nativeId !== source.nativeSessionId
@@ -3450,12 +4158,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return blocked("Only the exact published unattempted queue owner may exclude its preparation");
     }
     if (meta.runs.some(run => run.sessionId === id && (run.status === "running" && run !== own?.owner?.run
-      || claudeRuns.followupPending(run.queuedFollowupId ?? "")))) return blocked("Other App running metadata or followup remains unresolved");
+      || source.harnessId === "claude-code" && claudeRuns.followupPending(run.queuedFollowupId ?? "")))) return blocked("Other App running metadata or followup remains unresolved");
     if (pendingInputs!.store.readRecords().conversations.filter(c => c.conversationId === id).some(c => c.items.some(item =>
       ["claimed", "run-linked"].includes(item.state) && (!own || !item.claim || item.claim.possibleNative || item.claim.uncertain || !equalPendingPin(item.claim.identity, own.identity)))))
       return blocked("Another unresolved App queue claim remains held");
     // Fresh aggregate service observation at EVERY boundary; no preclaim cache.
     // Its sole exclusion is the exact private owner above, before intent writes.
+    if (source.harnessId === "grok") {
+      // Only a fresh unattempted queue owner is excluded above. Actual process
+      // closure/executable/source readiness is read asynchronously before claim.
+      const observed = own?.owner && grokRuns.observation(own.owner);
+      if (observed && (observed.submission !== "not-submitted" || observed.wrapperCompletion !== "not-started")) return blocked("Grok local process has already been attempted");
+      return { ready: true };
+    }
     return claudeRuns.readLocalIdle(id, own?.owner);
   };
   pendingInputBridge = createPendingInputBridge({ store: pendingInputs.store, coordinator,
@@ -3467,7 +4182,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     nativeReadiness: pinnedNativeReadiness,
     terminalSnapshot: (source, commandId) => readOnlyDispatchProof(() => oc.snapshot(source.nativeSessionId!, commandId, source.cwd)),
     readPendingCancellation: owner => ocRuns.readPendingCancellation(owner),
-    groupAlive, readLocalSettlement: owner => claudeRuns.readLocalSettlement(owner), currentAppIdle: queueCurrentAppIdle, failClosed,
+    groupAlive: claudeGroupAlive, readLocalSettlement: owner => {
+      const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
+      if (session?.harness !== "claude-code") return { ready: false, reason: "Claude settlement requires a Claude run", code: "claude-local-unproven" };
+      return claudeRuns.readLocalSettlement(owner);
+    }, readGrokSettlement: (owner, source) => grokRuns.successfulSettlement(owner, source), currentAppIdle: queueCurrentAppIdle, failClosed,
     // Resolve the existing supervised admission when the scheduler polls,
     // after startup constructs it; do not capture an uninitialized service.
     admit: async (prepared, lease, input) => {
@@ -3501,6 +4220,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
       const owner = owners.get(form.sessionId);
       if (owner?.stopRequested || owner?.cancelling || owner?.stopping) return { ready: false, disposition: "pause", reason: "Conversation was stopped; resume answer delivery explicitly" };
+      if (form.native.harness === "gk" && (!owner || owner.run.runId === form.delivery?.runId && !owner.nativeDispatched)) {
+        const session = meta.sessions.find(s => s.sessionId === form.sessionId)!;
+        if (!owner && session.lastStatus === "running") return { ready: false, disposition: "wait", reason: "Grok still has unresolved local execution" };
+        if (owner && grokRuns.observation(owner)?.submission !== undefined && grokRuns.observation(owner)?.submission !== "not-submitted") return { ready: false, disposition: "wait", reason: "Grok response delivery has already been attempted" };
+      }
       if (form.native.harness === "cc" && (!owner || owner.run.runId === form.delivery?.runId && !owner.nativeDispatched)) {
         const idle = claudeRuns.readLocalIdle(form.sessionId, owner);
         if (!idle.ready) return { ready: false, disposition: "wait", reason: idle.reason };
@@ -3554,6 +4278,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!delivery.runId) return null;
       const run = meta.runs.find(candidate => candidate.sessionId === form.sessionId && candidate.runId === delivery.runId);
       if (!run || run.cwd !== form.cwd || (run.nativeCommandId ?? null) !== delivery.nativeCommandId || run.operation === "compact") return null;
+      if (form.native.harness === "gk") {
+        if (delivery.nativeCommandId !== null || !grokWrapperCompletion(form.native, run, journalEvents(run.runId), delivery.id)) return null;
+        return { wrapperCompleted: true, evidence: { requestId: delivery.id, runId: run.runId, nativeCommandId: null,
+          source: { harnessId: "grok", sessionId: form.sessionId, authorityId: form.native.authorityId, nativeSessionId: form.native.nativeId, cwd: form.cwd },
+          submission: "submitted", nativeAcceptance: "unknown" } };
+      }
       const accepted = form.native.harness === "oc" ? run.nativePhase === "accepted" && !!delivery.nativeCommandId
         : journalEvents(run.runId).some(event => event.kind === "stdout" && isClaudeRootRecord(event.data)
           && (event.data as any)?.session_id === form.native.nativeId && (event.data as any)?.type === "result"
@@ -3561,7 +4291,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             || Array.isArray((event.data as any).user_message_uuids) && (event.data as any).user_message_uuids.includes(run.runId)));
       if (!accepted) return null;
       return { evidence: { requestId: delivery.id, runId: run.runId, nativeCommandId: delivery.nativeCommandId,
-        source: { harnessId: form.native.harness === "cc" ? "claude-code" : "opencode", sessionId: form.sessionId,
+        source: { harnessId: toSessionHarness(form.native.harness), sessionId: form.sessionId,
           authorityId: form.native.authorityId, nativeSessionId: form.native.nativeId, cwd: form.cwd },
         submission: "submitted", nativeAcceptance: "accepted" } };
     },
@@ -3600,6 +4330,434 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     snapshot.observedAt = new Date().toISOString();
     return snapshot;
   }
+  const assertAppAdmissionStorage = () => {
+    assertStorageOwned();
+    if (storageFailed) throw new Error("App admission storage ownership is unavailable");
+  };
+  function assertAppAdmissionExpectedSource(intent: AppAdmissionIntent, source: DispatchIdentity["source"]) {
+    const expected = intent.expectedSource;
+    if (intent.operation === "new-conversation") {
+      // Native creation has no browser-native identity yet. The server-reserved
+      // binding, prepared launch and pinned installation source still govern it.
+      if (expected !== null || source.authorityId !== nativeSource(source.harnessId)) throw new AppAdmissionRequestError("target-conflict", "New conversation differs from the pinned native source");
+      return;
+    }
+    if (!expected || source.sessionId !== intent.conversationId || !appAdmissionExpectedSourceMatches(expected, source)
+      || source.authorityId !== nativeSource(source.harnessId)) throw new AppAdmissionRequestError("target-conflict", "The original frozen conversation source changed; no replacement submission is allowed");
+  }
+  const admissionSetupPorts = { enqueue, assertStorage: assertAppAdmissionStorage,
+    failClosed: (error: AppAdmissionStorageError) => failClosed(error, "app-admission-storage") };
+  if (options.initializeAppAdmissions) await initializeAppAdmissionFeature(options.dataDir, store.manifest.storeId, admissionSetupPorts, originalAppAdmissionRoot);
+  let appAdmissionFeature: ReturnType<typeof readAppAdmissionFeature>;
+  try { appAdmissionFeature = readAppAdmissionFeature(options.dataDir, store.manifest.storeId, originalAppAdmissionRoot); }
+  catch (error) { failClosed(error, "app-admission-feature"); throw error; }
+  if (appAdmissionFeature.state === "enabled") appAdmissions = new AppAdmissionService(options.dataDir, store.manifest.storeId, {
+    ...admissionSetupPorts,
+    assertStorage: () => { assertAppAdmissionStorage(); appAdmissionFeature.assertCurrent(); },
+    assertCanBegin: (envelope, _pending, binding) => {
+      assertAppAdmissionEligibility(assertStartupReady);
+      const { intent } = envelope, input = intent.payload;
+      const allowed = ["prompt", "sessionId", "nativeStopped", "harness", "cwd", "workspaceId", "worktreeId", "model", "effort", "agent", "profileId", "requestId", "scienceSnapshots"];
+      const science = Object.hasOwn(input, "scienceSnapshots");
+      if (Object.keys(input).some(key => !allowed.includes(key)) || typeof input.prompt !== "string"
+        || !input.prompt.trim() && !(input.prompt === "" && science && intent.operation === "science-message")
+        || /^\s*\/compact(?:\s|$)/i.test(input.prompt) || input.nativeStopped !== undefined && typeof input.nativeStopped !== "boolean") throw new AppAdmissionRequestError("invalid-request", "Invalid ordinary submission payload", 400);
+      for (const key of ["sessionId", "harness", "cwd", "workspaceId", "worktreeId", "model", "effort", "agent", "profileId"] as const) {
+        if (input[key] !== undefined && typeof input[key] !== "string") throw new AppAdmissionRequestError("invalid-request", "Invalid ordinary submission selection", 400);
+      }
+      if (binding.kind === "server-provisional") {
+        if (Object.hasOwn(input, "sessionId") || meta.sessions.some(session => session.sessionId === binding.conversationId) || admissions.get(binding.conversationId)) throw new AppAdmissionRequestError("target-conflict", "Reserved conversation must be new and cannot adopt an existing identity");
+      } else {
+        if (input.sessionId !== intent.conversationId || binding.conversationId !== intent.conversationId) throw new AppAdmissionRequestError("invalid-request", "Submission conversation differs from its frozen intent", 400);
+        const session = meta.sessions.find(session => session.sessionId === binding.conversationId);
+        assertAppAdmissionEligibility(() => assertCatalogActive(session));
+        if (!session) throw new AppAdmissionRequestError("target-conflict", "The original conversation is unavailable");
+        assertAppAdmissionExpectedSource(intent, dispatchSource(session));
+      }
+      if (science !== (intent.operation === "science-message") || !science && Object.hasOwn(input, "requestId")) throw new AppAdmissionRequestError("invalid-request", "Submission operation differs from its frozen payload", 400);
+      if (science) {
+        if (!uuid(input.requestId) || !Array.isArray(input.scienceSnapshots) || input.scienceSnapshots.length < 1 || input.scienceSnapshots.length > 4
+          || input.scienceSnapshots.some(ref => !ref || typeof ref !== "object" || Array.isArray(ref) || Object.keys(ref).length !== 2
+            || !("snapshotId" in ref) || typeof ref.snapshotId !== "string" || !("blockId" in ref) || typeof ref.blockId !== "string")
+          || new Set(input.scienceSnapshots.map(ref => (ref as { snapshotId: string }).snapshotId)).size !== input.scienceSnapshots.length) throw new AppAdmissionRequestError("invalid-request", "Invalid frozen science submission", 400);
+        const prior = scienceSubmissions.get({ conversationId: binding.conversationId, requestId: input.requestId });
+        if (prior && prior.state !== "prepared") throw new AppAdmissionRequestError("pending-admission", "The original science request requires exact reconciliation; it cannot be replayed");
+      }
+      if (intent.operation === "live-input") {
+        const owner = owners.get(binding.conversationId);
+        const liveSession = meta.sessions.find(s => s.sessionId === binding.conversationId);
+        if (liveSession?.harness === "grok" || !owner || owner.run.runId !== intent.expectedLiveRunId || !claudeRuns.canSendInput(owner)) throw new AppAdmissionRequestError("target-conflict", "The selected live run changed or is no longer eligible");
+      }
+      const decision = coordinator.inspectReadiness({ conversationId: binding.conversationId, intent: { kind: "user-prompt" }, phase: intent.operation === "live-input" ? "enqueue" : "admission" });
+      if (!decision.ready) throw new AppAdmissionRequestError(decision.code === "capacity" ? "capacity" : "pending-admission", decision.reason, decision.code === "capacity" ? 429 : 409);
+      if (pendingInputs?.hasChain(binding.conversationId)) throw new AppAdmissionRequestError("pending-admission", "A durable input chain already owns this conversation");
+    },
+  });
+  function originalSubmissionPublication(original: OriginalAppAdmission): SubmissionPublicationFactory {
+    return owner => {
+      if (!appAdmissions) throw new Error("App admission is unavailable");
+      const originalMetadata = ownerMetadata.get(owner);
+      if (!originalMetadata) throw new Error("Original dispatch metadata association is unavailable");
+      const identity = originalMetadata.identity;
+      return appAdmissions.publication(original, (envelope, supplied) => {
+        const bound = decodeContextMessageSubmission(supplied);
+        if (!isDeepStrictEqual(bound.composition.dispatch, identity)) throw new Error("Bound submission differs from its original dispatch");
+        assertAppAdmissionExpectedSource(envelope.intent, identity.source);
+        const expectedBody = envelope.intent.payload.prompt, range = bound.composition.body.range;
+        if (typeof expectedBody !== "string" || Buffer.from(bound.text, "utf8").subarray(range.offset, range.offset + range.length).toString("utf8") !== expectedBody) throw new Error("Bound authored body differs from the immutable App intent");
+        const live = bound.liveInput === true;
+        let nativeMessageId: string;
+        if (identity.source.harnessId === "claude-code") {
+          const prefix = `${identity.runId}:user:`;
+          nativeMessageId = live && bound.messageId.startsWith(prefix) ? bound.messageId.slice(prefix.length) : identity.runId;
+          if (!uuid(nativeMessageId) || (!live && bound.messageId !== `${identity.runId}:user`) || live && bound.messageId !== prefix + nativeMessageId) throw new Error("Actual Claude message UUID correlation is unavailable");
+        } else {
+          if (live || !identity.nativeCommandId || bound.messageId !== identity.nativeCommandId) throw new Error("Actual native command correlation is unavailable");
+          nativeMessageId = identity.nativeCommandId;
+        }
+        const target = decodeAppAdmissionTarget({ kind: live ? "live-input" : "run-initial", dispatch: identity, messageId: bound.messageId, nativeMessageId });
+        const standards = (events.get(identity.runId) ?? []).filter(event => event.kind === "submission" && (event.data as { messageId?: unknown })?.messageId === bound.messageId);
+        const standard = standards[0];
+        if (standards.length !== 1 || !standard || !isDeepStrictEqual(decodeContextMessageSubmission(standard.data), bound)) throw new Error("Original actual submission journal reservation is unavailable");
+        const reservation = runJournals.reservation(standard);
+        const metadataReceipt = originalMetadata.receipt;
+        if (!metadataReceipt) throw new Error("Original metadata was not durably committed");
+        const assertCurrent = () => {
+          assertAppAdmissionStorage();
+          // Compare only the ORIGINAL dispatch proof, never a replacement owner
+          // resolved by conversation ID at publication or the native boundary.
+          assertAppAdmissionExpectedSource(envelope.intent, identity.source);
+          metadataPublisher.assertOriginalAssociation(metadataReceipt, identity);
+          // The original writer already owns the exact reservation and bytes.
+          // Its durable fence verifies identity, content and fsync without a
+          // second inspector decoding and reconstructing this same journal.
+          runJournals.flushThrough(reservation);
+        };
+        return Object.freeze({ target, assertCurrent });
+      });
+    };
+  }
+  const assetRoute = createAssetRoute({ assetsDir, assetManifest });
+  const agentProfileRoute = createAgentProfileRoute({ readProfiles: () => agentProfiles, commitProfiles: commitAgents });
+  const browserPairRoute = createBrowserPairRoute({ storeId: store.manifest.storeId, browserPairs, catalog,
+    findSession: id => meta.sessions.find(session => session.sessionId === id), sessionHarness: pairSessionHarness, nativeSource,
+    assertDomainMutationOpen, authenticated: req => auth.authenticated(req), assertCatalogActive,
+    isWorkerSession: id => workerStore.hasSession(id),
+    branchReplaced: id => !!branches.replaced(id), branchPending: id => !!branches.pending(id),
+  });
+  const terminalRoute = createTerminalRoute({ terminals, terminalToken: req => auth.terminalToken(req),
+    readOrigin: () => origin, closing: () => closing });
+  const workspaceRoute = createWorkspaceRoute({ catalog, workspace, worktrees, workspaceCreations: workspaceCreations!,
+    gitOperations: gitOperations!, searches, authenticated: req => auth.authenticated(req),
+    terminalToken: req => auth.terminalToken(req), assertDomainMutationOpen,
+    canCreate: req => !closing && auth.authenticated(req),
+    canRunGit: (req, token) => !closing && !storageFailed && !retainOwner && !meta.reconciliationRequired && startupReady && !!token && auth.terminalToken(req) === token,
+    beforeRemoveWorktree: async (workspaceId, worktreeId) => {
+      const admittingSession = meta.sessions.find(s => {
+        const a = catalog.association(s.sessionId);
+        return a.association === "resolved" && a.workspaceId === workspaceId && a.worktreeId === worktreeId && admitting.has(s.sessionId);
+      });
+      if (admittingSession) throw new WorkspaceError(409, "worktree-busy", "Wait for the in-flight message submission in this worktree to finish before removing it");
+      await terminals.disposeWorktree(workspaceId, worktreeId);
+    },
+  });
+  const nativeSubagentEvidenceRoute = createNativeSubagentEvidenceRoute({ nativeSubagents, nativeSubagentRecorder,
+    findSession: id => meta.sessions.find(session => session.sessionId === id),
+    findRun: (runId, sessionId) => meta.runs.find(run => run.runId === runId && run.sessionId === sessionId),
+  });
+  const transcriptEvidenceRoute = createTranscriptEvidenceRoute({ transcripts,
+    findSession: id => meta.sessions.find(session => session.sessionId === id), ensureSessionJournals,
+  });
+  const runEvidenceRoute = createRunEvidenceRoute({ sessionRunPreviews, auth, storeId: store.manifest.storeId,
+    findSession: id => meta.sessions.find(session => session.sessionId === id),
+    findRun: id => meta.runs.find(run => run.runId === id),
+    runsForSession: id => meta.runs.filter(run => run.sessionId === id), journalEvents,
+    readProtectedContext: run => contextHistory.read(run),
+    readPreparationTiming: run => {
+      const owner = owners.get(run.sessionId);
+      const active = owner?.run === run ? readOwnerPreparationTiming(owner) : undefined;
+      return { active, archived: active === undefined ? preparationTimingArchive.read(run.runId) : undefined };
+    },
+  });
+  const conversationSearchRoute = createConversationSearchRoute({ activeSessions, catalog,
+    runsForSession: id => meta.runs.filter(run => run.sessionId === id), journalEvents, storedNativeHistory,
+  });
+  const sessionCatalogRoute = createSessionCatalogRoute({ selection: sessionCatalog,
+    registeredWorkspaces: async () => (await catalog.registeredWorkspaces()).workspaces,
+    registeredWorkspace: id => catalog.registered(id), association: id => catalog.association(id),
+    current: () => ({ sessions: meta.sessions.map(session => grokApp!.overlay(session)), active: activeSessions().map(session => grokApp!.overlay(session)),
+      runs: [...meta.runs, ...grokApp!.presentationRuns()], events }),
+    openMembership: async workspaceId => {
+      try {
+        const adapter = await router!.forPolling(workspaceId);
+        return sessions => adapter.overview(sessions);
+      } catch (error) {
+        // No repository domain means unknown, never confirmed unassigned.
+        // Actual read failures must not silently masquerade as empty data.
+        if ((error instanceof WorkstreamAdapterError && error.code === "not-repository") || (error instanceof RepositoryStoreError && error.state === "uninitialized")) return undefined;
+        throw error;
+      }
+    },
+    capturePresentation: () => {
+      nativeActivityDemandUntil = Date.now() + 90_000;
+      nativeActivitySnapshot.refresh();
+      // Only fresh cached display evidence may overlay App metadata; refresh is
+      // deferred, never awaited, and a cold/stale/failed read remains unknown.
+      const native = nativeActivitySnapshot.read();
+      const indexes = sessionListProjection(workerStore.sessionListWorkers().filter(worker => !retiredId(worker.sessionId)), workerStore.sessionListDeliveries().filter(delivery => !retiredId(delivery.parentSessionId)), branches.list(), [
+        ...recoveredInputConversations, ...handoffDispatches.keys(),
+        ...meta.runs.filter(run => run.status === "running").map(run => run.sessionId),
+      ]);
+      presentationAdmissions.set(indexes, appAdmissions?.readPending() ?? []);
+      return { native, indexes };
+    },
+    projectRow: (session, summary, read): SessionListRow => {
+      if (session.harness === "grok") {
+        const projected = grokApp!.overlay(session);
+        const configured = grokApp!.capability();
+        return { session: projected, association: catalog.association(session.sessionId),
+          availability: !configured.configured ? { canSend: false, reason: configured.reason }
+            : projected.lastStatus === "running" ? { canSend: false, code: "conversation-busy", reason: "Grok is processing this turn" }
+              : availability(session.sessionId, true, false, false, "user", read) };
+      }
+      const observedAt = historyRefreshes.get(session.sessionId);
+      const owner = owners.get(session.sessionId);
+      const activity = observedAt ? { phase: "refreshing" as const, observedAt }
+        : owner && session.harness === "claude-code" ? claudeRuns.activity(owner) : undefined;
+      return { session, activity, updateSource: replyIntegration?.updateSource(session.sessionId),
+        // Presentation only: authoritative policy uses one verified pending
+        // snapshot for this synchronous response, not one ledger scan per row.
+        admission: summary ? undefined : admissions.get(session.sessionId), association: catalog.association(session.sessionId),
+        availability: availability(session.sessionId, true, false, false, "user", read) };
+    },
+    globalAvailability: read => availability(undefined, true, false, false, undefined, read),
+    followupPending: id => claudeRuns.followupPending(id), isRetired: session => retirements.isRetired(session),
+    isWorkerSession: id => workerStore.hasSession(id),
+  });
+  const workstreamRoute = createWorkstreamRoute({ authenticated: req => auth.authenticated(req),
+    inspect: workspaceId => router!.inspect(workspaceId),
+    initialize: async workspaceId => {
+      const result = await router!.initialize(workspaceId);
+      notifyPendingInput("domain");
+      return result;
+    },
+    artifacts: (workspaceId, repositoryId) => router!.forWorkspace(workspaceId, repositoryId),
+    open: async (workspaceId, readOnly) => {
+      const workstreams = await (readOnly ? router!.forPolling(workspaceId) : router!.forWorkspace(workspaceId));
+      return {
+        overview: () => workstreams.overview(activeSessions().filter(s => catalog.association(s.sessionId).workspaceId === workspaceId)),
+        list: () => workstreams.list(), status: id => workstreams.status(id),
+        manage: input => {
+          const target = input.ref && workstreams.appSessionId(input.ref, meta.sessions);
+          assertPendingInputDomainMutation(pendingInputs!.store.readRecords().conversations, workstreams.domain,
+            input.operation === "phase/end" ? { kind: "phase/end", assignmentId: input.assignmentId }
+              : input.operation === "associate" ? { kind: "associate", ref: input.ref, workstreamId: input.workstreamId } : { kind: "phase/assign", ref: input.ref });
+          const available = availability(target || undefined, false);
+          if (!available.canSend) throw new WorkstreamAdapterError(409, "bridge-busy", available.reason!);
+          return queueDomainCommitted(() => workstreams.manage(input.ref, input.operation, input));
+        },
+        create: input => queueDomainCommitted(() => workstreams.create(input)),
+        setDefaultCheckout: (id, checkout) => queueDomainCommitted(() => workstreams.setDefaultCheckout(id, checkout)),
+        resolveTarget: (id, phase, target) => workstreams.resolveTarget(id, phase, target),
+        session: async (operation, input) => {
+          const session = meta.sessions.find(s => s.sessionId === input.sessionId);
+          if (!session) throw new WorkstreamAdapterError(404, "not-found", "Unknown App conversation");
+          const admission = admissions.get(session.sessionId);
+          if (!admission || admission.binding.workspaceId !== workspaceId) throw new WorkstreamAdapterError(409, "repository-mismatch", "Conversation belongs to another workspace");
+          await router!.forAdmission(admission, workspaceId);
+          if (operation === "conversation") return workstreams.conversation(session);
+          if (operation === "context") return workstreams.invocation(session);
+          assertPendingInputDomainMutation(pendingInputs!.store.readRecords().conversations, workstreams.domain,
+            operation === "phase/end" ? { kind: "phase/end", assignmentId: input.assignmentId }
+              : operation === "associate" ? { kind: "associate", ref: workstreams.reference(session), workstreamId: input.workstreamId } : { kind: "phase/assign", ref: workstreams.reference(session) });
+          const available = availability(session.sessionId, false);
+          if (!available.canSend) throw new WorkstreamAdapterError(409, "bridge-busy", available.reason!);
+          if (operation === "associate") return queueDomainCommitted(() => workstreams.associate(session, input.workstreamId));
+          if (operation === "phase/assign") return queueDomainCommitted(() => workstreams.assignPhase(session, input.phase));
+          return queueDomainCommitted(() => workstreams.endPhase(session, input.assignmentId));
+        },
+      };
+    },
+    action: async (workspaceId, operation, actionInput) => {
+      let adapter = await router!.forWorkspace(workspaceId, actionInput.repositoryId);
+      if (actionInput.sessionId !== undefined) {
+        const session = meta.sessions.find(candidate => candidate.sessionId === actionInput.sessionId);
+        if (!session) throw new WorkstreamAdapterError(404, "not-found", "Unknown App conversation");
+        assertCatalogActive(session);
+        const admission = admissions.get(session.sessionId);
+        if (!admission || admission.binding.workspaceId !== workspaceId || admission.binding.domain.mode !== "repository" || admission.binding.domain.repositoryId !== actionInput.repositoryId) throw new WorkstreamAdapterError(409, "repository-mismatch", "Conversation and requested repository differ");
+        if (session.nativeSessionId !== admission.nativeId || session.authorityId !== admission.source.authorityId || adapter.reference(session).harness !== admission.source.descriptor.harness) throw new WorkstreamAdapterError(409, "invalid-app-reference", "Conversation native identity differs from its admission");
+        await router!.execution(admission);
+        adapter = await router!.forWorkspace(workspaceId, actionInput.repositoryId);
+        if (adapter.invocation(session).workstream?.id !== actionInput.id) throw new WorkstreamAdapterError(409, "workstream-mismatch", "Conversation belongs to another workstream");
+      }
+      if (adapter.status(actionInput.id).workstream.revision !== actionInput.expectedRevision) throw new DomainError("CONFLICT", "Workstream changed; refresh its current state before retrying");
+      if (operation === "complete") {
+        await adapter.complete(actionInput.id, actionInput.expectedRevision);
+        return { action: "complete", id: actionInput.id, ok: true } satisfies WorkstreamCompleteResult;
+      }
+      const action: WorkstreamAction = operation, phaseInput = actionInput as WorkstreamActionInput;
+      if (action === "validate") {
+        const result = await adapter.validate(phaseInput.id, phaseInput.phase);
+        return { action, phase: phaseInput.phase, ok: result.ok } satisfies WorkstreamActionResult;
+      }
+      // The adapter reserves at the actual backend call, covering callers other
+      // than HTTP and enqueue/preflight throughout core's awaits.
+      await adapter.provide(phaseInput.id, phaseInput.phase, false, phaseInput.expectedRevision);
+      return { action, phase: phaseInput.phase, ok: true } satisfies WorkstreamActionResult;
+    },
+  });
+  /** One original submission execution, shared by compatibility HTTP and future
+   * durable intake. No Request/auth reentry, replay or receipt scheduling here. */
+  async function submitUserInput(input: Awaited<ReturnType<typeof body>>, submissionPublication?: SubmissionPublicationFactory, originalSubmission?: OriginalSubmission): Promise<Response> {
+    const originalIntent = originalSubmission?.envelope.intent;
+    if (originalSubmission?.binding.kind === "server-provisional"
+      && (meta.sessions.some(session => session.sessionId === originalSubmission.binding.conversationId) || admissions.get(originalSubmission.binding.conversationId))) throw new AppAdmissionRequestError("target-conflict", "Reserved conversation collides with existing App state; it cannot be adopted");
+    if (input?.sessionId) {
+      const session = meta.sessions.find(s => s.sessionId === input.sessionId);
+      assertCatalogActive(session);
+      if (originalIntent) {
+        if (!session) throw new AppAdmissionRequestError("target-conflict", "The original conversation is unavailable");
+        assertAppAdmissionExpectedSource(originalIntent, dispatchSource(session));
+      }
+    }
+    let scienceReceipt: ScienceSubmissionReceipt | undefined;
+    if (input && Object.hasOwn(input, "scienceSnapshots")) {
+      const allowed = ["prompt", "sessionId", "requestId", "scienceSnapshots", "nativeStopped", "harness", "cwd", "workspaceId", "worktreeId", "model", "effort", "agent", "profileId"];
+      if (Object.keys(input).some(key => !allowed.includes(key)) || !uuid(input.sessionId) || !uuid(input.requestId)
+        || typeof input.prompt !== "string" || input.prompt !== "" && !input.prompt.trim() || /^\s*\/compact(?:\s|$)/i.test(input.prompt)
+        || !Array.isArray(input.scienceSnapshots) || !input.scienceSnapshots.length || input.scienceSnapshots.length > 4
+        || input.scienceSnapshots.some((ref: any) => !ref || typeof ref !== "object" || Object.keys(ref).length !== 2 || typeof ref.snapshotId !== "string" || typeof ref.blockId !== "string")) return json({ error: "Science sends require an existing conversation, request ID and frozen snapshot references; the comment may be exactly empty", code: "science-send-invalid" }, 400);
+      const settings = Object.fromEntries(Object.entries(input).filter(([key]) => !["prompt", "sessionId", "requestId", "scienceSnapshots"].includes(key)));
+      const prior = scienceSubmissions.get({ conversationId: input.sessionId, requestId: input.requestId });
+      const snapshots = scienceReferences(input.sessionId, input.scienceSnapshots, settings);
+      const sharingSession = meta.sessions.find(row => row.sessionId === input.sessionId);
+      if (!sharingSession) return json({ error: "Unknown science-sharing conversation" }, 404);
+      scienceReceipt = scienceSubmissions.prepare(prior && prior.intent.version !== 3
+        ? { ...prior.intent, text: input.prompt, snapshots }
+        : { version: 3, binding: contextBinding(sharingSession), storeId: store.manifest.storeId, conversationId: input.sessionId, requestId: input.requestId, text: input.prompt, snapshots });
+      if (scienceReceipt.state !== "prepared") {
+        if (scienceReceipt.state === "submitted" && scienceReceipt.association) return json({ sessionId: input.sessionId, runId: scienceReceipt.association.runId, scienceSubmission: scienceView(scienceReceipt) }, 202);
+        return json({ error: "Original science send outcome requires reconciliation; it will not be replayed", code: "science-submission-unknown", scienceSubmission: scienceView(scienceReceipt) }, 409);
+      }
+      if (scienceReceipt.intent.version !== 3) return json({ error: "Historical science receipt cannot be rewritten or replayed through shared context", code: "science-legacy-context-unproven", scienceSubmission: scienceView(scienceReceipt) }, 409);
+      const { scienceSnapshots: _refs, requestId: _requestId, ...ordinary } = input;
+      // Preparation already consumes the verified receipt's NONEMPTY framed
+      // transport text. Its exact authored body (including '') remains in the
+      // receipt and is used by scienceContextMessageInput at composition. No
+      // client allow-empty flag, placeholder, hash rewrite or ordinary exception.
+      input = { ...ordinary, prompt: scienceReceipt.dispatchText };
+    }
+    if (input?.sessionId && uuid(input.sessionId) && pendingInputs!.hasChain(input.sessionId)) return json({ error: "A durable input chain is active; use the explicit pending-inputs API", code: "pending-input-chain-active" }, 409);
+    const prepared = await prepareUserInput(input, { ...preparationState(), profiles: agentProfiles, getSession: id => meta.sessions.find(s => s.sessionId === id),
+      defaultCwd: options.cwd, conversationId: () => originalSubmission?.binding.conversationId ?? crypto.randomUUID(), sourceAuthorityId: nativeSource,
+      selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
+      ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) });
+    const { conversationId, cwd } = prepared.binding;
+    if (originalSubmission && conversationId !== originalSubmission.binding.conversationId) throw new AppAdmissionRequestError("target-conflict", "Prepared conversation differs from its original server binding");
+    if (originalIntent) {
+      assertAppAdmissionExpectedSource(originalIntent, { sessionId: conversationId, harnessId: prepared.binding.harness,
+        authorityId: prepared.binding.authorityId, nativeSessionId: prepared.binding.nativeSessionId ?? null, cwd });
+      if (prepared.resume) {
+        const session = meta.sessions.find(s => s.sessionId === conversationId);
+        if (!session) throw new AppAdmissionRequestError("target-conflict", "The original conversation disappeared during preparation");
+        assertAppAdmissionExpectedSource(originalIntent, dispatchSource(session));
+      }
+    }
+    const liveOwner = owners.get(conversationId);
+    if (originalIntent?.operation === "live-input" && (!liveOwner || liveOwner.run.runId !== originalIntent.expectedLiveRunId || !claudeRuns.canSendInput(liveOwner))) throw new AppAdmissionRequestError("target-conflict", "The selected live run changed during preparation; no replacement send is allowed");
+    if (!scienceReceipt && (!originalIntent || originalIntent.operation === "live-input") && prepared.binding.harness === "claude-code" && liveOwner && claudeRuns.canSendInput(liveOwner)) {
+      if (prepared.stagedUpgrade || prepared.configuration.model !== liveOwner.run.model || prepared.configuration.effort !== liveOwner.run.effort) return json({ error: "Wait for this run to finish before changing assistant settings", code: "claude-input-configuration" }, 409);
+      const checkCurrent = () => {
+        if (originalIntent && liveOwner.run.runId !== originalIntent.expectedLiveRunId) throw new AppAdmissionRequestError("target-conflict", "The original selected live run changed");
+        if (originalIntent) {
+          if (!liveOwner.contextIdentity) throw new AppAdmissionRequestError("target-conflict", "The original live dispatch source is unavailable");
+          assertAppAdmissionExpectedSource(originalIntent, liveOwner.contextIdentity.source);
+        }
+        assertPreparedUserInputCurrent(prepared, { profiles: agentProfiles, getSession: id => meta.sessions.find(s => s.sessionId === id), sourceAuthorityId: nativeSource });
+        const readiness = coordinator.inspectReadiness({ conversationId, intent: { kind: "user-prompt" }, phase: "enqueue" });
+        if (!readiness.ready) throw new WorkstreamAdapterError(409, readiness.code, readiness.reason);
+        if (owners.get(conversationId) !== liveOwner || coordinator.hasAdmission(conversationId) || coordinator.hasReconciliation(conversationId) || pendingInputs!.hasChain(conversationId)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Conversation changed before the follow-up could be sent");
+      };
+      const assertCurrent = () => originalSubmission ? withOriginalAdmission(originalSubmission.original, checkCurrent) : checkCurrent();
+      const task = Promise.withResolvers<void>(); attachmentTasks.add(task.promise);
+      try {
+        assertCurrent();
+        if (await execution(conversationId) !== cwd) throw new WorkstreamAdapterError(409, "execution-mismatch", "Conversation execution checkout changed");
+        return json({ sessionId: conversationId, ...await claudeRuns.sendInput(liveOwner, prepared.prompt, assertCurrent, submissionPublication?.(liveOwner)) }, 202);
+      } finally { task.resolve(); attachmentTasks.delete(task.promise); }
+    }
+    // Science preserves its domain request identity and separate transport facts.
+    const reserveOriginal = () => coordinator.reserveAdmission({ conversationIds: [conversationId], intent: { kind: "user-prompt", ...(scienceReceipt ? { requestId: scienceReceipt.intent.requestId } : {}) } });
+    const admission = originalSubmission ? withOriginalAdmission(originalSubmission.original, reserveOriginal) : reserveOriginal();
+    if (!admission.ready) return json({ error: admission.reason, code: admission.code }, admission.code === "capacity" ? 429 : 409);
+    const lease = admission.lease;
+    if (originalSubmission) appAdmissionLeases.set(lease, originalSubmission.original);
+    const task = Promise.withResolvers<void>(); attachmentTasks.add(task.promise);
+    try {
+      if (scienceReceipt) {
+        const key = { conversationId, requestId: scienceReceipt.intent.requestId };
+        try {
+          const reservation = scienceSubmissions.reserve(key);
+          if (!reservation.reserved) return json({ error: "Science submission already reserved; no replay", code: "science-submission-unknown" }, 409);
+          const runId = crypto.randomUUID(), nativeCommandId = preparedAdmissionNativeCommandId(prepared.binding.harness);
+          const association = { runId, nativeCommandId };
+          scienceSubmissions.associate(key, association);
+          const validateIdentity = (identity: DispatchIdentity) => {
+            if (identity.runId !== runId || identity.nativeCommandId !== nativeCommandId || identity.requestId !== key.requestId
+              || identity.source.sessionId !== conversationId || identity.source.authorityId !== prepared.binding.authorityId
+              || identity.source.nativeSessionId !== prepared.binding.nativeSessionId || identity.source.harnessId !== prepared.binding.harness || identity.source.cwd !== cwd) throw new Error("Science dispatch identity changed");
+            const receipt = scienceSubmissions.get(key)!;
+            if (canonicalJSON(scienceReferences(conversationId, receipt.intent.snapshots, receipt.intent.snapshots[0].provenance.settings as Record<string, any>)) !== canonicalJSON(receipt.intent.snapshots)) throw new UserInputPreparationError("Science snapshot authority changed", 409);
+          };
+          const submission = Promise.withResolvers<void>();
+          const context: PreparedAdmissionContext = { origin: "user", delivery: "idle-only", intent: { kind: "user-prompt", requestId: key.requestId }, runId,
+            ...(nativeCommandId ? { nativeCommandId } : {}), validate: validateIdentity,
+            link: identity => { validateIdentity(identity); scienceSubmissions.associate(key, association); },
+            evidence: {
+              beforeNative: evidence => {
+                validateIdentity(evidence);
+                if (evidence.submission !== "attempted" || evidence.nativeAcceptance !== "unknown") throw new Error("Invalid science native boundary evidence");
+                scienceSubmissions.beforeNative(key, association);
+              },
+              outcome: evidence => {
+                validateIdentity(evidence);
+                if (evidence.submission === "attempted") throw new Error("Unexpected science outcome");
+                const evidenceKey = `${conversationId}/${key.requestId}`;
+                scienceOutcomeEvidence.set(evidenceKey, evidence);
+                try { scienceSubmissions.markOutcome(key, evidence.submission); }
+                finally { scienceOutcomeEvidence.delete(evidenceKey); }
+                submission.resolve();
+              },
+            } };
+          const { lifecycle, ...response } = await admitPreparedInput(prepared, lease, { context, scienceSubmission: key, submissionPublication });
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          try { await Promise.race([submission.promise, new Promise<void>(resolve => { timeout = setTimeout(resolve, 10_000); })]); }
+          finally { if (timeout) clearTimeout(timeout); }
+          const receipt = scienceSubmissions.get(key)!;
+          if (receipt.state !== "submitted") return json({ ...response, error: "Science submission outcome is unconfirmed; no automatic resend", code: "science-submission-unknown", scienceSubmission: scienceView(receipt) }, receipt.state === "unknown" ? 202 : 409);
+          return json({ ...response, scienceSubmission: scienceView(receipt) }, 202);
+        } catch (error) {
+          if (error instanceof ScienceSubmissionStorageError) failClosed();
+          return json({ error: "Science submission is reserved; reconcile the original request without resending", code: "science-submission-unknown", scienceSubmission: scienceView(scienceSubmissions.get(key)!) }, 503);
+        }
+      }
+      const { lifecycle: _lifecycle, ...response } = await admitPreparedInput(prepared, lease, { submissionPublication }); return json(response, 202);
+    } finally { coordinator.releaseAdmission(lease); task.resolve(); attachmentTasks.delete(task.promise); }
+  }
+  function captureAppAdmissionAuthorization(req: Request, acceptedOrigin: URL) {
+    const principal = auth.terminalToken(req);
+    const scope = Object.freeze({ url: req.url, method: req.method, origin: origin, acceptedOrigin: acceptedOrigin.origin,
+      requestOrigin: req.headers.get("origin"), host: req.headers.get("host"), cookie: req.headers.get("cookie"), storeId: store.manifest.storeId });
+    return () => {
+      // A changed server store identity is an invariant failure, not a revoked
+      // browser principal. Keep it on the queue's existing fail-closed path.
+      if (store.manifest.storeId !== scope.storeId) throw new AppAdmissionStorageError("corrupt", "The original App store identity changed before submission intake");
+      if (!principal || !auth.validTerminalToken(principal) || !auth.authenticated(req) || auth.terminalToken(req) !== principal
+        || req.url !== scope.url || req.method !== scope.method || origin !== scope.origin || acceptedOrigin.origin !== scope.acceptedOrigin
+        || req.headers.get("origin") !== scope.requestOrigin || req.headers.get("host") !== scope.host || req.headers.get("cookie") !== scope.cookie) throw new AppAdmissionAuthorizationError("The original authenticated submission request was revoked or changed before intake");
+    };
+  }
   type BridgeSocketData = ({ kind: "terminal" } & TerminalSocketData) | ({ kind: "browser" } & BrowserSocketData);
   async function handle(req: Request, srv: Pick<Bun.Server<undefined>, "requestIP" | "port">, upgrade?: (req: Request, data: BridgeSocketData) => boolean): Promise<Response | undefined> {
     try {
@@ -3624,10 +4782,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         const connection = signedIn ? nativeConnectionSnapshot.read() : undefined;
         const nativeConnection = connection?.value ?? { available: false, connected: false, state: "unavailable", reason: connection?.error };
-        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { storeId: store.manifest.storeId, conversationUpdates: true, ...(pendingInputAutomationHealthy() ? { pendingInputCapability: { protocol: "pending-input", version: 1, supported: true, maxWaiting: 3, removal: true, resume: true } } : {}), capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability, browser: browsers.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [
-          { id: "claude-code", name: getHarnessDescriptor("claude-code")!.label, available: true, connected: true, state: "available", capabilities: capabilitiesFor("claude-code") },
+        const grokCapability = grokApp!.capability();
+        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { storeId: store.manifest.storeId, appAdmissionCapability: { protocol: "app-admission", version: 1, state: appAdmissionFeature.state === "enabled" ? "enabled" : "requires-initialization" }, conversationUpdates: true, ...(pendingInputAutomationHealthy() ? { pendingInputCapability: { protocol: "pending-input", version: 1, supported: true, maxWaiting: 3, removal: true, resume: true } } : {}), capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability, browser: browsers.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [          { id: "claude-code", name: getHarnessDescriptor("claude-code")!.label, available: true, connected: true, state: "available", capabilities: capabilitiesFor("claude-code") },
           { id: "opencode", name: getHarnessDescriptor("opencode")!.label, ...nativeConnection, capabilities: capabilitiesFor("opencode") },
-        ] } : {}) });
+          { id: "grok", name: "Grok", available: grokCapability.configured, connected: grokCapability.configured,
+            state: grokCapability.configured ? "configured" : "unconfigured", reason: grokCapability.reason,
+            capabilities: capabilitiesFor("grok") },
+        ], grokCapability } : {}) });
       }
       if (path === "/api/login" && req.method === "POST") return await auth.login(req, expected);
       if (path === "/api/logout" && req.method === "POST") {
@@ -3636,6 +4797,38 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return auth.logout(req);
       }
       if (path.startsWith("/api/") && !auth.authenticated(req)) return json({ error: "Authentication required" }, 401);
+      // Capture-only Grok intake is deliberately separate from v1 receipts.
+      // Browser auth/origin checks above apply to these routes as to normal chat.
+      if (path === "/api/grok/turns") {
+        if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+        const input = await body(req);
+        if (!auth.authenticated(req)) return json({ error: "Authentication required" }, 401);
+        const task = Promise.withResolvers<void>();
+        attachmentTasks.add(task.promise);
+        try { return json(await grokApp!.submit(input as GrokTurnInput), 202); }
+        catch (error) { if (error instanceof GrokManagedSubmissionResponse) return error.response; throw error; }
+        finally { task.resolve(); attachmentTasks.delete(task.promise); }
+      }
+      const grokSession = /^\/api\/grok\/sessions\/([^/]+)(\/stop)?$/.exec(path);
+      if (grokSession) {
+        const id = decodeURIComponent(grokSession[1]!);
+        if (grokSession[2] && req.method === "POST") return json(await grokApp!.stop(id));
+        if (!grokSession[2] && req.method === "GET") return json(await grokApp!.view(id));
+        return json({ error: "Method not allowed" }, 405);
+      }
+      // Capture before any body/queue await. The capability is process-private,
+      // request-bound, and is consumed only by this original intake call.
+      const appAdmissionAuthorization = path === "/api/submissions" && req.method === "POST"
+        ? captureAppAdmissionAuthorization(req, expected) : undefined;
+      const appSubmissionLookup = /^\/api\/submissions\/([^/]+)$/.exec(path);
+      if (appSubmissionLookup) {
+        if (req.method !== "GET") return json({ error: "Method not allowed" }, 405, { allow: "GET" });
+        if (!appAdmissions) return json({ error: "App admission requires explicit initialization", code: "app-admission-uninitialized" }, 503);
+        if ([...url.searchParams.keys()].some(key => !["storeId", "payloadSha256"].includes(key))
+          || ["storeId", "payloadSha256"].some(key => url.searchParams.getAll(key).length !== 1)) return json({ error: "Provide the exact store and payload hash", code: "invalid-request" }, 400);
+        const key = decodeAppAdmissionKey({ storeId: url.searchParams.get("storeId"), clientRequestId: decodeURIComponent(appSubmissionLookup[1]!), payloadSha256: url.searchParams.get("payloadSha256") });
+        return json(appAdmissions.lookup(key));
+      }
       // This read-only endpoint must reject writes before startup/branch mutation guards.
       if (req.method !== "GET" && /^\/api\/sessions\/[^/]+\/runs\/preview$/.test(path)) return json({ error: "Method not allowed" }, 405, { allow: "GET" });
       const codeShareMatch = /^\/api\/sessions\/([^/]+)\/code-shares$/.exec(path);
@@ -3672,14 +4865,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const association = catalog.association(scope.session.sessionId);
           if (current.hidden || !admission || admission.state !== "ready" || JSON.stringify(admission) !== admissionPin
             || admission.nativeId !== scope.session.nativeSessionId || admission.source.authorityId !== scope.session.authorityId
-            || admission.source.descriptor.harness !== (scope.session.harness === "opencode" ? "oc" : "cc")
+            || admission.source.descriptor.harness !== toNativeHarness(scope.session.harness)
             || association.workspaceId !== admission.binding.workspaceId || association.worktreeId !== admission.binding.worktreeId
             || current.cwd !== admission.binding.executionCheckout) throw new ResourcePairError(409, "resource-pair-identity", "Conversation admission changed; reconnect before restoring links");
           // Cached authority IDs do not attest that their configured/admitted
           // locators still resolve to that authority after an async boundary.
           try {
-            const source = store.sources[admission.source.descriptor.harness];
-            if (source.authorityId !== scope.session.authorityId
+            const native = admission.source.descriptor.harness;
+            const source = native === "gk" ? store.sources.version === 2 ? store.sources.gk : undefined : store.sources[native];
+            if (!source || source.authorityId !== scope.session.authorityId
               || normalizeNativeSource(source.descriptor).authorityId !== scope.session.authorityId
               || normalizeNativeSource(admission.source.descriptor).authorityId !== scope.session.authorityId) throw new Error("Native source changed");
           } catch {
@@ -3721,6 +4915,35 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return json(snapshot);
       }
       if (!startupReady && path.startsWith("/api/") && !["GET", "HEAD"].includes(req.method)) return json({ error: "Startup execution classification is incomplete", code: "startup-classifying" }, 503);
+      if (path === "/api/submissions") {
+        if (req.method !== "POST") return json({ error: "Method not allowed" }, 405, { allow: "POST" });
+        if (url.searchParams.size) return json({ error: "Submission intake does not accept query parameters", code: "invalid-request" }, 400);
+        const service = appAdmissions;
+        if (!service) return json({ error: "App admission requires explicit initialization", code: "app-admission-uninitialized" }, 503);
+        const completion = Promise.withResolvers<void>(); attachmentTasks.add(completion.promise);
+        const finish = () => { completion.resolve(); attachmentTasks.delete(completion.promise); };
+        try {
+          const envelope = decodeAppAdmissionEnvelope(await body(req));
+          if (!appAdmissionAuthorization) throw new Error("Original submission authorization was not captured");
+          const begun = await service.begin(envelope, appAdmissionAuthorization);
+          if (begun.kind === "existing") { finish(); return json(begun.receipt, 202); }
+          const originalSubmission: OriginalSubmission = { original: begun.original, envelope: begun.intent, binding: begun.binding };
+          // One original, supervised background invocation. Browser abort is not
+          // cancellation and no receipt, GET, restart or duplicate starts it again.
+          void Promise.resolve().then(async () => {
+            try {
+              const response = await submitUserInput(begun.intent.intent.payload, originalSubmissionPublication(begun.original), originalSubmission);
+              if (!response.ok) await service.rejectBeforeInstallation(begun.original, { code: response.status === 400 ? "invalid-request" : response.status === 409 ? "conflict" : "unavailable" });
+            } catch (error) {
+              if (!(error instanceof AppAdmissionStorageError)) {
+                try { await service.rejectBeforeInstallation(begun.original, { code: error instanceof UserInputPreparationError ? "preparation-refused" : error instanceof AppAdmissionRequestError ? "conflict" : "unavailable" }); }
+                catch { /* Storage failure retains original pending uncertainty. */ }
+              }
+            } finally { finish(); }
+          });
+          return json(begun.receipt, 202);
+        } catch (error) { finish(); throw error; }
+      }
       if (path === "/api/resource-pairs") {
         if (req.method === "GET") {
           if ([...url.searchParams.keys()].some(key => !["storeId", "target"].includes(key))
@@ -3748,29 +4971,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return json(resourcePairs.write(input, assertCurrent));
       }
       if (path === "/api/browser-pairs") {
-        if (req.method === "GET") {
-          if ([...url.searchParams.keys()].some(key => !["storeId", "workspaceId", "tabId"].includes(key))
-            || ["storeId", "workspaceId", "tabId"].some(key => url.searchParams.getAll(key).length !== 1)) return json({ error: "Provide storeId, workspaceId and tabId only" }, 400);
-          if (url.searchParams.get("storeId") !== store.manifest.storeId) throw new BrowserPairError(409, "browser-pair-store", "The App store changed; reconnect before pairing");
-          const target = { workspaceId: url.searchParams.get("workspaceId"), tabId: url.searchParams.get("tabId") };
-          if (!isBrowserPairTarget(target)) throw new BrowserPairError(400, "browser-pair-input", "Invalid browser tab identity");
-          if (!catalog.workspaceName(target.workspaceId)) throw new BrowserPairError(404, "browser-pair-workspace", "Unknown browser workspace");
-          return json(browserPairs.read(target));
-        }
-        if (req.method !== "PUT") return json({ error: "Method not allowed" }, 405, { allow: "GET, PUT" });
-        if (url.searchParams.size) throw new BrowserPairError(400, "browser-pair-input", "Pairing writes do not accept query parameters");
-        const input = await body(req);
-        if (!isBrowserPairWrite(input)) throw new BrowserPairError(400, "browser-pair-input", "Provide an exact browser tab, operation, expected revision, and conversation identity for session-level changes");
-        // Metadata only: no native refresh, prompt preparation or dispatch. The
-        // browser owns its tab IDs; the server never fetches a tab's URL.
-        const assertCurrent = () => {
-          assertDomainMutationOpen();
-          if (req.signal.aborted || !auth.authenticated(req)) throw new BrowserPairError(409, "browser-pair-interrupted", "Pairing request is no longer current");
-          if (!catalog.workspaceName(input.workspaceId)) throw new BrowserPairError(404, "browser-pair-workspace", "Unknown browser workspace");
-          assertPairConversation(input, BrowserPairError);
-        };
-        return json(browserPairs.write(input, assertCurrent));
-      }
+        const response = await browserPairRoute(req, url);
+        if (response !== null) return response;      }
       if (path === "/api/session-retirements") {
         if (!loopback(srv.requestIP(req)?.address ?? "")) return json({ error: "Retirement operations require the local authenticated listener", code: "retirement-local-only" }, 403);
         if (url.searchParams.size) return json({ error: "Retirement endpoint does not accept query parameters" }, 400);
@@ -3824,55 +5026,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return json({ form: result });
       }
       if (path === "/api/agents" || path.startsWith("/api/agents/")) {
-        try {
-          if (path === "/api/agents" && req.method === "GET") return json(agentProfiles);
-          // Read the body before cloning so concurrent edits never overwrite each other.
-          const input = req.method === "PUT" || req.method === "POST" && !path.endsWith("/reset") ? await body(req) : undefined;
-          const next = structuredClone(agentProfiles);
-          if (path === "/api/agents" && req.method === "POST") {
-            const { fromId, ...fields } = input ?? {};
-            const from = next.profiles.find(p => p.id === fromId);
-            if (!from) return json({ error: "Unknown agent profile" }, 404);
-            const profile = applyProfileInput({ ...from, id: crypto.randomUUID(), builtin: false, locked: false, order: Math.max(...next.profiles.map(p => p.order)) + 1 }, fields);
-            next.profiles.push(profile); await commitAgents(next);
-            return json({ profile });
-          }
-          if (path === "/api/agents/order" && req.method === "PUT") {
-            if (input?.order !== undefined) {
-              if (!Array.isArray(input.order) || input.order.length !== next.profiles.length || new Set(input.order).size !== input.order.length || next.profiles.some(p => !input.order.includes(p.id))) return json({ error: "order must list every agent profile id exactly once" }, 400);
-              for (const p of next.profiles) p.order = input.order.indexOf(p.id);
-            }
-            if (input?.defaultId !== undefined) next.defaultId = input.defaultId;
-            if (input?.workerDefaults !== undefined) next.workerDefaults = input.workerDefaults;
-            await commitAgents(next);
-            return json(agentProfiles);
-          }
-          const match = /^\/api\/agents\/([^/]+)(\/reset)?$/.exec(path);
-          const index = match ? next.profiles.findIndex(p => p.id === decodeURIComponent(match[1]!)) : -1;
-          if (!match || index < 0) return json({ error: "Unknown agent profile" }, 404);
-          const current = next.profiles[index]!;
-          if (match[2] && req.method === "POST") {
-            if (!current.builtin) return json({ error: "Only builtin profiles can be reset" }, 400);
-            const profile = { ...builtinProfiles().find(p => p.id === current.id)!, order: current.order };
-            next.profiles[index] = profile; await commitAgents(next);
-            return json({ profile });
-          }
-          if (!match[2] && req.method === "PUT") {
-            if (current.builtin && current.kind === "base" && input?.harness !== undefined && input.harness !== current.harness) return json({ error: "Base profile harness cannot change" }, 400);
-            const profile = applyProfileInput(current, input ?? {});
-            if (profile.hidden && next.defaultId === profile.id) return json({ error: "The default agent cannot be hidden" }, 400);
-            next.profiles[index] = profile; await commitAgents(next);
-            return json({ profile });
-          }
-          if (!match[2] && req.method === "DELETE") {
-            if (current.builtin) return json({ error: "Builtin profiles cannot be deleted" }, 400);
-            next.profiles.splice(index, 1);
-            if (next.defaultId === current.id) next.defaultId = BASE_PROFILE_IDS["claude-code"];
-            await commitAgents(next);
-            return json({ ok: true });
-          }
-          return json({ error: "Method not allowed" }, 405);
-        } catch (error) { if (error instanceof AppStoreError) return json({ error: error.message }, 400); throw error; }
+        const response = await agentProfileRoute(req, url);
+        if (response !== null) return response;
       }
       if (path === "/api/handoffs" && req.method === "GET") { const listed = await handoffs.list(url.searchParams.get("workspaceId") ?? ""); return json({ handoffs: listed, problems: Object.fromEntries(listed.filter(h => handoffProblems.has(h.id)).map(h => [h.id, handoffProblems.get(h.id)])) }); }
       const handoffAction = /^\/api\/handoffs\/([^/]+)\/(retry|acknowledge|reconcile)$/.exec(path);
@@ -3897,95 +5052,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         handoffReservations.delete(h.recipient.sessionId);
         return json({ handoff: retried }, 202);
       }
-      if (path === "/api/workstreams" || path.startsWith("/api/workstreams/")) {
+      if (matchesWorkstreamRoute(path)) {
         // Host/Origin checks above have already accepted this exact request.
-        return await authenticatedWorkstreamRoute(req, request => auth.authenticated(request) ? null : json({ error: "Authentication required" }, 401), async () => {
-          const workspaceId = url.searchParams.get("workspaceId");
-          if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
-          if (path === "/api/workstreams/inspect" && req.method === "GET") return router!.inspect(workspaceId);
-           if (path === "/api/workstreams/init" && req.method === "POST") { const result = await router!.initialize(workspaceId); notifyPendingInput("domain"); return result; }
-          const operation = path.slice("/api/workstreams/".length);
-          if (operation === "artifacts/catalog" || operation === "artifacts/list" || operation === "artifacts/read") {
-            if (req.method !== "POST") throw new WorkstreamAdapterError(405, "method-not-allowed", "Method not allowed");
-            const input = await body(req);
-            validateWorkstreamInput(operation, input);
-            const adapter = await router!.forWorkspace(workspaceId, input.repositoryId);
-            if (operation === "artifacts/catalog") return adapter.documentCatalog(input.id);
-            if (operation === "artifacts/list") return adapter.listArtifacts(input.id);
-            return adapter.readArtifactSnapshot(input.id, input.path);
-          }
-          const workstreams = await (req.method === "GET" ? router!.forPolling(workspaceId) : router!.forWorkspace(workspaceId));
-          if (path === "/api/workstreams/overview" && req.method === "GET") {
-            if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
-            return workstreams.overview(activeSessions().filter(s => catalog.association(s.sessionId).workspaceId === workspaceId));
-          }
-          if (path === "/api/workstreams" && req.method === "GET") return workstreams.list();
-          if (req.method === "GET" && operation === "status") return workstreams.status(url.searchParams.get("id") ?? "");
-          if (req.method !== "POST") throw new WorkstreamAdapterError(405, "method-not-allowed", "Method not allowed");
-          const input = await body(req);
-          if (operation === "artifacts/write") throw new WorkstreamAdapterError(405, "read-only-artifacts", "App workstream artifacts are read-only");
-          if (operation === "manage") {
-            if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
-            if (!input || !["associate", "phase/assign", "phase/end"].includes(input.operation)) throw new WorkstreamAdapterError(400, "invalid-request", "Unknown management action");
-            validateWorkstreamInput(input.operation, { ...input, sessionId: "qualified-native-reference" });
-            const target = input.ref && workstreams.appSessionId(input.ref, meta.sessions);
-            assertPendingInputDomainMutation(pendingInputs!.store.readRecords().conversations, workstreams.domain,
-              input.operation === "phase/end" ? { kind: "phase/end", assignmentId: input.assignmentId }
-                : input.operation === "associate" ? { kind: "associate", ref: input.ref, workstreamId: input.workstreamId } : { kind: "phase/assign", ref: input.ref });
-            const available = availability(target || undefined, false);
-            if (!available.canSend) throw new WorkstreamAdapterError(409, "bridge-busy", available.reason!);
-             return queueDomainCommitted(() => workstreams.manage(input.ref, input.operation, input));
-          }
-          validateWorkstreamInput(path === "/api/workstreams" ? "create" : operation, input);
-          if (operation === "validate" || operation === "provide" || operation === "complete") {
-            const actionInput = input as WorkstreamActionInput | WorkstreamCompleteInput;
-            let adapter = await router!.forWorkspace(workspaceId, actionInput.repositoryId);
-            if (actionInput.sessionId !== undefined) {
-              const session = meta.sessions.find(candidate => candidate.sessionId === actionInput.sessionId);
-              if (!session) throw new WorkstreamAdapterError(404, "not-found", "Unknown App conversation");
-              assertCatalogActive(session);
-              const admission = admissions.get(session.sessionId);
-              if (!admission || admission.binding.workspaceId !== workspaceId || admission.binding.domain.mode !== "repository" || admission.binding.domain.repositoryId !== actionInput.repositoryId) throw new WorkstreamAdapterError(409, "repository-mismatch", "Conversation and requested repository differ");
-              if (session.nativeSessionId !== admission.nativeId || session.authorityId !== admission.source.authorityId || adapter.reference(session).harness !== admission.source.descriptor.harness) throw new WorkstreamAdapterError(409, "invalid-app-reference", "Conversation native identity differs from its admission");
-              await router!.execution(admission);
-              adapter = await router!.forWorkspace(workspaceId, actionInput.repositoryId);
-              if (adapter.invocation(session).workstream?.id !== actionInput.id) throw new WorkstreamAdapterError(409, "workstream-mismatch", "Conversation belongs to another workstream");
-            }
-            if (adapter.status(actionInput.id).workstream.revision !== actionInput.expectedRevision) throw new DomainError("CONFLICT", "Workstream changed; refresh its current state before retrying");
-            if (operation === "complete") {
-              await adapter.complete(actionInput.id, actionInput.expectedRevision);
-              return { action: "complete", id: actionInput.id, ok: true } satisfies WorkstreamCompleteResult;
-            }
-            const action: WorkstreamAction = operation, phaseInput = input as WorkstreamActionInput;
-            if (action === "validate") {
-              const result = await adapter.validate(phaseInput.id, phaseInput.phase);
-              return { action, phase: phaseInput.phase, ok: result.ok } satisfies WorkstreamActionResult;
-            }
-            // The adapter reserves at the actual backend call, covering callers
-            // other than HTTP and enqueue/preflight throughout core's awaits.
-            await adapter.provide(phaseInput.id, phaseInput.phase, false, phaseInput.expectedRevision);
-            return { action, phase: phaseInput.phase, ok: true } satisfies WorkstreamActionResult;
-          }
-            if (path === "/api/workstreams") return queueDomainCommitted(() => workstreams.create({ id: input.id, title: input.title, type: input.type, defaultCheckout: input.defaultCheckout }));
-           if (operation === "default-checkout") return queueDomainCommitted(() => workstreams.setDefaultCheckout(input.id, input.checkout));
-          if (operation === "target") return workstreams.resolveTarget(input.id, input.phase, input.target);
-          if (!["conversation", "associate", "phase/assign", "phase/end", "context"].includes(operation)) throw new WorkstreamAdapterError(404, "not-found", "Unknown workstream operation");
-          const session = meta.sessions.find(s => s.sessionId === input.sessionId);
-          if (!session) throw new WorkstreamAdapterError(404, "not-found", "Unknown App conversation");
-          const admission = admissions.get(session.sessionId);
-          if (!admission || admission.binding.workspaceId !== workspaceId) throw new WorkstreamAdapterError(409, "repository-mismatch", "Conversation belongs to another workspace");
-          await router!.forAdmission(admission, workspaceId);
-          if (operation === "conversation") return workstreams.conversation(session);
-          if (operation === "context") return workstreams.invocation(session);
-          assertPendingInputDomainMutation(pendingInputs!.store.readRecords().conversations, workstreams.domain,
-            operation === "phase/end" ? { kind: "phase/end", assignmentId: input.assignmentId }
-              : operation === "associate" ? { kind: "associate", ref: workstreams.reference(session), workstreamId: input.workstreamId } : { kind: "phase/assign", ref: workstreams.reference(session) });
-          const available = availability(session.sessionId, false);
-          if (!available.canSend) throw new WorkstreamAdapterError(409, "bridge-busy", available.reason!);
-           if (operation === "associate") return queueDomainCommitted(() => workstreams.associate(session, input.workstreamId));
-           if (operation === "phase/assign") return queueDomainCommitted(() => workstreams.assignPhase(session, input.phase));
-           return queueDomainCommitted(() => workstreams.endPhase(session, input.assignmentId));
-        });
+        const response = await workstreamRoute(req, url);
+        if (response !== null) return response;
       }
       if (/^\/api\/workspaces\/[^/]+\/worktrees\/[^/]+\/science\/chats\/[^/]+$/.test(path)) {
         const token = auth.terminalToken(req);
@@ -3995,32 +5065,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const token = auth.terminalToken(req);
         return (await scienceRoute(req, science!, () => !closing && !storageFailed && !!token && auth.terminalToken(req) === token))!;
       }
-      const terminalMatch = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/terminal(?:\/(socket|close|restart))?$/.exec(path);
-      if (terminalMatch) {
-        const workspaceId = decodeURIComponent(terminalMatch[1]!), worktreeId = decodeURIComponent(terminalMatch[2]!), operation = terminalMatch[3];
-        // No query-string credentials or mutable cwd/directory overrides.
-        if (url.search) return json({ error: "Terminal routes do not accept query parameters", code: "terminal-query" }, 400);
-        if (operation === "socket") {
-          if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
-          if (req.headers.get("origin") !== origin) return json({ error: "Origin rejected" }, 403);
-          if (!upgrade || req.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "WebSocket upgrade required" }, 426);
-          const token = auth.terminalToken(req);
-          if (!token) return json({ error: "Authentication required" }, 401);
-          const data = await terminals.prepare(workspaceId, worktreeId, token);
-          if (closing || auth.terminalToken(req) !== token) { terminals.cancelUpgrade(data); return json({ error: "Attachment authorization changed" }, 401); }
-          try { if (upgrade(req, { kind: "terminal", ...data })) return undefined; } catch { terminals.cancelUpgrade(data); return json({ error: "WebSocket upgrade failed" }, 400); }
-          terminals.cancelUpgrade(data); return json({ error: "WebSocket upgrade failed" }, 400);
-        }
-        if (!operation && req.method === "GET") {
-          const token = auth.terminalToken(req), state = await terminals.get(workspaceId, worktreeId);
-          if (!token || auth.terminalToken(req) !== token) return json({ error: "Authentication revoked" }, 401);
-          return json(state);
-        }
-        if (req.method === "POST") {
-          const token = auth.terminalToken(req), input = await body(req);
-          return json(await terminals.change(workspaceId, worktreeId, operation === "close" ? "close" : operation === "restart" ? "restart" : "start", input, () => !closing && !!token && auth.terminalToken(req) === token));
-        }
-        return json({ error: "Method not allowed" }, 405);
+      if (matchesTerminalRoute(path)) {
+        const result = await terminalRoute(req, url, upgrade ? (request, data) => upgrade(request, { kind: "terminal", ...data }) : undefined);
+        if (result.handled) return result.response;
       }
       const browserMatch = /^\/api\/workspaces\/([^/]+)\/browser\/(.+)$/.exec(path);
       if (browserMatch) {
@@ -4043,125 +5090,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         return browsers.route(req, workspaceId, suffix, authorized, token);
       }
-      if (path === "/api/navigation") {
-        if (req.method === "GET") return json(catalog.getNavigation());
-        if (req.method === "PUT") return json(await catalog.putNavigation(await body(req)));
-        return json({ error: "Method not allowed" }, 405);
-      }
-      if (path === "/api/workspaces/create") {
-        if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-        return json(await workspaceCreations!.create(await body(req), () => !closing && auth.authenticated(req)), 201);
-      }
-      if (path === "/api/workspaces") {
-        if (req.method === "GET") return json(await catalog.list());
-        if (req.method === "POST") { const input = await body(req); return json(await catalog.register(input?.cwd), 201); }
-        return json({ error: "Method not allowed" }, 405);
-      }
-      const aliasMatch = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/alias$/.exec(path);
-      if (aliasMatch) {
-        try {
-          if (req.method !== "PUT") return json({ error: "Method not allowed" }, 405);
-          const workspaceId = decodeURIComponent(aliasMatch[1]!), worktreeId = decodeURIComponent(aliasMatch[2]!);
-          const input = await body(req);
-          return json({ workspace: await catalog.setAlias(workspaceId, worktreeId, input?.alias ?? null) });
-        } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
-      }
-      const gitOperationsMatch = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/git-operations$/.exec(path);
-      if (gitOperationsMatch) {
-        try {
-          const workspaceId = decodeURIComponent(gitOperationsMatch[1]!), worktreeId = decodeURIComponent(gitOperationsMatch[2]!);
-          const token = auth.terminalToken(req);
-          if (req.method === "GET") {
-            const result = await gitOperations!.get(workspaceId, worktreeId, url.searchParams.get("bindingRevision"));
-            if (!token || auth.terminalToken(req) !== token) return json({ error: "Authentication revoked" }, 401);
-            return json(result);
-          }
-          if (req.method === "POST") {
-            assertDomainMutationOpen();
-            const input = await body(req);
-            return json(await gitOperations!.run(workspaceId, worktreeId, input, () => !closing && !storageFailed && !retainOwner && !meta.reconciliationRequired && startupReady && !!token && auth.terminalToken(req) === token));
-          }
-          return json({ error: "Method not allowed" }, 405);
-        } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
-      }
-      const catalogMatch = /^\/api\/workspaces\/([^/]+)(?:\/worktrees\/([^/]+)(?:\/(list|file|copy|rename|git|diff|search|paths))?)?$/.exec(path);
-      if (catalogMatch) {
-        try {
-          const workspaceId = decodeURIComponent(catalogMatch[1]!), worktreeId = catalogMatch[2] && decodeURIComponent(catalogMatch[2]), operation = catalogMatch[3];
-          if (!worktreeId && req.method === "GET") return json(await catalog.get(workspaceId));
-          const key = `${workspaceId}/${worktreeId}`, revision = url.searchParams.get("workspaceId") ?? url.searchParams.get("bindingRevision"), filePath = url.searchParams.get("path") ?? "";
-          if (!operation && worktreeId && req.method === "GET") { const resolved = await worktrees.resolve(key); return json({ ...resolved, catalogWorkspaceId: workspaceId, worktreeId, bindingRevision: resolved.workspaceId }); }
-          if (!operation && worktreeId && req.method === "DELETE") {
-            const input = await body(req).catch(() => ({}));
-            const result = await catalog.removeWorktree(workspaceId, worktreeId, {
-              force: input?.force === true,
-              beforeRemove: async () => {
-                const admittingSession = meta.sessions.find(s => {
-                  const a = catalog.association(s.sessionId);
-                  return a.association === "resolved" && a.workspaceId === workspaceId && a.worktreeId === worktreeId && admitting.has(s.sessionId);
-                });
-                if (admittingSession) throw new WorkspaceError(409, "worktree-busy", "Wait for the in-flight message submission in this worktree to finish before removing it");
-                await terminals.disposeWorktree(workspaceId, worktreeId);
-              },
-            });
-            return json(result);
-          }
-          if (operation === "list" && req.method === "GET") return json(await worktrees.list(key, revision, filePath));
-          if (operation === "file" && req.method === "GET") return json(await worktrees.file(key, revision, filePath));
-          if (operation === "file" && req.method === "PUT") { const input = await body(req); return json(await worktrees.write(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId })); }
-          if (operation === "search" && req.method === "POST") {
-            searches.assertOpen();
-            const input = await body(req);
-            return json(await searches.run(req.signal, signal => worktrees.search(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, signal)));
-          }
-          if (operation === "paths" && req.method === "POST") {
-            searches.assertOpen();
-            const input = await body(req);
-            const result = await searches.run(req.signal, signal => worktrees.paths(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, signal));
-            if (!auth.authenticated(req)) return json({ error: "Authentication revoked" }, 401);
-            return json(result);
-          }
-          if ((operation === "file" && ["POST", "DELETE"].includes(req.method)) || (["copy", "rename"].includes(operation ?? "") && req.method === "POST")) {
-            const input = await body(req), boundInput = { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId };
-            if (operation === "copy") return json(await worktrees.copy(key, boundInput), 201);
-            if (operation === "rename") return json(await worktrees.rename(key, boundInput));
-            if (req.method === "POST") return json(await worktrees.create(key, boundInput), 201);
-            return json(await worktrees.delete(key, boundInput));
-          }
-          if (operation === "git" && req.method === "GET") return json(await worktrees.status(key, revision));
-          if (operation === "diff" && req.method === "GET") return json(await worktrees.diff(key, revision, filePath, url.searchParams.get("comparison") ?? ""));
-          return json({ error: "Method not allowed" }, 405);
-        } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
-      }
-      const workspaceMatch = /^\/api\/sessions\/([^/]+)\/workspace(?:\/(list|file|copy|rename|git|diff|search|paths))?$/.exec(path);
-      if (workspaceMatch) {
-        try {
-          const sessionId = decodeURIComponent(workspaceMatch[1]!);
-          const operation = workspaceMatch[2], workspaceId = url.searchParams.get("workspaceId"), filePath = url.searchParams.get("path") ?? "";
-          if (!operation && req.method === "GET") return json(await workspace.resolve(sessionId));
-          if (operation === "list" && req.method === "GET") return json(await workspace.list(sessionId, workspaceId, filePath));
-          if (operation === "file" && req.method === "GET") return json(await workspace.file(sessionId, workspaceId, filePath));
-          if (operation === "file" && req.method === "PUT") return json(await workspace.write(sessionId, await body(req)));
-          if (operation === "search" && req.method === "POST") {
-            searches.assertOpen();
-            const input = await body(req);
-            return json(await searches.run(req.signal, signal => workspace.search(sessionId, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, signal)));
-          }
-          if (operation === "paths" && req.method === "POST") {
-            searches.assertOpen();
-            const input = await body(req);
-            const result = await searches.run(req.signal, signal => workspace.paths(sessionId, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, signal));
-            if (!auth.authenticated(req)) return json({ error: "Authentication revoked" }, 401);
-            return json(result);
-          }
-          if (operation === "file" && req.method === "POST") return json(await workspace.create(sessionId, await body(req)), 201);
-          if (operation === "file" && req.method === "DELETE") return json(await workspace.delete(sessionId, await body(req)));
-          if (operation === "copy" && req.method === "POST") return json(await workspace.copy(sessionId, await body(req)), 201);
-          if (operation === "rename" && req.method === "POST") return json(await workspace.rename(sessionId, await body(req)));
-          if (operation === "git" && req.method === "GET") return json(await workspace.status(sessionId, workspaceId));
-          if (operation === "diff" && req.method === "GET") return json(await workspace.diff(sessionId, workspaceId, filePath, url.searchParams.get("comparison") ?? ""));
-          return json({ error: "Method not allowed", code: "method-not-allowed" }, 405);
-        } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
+      if (matchesWorkspaceRoute(path)) {
+        const response = await workspaceRoute(req, url);
+        if (response !== null) return response;
       }
       const modelsRoute = /^\/api\/harnesses\/([^/]+)\/models$/.exec(path);
       if (modelsRoute && req.method === "GET") {
@@ -4170,6 +5101,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return await dispatchHarness(descriptor.id, {
           "claude-code": () => { throw new HarnessOperationError("This harness has no live model catalog", 501, "unsupported-harness-operation"); },
           opencode: async () => json({ models: await oc.models(cwd) }),
+          grok: async () => {
+            const capability = grokApp!.capability();
+            if (!capability.configured) throw new HarnessOperationError(capability.reason ?? "Grok is not configured", 409, "grok-unconfigured");
+            return json(await grokModelCatalog!.read(cwd, url.searchParams.get("refresh") === "true"));
+          },
         });
       }
       const workerCancel = /^\/api\/sessions\/([^/]+)\/workers\/cancel$/.exec(path);
@@ -4247,135 +5183,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!meta.sessions.some(s => s.sessionId === workerList[1])) return json({ error: "Unknown parent session" }, 404);
         return json({ workers: await Promise.all(workers.tree(workerList[1]!).filter(w => url.searchParams.get("includeRetired") === "1" || !retiredId(w.sessionId)).map(w => workers.refresh(w))), deliveries: workerStore.deliveriesForParent(workerList[1]!), continuationSuppressed: workerStore.suppressed(workerList[1]!) });
       }
-      if ((path === "/api/sessions" || path === "/api/sessions/summaries" || path === "/api/sessions/groups") && req.method === "GET") {
-        const directory = path === "/api/sessions/groups";
-        const targeted = path === "/api/sessions/summaries";
-        const query = directory ? sessionCatalogGroupsQuery(url.searchParams)
-          : !targeted && (url.searchParams.has("limit") || url.searchParams.has("cursor")) ? sessionCatalogQuery(url.searchParams) : undefined;
-        const requestedIds = targeted ? sessionSummaryIds(url.searchParams) : undefined;
-        const summary = targeted || url.searchParams.get("summary") === "1";
-        // Metadata-only enumeration: missing filesystem state does not erase a
-        // recorded tree's identity. Never rewrite the source association DTO.
-        const registered = query && (directory || query.workspaceId === "unavailable" || query.worktreeId === "unavailable")
-          ? (await catalog.registeredWorkspaces()).workspaces : undefined;
-        const registeredTrees = registered ? new Map(registered.map(workspace => [workspace.workspaceId,
-          new Set(workspace.worktrees.map(tree => tree.worktreeId))])) : undefined;
-        const groupAssociation = (id: string) => {
-          const association = catalog.association(id), trees = registeredTrees?.get(association.workspaceId ?? "");
-          if (!trees) return { workspaceId: null, worktreeId: null };
-          return { workspaceId: association.workspaceId, worktreeId: trees.has(association.worktreeId!) ? association.worktreeId : null };
-        };
-        // Domain reads are needed only when creating a filtered snapshot. Resolve
-        // read-only adapters first; capture membership and all local policy below
-        // synchronously, against current sessions/identities after the awaits.
-        const membershipAdapters = new Map<string, import("./workstreams").WorkstreamAdapter>();
-        if (query && sessionCatalog.needsMembership(query)) {
-          const workspaceIds = new Set(activeSessions().filter(session => query.workspaceId !== "unavailable" || !groupAssociation(session.sessionId).workspaceId)
-            .map(session => catalog.association(session.sessionId).workspaceId)
-            .filter((id): id is string => !!id && (!registeredTrees || registeredTrees.has(id))
-              && (query.workspaceId === "all" || query.workspaceId === "unavailable" || query.workspaceId === id)));
-          for (const workspaceId of workspaceIds) {
-            try { membershipAdapters.set(workspaceId, await router!.forPolling(workspaceId)); }
-            catch (error) {
-              // No repository domain means unknown, never confirmed unassigned.
-              // Actual read failures must not silently masquerade as empty data.
-              if ((error instanceof WorkstreamAdapterError && error.code === "not-repository") || (error instanceof RepositoryStoreError && error.state === "uninitialized")) continue;
-              throw error;
-            }
-          }
-        }
-        const availableWorktrees = new Set<string>();
-        if (query?.availableOnly) {
-          const workspaces = query.workspaceId !== "all" && query.workspaceId !== "unavailable"
-            ? [await catalog.registered(query.workspaceId)] : registered ?? (await catalog.registeredWorkspaces()).workspaces;
-          for (const workspace of workspaces) for (const tree of workspace.worktrees) if (tree.state === "available") {
-            availableWorktrees.add(JSON.stringify([workspace.workspaceId, tree.worktreeId]));
-          }
-        }
-        const active = activeSessions();
-        const membership = new Map<string, SessionCatalogMembership>();
-        for (const [workspaceId, adapter] of membershipAdapters) {
-          const overview = adapter.overview(active.filter(session => catalog.association(session.sessionId).workspaceId === workspaceId));
-          const refKey = (ref: { harness: string; authorityId: string; nativeId: string }) => JSON.stringify([ref.harness, ref.authorityId, ref.nativeId]);
-          const phases = new Map<string, string[]>();
-          for (const assignment of overview.workstreams.flatMap(workstream => workstream.activePhases)) {
-            const key = refKey(assignment.ref), values = phases.get(key) ?? [];
-            values.push(assignment.phase); phases.set(key, values);
-          }
-          for (const row of overview.conversations) if (row.sessionId) membership.set(row.sessionId, {
-            workstreamId: row.conversation?.workstreamId ?? null, phases: row.ref ? phases.get(refKey(row.ref)) ?? [] : [],
-          });
-        }
-        nativeActivityDemandUntil = Date.now() + 90_000;
-        nativeActivitySnapshot.refresh();
-        // Native continuations outlive the exact App run. Only fresh cached
-        // display evidence may overlay it; a cold/failed/stale read is unknown,
-        // never an empty catalog proving idle. Refresh is deferred, never awaited.
-        const native = nativeActivitySnapshot.read();
-        // Capture local policy/lifecycle evidence and consume synchronously.
-        const read = sessionListProjection(workerStore.sessionListWorkers().filter(worker => !retiredId(worker.sessionId)), workerStore.sessionListDeliveries().filter(delivery => !retiredId(delivery.parentSessionId)), branches.list(), [
-          ...recoveredInputConversations, ...handoffDispatches.keys(),
-          ...meta.runs.filter(run => run.status === "running").map(run => run.sessionId),
-        ]);
-        let selected = active;
-        let page: import("../shared/conversation/session-catalog").SessionCatalogPageInfo | undefined;
-        const missing: { sessionId: string; reason: "retired" | "not-found" }[] = [];
-        if (requestedIds) {
-          const current = new Map(meta.sessions.map(session => [session.sessionId, session]));
-          selected = requestedIds.flatMap(sessionId => {
-            const session = current.get(sessionId);
-            if (!session || retirements.isRetired(session)) {
-              missing.push({ sessionId, reason: session ? "retired" : "not-found" }); return [];
-            }
-            return [session];
-          });
-        } else if (query) {
-          const visible = (session: Session) => {
-            if (query.availableOnly) {
-              const association = catalog.association(session.sessionId);
-              if (association.association !== "resolved" || !availableWorktrees.has(JSON.stringify([association.workspaceId, association.worktreeId]))) return false;
-            }
-            const replaced = read.replaced.has(session.sessionId);
-            if (query.mode === "chat" && (session.agentKind === "worker" || workerStore.hasSession(session.sessionId) || replaced)) return false;
-            return query.showDeleted || !session.hidden || query.mode === "history" && replaced;
-          };
-          const filterInput = { sessions: active, runs: meta.runs, events, membership,
-            association: (id: string) => catalog.association(id), groupAssociation, visible,
-            status: (session: Session) => session.harness === "opencode" && native.value?.[session.nativeSessionId!]
-              ? "running" : session.lastStatus,
-          };
-          if (directory) return json({ groups: sessionCatalog.groups(query, filterInput),
-            availability: availability(undefined, true, false, false, undefined, read),
-          } satisfies import("../shared/conversation/session-catalog").SessionCatalogGroupsResponse);
-          const selection = sessionCatalog.select(query, filterInput);
-          selected = selection.sessions; page = selection.page;
-        }
-        // Page selection precedes per-row policy, followup and DTO projection.
-        // Coordination indexes and the availability envelope remain global.
-        const rows: SessionListRow[] = selected.map(session => {
-          const observedAt = historyRefreshes.get(session.sessionId);
-          const owner = owners.get(session.sessionId);
-          const activity = observedAt ? { phase: "refreshing" as const, observedAt }
-            : owner && session.harness === "claude-code" ? claudeRuns.activity(owner) : undefined;
-          return {
-            session, activity,
-            updateSource: replyIntegration?.updateSource(session.sessionId),
-            // Presentation only: availability below still reads authoritative policy.
-            admission: summary ? undefined : admissions.get(session.sessionId),
-            association: catalog.association(session.sessionId),
-            availability: availability(session.sessionId, true, false, false, "user", read),
-          };
-        });
-        return json({ ...sessionListResponse({
-          rows, presentation: summary ? "summary" : "full", runs: meta.runs, events, indexes: read,
-          native: { active: native.value ?? {}, error: native.error ?? "" },
-          availability: availability(undefined, true, false, false, undefined, read),
-        }, claudeRuns), ...(page ? { page } : {}), ...(targeted ? { missing } : {}) });
+      if (matchesSessionCatalogRoute(req, url)) {
+        const response = await sessionCatalogRoute(req, url);
+        if (response !== null) return response;
       }
       const branchRoute = /^\/api\/sessions\/([^/]+)\/branch$/.exec(path);
       if (branchRoute) {
         const source = meta.sessions.find(s => s.sessionId === branchRoute[1]);
         if (!source) return json({ error: "Unknown source conversation" }, 404);
+        if (snapshotIdentity(source) && req.method === "POST") return json({ error: "SANE branching requires verified inherited user-message prefix evidence; no native branch was created", code: "context-branch-prefix-unproven" }, 409);
         if (req.method === "GET") {
           try {
             assertBranchIdle(source);
@@ -4412,7 +5228,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const adapter = await branchDomain(source, true), state = adapter?.domain.branchState(adapter.reference(source));
           if (state?.phases.length && !input.replace) throw new Error("Active phase assignments require Replace original");
           op = { id: input.requestId, sourceId: source.sessionId, destinationId: crypto.randomUUID(), ...boundary, selector, replace: input.replace, state: "reserved", createdAt: new Date().toISOString(), ...(input.prompt.trim() ? { firstMessage: input.prompt } : {}) };
-          if ((canonicalContextEnabled || source.saneExecution) && source.agentKind === "assistant" && isAssistantAgentId(source.agent)) op.canonicalActivation = true;
+          if (source.saneExecution && source.agentKind === "assistant" && isAssistantAgentId(source.agent)) op.canonicalActivation = true;
           branches.save(op);
           if (op.canonicalActivation) await executionReservation(op.destinationId, { kind: "assistant", role: source.agent as import("sane-core/agent-catalog").AssistantAgentId }, async () => {
             const pair = source.saneExecution
@@ -4432,6 +5248,57 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const nativeId = await dispatchHarness(descriptor.id, {
             opencode: async () => (await oc.fork(source.nativeSessionId!, source.cwd, op!.boundary, op!.before, beforeFork)).id,
             "claude-code": async () => (await forkClaudeHistory(source.nativeSessionId!, source.cwd, op!.boundary, claudeRoot, beforeFork)).sessionId,
+            grok: async () => {
+              if (!options.grokExecutable) throw new WorkstreamAdapterError(409, "grok-executable-missing", "Configure the explicit Grok executable before branching");
+              const homeRoot = grokHistoryHome(), sourcePin = dispatchSnapshot(source), targetNativeSessionId = crypto.randomUUID();
+              await prepareGrokFork(homeRoot, source.cwd, source.nativeSessionId!, targetNativeSessionId);
+              assertDispatchSnapshot(source.sessionId, sourcePin);
+              op = { ...op!, nativeId: targetNativeSessionId }; branches.save(op);
+              const finished = Promise.withResolvers<void>();
+              const fork: { sourceId: string; controller: AbortController; done: Promise<void>; spawned?: GrokAcpSpawnInfo; observation?: GrokAcpCloseEvidence } = {
+                sourceId: source.sessionId, controller: new AbortController(), done: finished.promise,
+              };
+              grokForkProcesses.set(op.id, fork);
+              let stderr = "";
+              try {
+                const result = await forkGrokSession({ executable: options.grokExecutable, homeRoot, cwd: source.cwd,
+                  sourceNativeSessionId: source.nativeSessionId!, targetNativeSessionId, signal: fork.controller.signal,
+                  beforeNative: () => {
+                    assertDispatchSnapshot(source.sessionId, sourcePin);
+                    if (fork.controller.signal.aborted || !coordinator.holdsAdmission(lease, source.sessionId)
+                      || !coordinator.holdsAdmission(lease, op!.destinationId) || owners.has(source.sessionId)
+                      || branches.get(op!.id)?.state !== "reserved") throw new WorkstreamAdapterError(409, "grok-fork-withheld", "The original source branch admission is no longer current");
+                    beforeFork();
+                  },
+                  onSpawn: info => { fork.spawned = info; if (closing) fork.controller.abort(); },
+                  onStderr: text => { stderr = (stderr + text).slice(-8_000); },
+                  onClose: evidence => { fork.observation = evidence; },
+                });
+                fork.observation = result.process;
+                if (result.nativeSessionId !== targetNativeSessionId || result.sourceNativeSessionId !== source.nativeSessionId || !result.parentVerified)
+                  throw new Error("Grok fork returned a different native source or target; no App branch was enrolled");
+                assertDispatchSnapshot(source.sessionId, sourcePin);
+                return result.nativeSessionId;
+              } catch (error) {
+                if (error instanceof GrokAcpForkError) fork.observation = error.evidence;
+                if (stderr) throw new Error(`${error instanceof Error ? error.message : "Grok native fork failed"}\n${stderr}`, { cause: error });
+                throw error;
+              } finally {
+                try {
+                  const observed = fork.observation;
+                  const unstarted = !fork.spawned && (!observed || observed.pid === null && observed.nativeRequest === "not-written");
+                  const drained = unstarted || !!observed && observed.closeObserved && observed.processGroupGone && observed.stdoutEnded && observed.stderrEnded
+                    && observed.stdoutClosed && observed.stderrClosed;
+                  if (drained) grokForkProcesses.delete(op!.id);
+                  else {
+                    // Unknown native creation is never retried. Retain process/data
+                    // ownership rather than release a possibly surviving ACP group.
+                    retainOwner = true; meta.reconciliationRequired = true;
+                    if (!storageFailed) await persist();
+                  }
+                } finally { finished.resolve(); }
+              }
+            },
           });
           op = { ...op, nativeId, state: "confirmed" }; branches.save(op);
           const destination = await enrollBranch(op, source);
@@ -4440,8 +5307,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             const run: Run = { runId: crypto.randomUUID(), sessionId: destination.sessionId, cwd: destination.cwd, status: "running", createdAt: new Date().toISOString(), model: destination.model, effort: destination.effort, agent: destination.agent, agentKind: destination.agentKind, nativeAgentSelected: destination.nativeAgentSelected, profileId: sessionProfileId(destination), ...saneContextSnapshot(destination) };
             branches.save({ ...branches.get(op.id)!, firstRunId: run.runId });
             if (sessionHarness(destination) === "opencode") { run.nativeCommandId = `msg_${crypto.randomUUID().replaceAll("-", "")}`; run.nativePhase = "preparing"; }
-            const effectivePrompt = sessionHarness(destination) === "opencode" && !destination.saneContext?.package && isStoredAssistantAgentId(destination.agent) && !destination.nativeAgentSelected ? `[SANE role: ${storedAssistantLabel(destination.agent)} assistant. Follow the SANE ${storedAssistantLabel(destination.agent)} assistant procedures for this conversation.]\n\n${input.prompt}` : input.prompt;
-            const lifecycle = executePrompt(lease, destination, run, effectivePrompt, true, "user");
+            const lifecycle = executePrompt(lease, destination, run, input.prompt, true, "user");
             await lifecycle.admission;
           }
           return json({ sessionId: destination.sessionId, operation: branches.get(op.id) }, 201);
@@ -4487,7 +5353,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           // Do not confuse uncertain creation with same-known-identity retry.
           if (!pending.nativeId) return json({ error: "Native creation identity is unknown; operator inspection required", code: "native_creation_unknown" }, 409);
           if (session.harness === "opencode") await oc.assertIdle(pending.nativeId, pending.binding.executionCheckout);
-          else if (!(await readClaudeHistory(pending.nativeId, pending.binding.executionCheckout, claudeRoot)).length && pending.operation !== "create") return json({ error: "Native history unavailable" }, 409);
+          else if (session.harness === "grok") {
+            if (pending.source.descriptor.harness !== "gk" || session.authorityId !== pending.source.authorityId
+              || pending.source.authorityId !== nativeSource("grok") || pending.nativeId !== session.nativeSessionId
+              || pending.binding.executionCheckout !== session.cwd || !uuid(pending.nativeId)) throw new WorkstreamAdapterError(409, "grok-source-mismatch", "Grok admission differs from the original native source");
+            if (pending.operation !== "create" && (!(await grokSessionExists(grokHistoryHome(), session.cwd, pending.nativeId))
+              || !(await readGrokHistory(pending.nativeId, session.cwd, grokHistoryHome())).length)) return json({ error: "Grok native history unavailable" }, 409);
+          } else if (!(await readClaudeHistory(pending.nativeId, pending.binding.executionCheckout, claudeRoot)).length && pending.operation !== "create") return json({ error: "Native history unavailable" }, 409);
           await admissions.register(sessionId); await persist(); admissions.ready(sessionId);
           replyIntegration?.requestRefresh();
           return json({ admission: admissions.get(sessionId) });
@@ -4496,7 +5368,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (path === "/api/sessions/attach" && req.method === "POST") {
         const input = await body(req);
         const harness = input?.harness, nativeSessionId = input?.nativeSessionId, cwd = input?.cwd;
-        if (!isHarness(harness) || (harness === "claude-code" ? !uuid(nativeSessionId) : typeof nativeSessionId !== "string" || !/^ses[a-zA-Z0-9_-]{1,200}$/.test(nativeSessionId)) || typeof cwd !== "string" || !isAbsolute(cwd) || cwd.includes("\0")) return json({ error: "Provide harness, valid native session ID and absolute execution directory" }, 400);
+        if (!isHarness(harness) || (harness === "opencode" ? typeof nativeSessionId !== "string" || !/^ses[a-zA-Z0-9_-]{1,200}$/.test(nativeSessionId) : !uuid(nativeSessionId)) || typeof cwd !== "string" || !isAbsolute(cwd) || cwd.includes("\0")) return json({ error: "Provide harness, valid native session ID and absolute execution directory" }, 400);
         requireOperation(harness, "attachHistory");
         const key = `${harness}:${nativeSessionId}`;
         let session = meta.sessions.find(s => (s.harness ?? "claude-code") === harness && (s.nativeSessionId ?? s.sessionId) === nativeSessionId);
@@ -4519,7 +5391,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (typeof input.workspaceId !== "string" || typeof input.worktreeId !== "string" || (await catalog.binding(input.workspaceId, input.worktreeId)).cwd !== cwd) throw new OpenCodeError("Selected worktree differs from native execution directory", 409);
           }
           const catalogSelection = await catalog.register(cwd);
-          if (!admissions.get(sessionId)) await admissions.begin({ sessionId, operation: "attach", harness: harness === "opencode" ? "oc" : "cc", nativeId: nativeSessionId, cwd, workspaceId: catalogSelection.workspaceId, worktreeId: catalogSelection.worktreeId });
+          if (harness === "grok" && !(await grokSessionExists(grokHistoryHome(), cwd, nativeSessionId))) throw new WorkstreamAdapterError(409, "grok-history-missing", "Grok native session does not exist in the configured home and exact checkout");
+          if (!admissions.get(sessionId)) await admissions.begin({ sessionId, operation: "attach", harness: toNativeHarness(harness), nativeId: nativeSessionId, cwd, workspaceId: catalogSelection.workspaceId, worktreeId: catalogSelection.worktreeId });
           const candidate: Session = session ?? { sessionId, nativeSessionId, authorityId: nativeSource(harness), harness, cwd, lastStatus: "unknown", lastRunId: null, title: "Conversation", titleSource: "fallback", titleRevision: 0, titleAutoEligible: false, attachment: { state: "pending", source: nativeSource(harness) } };
           const native = await readNativeHistory(harness, nativeSessionId, cwd);
           if (!native.messages.length) throw new OpenCodeError("Native transcript is empty; nothing attached", 409);
@@ -4599,117 +5472,37 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         try { return json(await promise, 202); }
         finally { if (compactAdmissions.get(key)?.promise === promise) compactAdmissions.delete(key); }
       }
-      if (path === "/api/sessions" && req.method === "POST") {
-        let input = await body(req);
-        if (input?.sessionId) assertCatalogActive(meta.sessions.find(s => s.sessionId === input.sessionId));
-        let scienceReceipt: ScienceSubmissionReceipt | undefined;
-        if (input && Object.hasOwn(input, "scienceSnapshots")) {
-          const allowed = ["prompt", "sessionId", "requestId", "scienceSnapshots", "nativeStopped", "harness", "cwd", "workspaceId", "worktreeId", "model", "effort", "agent", "profileId"];
-          if (Object.keys(input).some(key => !allowed.includes(key)) || !uuid(input.sessionId) || !uuid(input.requestId)
-            || typeof input.prompt !== "string" || /^\s*\/compact(?:\s|$)/i.test(input.prompt)
-            || !Array.isArray(input.scienceSnapshots) || !input.scienceSnapshots.length || input.scienceSnapshots.length > 4
-            || input.scienceSnapshots.some((ref: any) => !ref || typeof ref !== "object" || Object.keys(ref).length !== 2 || typeof ref.snapshotId !== "string" || typeof ref.blockId !== "string")) return json({ error: "Science sends require an existing conversation, request ID, comment and frozen snapshot references", code: "science-send-invalid" }, 400);
-          const settings = Object.fromEntries(Object.entries(input).filter(([key]) => !["prompt", "sessionId", "requestId", "scienceSnapshots"].includes(key)));
-          const prior = scienceSubmissions.get({ conversationId: input.sessionId, requestId: input.requestId });
-          const { scienceSnapshots: _snapshots, requestId: _id, ...roleInput } = input;
-          const snapshots = scienceReferences(input.sessionId, input.scienceSnapshots, settings);
-          const rolePrepared = prior ? null : await prepareUserInput({ ...roleInput, prompt: [input.prompt, ...snapshots.map(snapshot => snapshot.agentText)].filter(Boolean).join("\n\n") }, { profiles: agentProfiles, getSession: id => meta.sessions.find(s => s.sessionId === id),
-            defaultCwd: options.cwd, conversationId: () => crypto.randomUUID(), sourceAuthorityId: nativeSource,
-            selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
-            ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) });
-          scienceReceipt = scienceSubmissions.prepare({ ...(prior?.intent.version === 1 ? { version: 1 as const } : { version: 2 as const, rolePrefix: prior?.intent.version === 2 ? prior.intent.rolePrefix : ordinaryRolePrefix(rolePrepared!) }),
-            storeId: store.manifest.storeId, conversationId: input.sessionId, requestId: input.requestId,
-            text: input.prompt, snapshots });
-          if (scienceReceipt.state !== "prepared") {
-            if (scienceReceipt.state === "submitted" && scienceReceipt.association) return json({ sessionId: input.sessionId, runId: scienceReceipt.association.runId, scienceSubmission: scienceView(scienceReceipt) }, 202);
-            return json({ error: "Original science send outcome requires reconciliation; it will not be replayed", code: "science-submission-unknown", scienceSubmission: scienceView(scienceReceipt) }, 409);
-          }
-          const { scienceSnapshots: _refs, requestId: _requestId, ...ordinary } = input;
-          input = { ...ordinary, prompt: scienceReceipt.dispatchText };
-        }
-        if (input?.sessionId && uuid(input.sessionId) && pendingInputs!.hasChain(input.sessionId)) return json({ error: "A durable input chain is active; use the explicit pending-inputs API", code: "pending-input-chain-active" }, 409);
-        const prepared = await prepareUserInput(input, { ...preparationState(), profiles: agentProfiles, getSession: id => meta.sessions.find(s => s.sessionId === id),
-          defaultCwd: options.cwd, conversationId: () => crypto.randomUUID(), sourceAuthorityId: nativeSource,
-          selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
+      const contextUpdateRoute = /^\/api\/sessions\/([^/]+)\/context-update$/.exec(path);
+      if (contextUpdateRoute) {
+        if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+        const session = meta.sessions.find(row => row.sessionId === contextUpdateRoute[1]);
+        if (!session) return json({ error: "Unknown context-update conversation" }, 404);
+        assertCatalogActive(session);
+        const input = await body(req);
+        if (!input || Object.keys(input).some(key => !["prompt", "nativeStopped"].includes(key)) || typeof input.prompt !== "string" || !input.prompt.trim()) return json({ error: "Provide an authored context-update prompt and optional nativeStopped acknowledgement" }, 400);
+        if (pendingInputs!.hasChain(session.sessionId)) return json({ error: "Explicit context updates cannot enter an existing ordinary-input chain", code: "pending-input-chain-active" }, 409);
+        const prepared = await prepareUserInput({ ...input, sessionId: session.sessionId }, { ...preparationState(), defaultCwd: options.cwd,
+          conversationId: () => crypto.randomUUID(), selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
           ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) });
-        const { conversationId, cwd } = prepared.binding;
-        const liveOwner = owners.get(conversationId);
-        if (!scienceReceipt && prepared.binding.harness === "claude-code" && liveOwner && claudeRuns.canSendInput(liveOwner)) {
-          if (prepared.stagedUpgrade || prepared.configuration.model !== liveOwner.run.model || prepared.configuration.effort !== liveOwner.run.effort) return json({ error: "Wait for this run to finish before changing assistant settings", code: "claude-input-configuration" }, 409);
-          const assertCurrent = () => {
-            assertPreparedUserInputCurrent(prepared, { profiles: agentProfiles, getSession: id => meta.sessions.find(s => s.sessionId === id), sourceAuthorityId: nativeSource });
-            const readiness = coordinator.inspectReadiness({ conversationId, intent: { kind: "user-prompt" }, phase: "enqueue" });
-            if (!readiness.ready) throw new WorkstreamAdapterError(409, readiness.code, readiness.reason);
-            if (owners.get(conversationId) !== liveOwner || coordinator.hasAdmission(conversationId) || coordinator.hasReconciliation(conversationId) || pendingInputs!.hasChain(conversationId)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Conversation changed before the follow-up could be sent");
-          };
-          const task = Promise.withResolvers<void>(); attachmentTasks.add(task.promise);
-          try {
-            assertCurrent();
-            if (await execution(conversationId) !== cwd) throw new WorkstreamAdapterError(409, "execution-mismatch", "Conversation execution checkout changed");
-            return json({ sessionId: conversationId, ...await claudeRuns.sendInput(liveOwner, prepared.prompt, assertCurrent) }, 202);
-          } finally { task.resolve(); attachmentTasks.delete(task.promise); }
-        }
-        // Science dispatch carries this exact request identity through readiness
-        // and native evidence; the admission lease must reserve the same intent.
-        const admission = coordinator.reserveAdmission({ conversationIds: [conversationId], intent: { kind: "user-prompt", ...(scienceReceipt ? { requestId: scienceReceipt.intent.requestId } : {}) } });
-        if (!admission.ready) return json({ error: admission.reason, code: admission.code }, admission.code === "capacity" ? 429 : 409);
-        const lease = admission.lease;
-        const task = Promise.withResolvers<void>(); attachmentTasks.add(task.promise);
+        const lease = reserve({ kind: "user-prompt" }, session.sessionId);
+        const done = Promise.withResolvers<void>(); attachmentTasks.add(done.promise);
         try {
-          if (scienceReceipt) {
-            const key = { conversationId, requestId: scienceReceipt.intent.requestId };
-            try {
-            const reservation = scienceSubmissions.reserve(key);
-            if (!reservation.reserved) return json({ error: "Science submission already reserved; no replay", code: "science-submission-unknown" }, 409);
-            // All native identities and the exact text are durable before admission
-            // can mutate configuration, link a run or publish a native owner.
-            const runId = crypto.randomUUID(), nativeCommandId = prepared.binding.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : null;
-            const association = { runId, nativeCommandId };
-            scienceSubmissions.associate(key, association);
-            const validateIdentity = (identity: DispatchIdentity) => {
-              if (identity.runId !== runId || identity.nativeCommandId !== nativeCommandId || identity.requestId !== key.requestId
-                || identity.source.sessionId !== conversationId || identity.source.authorityId !== prepared.binding.authorityId
-                || identity.source.nativeSessionId !== prepared.binding.nativeSessionId || identity.source.harnessId !== prepared.binding.harness || identity.source.cwd !== cwd) throw new Error("Science dispatch identity changed");
-              const receipt = scienceSubmissions.get(key)!;
-              if (canonicalJSON(scienceReferences(conversationId, receipt.intent.snapshots, receipt.intent.snapshots[0].provenance.settings as Record<string, any>)) !== canonicalJSON(receipt.intent.snapshots)) throw new UserInputPreparationError("Science snapshot authority changed", 409);
-            };
-             const submission = Promise.withResolvers<void>();
-             const context: PreparedAdmissionContext = { origin: "user", delivery: "idle-only", intent: { kind: "user-prompt", requestId: key.requestId }, runId,
-              ...(nativeCommandId ? { nativeCommandId } : {}), validate: validateIdentity,
-              link: identity => { validateIdentity(identity); scienceSubmissions.associate(key, association); },
-              evidence: {
-                beforeNative: evidence => {
-                  validateIdentity(evidence);
-                  if (evidence.submission !== "attempted" || evidence.nativeAcceptance !== "unknown") throw new Error("Invalid science native boundary evidence");
-                  scienceSubmissions.beforeNative(key, association);
-                },
-                outcome: evidence => {
-                  validateIdentity(evidence);
-                  if (evidence.submission === "attempted") throw new Error("Unexpected science outcome");
-                  const evidenceKey = `${conversationId}/${key.requestId}`;
-                  scienceOutcomeEvidence.set(evidenceKey, evidence);
-                   try { scienceSubmissions.markOutcome(key, evidence.submission); }
-                   finally { scienceOutcomeEvidence.delete(evidenceKey); }
-                   submission.resolve();
-                },
-              } };
-              const { lifecycle, ...response } = await admitPreparedInput(prepared, lease, { context, scienceSubmission: key });
-               // Readiness precedes native acceptance in both harnesses. Only
-               // the durable outcome hook can release this submission barrier.
-               let timeout: ReturnType<typeof setTimeout> | undefined;
-               try { await Promise.race([submission.promise, new Promise<void>(resolve => { timeout = setTimeout(resolve, 10_000); })]); }
-               finally { if (timeout) clearTimeout(timeout); }
-               const receipt = scienceSubmissions.get(key)!;
-               if (receipt.state !== "submitted") return json({ ...response, error: "Science submission outcome is unconfirmed; no automatic resend", code: "science-submission-unknown", scienceSubmission: scienceView(receipt) }, receipt.state === "unknown" ? 202 : 409);
-              return json({ ...response, scienceSubmission: scienceView(receipt) }, 202);
-            } catch (error) {
-              if (error instanceof ScienceSubmissionStorageError) failClosed();
-              return json({ error: "Science submission is reserved; reconcile the original request without resending", code: "science-submission-unknown", scienceSubmission: scienceView(scienceSubmissions.get(key)!) }, 503);
-            }
-          }
-          const { lifecycle: _lifecycle, ...response } = await admitPreparedInput(prepared, lease); return json(response, 202);
-        }
-        finally { coordinator.releaseAdmission(lease); task.resolve(); attachmentTasks.delete(task.promise); }
+          const assertInputCurrent = () => assertPreparedUserInputCurrent(prepared, preparationState());
+          let rootsCurrent = () => {};
+          const messageIntent: BridgeMessageIntent = { kind: "selected", source: `app:${store.manifest.storeId}/explicit-session-update:${session.sessionId}`,
+            assertCurrent: () => { assertInputCurrent(); rootsCurrent(); },
+            readCurrent: async () => {
+              const roots = await sessionMessageSource(session, assertInputCurrent);
+              rootsCurrent = roots.check;
+              return { body: prepared.prompt, binding: contextBinding(session), origin: "context-update", placement: { kind: "selected", purpose: "update" },
+                selections: [{ kind: "fragment", fragment: { ...roots.fragment, reason: "Explicit user-requested Session root and membership update" } }] };
+            } };
+          const { lifecycle: _lifecycle, ...result } = await admitPreparedInput(prepared, lease, { messageIntent });
+          return json(result, 202);
+        } finally { coordinator.releaseAdmission(lease); done.resolve(); attachmentTasks.delete(done.promise); }
+      }
+      if (path === "/api/sessions" && req.method === "POST") {
+        return await submitUserInput(await body(req));
       }
       const scienceSubmissionRead = /^\/api\/sessions\/([^/]+)\/science-submissions(?:\/([^/]+))?$/.exec(path);
       if (scienceSubmissionRead && req.method === "GET") {
@@ -4723,46 +5516,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         return json({ submissions: scienceSubmissions.listConversationViews(id) });
       }
-      const nativeSubagent = /^\/api\/sessions\/([^/]+)\/native-subagents(?:\/([^/]+)\/([^/]+)(\/refresh)?)?$/.exec(path);
-      if (nativeSubagent) {
-        const force = nativeSubagent[4] === "/refresh";
-        if (req.method !== (force ? "POST" : "GET")) return json({ error: "Method not allowed" }, 405);
-        if (force && url.searchParams.size) return json({ error: "Refresh does not accept query selectors", code: "native-subagent-input" }, 400);
-        try {
-          const selectors = nativeSubagent.slice(1).map(value => value === undefined ? undefined : decodeURIComponent(value));
-          const result = selectors[1] === undefined ? nativeSubagents.list(selectors[0]!, url.searchParams)
-            : nativeSubagents.page(selectors[0]!, selectors[1], selectors[2]!, url.searchParams);
-          const parent = meta.sessions.find(session => session.sessionId === selectors[0])!;
-          const summaries = "subagents" in result ? result.subagents : [result.subagent];
-          for (const summary of summaries) {
-            const run = meta.runs.find(run => run.runId === summary.runId && run.sessionId === parent.sessionId);
-            if (run) nativeSubagentRecorder.refresh(parent, run, summary.parentToolUseId, force);
-          }
-          return json(result);
-        } catch (error) {
-          if (error instanceof URIError) return json({ error: "Invalid native subagent selector", code: "native-subagent-input" }, 400);
-          if (error instanceof NativeSubagentError) return json({ error: error.message, code: error.code }, error.status);
-          throw error;
-        }
+      if (matchesNativeSubagentEvidenceRoute(req, url)) {
+        const response = await nativeSubagentEvidenceRoute(req, url);
+        if (response !== null) return response;
       }
-      const transcript = /^\/api\/sessions\/([^/]+)\/transcript(?:\/(meta|refresh))?$/.exec(path);
-      if (transcript) {
-        const session = meta.sessions.find(s => s.sessionId === transcript[1]);
-        if (!session) return json({ error: "Unknown session" }, 404);
-        try {
-          if (!transcript[2] && req.method === "GET") { ensureSessionJournals(session.sessionId); return json(await transcripts.page(session, url.searchParams)); }
-          if (transcript[2] === "meta" && req.method === "GET") { ensureSessionJournals(session.sessionId); return json(await transcripts.metadataPage(session, url.searchParams)); }
-          if (transcript[2] === "refresh" && req.method === "POST") {
-            if (url.searchParams.size) return json({ error: "Refresh does not accept query selectors", code: "transcript-input" }, 400);
-            let input: unknown;
-            try { input = await body(req); } catch { return json({ error: "Invalid refresh body", code: "transcript-input" }, 400); }
-            return json(await transcripts.refresh(session, input as import("./transcript-contract").TranscriptRefreshRequest));
-          }
-          return json({ error: "Method not allowed" }, 405);
-        } catch (error) {
-          if (error instanceof TranscriptError) return json({ error: error.message, code: error.code }, error.status);
-          throw error;
-        }
+      if (matchesTranscriptEvidenceRoute(req, url)) {
+        const response = await transcriptEvidenceRoute(req, url);
+        if (response !== null) return response;
       }
       const reconciliation = /^\/api\/sessions\/([^/]+)\/(reconcile|native-history)$/.exec(path);
       if (reconciliation) {
@@ -4778,14 +5538,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const lease = reserve({ kind: "history-refresh" }, session.sessionId);
         historyRefreshes.set(session.sessionId, new Date().toISOString());
         try {
+          const source = dispatchSource(session), snapshot = dispatchSnapshot(session);
           await execution(session.sessionId);
           const nativeSessionId = session.nativeSessionId ?? session.sessionId;
           const native = await readNativeHistory(sessionHarness(session), nativeSessionId, session.cwd);
+          assertDispatchSnapshot(session.sessionId, snapshot);
+          if (source.harnessId === "grok" && (session.nativeSessionId !== nativeSessionId || source.authorityId !== nativeSource("grok"))) throw new WorkstreamAdapterError(409, "grok-source-mismatch", "Grok history source changed during refresh");
           if (!native.messages.length) return json({ error: "Native transcript is empty; previous history preserved" }, 409);
           if (closing || storageFailed) return json({ error: "Bridge unavailable" }, 503);
           const history: ReconciledHistory = { sessionId: session.sessionId, nativeSessionId, importedAt: new Date().toISOString(), ...native,
             coveredRunIds: coveredNativeRuns(session, meta.runs, native.messages),
-            reason: session.harness === "opencode" ? "Read-only native history snapshot. Activity is a point-in-time observation; Reconcile again for later changes. Stop external work in OpenCode." : "Read-only native transcript. Active execution, message timestamps and run outcome are not exposed by the SDK history API. Ensure external assistant execution is stopped before sending here." };
+            reason: session.harness === "opencode" ? "Read-only native history snapshot. Activity is a point-in-time observation; Reconcile again for later changes. Stop external work in OpenCode."
+              : session.harness === "grok" ? "Read-only Grok native history from the pinned home and exact checkout. Native activity, provider acceptance and App run coverage remain unverified. Stop external Grok execution before sending here."
+                : "Read-only native transcript. Active execution, message timestamps and run outcome are not exposed by the SDK history API. Ensure external assistant execution is stopped before sending here." };
           await enqueue(async () => saveNativeHistory(history));
           return json({ history });
         } catch (error) { return json({ error: error instanceof Error ? error.message : "Native reconciliation unavailable" }, error instanceof OpenCodeError && error.status === 409 ? 409 : 503); }
@@ -4864,6 +5629,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const session = meta.sessions.find(s => s.sessionId === (interactionMatch ?? cancelMatch)![1]);
         if (!session) return json({ error: "Unknown session" }, 404);
         if (cancelMatch && req.method === "POST") {
+          if (session.harness === "grok") return json(await grokApp!.stop(session.sessionId));
           requireOperation(sessionHarness(session), "cancelOwnedRun");
           const currentOwner = owners.get(session.sessionId);
           if (currentOwner) requireOwnedOperation({ sessionId: session.sessionId, harness: sessionHarness(session) }, currentOwner, "cancelOwnedRun");
@@ -4884,30 +5650,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (!owner) return json({ interrupted: false, status: session.lastStatus,
             ...(recoveredInputConversations.has(session.sessionId) ? { code: "pending-input-reconciliation-required", reconciliationRequired: true } : {}),
             reason: "No active App-owned run; external execution must be stopped in its native harness" });
-          if (!owner.cancel) {
-          owner.cancelling = true;
-          owner.cancel = (async () => {
-            owner.stopRequested = true;
-            if (owner.run.status === "running") await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence",
-              ...(worker && isExplicitWorker(worker) ? { workerRunStopped: true } : {}) });
-            if (owners.get(session.sessionId) !== owner || owner.run.status !== "running") return { interrupted: false };
-            if (owner.native) return ocRuns.interruptCurrent(owner);
-            const stopped = await terminate(owner);
-            return { interrupted: stopped };
-          })().finally(() => {
-            // A native restart can resume execution after this acknowledgement.
-            // Keep ownership until terminal evidence, but do not cache a settled
-            // interrupt forever. Concurrent Stops still share this attempt.
-            if (owner.native) owner.cancel = undefined;
-            owner.cancelling = false; releaseOwner(owner);
-          });
-          }
-          const attempt = owner.cancel;
-          try { return json(await attempt); }
+          try { return json(await requestRunCancellation(owner, "user", {
+            emitStopping: () => emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence",
+              ...(worker && isExplicitWorker(worker) ? { workerRunStopped: true } : {}) }),
+            isCurrent: () => owners.get(session.sessionId) === owner,
+            release: releaseOwner,
+          })); }
           catch (error) {
             // An explicit retry is allowed after an ambiguous network failure;
             // concurrent requests still share the same in-flight attempt.
-            if (owner.cancel === attempt) owner.cancel = undefined;
             if (owner.run.status === "running") await emit(owner.run, "status", { status: "running", connection: "unconfirmed", reason: "Stop acknowledgement unavailable; execution state remains unconfirmed" });
             throw error;
           }
@@ -4919,11 +5670,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ interactions: await oc.interactions(session.nativeSessionId!) });
         }
         if (interactionMatch?.[2] && req.method === "POST") {
-          if (recoveredInputConversations.has(session.sessionId)) return json({ code: "pending-input-reconciliation-required", error: "Recovered queued execution is uncertain; native interaction mutation is unavailable" }, 409);
+          const replySource = dispatchSource(session);
+          const assertReplyCurrent = () => {
+            // Interaction replies are unrelated mutations: no original-intake
+            // exemption, copied public request key or chain ID may bypass this.
+            if (appAdmissions?.readPending().some(row => row.conversationId === replySource.sessionId)) throw new WorkstreamAdapterError(409, "app-admission-pending", "An original App submission is unresolved; native interaction mutation is unavailable");
+            if (recoveredInputConversations.has(replySource.sessionId)) throw new WorkstreamAdapterError(409, "pending-input-reconciliation-required", "Recovered queued execution is uncertain; native interaction mutation is unavailable");
+            const current = meta.sessions.find(row => row.sessionId === replySource.sessionId);
+            if (!current || !sameDispatchSource(replySource, dispatchSource(current))) throw new WorkstreamAdapterError(409, "dispatch-source-mismatch", "The original interaction conversation source changed");
+          };
+          assertReplyCurrent();
           const reply = await body(req);
+          assertReplyCurrent();
           if (!reply || (reply.type !== "permission" && reply.type !== "question")) return json({ error: "Invalid interaction reply type" }, 400);
           requireOperation(descriptor.id, reply.type === "permission" ? "permissionReply" : "questionReply");
-          await oc.reply(session.nativeSessionId!, decodeURIComponent(interactionMatch[2]), reply); return json({ ok: true });
+          assertReplyCurrent();
+          await oc.reply(replySource.nativeSessionId!, decodeURIComponent(interactionMatch[2]), reply, assertReplyCurrent); return json({ ok: true });
         }
         return json({ error: "Method not allowed" }, 405);
       }
@@ -4941,177 +5703,21 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         await persist();
         return json({ ok: true, sessionId: session.sessionId, hidden: session.hidden });
       }
-      const runPreviewMatch = /^\/api\/sessions\/([^/]+)\/runs\/preview$/.exec(path);
-      if (runPreviewMatch) {
-        if (req.method !== "GET") return json({ error: "Method not allowed" }, 405, { allow: "GET" });
-        try {
-          const owner = auth.terminalToken(req);
-          const preview = await sessionRunPreviews.page(runPreviewMatch[1]!, url.searchParams, owner, req.signal);
-          if (!auth.authenticated(req) || auth.terminalToken(req) !== owner) return json({ error: "Authentication revoked" }, 401);
-          return json(preview);
-        } catch (error) {
-          if (error instanceof SessionRunPreviewError) return json({ error: error.message, code: error.code }, error.status);
-          throw error;
-        }
+      if (matchesRunEvidenceRoute(req, url)) {
+        const response = await runEvidenceRoute(req, url);
+        if (response !== null) return response;
       }
-      const runsMatch = /^\/api\/sessions\/([^/]+)\/runs$/.exec(path);
-      if (runsMatch && req.method === "GET") { if (!meta.sessions.some(s => s.sessionId === runsMatch[1])) return json({ error: "Unknown session" }, 404); return json({ runs: meta.runs.filter(r => r.sessionId === runsMatch[1]) }); }
-      const eventMatch = /^\/api\/runs\/([^/]+)\/events$/.exec(path);
-      if (eventMatch && req.method === "GET") { const run = meta.runs.find(r => r.runId === eventMatch[1]); if (!run) return json({ error: "Unknown run" }, 404); const after = Number(url.searchParams.get("after") ?? 0); if (!Number.isSafeInteger(after) || after < 0) return json({ error: "Invalid cursor" }, 400); const list = journalEvents(run.runId).filter(e => e.seq > after); return json({ events: list, nextCursor: list.at(-1)?.seq ?? after, status: run.status }); }
-      const systemPromptMatch = /^\/api\/runs\/([^/]+)\/system-prompt$/.exec(path);
-      if (systemPromptMatch && req.method === "GET") {
-        const run = meta.runs.find(r => r.runId === systemPromptMatch[1]);
-        if (!run) return json({ error: "Unknown run" }, 404);
-        const expectedStore = url.searchParams.get("storeId");
-        if (expectedStore !== null && expectedStore !== store.manifest.storeId) return json({ error: "System prompt belongs to another App store" }, 409);
-        return json(systemPromptSnapshot(store.manifest.storeId, run, journalEvents(run.runId)));
-      }
-      const contextMatch = /^\/api\/runs\/([^/]+)\/context$/.exec(path);
-      if (contextMatch && req.method === "GET") {
-        const run = meta.runs.find(r => r.runId === contextMatch[1]);
-        if (!run) return json({ error: "Unknown run" }, 404);
-        return json({ schema: 1, runId: run.runId, sessionId: run.sessionId, status: run.status,
-          records: (journalEvents(run.runId)).filter(event => event.kind === "context" || event.kind === "launch"),
-          evidence: "Prepared segments and transport receipts; model-request observation is not implied" });
-      }
-      if (path === "/api/sessions/search" && req.method === "GET") {
-        // Best-effort message-body search over in-memory event logs plus
-        // persisted native-history snapshots. Metadata filters always work
-        // client-side even when this endpoint returns no body hits.
-        // Bounds: query 1-200 chars, ≤200 sessions, ≤20 recent runs/session,
-        // ≤500 recent events/run, ≤50 results. Tool/reasoning parts stripped.
-        const q = (url.searchParams.get("q") ?? "").trim();
-        if (!q) return json({ results: [] });
-        if (q.length > 200) return json({ error: "Query too long" }, 400);
-        const limitRaw = Number(url.searchParams.get("limit") ?? 20);
-        const limit = Number.isSafeInteger(limitRaw) ? Math.min(50, Math.max(1, limitRaw)) : 20;
-        const workspaceFilter = url.searchParams.get("workspaceId"), worktreeFilter = url.searchParams.get("worktreeId");
-        const lowered = q.toLowerCase();
-        const snippetFor = (text: string): string | null => {
-          const at = text.toLowerCase().indexOf(lowered);
-          if (at < 0) return null;
-          const start = Math.max(0, at - 60), end = Math.min(text.length, at + q.length + 60);
-          return `${start > 0 ? "…" : ""}${text.slice(start, end).replace(/\s+/g, " ").trim()}${end < text.length ? "…" : ""}`.slice(0, 240);
-        };
-        const textOf = (data: unknown): string[] => {
-          if (typeof data === "string") return data.length <= 20000 ? [data] : [];
-          if (!data || typeof data !== "object" || Array.isArray(data)) return [];
-          const record = data as Record<string, any>;
-          // Submission events carry {messageId, text}; message snapshots carry parts.
-          if (typeof record.text === "string" && typeof record.messageId === "string") return record.text.length <= 20000 ? [record.text] : [];
-          if (Array.isArray(record.parts)) {
-            const out: string[] = [];
-            for (const part of record.parts) {
-              if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string" && part.text.length <= 20000) out.push(part.text);
-            }
-            return out;
-          }
-          if (record.message && typeof record.message === "object") return textOf(record.message);
-          if (Array.isArray(record.content)) {
-            const out: string[] = [];
-            for (const part of record.content) {
-              if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string") out.push(part.text);
-            }
-            return out;
-          }
-          if (record.type === "result" && typeof record.result === "string") return [record.result];
-          if (typeof record.prompt === "string") return [record.prompt];
-          return [];
-        };
-        const results: { sessionId: string; runId?: string; snippet: string; score: number }[] = [];
-        const sessions = activeSessions().slice(-200);
-        for (const session of sessions) {
-          if (results.length >= limit) break;
-          const association = catalog.association(session.sessionId);
-          if (workspaceFilter && association.workspaceId !== workspaceFilter) continue;
-          if (worktreeFilter && association.worktreeId !== worktreeFilter) continue;
-          // Title hits are metadata; body endpoint still surfaces one snippet.
-          if (session.title && snippetFor(session.title)) {
-            results.push({ sessionId: session.sessionId, snippet: snippetFor(session.title)!, score: 0.9 });
-            if (results.length >= limit) break;
-          }
-          const runs = meta.runs.filter(r => r.sessionId === session.sessionId).slice(-20);
-          for (const run of runs) {
-            if (results.length >= limit) break;
-            const list = (journalEvents(run.runId)).slice(-500);
-            for (const event of list) {
-              if (results.length >= limit) break;
-              if (event.kind !== "submission" && event.kind !== "message" && event.kind !== "stdout") continue;
-              for (const text of textOf(event.data)) {
-                const snippet = snippetFor(text);
-                if (snippet) {
-                  // Earlier runs rank lower; title-adjacent score stays highest.
-                  const score = event.kind === "submission" ? 0.8 : 0.5;
-                  results.push({ sessionId: session.sessionId, runId: run.runId, snippet, score });
-                  break;
-                }
-              }
-              // One hit per event keeps the cap meaningful across long logs.
-              if (results.length && results.at(-1)?.runId === run.runId && results.at(-1)?.sessionId === session.sessionId) {
-                // Allow multiple events per run but stop scanning this run after 3 hits.
-                if (results.filter(r => r.runId === run.runId).length >= 3) break;
-              }
-            }
-          }
-          if (results.length >= limit) break;
-          // Attached/reconciled native snapshots not yet covered by run events.
-          try {
-            const history = await storedNativeHistory(session);
-            const messages = history?.messages.slice(-100) ?? [];
-            for (const message of messages) {
-              if (results.length >= limit) break;
-              for (const text of textOf(message)) {
-                const snippet = snippetFor(text);
-                if (snippet) { results.push({ sessionId: session.sessionId, snippet, score: 0.4 }); break; }
-              }
-              if (results.filter(r => r.sessionId === session.sessionId && !r.runId).length >= 2) break;
-            }
-          } catch { /* Missing snapshot: in-memory events are the source. */ }
-        }
-        return json({ results: results.slice(0, limit) });
+      if (matchesConversationSearchRoute(req, url)) {
+        const response = await conversationSearchRoute(req, url);
+        if (response !== null) return response;
       }
       if (/^\/api\/(?:runs|sessions)\/[^/]+\/input$/.test(path) && req.method === "POST") return json({ error: "One-shot mode does not support interactive input" }, 501);
       if (path.startsWith("/api/")) return json({ error: "Not found" }, 404);
-      if (req.method !== "GET" && req.method !== "HEAD") return json({ error: "Method not allowed" }, 405);
-      let assetName: string;
-      if (path === "/") assetName = "index.html";
-      else if (path === "/push-worker.js") assetName = "push-worker.js";
-      else {
-        let assetPath: string;
-        try { assetPath = decodeURIComponent(path); } catch { return json({ error: "Not found" }, 404); }
-        if (!assetPath.startsWith("/assets/") || assetPath.includes("\\") || assetPath.includes("\0") || assetPath.split("/").slice(2).some(part => !part || part.startsWith("."))) return json({ error: "Not found" }, 404);
-        assetName = assetPath.slice("/assets/".length);
-        if (url.searchParams.has("v") && (url.searchParams.getAll("v").length !== 1 || url.searchParams.get("v") !== assetManifest.fingerprint)) return json({ error: "Not found" }, 404);
-      }
-      if (!Object.hasOwn(assetManifest.outputs, assetName) || /\.(?:gz|br)$/.test(assetName)) return json({ error: "Not found" }, 404);
-      const accepted = new Map<string, number>();
-      for (const part of (req.headers.get("accept-encoding") ?? "").toLowerCase().split(",")) {
-        const [name, ...parameters] = part.trim().split(";").map(value => value.trim());
-        if (!name) continue;
-        const q = parameters.find(value => value.startsWith("q="))?.slice(2);
-        accepted.set(name, q === undefined ? 1 : /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(q) ? Number(q) : 0);
-      }
-      const quality = (name: string) => accepted.get(name) ?? accepted.get("*") ?? 0;
-      const encodings = [{ name: "br", suffix: ".br" }, { name: "gzip", suffix: ".gz" }].sort((a, b) => quality(b.name) - quality(a.name));
-      const encoding = encodings.find(value => quality(value.name) > 0 && quality(value.name) >= (accepted.get("identity") ?? 0) && Object.hasOwn(assetManifest.outputs, assetName + value.suffix));
-      if (!encoding && (accepted.get("identity") ?? (accepted.get("*") === 0 ? 0 : 1)) === 0) return new Response(null, { status: 406, headers: { "cache-control": "no-store", vary: "Accept-Encoding" } });
-      let file = resolve(assetsDir, assetName + (encoding?.suffix ?? ""));
-      if (!file.startsWith(assetsDir + "/")) return json({ error: "Not found" }, 404);
-      try {
-        const canonicalRoot = await realpath(assetsDir);
-        file = await realpath(file);
-        if (!file.startsWith(canonicalRoot + "/")) return json({ error: "Not found" }, 404);
-      } catch { return json({ error: "Not found" }, 404); }
-      try { if (!(await stat(file)).isFile()) return json({ error: "Not found" }, 404); }
-      catch { return json({ error: "Not found" }, 404); }
-      const asset = Bun.file(file);
-      const immutable = assetName !== "index.html" && assetName !== "push-worker.js" && url.searchParams.get("v") === assetManifest.fingerprint;
-      return new Response(req.method === "HEAD" ? null : asset, { headers: {
-        "content-type": Bun.file(join(assetsDir, assetName)).type, "content-length": String(asset.size),
-        "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-store", "x-content-type-options": "nosniff", vary: "Accept-Encoding",
-        ...(encoding ? { "content-encoding": encoding.name } : {}), ...(path === "/push-worker.js" ? { "service-worker-allowed": "/" } : {}),
-      } });
+      return (await assetRoute(req, url)) ?? json({ error: "Not found" }, 404);
     } catch (error) {
+      if (error instanceof AppAdmissionAuthorizationError) return json({ error: error.message, code: error.code }, error.status);
+      if (error instanceof AppAdmissionStorageError) { failClosed(error, "app-admission-http"); return json({ error: "App admission storage is unavailable; reconcile the original request without resending", code: "app-admission-storage-unavailable" }, 503); }
+      if (error instanceof AppAdmissionRequestError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof BrowserPairError || error instanceof ResourcePairError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof SessionRetirementError || error instanceof SessionCatalogError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof UserQuestionsError) return json({ error: error.message, code: error.code }, error.status);
@@ -5128,7 +5734,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await workers.drainLaunches();
     await Promise.all([terminals.close(), browsers.close()]);
     await Promise.all([...owners.values()].map(async owner => {
-      if (!owner.native && owner.child && !await terminate(owner)) retainOwner = true;
+      if (!await cleanupOwner(owner)) retainOwner = true;
       await Promise.all([owner.done, owner.submission?.catch(() => {}), owner.cancel?.catch(() => {})]);
     }));
     await Promise.all([...dispatchTasks, ...attachmentTasks, ...handoffDispatches.values(), workerOutboxTask, handoffTask, nativeSubagentRecorder.drain()]);
@@ -5154,36 +5760,49 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }),
   });
   boundListenerStops.push(async () => { await server.stop(true); });
-  const hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/browser" ? (loopback(srv.requestIP(req)?.address ?? "") ? browsers.handleNativeBroker(req, handoffToken, caller => {
+  const hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/browser" ? (loopback(srv.requestIP(req)?.address ?? "") ? grokRequestProof.run(req.headers.get(GROK_RUNTIME_HEADER) ?? undefined, () => browsers.handleNativeBroker(req, handoffToken, (caller, tool, args) => {
     try {
-      const source = normalizeNativeSource(caller.source as Parameters<typeof normalizeNativeSource>[0]);
+      const source = normalizeNativeSource(caller.source as NativeSourceDescriptor);
       if (source.authorityId !== caller.authorityId) throw new Error();
       const admission = admissions.getByNative({ harness: source.descriptor.harness, authorityId: caller.authorityId, nativeId: caller.nativeId });
       const session = admission && meta.sessions.find(s => s.sessionId === admission.sessionId);
-      if (!admission || admission.state !== "ready" || !session || retirementPaused(session.sessionId) || session.hidden
+      const sessionHarnessId = session ? validateHarness(session.harness) : undefined;
+      if (!admission || admission.state !== "ready" || !session || !sessionHarnessId || retirementPaused(session.sessionId) || session.hidden
         || session.nativeSessionId !== caller.nativeId || session.authorityId !== caller.authorityId
-        || session.harness !== (source.descriptor.harness === "cc" ? "claude-code" : "opencode")
+        || sessionHarnessId !== toSessionHarness(source.descriptor.harness)
         || session.cwd !== caller.cwd || admission.binding.executionCheckout !== caller.cwd
         || canonicalJSON(admission.source) !== canonicalJSON(source)) throw new Error();
-      return { sessionId: session.sessionId, harness: sessionHarness(session), authorityId: session.authorityId, nativeSessionId: session.nativeSessionId };
+      // Like every other Grok tool route: the exact signed invocation of the
+      // original live, unstopped App-owned run, not only a matching admission.
+      if (source.descriptor.harness === "gk" && authorizeGrokInvocation(caller, tool, args).session !== session) throw new Error();
+      return { sessionId: session.sessionId, harness: sessionHarnessId, authorityId: session.authorityId, nativeSessionId: session.nativeSessionId };
     } catch { throw new BrowserGrantError(403, "browser-session-unverified", "This conversation is not an admitted SANE session"); }
-  }) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/user-questions" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeUserQuestions(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
+  })) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/user-questions" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeUserQuestions(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
   boundListenerStops.push(async () => { await hookServer.stop(true); });
   presentationPoller.start();
   origin = options.publicOrigin ?? `http://${options.host.includes(":") ? `[${options.host}]` : options.host}:${server.port}`;
   browserLoopbackOrigin = `http://127.0.0.1:${server.port}`;
   browsers.setHookEndpoint(`http://127.0.0.1:${hookServer.port}/native/browser`, handoffToken);
-  atomicAppRecord(options.dataDir, "browser-mcp.json", { version: 1, url: `http://127.0.0.1:${hookServer.port}/native/browser`, token: handoffToken, pid: process.pid });
+  // OpenCode reads native-handoff.json and sends a qualified caller. Do not publish
+  // a second copy of that bearer as browser-mcp.json; possession is not a grant.
   atomicAppRecord(options.dataDir, "native-handoff.json", { version: 1, url: `http://127.0.0.1:${hookServer.port}/native/handoffs`, token: handoffToken, pid: process.pid });
   // Start recovery only after both listeners are acquired. A port-bind failure
   // must not leave observers writing after startup releases the ownership lock.
   recoveredInputClaims = classifyPendingInputMutation(() => pendingInputs!.recover());
   // Capture EVERY original synchronously before the first source/context await,
   // including journals whose Run metadata is missing. Reads never lazily repin.
-  try { for (const item of recoveredInputClaims) originalJournals.capture(item); }
+  try { for (const item of recoveredInputClaims) {
+    const identity = item.claim!.identity;
+    if (coordinator.hasOwner(identity.source.sessionId) || coordinator.hasAdmission(identity.source.sessionId)
+      || coordinator.hasReconciliation(identity.source.sessionId)) throw new Error("Original journal recovery cannot replace a live owner/admission");
+    // The existing serialized queue must have consumed any startup-only writes
+    // before this explicit, one-way transfer to original-recovery authority.
+    runJournals.excludeOriginal(identity.runId);
+    originalJournals.capture(item);
+  } }
   catch (error) { failClosed(error, "pending-input-initialization"); throw error; }
   const originalJournal = (original: PendingInputStoredItem) => {
-    try { return originalJournals.read(original); }
+    try { runJournals.assertOriginal(original.claim!.identity.runId); return originalJournals.read(original); }
     catch (error) { failClosed(error, "original-journal-authority"); throw error instanceof PendingInputStorageError ? error : new PendingInputStorageError("Original App journal authority lost", error); }
   };
   for (const item of recoveredInputClaims) recoveredInputConversations.add(item.claim!.identity.source.sessionId);
@@ -5291,7 +5910,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (stored.status === "running") { stored.status = status; stored.endedAt = new Date().toISOString(); }
       const session = candidate.sessions.find(row => row.sessionId === identity.source.sessionId)!;
       if (session.lastRunId === identity.runId) session.lastStatus = status;
-      atomicAppRecord(options.dataDir, "metadata.json", candidate);
+      publishMetadata(JSON.stringify(candidate));
       run.status = stored.status; run.endedAt = stored.endedAt;
       if (session.lastRunId === identity.runId) meta.sessions.find(row => row.sessionId === session.sessionId)!.lastStatus = status;
       try { replyIntegration?.metadataPublished(JSON.stringify(candidate)); } catch {}
@@ -5346,6 +5965,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // Observe originals before admission opens. Unfinished/offline originals are
   // revisited below through the same pinned, observation-only recovery scope.
   await pendingInputRecovery.startup();
+  assertStorageOwned();
   replyIntegration.start();
   chromePush.start();
   // Legacy monitor has neither strict queued-user association nor recovered
@@ -5357,6 +5977,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const descriptor = requireOperation(sessionHarness(meta.sessions.find(s => s.sessionId === recovering.sessionId)!), "recoverRun");
     const finished = Promise.withResolvers<void>();
     const owner: Owner = { run: recovering, native: descriptor.nativeHarness === "oc", done: finished.promise, settled: false };
+    bindOwnerControls(owner);
     const adoption = coordinator.adoptObservedOwner(owner);
     startupObservations.delete(recovering.sessionId);
     if (!adoption.ready) throw new WorkstreamAdapterError(409, adoption.code, adoption.reason);
@@ -5364,6 +5985,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const recoveryTask = Promise.resolve().then(() => dispatchOwnedOperation(ownedSession(owner), owner, "recoverRun", {
       "claude-code": () => { throw new HarnessOperationError("Claude process ownership cannot be recovered", 501, "unsupported-harness-operation"); },
       opencode: () => recovering.operation === "compact" ? ocRuns.recoverNativeCompact(owner) : recovering.nativePhase === "preparing" ? ocRuns.finishNative(owner, "failed", "Bridge restarted before native submission") : ocRuns.monitorNative(owner),
+      grok: () => { throw new HarnessOperationError("Grok is not available through this driver", 501, "unsupported-harness-operation"); },
     }))
       .catch(error => { recoveryHealthy = false; failClosed(error, "startup-recovery"); }).finally(async () => {
         // Acquire the exact barrier while still owning. Release and done are not
@@ -5396,18 +6018,28 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const session = meta.sessions.find(s => s.sessionId === w.sessionId);
         if (!session && !w.launch.identity) throw new Error("Worker recovery requires its original identity");
         const activation = session ?? await executionReservation(w.sessionId, w.launch.identity!);
+        assertStorageOwned();
         const selected = await oc.recoverLaunch(a.nativeId, w.checkout, activation.saneExecution ? "build" : w.launch.agent!);
+        assertStorageOwned();
         workerStore.update(w.id, { state: "uncertain", child: { harness: "oc", authorityId: a.source.authorityId, nativeId: a.nativeId }, launch: { ...w.launch, ...(selected?.model ? { model: `${selected.model.providerID}/${selected.model.id}`, effort: selected.model.variant } : {}) }, error: "Native selection recovered; reconciling admission and run-publication evidence without resubmitting" });
-      } catch (e) { workerStore.update(w.id, { state: "uncertain", error: e instanceof Error ? e.message : "Native selection recovery unavailable" }); }
+      } catch (e) { assertStorageOwned(); workerStore.update(w.id, { state: "uncertain", error: e instanceof Error ? e.message : "Native selection recovery unavailable" }); }
     }
     await workers.refresh(workerStore.get(w.id)!);
+    assertStorageOwned();
   }
   let closePromise: Promise<void> | undefined;
-  for (const w of (await catalog.list()).workspaces.filter(w => w.kind === "repository")) {
+  const startupCatalog = await catalog.list();
+  assertStorageOwned();
+  for (const w of startupCatalog.workspaces.filter(w => w.kind === "repository")) {
     try {
-      for (const h of await handoffs.listForPolling(w.workspaceId)) if (!retiredId(h.recipient.sessionId) && h.recipient.ownerId === store.manifest.storeId && !["queued", "completed", "failed"].includes(h.status)) handoffReservations.add(h.recipient.sessionId);
+      const startupHandoffs = await handoffs.listForPolling(w.workspaceId);
+      assertStorageOwned();
+      for (const h of startupHandoffs) if (!retiredId(h.recipient.sessionId) && h.recipient.ownerId === store.manifest.storeId && !["queued", "completed", "failed"].includes(h.status)) handoffReservations.add(h.recipient.sessionId);
       const domain = (await router!.forPolling(w.workspaceId)).domain;
-      for (const h of await handoffs.denialsForPolling(w.workspaceId)) {
+      assertStorageOwned();
+      const startupDenials = await handoffs.denialsForPolling(w.workspaceId);
+      assertStorageOwned();
+      for (const h of startupDenials) {
         if (h.recipient.ownerId !== store.manifest.storeId) continue;
         const notification = domain.getHandoffDenialNotification(h.id);
         if (notification?.state === "claimed" && !retiredId(notification.sessionId)) handoffReservations.add(notification.sessionId);
@@ -5422,6 +6054,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // its pending source/destination policy; reconciliation reserves synchronously
   // below before any request callback can run. Queue barriers were installed
   // before legacy observation; waiting-only chains occupy no running capacity.
+  assertStorageOwned();
   if (closing || storageFailed) throw new Error("Startup classification did not complete safely");
   startupReady = true;
   for (const session of activeSessions()) if (session.harness === "opencode") {
@@ -5442,6 +6075,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
     { intervalMs: 2000, shouldRun: () => !closing && !storageFailed, onError: (error) => failClosed(error, "pending-input-recovery-refresh") },
   );
+  assertStorageOwned();
   handoffPoller.start(); workerOutboxPoller.start(); userQuestionsPoller.start(); inputRecoveryPoller.start();
   stopStartupConsumers = () => { handoffPoller.stop(); workerOutboxPoller.stop(); userQuestionsPoller.stop(); inputRecoveryPoller.stop(); };
   const preparedInput: PreparedInputAdmission = {
@@ -5459,6 +6093,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
    return { origin, port: server.port, workers, workerOutbox, handoffs, prepareHandoffRecipient, preparedInput, pendingInputs, pendingInputConsumer, pendingInputWake, startPendingInputWake, failOwnershipPublication: failClosed, abortStartup, close() {
     if (closePromise) return closePromise;
     closing = true;
+    stopGrokForks?.();
     stopPresentationReads?.();
     const repositoryReadDrain = router?.stopReads();
     pendingInputWake!.close();
@@ -5473,6 +6108,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const creationDrain = workspaceCreations?.close();
     const gitOperationsDrain = gitOperations?.close();
     const scienceDrain = science?.close();
+    const grokDrain = grokApp!.close();
+    const grokCatalogDrain = grokModelCatalog!.close();
     // Observe immediately; later shutdown stages still supervise retained ownership.
     void scienceDrain?.catch(() => { retainOwner = true; });
     const nativeSubagentDrain = nativeSubagentRecorder.drain();
@@ -5491,6 +6128,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await creationDrain;
     await gitOperationsDrain;
     await boundedStartupCleanup(() => scienceDrain);
+    if (!(await grokDrain).drained) retainOwner = true;
+    if (!await grokCatalogDrain) retainOwner = true;
     await nativeSubagentDrain;
     try { await workers.drainLaunches(); } catch (error) { failClosed(error, "shutdown-worker-drain"); }
     await workerOutboxTask;
@@ -5504,19 +6143,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!attachmentsDrained) failClosed();
     }
     await Promise.all([...owners.values()].map(async owner => {
-    if (owner.native) {
-      // Let any outstanding bounded HTTP request finish before releasing local
-      // storage ownership. This waits for the adapter, never for native work.
-       const detached = await Promise.race([Promise.all([owner.done, owner.cancel?.catch(() => {})]).then(() => true), Bun.sleep(12000).then(() => false)]);
-      if (!detached) retainOwner = true;
-    }
-    if (owner && !owner.native) {
-      // execute checks closing after every prelaunch await; no future spawn is
-      // possible even if preparation outlives this bounded shutdown.
-      if (owner.child) await terminate(owner);
-      const done = await Promise.race([owner.done.then(() => true), Bun.sleep(3000).then(() => false)]);
-      if (!done || (owner.child && groupAlive(owner))) { retainOwner = true; meta.reconciliationRequired = true; }
-    }
+      if (!owner.controls) throw new HarnessOperationError("Run owner controls are unavailable", 409, "owner-harness-mismatch");
+      const outcome = await owner.controls.shutdown();
+      if (!outcome.drained) retainOwner = true;
+      if (outcome.reconciliationRequired) meta.reconciliationRequired = true;
     }));
     // Owner release and source reconciliation are separate boundaries. A report
     // can be released while its journal/domain reconciliation is still awaited.

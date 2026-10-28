@@ -38,6 +38,15 @@ import { jitteredDelay } from "./visibility";
 import { subscribeWake, wakePolls } from "./poll-wake";
 import { invalidateCoalescedRequests } from "./request-coalescing";
 import { MAX_SESSION_TITLE_LENGTH, normalizeSessionTitle } from "../shared/conversation/session-title";
+import { appAdmissionExpectedSourceMatches, appAdmissionRecoveryStorageKey, decodeAppAdmissionIntent } from "../shared/conversation/app-admission-contract";
+import type { AppAdmissionIntent, AppAdmissionLookup, AppAdmissionReceipt, AppAdmissionRecoveryScope } from "../shared/conversation/app-admission-contract";
+import { createAppAdmissionEnvelope, settleAppAdmissionRecovery } from "./app-admission-recovery";
+import type { AppAdmissionRecoveryRecord } from "./app-admission-recovery";
+import { AppAdmissionLedger } from "./app-admission-ledger";
+import { advanceComposerStamp, sameComposerStamp } from "./composer-lineage";
+import type { ComposerStamp } from "./composer-lineage";
+import type { GrokSessionView, GrokTurnInput } from "./types";
+import { grokAvailability, grokMessages, grokProfileChoices, grokRuns, grokSessionView, GROK_UNKNOWN_NOTICE } from "./grok-presentation";
 
 export type SessionNameIntent = { conversationId: string; mode: "rename" | "regenerate"; title: string; expectedRevision: number; scope: string; restoreFocus?: () => HTMLElement | null };
 
@@ -48,9 +57,14 @@ export type SciencePendingSend = { version: 1; requestId: string; conversationId
 export type ScienceRejectedRecovery = SciencePendingSend & { status: "rejected" };
 export type Draft = { text: string; cwd: string; profileId: string; upgradeId: string; scienceSnapshots?: ScienceStagedSnapshot[] };
 export type UnconfirmedSubmission = { conversationId: string; sourceKey: string; localId: string; requestId?: string; text: string; draft: Draft };
-export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "queued"; conversationId: string; requestId: string } | { status: "blocked" | "rejected" | "unknown" };
+export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "queued"; conversationId: string; requestId: string } | { status: "recorded"; requestId: string; conversationId?: string } | { status: "blocked" | "rejected" | "unknown" };
 export type PendingCompact = { payload: CompactRequest; phase: "sending" | "unconfirmed" | "accepted" | "rejected"; runId?: string };
 export type State = {
+  /** Exact original-origin/store recovery, never a replay queue. Snapshot refs
+   * remain refs after reload; they are not fabricated science previews. */
+  appAdmissionRecoveries?: Record<string, AppAdmissionRecoveryRecord>;
+  grokView?: GrokSessionView | null;
+  appAdmissionLoading?: boolean; appAdmissionError?: string; appAdmissionChecking?: string[];
   sessionNameDialog?: SessionNameIntent;
   sessionTitleRequests?: Record<string, boolean>;
   /** Separate durable run-ID map, independent of transcript page versions. */
@@ -73,6 +87,8 @@ export type State = {
   /** Original-source evidence only, never a retry/replay queue. */
   unconfirmedSubmissions?: Record<string, UnconfirmedSubmission>;
   models: ModelChoice[]; modelsLoading: boolean; modelsError: string; modelsLoaded: boolean;
+  /** Separate advisory discovery; never substitutes for the OpenCode catalog. */
+  grokModelCatalog?: import("../shared/conversation/model-catalog").ModelCatalog & { cwd: string; loading: boolean; loaded: boolean };
   modelsCwd: string; interactions: Interaction[]; handoffApprovals: Interaction[]; interactionError: string; actionBusy: boolean; actionNotice: string;
   nativeHistory?: ReconciledHistory | null;
   pendingTurn?: PendingTurn | null;
@@ -103,6 +119,413 @@ export function completionVerificationTarget(state: State): CompletionVerificati
 }
 const fallbackProfiles: AgentProfiles = { version: 1, defaultId: BASE_PROFILE_IDS["claude-code"], profiles: builtinProfiles("") };
 export class ChatStore {
+  private readonly composerEditorId = crypto.randomUUID();
+  private composerStamps = new Map<string, ComposerStamp>();
+  private composerStamp(key: string): ComposerStamp {
+    let stamp = this.composerStamps.get(key);
+    if (!stamp) {
+      stamp = Object.freeze({ editorId: this.composerEditorId, chainId: crypto.randomUUID(), revision: 0 });
+      this.composerStamps.set(key, stamp);
+    }
+    return stamp;
+  }
+  private pendingInputDraftStamps = new Map<string, ComposerStamp>();
+  private appAdmissionSendGuard = false;
+  private appAdmissionSuspended = false;
+  private appAdmissionLedger?: AppAdmissionLedger;
+  private appAdmissionRecords = new Map<string, AppAdmissionRecoveryRecord>();
+  private appAdmissionRead?: Promise<boolean>;
+  private appAdmissionLoaded = false;
+  private appAdmissionStorageError = "";
+  private appAdmissionLastPoll = 0;
+  private appAdmissionPollCursor = 0;
+  private appAdmissionChecks = new Map<string, AbortController>();
+  private appAdmissionApplied = new Set<string>();
+  private appAdmissionSubmissionError?: { requestId: string; message: string };
+  private appAdmissionContexts = new Map<string, {
+    draft: Draft; preserveDraft: boolean; consumed: boolean; auth: number;
+    selection: number; generation: number; selected: string; sourceKey: string;
+    pendingTurn: PendingTurn;
+  }>();
+  private appAdmissionScope(): AppAdmissionRecoveryScope | undefined {
+    const config = this.state.config;
+    if (this.appAdmissionSuspended || this.state.phase !== "ready" || config?.authenticated !== true || !config.storeId) return;
+    if (typeof location === "undefined") throw new Error("An exact browser origin is required for durable App admission recovery.");
+    const scope = { version: 1 as const, browserOrigin: location.origin, storeId: config.storeId };
+    appAdmissionRecoveryStorageKey(scope);
+    return scope;
+  }
+  private appAdmissionCurrent(ledger: AppAdmissionLedger, auth: number): boolean {
+    try {
+      const scope = this.appAdmissionScope();
+      return auth === this.authEpoch && !!scope && appAdmissionRecoveryStorageKey(scope) + ":" === ledger.prefix;
+    } catch { return false; }
+  }
+  appAdmissionSupported = (): boolean => {
+    const capability = this.state.config?.appAdmissionCapability;
+    return !this.appAdmissionSuspended && this.state.phase === "ready" && this.state.config?.authenticated === true
+      && capability?.protocol === "app-admission" && capability.version === 1 && capability.state === "enabled"
+      && !!this.client.submitAdmission && !!this.client.lookupAdmission;
+  };
+  grokCaptureSupported = (): boolean => {
+    const capability = this.state.config?.grokCapability;
+    return this.state.phase === "ready" && this.state.config?.authenticated === true
+      && capability?.protocol === "grok-capture" && capability.version === 1 && capability.configured
+      && !!this.client.grokTurn && !!this.client.grokSession;
+  };
+  captureSendSupported = (): boolean => this.harness() === "grok" ? this.grokCaptureSupported() : this.appAdmissionSupported();
+  private grokViews = new Map<string, GrokSessionView>();
+  /** Only unresolved in-memory capture identities, never a replay queue. */
+  private grokUnconfirmed = new Map<string, { turnIndex: number; draftKey: string; stamp: ComposerStamp; preserveDraft?: boolean }>();
+  private publishGrok(view: GrokSessionView, readiness?: Availability, history = this.state.nativeHistory) {
+    const original = this.grokUnconfirmed.get(view.sessionId);
+    if (original && (view.nextTurnIndex > original.turnIndex || view.active || view.blocked || view.phase === "not-submitted")) {
+      this.grokUnconfirmed.delete(view.sessionId);
+      const draft = this.state.drafts[original.draftKey];
+      if (draft && !original.preserveDraft && view.phase !== "not-submitted" && sameComposerStamp(this.composerStamp(original.draftKey), original.stamp)) {
+        this.update({ drafts: { ...this.state.drafts, [original.draftKey]: { ...draft, text: "",
+          ...(draft.upgradeId && view.profileId === draft.upgradeId ? { upgradeId: "" } : {}) } } });
+      }
+    }
+    this.grokViews.delete(view.sessionId); this.grokViews.set(view.sessionId, view);
+    if (this.grokViews.size > 20) this.grokViews.delete(this.grokViews.keys().next().value!);
+    const previous = this.state.conversations.find(item => item.id === view.sessionId);
+    const captureAvailability = grokAvailability(view, this.grokUnconfirmed.has(view.sessionId));
+    // Managed status includes current shared readiness. A sidebar summary read
+    // before it may still say busy after the original owner has been released.
+    // Use summary restrictions only for capture responses lacking readiness.
+    const availability = !view.availability && captureAvailability.canSend && readiness?.canSend === false ? readiness : captureAvailability;
+    const last = view.runs.at(-1);
+    const nativeHistory = history?.sessionId === view.sessionId && history.nativeSessionId === view.nativeSessionId ? history : null;
+    const runs = grokRuns(view);
+    let conversation: Conversation = { ...previous, id: view.sessionId, harness: "grok", authorityId: view.authorityId,
+      nativeSessionId: view.nativeSessionId ?? undefined, cwd: view.cwd || previous?.cwd || "",
+      model: view.model || previous?.model, effort: view.effort || previous?.effort,
+      profileId: view.profileId ?? previous?.profileId ?? last?.profileId,
+      agent: view.agent ?? previous?.agent ?? last?.agent,
+      agentKind: view.agentKind ?? previous?.agentKind ?? last?.agentKind,
+      nativeAgentSelected: view.nativeAgentSelected ?? previous?.nativeAgentSelected ?? last?.nativeAgentSelected,
+      ...(view.title !== undefined ? { title: view.title } : {}),
+      lastRunId: last?.id ?? previous?.lastRunId ?? null, lastRunStatus: last?.status ?? previous?.lastRunStatus,
+      status: view.active ? "running" : last?.status ?? "unknown", availability };
+    // Keep an existing unresolved association intact unless the service supplies
+    // both resolved IDs. Override the entire discriminated association together.
+    if (view.workspaceId && view.worktreeId) conversation = { ...conversation,
+      workspaceId: view.workspaceId, worktreeId: view.worktreeId, association: "resolved" };
+    const compactions = compactionsFor(conversation, runs, nativeHistory, this.state.selected === view.sessionId ? this.state.compactState?.operations : []);
+    const conversations = previous ? this.state.conversations.map(item => item.id === view.sessionId ? conversation : item) : [conversation, ...this.state.conversations];
+    this.update({ conversations, ...(this.state.selected === view.sessionId ? {
+      grokView: view, runs, messages: grokMessages(view, nativeHistory), availability,
+      pendingTurn: null, nativeHistory, compactions, contextUsage: contextUsageFor("grok", runs, this.state.models, nativeHistory, compactions), transcript: null, transcriptPaged: false,
+      transcriptInitialLoading: false, transcriptRefreshing: false, transcriptError: "", metadataError: "", workerLoading: false,
+      interactions: [],
+      connected: true, interactive: true, loading: false, connectionError: "",
+      ...(!this.grokUnconfirmed.has(view.sessionId) && this.state.submissionError === GROK_UNKNOWN_NOTICE ? { submissionError: "" } : {}),
+    } : {}) });
+  }
+  private appAdmissionSource(conversation?: Conversation) {
+    // Missing identity is not an alias for the currently selected native source.
+    if (!conversation?.authorityId || !conversation.nativeSessionId || (conversation.harness !== "claude-code" && conversation.harness !== "opencode")) return null;
+    return { harnessId: conversation.harness, authorityId: conversation.authorityId,
+      nativeSessionId: conversation.nativeSessionId, cwd: conversation.cwd };
+  }
+  private appAdmissionSourceMatches(record: AppAdmissionRecoveryRecord, conversation?: Conversation): boolean {
+    const intent = record.envelope.intent;
+    const expected = intent.expectedSource ?? (intent.operation === "new-conversation" && record.receipt?.state === "admitted"
+      ? record.receipt.target.dispatch.source : null);
+    const id = intent.conversationId ?? (record.receipt?.state === "admitted" ? record.receipt.target.dispatch.source.sessionId : null);
+    const actual = this.appAdmissionSource(conversation);
+    return !!expected && !!actual && conversation?.id === id && appAdmissionExpectedSourceMatches(actual, expected);
+  }
+  private publishAppAdmissions(error = this.appAdmissionStorageError) {
+    const records = Object.fromEntries(this.appAdmissionRecords);
+    this.update({ appAdmissionRecoveries: equalValue(records, this.state.appAdmissionRecoveries) ? this.state.appAdmissionRecoveries : records,
+      appAdmissionError: error, appAdmissionChecking: [...this.appAdmissionChecks.keys()],
+      ...(error ? { submissionError: error } : {}) });
+  }
+  private suspendAppAdmissions() {
+    this.appAdmissionSuspended = true;
+    this.appAdmissionSubmissionError = undefined;
+    for (const controller of this.appAdmissionChecks.values()) controller.abort();
+    this.appAdmissionChecks.clear(); this.appAdmissionLoaded = false; this.appAdmissionRead = undefined;
+    // Only hide authenticated display. Never delete or re-scope durable records.
+    this.update({ appAdmissionRecoveries: {}, appAdmissionChecking: [], appAdmissionLoading: false, appAdmissionError: "" });
+  }
+  private async loadAppAdmissions(force = false): Promise<boolean> {
+    if (this.appAdmissionRead) return this.appAdmissionRead;
+    const auth = this.authEpoch;
+    let ledger: AppAdmissionLedger;
+    try {
+      const scope = this.appAdmissionScope();
+      if (!scope) return false;
+      const prefix = `${appAdmissionRecoveryStorageKey(scope)}:`;
+      if (this.appAdmissionLedger?.prefix !== prefix) {
+        this.appAdmissionLedger = new AppAdmissionLedger(scope, localStorage);
+        this.appAdmissionRecords.clear(); this.appAdmissionLoaded = false;
+        this.appAdmissionContexts.clear(); this.appAdmissionApplied.clear();
+      }
+      if (!this.appAdmissionLedger) throw new Error("App admission recovery storage is unavailable.");
+      ledger = this.appAdmissionLedger;
+    } catch (error) {
+      this.appAdmissionStorageError = error instanceof Error ? error.message : "Durable App admission storage is unavailable.";
+      this.publishAppAdmissions(); return false;
+    }
+    if (!force && this.appAdmissionLoaded) return !this.appAdmissionStorageError;
+    this.update({ appAdmissionLoading: true });
+    const read = (async () => {
+      try {
+        const records = await ledger.read();
+        if (!this.appAdmissionCurrent(ledger, auth)) return false;
+        const next = new Map<string, AppAdmissionRecoveryRecord>();
+        for (const record of records) {
+          const id = record.envelope.clientRequestId, previous = this.appAdmissionRecords.get(id);
+          next.set(id, previous ? settleAppAdmissionRecovery(previous, record.receipt ?? { kind: "absent", key: record.envelope }) : record);
+        }
+        // A removed durable identity is a failure, never permission to mint a
+        // replacement UUID for the same conversation or composer lineage.
+        for (const [id, previous] of this.appAdmissionRecords) if (!next.has(id)) {
+          if (!previous.receipt || previous.receipt.state === "pending") throw new Error("An unresolved App admission recovery record disappeared. Sending is blocked; no request was retried.");
+          // A terminal may have been explicitly discarded by another tab.
+          this.appAdmissionContexts.delete(id); this.appAdmissionApplied.delete(id);
+        }
+        this.appAdmissionRecords = next; this.appAdmissionStorageError = ""; this.appAdmissionLoaded = true;
+        this.publishAppAdmissions();
+        for (const record of next.values()) if (record.receipt && record.receipt.state !== "pending"
+          && this.appAdmissionContexts.has(record.envelope.clientRequestId)) this.applyAppAdmission(record);
+        return true;
+      } catch (error) {
+        if (this.appAdmissionCurrent(ledger, auth)) {
+          this.appAdmissionStorageError = `App admission recovery is blocked: ${error instanceof Error ? error.message : "storage unavailable"}`;
+          this.publishAppAdmissions();
+        }
+        return false;
+      } finally { if (this.appAdmissionCurrent(ledger, auth)) this.update({ appAdmissionLoading: false }); }
+    })();
+    this.appAdmissionRead = read;
+    try { return await read; }
+    finally { if (this.appAdmissionRead === read) this.appAdmissionRead = undefined; }
+  }
+  private appAdmissionOwnsConsumed(record: AppAdmissionRecoveryRecord): boolean {
+    const context = this.appAdmissionContexts.get(record.envelope.clientRequestId);
+    return !!context?.consumed && context.auth === this.authEpoch && !context.preserveDraft && !!record.consumedStamp
+      && (!context.selected || this.appAdmissionSourceMatches(record, this.state.conversations.find(c => c.id === context.selected)))
+      && sameComposerStamp(this.composerStamp(record.draftKey), record.consumedStamp);
+  }
+  private restoreOwnedAppAdmission(record: AppAdmissionRecoveryRecord) {
+    const context = this.appAdmissionContexts.get(record.envelope.clientRequestId);
+    if (!context || !this.appAdmissionOwnsConsumed(record)) return;
+    this.update({ drafts: { ...this.state.drafts, [record.draftKey]: structuredClone(context.draft) } });
+  }
+  private applyAppAdmission(record: AppAdmissionRecoveryRecord) {
+    const requestId = record.envelope.clientRequestId, receipt = record.receipt;
+    this.appAdmissionRecords.set(requestId, record); this.publishAppAdmissions();
+    if (!receipt || receipt.state === "pending") {
+      // Ordinary receipt progress belongs to the activity row, not an error
+      // banner. Durable recovery and exact-status polling remain unchanged.
+      return;
+    }
+    if (this.appAdmissionApplied.has(requestId)) return;
+    this.appAdmissionApplied.add(requestId);
+    const context = this.appAdmissionContexts.get(requestId);
+    if (receipt.state === "rejected") {
+      this.restoreOwnedAppAdmission(record);
+      this.update({ ...(context && this.state.pendingTurn?.id === context.pendingTurn.id ? { pendingTurn: null } : {}),
+        ...(record.draftKey === this.draftKey() ? { submissionError: `App admission rejected (${receipt.rejection.code}). The original draft is retained in recovery; no request was retried.` } : {}) });
+      return;
+    }
+    const target = receipt.target, conversationId = target.dispatch.source.sessionId;
+    // Settled records are already durable, even if their original selection or
+    // generation no longer exists. Those fences govern presentation only.
+    if (!context || context.auth !== this.authEpoch) return;
+    wakePolls(conversationId);
+    const owns = this.appAdmissionOwnsConsumed(record);
+    if (owns && context.selected && context.draft.upgradeId && record.envelope.intent.operation !== "science-message") {
+      const draft = this.state.drafts[record.draftKey];
+      if (draft) this.update({ drafts: { ...this.state.drafts, [record.draftKey]: { ...draft, upgradeId: "" } } });
+    }
+    if (owns && !context.selected && !this.state.drafts[conversationId] && !this.composerStamps.has(conversationId)) {
+      const draft = this.state.drafts[record.draftKey];
+      if (draft) this.update({ drafts: { ...this.state.drafts, [conversationId]: { ...draft, profileId: "", upgradeId: "" } } });
+    }
+    const turn: PendingTurn = { ...context.pendingTurn, conversationId, runId: target.dispatch.runId,
+      messageId: target.messageId, nativeMessageId: target.nativeMessageId };
+    const originalSelection = context.selection === this.selectionEpoch && context.generation === this.generation
+      && context.selected === this.state.selected && record.draftKey === this.draftKey(context.selected)
+      && (!context.selected || this.appAdmissionSourceMatches(record, this.state.conversations.find(c => c.id === context.selected)));
+    if (!originalSelection) return;
+    const submissionError = this.appAdmissionSubmissionError;
+    const clearSubmissionError = submissionError?.requestId === requestId && this.state.submissionError === submissionError.message;
+    if (submissionError?.requestId === requestId) this.appAdmissionSubmissionError = undefined;
+    this.update({ sending: false, ...(clearSubmissionError ? { submissionError: "" } : {}),
+      ...(conversationId === this.state.selected ? { pendingTurn: turn } : {}) });
+    if (!context.selected && owns) { this.choose(conversationId, turn); catalog.navigate({ conversationId }); }
+    else this.requestSelectedRefresh();
+    this.sciencePolling(true);
+  }
+  private async settleAppAdmission(ledger: AppAdmissionLedger, record: AppAdmissionRecoveryRecord, evidence: AppAdmissionLookup | AppAdmissionReceipt, auth: number) {
+    // Persist first, independent of selected-chat generations. A late response
+    // must not be lost simply because choose()/reconnect() fenced its UI.
+    const next = await ledger.settle(record, evidence);
+    if (this.appAdmissionCurrent(ledger, auth)) this.applyAppAdmission(next);
+    return next;
+  }
+  appAdmissionStatus = (requestId: string): AppAdmissionRecoveryRecord | undefined => this.state.appAdmissionRecoveries?.[requestId];
+  /** Direct authenticated hydration, not a selected/sidebar row or native-owner
+   * lookup. No catalog publication happens until the persistent source matches. */
+  private async hydrateAppAdmissionSource(record: AppAdmissionRecoveryRecord, current: () => boolean, signal: AbortSignal): Promise<Conversation | undefined> {
+    invalidateCoalescedRequests(url => /^\/api\/config(?:\?|$)/.test(url));
+    const config = await this.client.config(signal);
+    if (!current()) return;
+    if (!config.authenticated) { this.loginRequired(); return; }
+    if (config.storeId !== record.scope.storeId) throw new Error("The original App store changed. Recovery was not redirected.");
+    const intent = record.envelope.intent;
+    const id = intent.conversationId ?? (record.receipt?.state === "admitted" ? record.receipt.target.dispatch.source.sessionId : null);
+    if (!id) return; // A still-unbound new draft has no native source to adopt.
+    // A direct client call can still join a cached/in-flight HTTP coalescer
+    // entry. Retire it AND the listing cache before assigning this acquisition
+    // its publication serial. Never allocate a new serial after the response.
+    this.invalidateSessionNameRequests();
+    this.conversationListing.invalidate();
+    const revision = this.conversationListing.revision, readSerial = ++this.catalogSummarySerial;
+    const targetVersion = this.catalogSummaryVersions.get(id), targetSource = this.pendingInputSource(id);
+    const listing = this.client.conversationSummaries ? await this.client.conversationSummaries([id], signal) : await this.client.conversations(signal);
+    if (!current()) return;
+    if (revision !== this.conversationListing.revision || targetVersion !== this.catalogSummaryVersions.get(id)
+      || targetSource !== this.pendingInputSource(id)) throw new Error("Newer conversation evidence superseded recovery hydration. Check the original source again; nothing was opened or restored.");
+    if (!this.client.conversationSummaries && "page" in listing && listing.page) throw new Error("This bridge cannot hydrate an off-page original conversation safely.");
+    const row = listing.conversations.find(c => c.id === id);
+    if (!row || !this.appAdmissionSourceMatches(record, row)) throw new Error("The original conversation source changed or is unavailable. Recovery cannot open or restore into a replacement source.");
+    // Hydration may itself retire an already displayed stale source. In that
+    // case its generation fence deliberately refuses the pending UI action.
+    this.mergeConversationSummaries([row], listing.availability, [], readSerial, true);
+    if (!current() || !this.appAdmissionSourceMatches(record, this.state.conversations.find(c => c.id === id))) return;
+    return row;
+  }
+  openAppAdmissionConversation = async (requestId: string): Promise<boolean> => {
+    const record = this.appAdmissionRecords.get(requestId), ledger = this.appAdmissionLedger, auth = this.authEpoch;
+    if (!record || record.receipt?.state !== "admitted" || !ledger || !this.appAdmissionCurrent(ledger, auth) || this.state.sending || this.state.actionBusy
+      || this.appAdmissionChecks.has(requestId) || this.appAdmissionChecks.size >= 4) return false;
+    const selection = this.selectionEpoch, generation = this.generation, navigation = { ...catalog.state.navigation };
+    const draftKey = this.draftKey(), stamp = this.composerStamp(draftKey), controller = new AbortController();
+    this.appAdmissionChecks.set(requestId, controller); this.publishAppAdmissions();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]);
+    const current = () => !signal.aborted && this.appAdmissionCurrent(ledger, auth) && selection === this.selectionEpoch && generation === this.generation
+      && this.appAdmissionRecords.get(requestId) === record && equalValue(navigation, catalog.state.navigation)
+      && draftKey === this.draftKey() && sameComposerStamp(stamp, this.composerStamp(draftKey)) && !this.state.sending && !this.state.actionBusy;
+    try {
+      const conversation = await this.hydrateAppAdmissionSource(record, current, signal);
+      if (!current() || !conversation) return false;
+      // Normal application navigation opens Chat and updates its catalog bookmark.
+      return this.openConversation(conversation.id);
+    } catch (error) {
+      if (current() && !this.expired(error)) this.publishAppAdmissions(error instanceof Error ? error.message : "Original conversation unavailable.");
+      return false;
+    } finally {
+      if (this.appAdmissionChecks.get(requestId) === controller) this.appAdmissionChecks.delete(requestId);
+      if (this.appAdmissionCurrent(ledger, auth)) this.update({ appAdmissionChecking: [...this.appAdmissionChecks.keys()] });
+    }
+  };
+  checkAppAdmission = async (requestId: string): Promise<void> => {
+    if (!this.appAdmissionSupported() || !await this.loadAppAdmissions()) return;
+    const record = this.appAdmissionRecords.get(requestId), ledger = this.appAdmissionLedger, auth = this.authEpoch;
+    if (!record || !ledger || this.appAdmissionChecks.has(requestId) || this.appAdmissionChecks.size >= 4) return;
+    const controller = new AbortController(); this.appAdmissionChecks.set(requestId, controller); this.publishAppAdmissions();
+    const deadline = setTimeout(() => controller.abort(), 15000);
+    const current = () => !controller.signal.aborted && this.appAdmissionCurrent(ledger, auth);
+    try {
+      // Authenticated installation identity is checked independently of whatever
+      // conversation is now selected. The only submission read is exact GET.
+      const config = await this.client.config(controller.signal);
+      if (!current()) return;
+      if (!config.authenticated) { this.loginRequired(); return; }
+      if (config.storeId !== record.scope.storeId || config.appAdmissionCapability?.protocol !== "app-admission"
+        || config.appAdmissionCapability.version !== 1 || config.appAdmissionCapability.state !== "enabled") {
+        this.suspendAppAdmissions();
+        this.update({ submissionError: "The original authenticated App store or admission capability changed. Recovery is suspended; original records were preserved and nothing was redirected." });
+        return;
+      }
+      const { storeId, clientRequestId, payloadSha256 } = record.envelope;
+      const lookup = await this.client.lookupAdmission!({ storeId, clientRequestId, payloadSha256 }, controller.signal);
+      if (!current()) return;
+      await this.settleAppAdmission(ledger, record, lookup, auth);
+    } catch (error) {
+      if (this.appAdmissionCurrent(ledger, auth) && !this.expired(error)) this.publishAppAdmissions(`${error instanceof Error ? error.message : "Exact status lookup unavailable."} Original request retained; no retransmission occurred.`);
+    } finally {
+      clearTimeout(deadline);
+      if (this.appAdmissionChecks.get(requestId) === controller) this.appAdmissionChecks.delete(requestId);
+      if (this.appAdmissionCurrent(ledger, auth)) this.update({ appAdmissionChecking: [...this.appAdmissionChecks.keys()] });
+    }
+  };
+  /** Explicit empty-composer action only. Reloaded science references remain in
+   * the recovery card; only the in-process original contains staged previews. */
+  restoreAppAdmissionDraft = async (requestId: string): Promise<boolean> => {
+    const record = this.appAdmissionRecords.get(requestId), ledger = this.appAdmissionLedger, auth = this.authEpoch;
+    if (!record || !ledger || !this.appAdmissionCurrent(ledger, auth) || this.state.sending || this.state.actionBusy
+      || this.appAdmissionChecks.has(requestId) || this.appAdmissionChecks.size >= 4
+      || record.draftKey !== this.draftKey() || this.draft().text || this.draft().scienceSnapshots?.length) return false;
+    const stamp = this.composerStamp(record.draftKey), selection = this.selectionEpoch, generation = this.generation;
+    const navigation = { ...catalog.state.navigation }, controller = new AbortController();
+    this.appAdmissionChecks.set(requestId, controller); this.publishAppAdmissions();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]);
+    const current = () => !signal.aborted && this.appAdmissionCurrent(ledger, auth) && selection === this.selectionEpoch && generation === this.generation
+      && this.appAdmissionRecords.get(requestId) === record
+      && equalValue(navigation, catalog.state.navigation) && !this.state.sending && !this.state.actionBusy
+      && record.draftKey === this.draftKey() && sameComposerStamp(stamp, this.composerStamp(record.draftKey))
+      && !this.draft().text && !this.draft().scienceSnapshots?.length;
+    try {
+      const conversation = await this.hydrateAppAdmissionSource(record, current, signal);
+      if (!current()) return false;
+      if ((record.envelope.intent.conversationId !== null || record.receipt?.state === "admitted") && !conversation) return false;
+      const context = this.appAdmissionContexts.get(requestId);
+      const original = context?.auth === this.authEpoch && !context.preserveDraft ? context.draft : undefined;
+      const draft: Draft = original ? structuredClone(original) : { text: record.recovery.text, cwd: record.recovery.cwd,
+        profileId: record.recovery.profileId ?? "", upgradeId: record.recovery.upgradeProfileId ?? "" };
+      this.update({ drafts: { ...this.state.drafts, [record.draftKey]: draft }, actionNotice: !original && record.recovery.scienceSnapshots?.length
+        ? "Recovered text only. Original science snapshot references remain in recovery; re-open their previews explicitly. No request was resent."
+        : "Draft explicitly restored. The original request remains in recovery; nothing was resent." });
+      return true;
+    } catch (error) {
+      if (current() && !this.expired(error)) this.publishAppAdmissions(error instanceof Error ? error.message : "Original draft source unavailable.");
+      return false;
+    } finally {
+      if (this.appAdmissionChecks.get(requestId) === controller) this.appAdmissionChecks.delete(requestId);
+      if (this.appAdmissionCurrent(ledger, auth)) this.update({ appAdmissionChecking: [...this.appAdmissionChecks.keys()] });
+    }
+  };
+  /** Explicit UI discard, needed to release bounded terminal recovery capacity.
+   * An App-admitted science request is not terminal science evidence. */
+  dismissAppAdmissionRecovery = async (requestId: string): Promise<boolean> => {
+    if (!await this.loadAppAdmissions()) return false;
+    const record = this.appAdmissionRecords.get(requestId), ledger = this.appAdmissionLedger, auth = this.authEpoch;
+    if (!record?.receipt || record.receipt.state === "pending" || !ledger || !this.appAdmissionCurrent(ledger, auth)
+      || this.appAdmissionChecks.has(requestId) || this.appAdmissionSendGuard) return false;
+    if (record.envelope.intent.operation === "science-message" && record.receipt.state !== "rejected") {
+      const evidence = this.appAdmissionScienceEvidence(record);
+      if (!evidence || evidence.state === "prepared" || evidence.state === "unknown") return false;
+    }
+    try {
+      await ledger.removeTerminal(record);
+      if (!this.appAdmissionCurrent(ledger, auth)) return true;
+      this.appAdmissionRecords.delete(requestId); this.appAdmissionContexts.delete(requestId); this.appAdmissionApplied.delete(requestId);
+      this.publishAppAdmissions(); return true;
+    } catch (error) {
+      if (this.appAdmissionCurrent(ledger, auth)) this.publishAppAdmissions(error instanceof Error ? error.message : "Recovery discard unavailable.");
+      return false;
+    }
+  };
+  private appAdmissionPolling(force = false) {
+    if (!this.appAdmissionSupported() || typeof document !== "undefined" && document.hidden || !force && Date.now() - this.appAdmissionLastPoll < 5000) return;
+    this.appAdmissionLastPoll = Date.now();
+    void (async () => {
+      if (!await this.loadAppAdmissions()) return;
+      const unresolved = [...this.appAdmissionRecords.values()].filter(record => !record.receipt || record.receipt.state === "pending");
+      if (!unresolved.length) return;
+      const start = this.appAdmissionPollCursor % unresolved.length;
+      this.appAdmissionPollCursor = (start + 4) % unresolved.length;
+      const batch = Array.from({ length: Math.min(4, unresolved.length) }, (_, index) => unresolved[(start + index) % unresolved.length]);
+      await Promise.all(batch.map(record => this.checkAppAdmission(record.envelope.clientRequestId)));
+    })();
+  }
   private sessionTitleMutations = new Map<string, { scope: string; expectedRevision: number; optimisticTitle?: string }>();
   sessionNameScope = (id: string) => JSON.stringify([this.authEpoch, this.state.config?.storeId, this.pendingInputSource(id)]);
   openSessionNameDialog = (conversationId: string, mode: SessionNameIntent["mode"], restoreFocus?: () => HTMLElement | null) => {
@@ -439,6 +862,15 @@ export class ChatStore {
     void this.refreshPendingInputs();
   }
   private async newPendingInputOperation(kind: PendingInputOperation["kind"], text?: string, itemId?: string): Promise<SendOutcome> {
+    if (kind === "enqueue" && this.appAdmissionSupported()) {
+      const fence = this.pendingInputFence();
+      if (!await this.loadAppAdmissions(true) || fence !== this.pendingInputFence()) return { status: "blocked" };
+      if ([...this.appAdmissionRecords.values()].some(record => (!record.receipt || record.receipt.state === "pending")
+        && (record.draftKey === this.draftKey() || record.envelope.intent.conversationId === this.state.selected))) {
+        this.update({ pendingInputError: "Resolve the original App admission request before queueing another input in this conversation or draft chain." });
+        return { status: "blocked" };
+      }
+    }
     if (kind === "enqueue" && this.draft().scienceSnapshots?.length) { this.update({ pendingInputError: "Science snapshots cannot be queued. Send them from an idle conversation." }); return { status: "blocked" }; }
     const id = this.state.selected, fence = this.pendingInputFence(), namespace = this.pendingInputKey(), lock = `${namespace}:${id}`;
     if (!id || !namespace || !isPendingInputCapability(this.state.config?.pendingInputCapability) || this.pendingInputMutations.has(lock)) return { status: "blocked" };
@@ -448,6 +880,7 @@ export class ChatStore {
       this.update({ pendingInputError: compactCommand(text ?? "") ? "Use ordinary /compact; compaction cannot be queued." : this.pendingInputUnavailable() }); return { status: "blocked" };
     }
     const draftKey = this.draftKey(), draftText = this.draft().text, sourceScope = this.pendingInputSource();
+    const draftStamp = this.composerStamp(draftKey);
     this.pendingInputMutations.add(lock);
     try {
       // A mutation must observe a GET started for this explicit action, not
@@ -481,6 +914,7 @@ export class ChatStore {
         sourceScope, ...(kind === "enqueue" ? { draftKey, draftText } : {}) };
       const ledger = this.pendingInputLedger();
       ledger.reserve(record); // Durable immutable UUID/body BEFORE any POST.
+      if (kind === "enqueue" && text === draftText) this.pendingInputDraftStamps.set(body.requestId, draftStamp);
       this.pendingInputRecords.set(body.requestId, record); this.publishPendingInputOperations();
       return await this.transmitPendingInput(record, ledger, fence);
     } catch (error) {
@@ -538,7 +972,9 @@ export class ChatStore {
     if (current()) {
       if (state === "confirmed") {
         const fresh = await this.freshPendingInputs(fence);
-        if (fresh && current() && o.kind === "enqueue" && record.draftKey === this.draftKey() && record.draftText === (body as PendingInputRequest).text && this.draft().text === record.draftText) this.setDraft({ text: "" });
+        const stamp = this.pendingInputDraftStamps.get(o.requestId);
+        if (fresh && current() && o.kind === "enqueue" && record.draftKey === this.draftKey() && stamp
+          && sameComposerStamp(stamp, this.composerStamp(record.draftKey))) this.setDraft({ text: "" });
         if (current() && error) this.update({ pendingInputError: error });
       }
       if (state === "rejected") await this.freshPendingInputs(fence);
@@ -582,7 +1018,9 @@ export class ChatStore {
       if (this.pendingInputTerminals.size > 32) this.pendingInputTerminals.delete(this.pendingInputTerminals.keys().next().value!);
       if (fence === this.pendingInputFence()) {
         this.publishPendingInputOperations();
-        if (await this.freshPendingInputs(fence) && fence === this.pendingInputFence() && record.draftKey === this.draftKey() && record.draftText === (record.body as PendingInputRequest).text && this.draft().text === record.draftText) this.setDraft({ text: "" });
+        const fresh = await this.freshPendingInputs(fence), stamp = this.pendingInputDraftStamps.get(requestId);
+        if (fresh && fence === this.pendingInputFence() && record.draftKey === this.draftKey() && stamp
+          && sameComposerStamp(stamp, this.composerStamp(record.draftKey))) this.setDraft({ text: "" });
       }
     } catch (cause) {
       const reason = `${cause instanceof Error ? cause.message : "Status unavailable."} The original operation remains unconfirmed; missing/404 does not prove it cannot commit.`;
@@ -660,7 +1098,6 @@ export class ChatStore {
   private catalogSummarySerial = 0;
   private catalogSummaryVersions = new Map<string, number>();
   private catalogMissing = new Set<string>();
-  private activeSubmission?: { recovery: UnconfirmedSubmission; draftKey: string; preserveDraft: boolean };
 
   setConversationQuery = (query: SessionCatalogQuery): void => {
     const next = { ...query, limit: query.limit ?? 50, cursor: undefined };
@@ -804,16 +1241,6 @@ export class ChatStore {
     registerWorkerSessions(rows, true); this.observeNotifications(rows, true);
     const selected = next.get(this.state.selected);
     if (previousSelected && (missing.includes(previousSelected.id) || selected && conversationKey(previousSelected) !== conversationKey(selected))) {
-      const submission = this.state.sending && this.activeSubmission?.recovery.conversationId === previousSelected.id ? this.activeSubmission : undefined;
-      const draft = submission && (this.state.drafts[submission.draftKey] ?? submission.recovery.draft);
-      const restoreDraft = !!submission && !submission.preserveDraft && !!draft && !draft.text && !draft.scienceSnapshots?.length;
-      const submissionPatch: Partial<State> = submission ? {
-        unconfirmedSubmissions: { ...this.state.unconfirmedSubmissions, [submission.recovery.requestId ?? submission.recovery.localId]: submission.recovery },
-        ...(restoreDraft ? { drafts: { ...this.state.drafts, [submission.draftKey]: { ...draft!, text: submission.recovery.text,
-          ...(submission.recovery.draft.scienceSnapshots?.length ? { scienceSnapshots: submission.recovery.draft.scienceSnapshots } : {}) } } } : {}),
-        submissionError: `The original native source changed while submitting. Acceptance is unknown; nothing was canceled or resent. ${submission.recovery.requestId ? `Original request: ${submission.recovery.requestId}. ` : `Local submission: ${submission.recovery.localId}. `}Check the original source before sending again. ${restoreDraft ? "Your draft is restored." : "Your current draft is preserved; the original submission is retained separately."}`,
-      } : {};
-      if (submission) this.activeSubmission = undefined;
       // Targeted retirement/rebinding is authoritative even outside a selected
       // poll (push, feed hydration, message search). Fence actions immediately.
       this.stop(); this.selectionEpoch++; this.actionSerial++; this.compactReadSerial++;
@@ -822,7 +1249,7 @@ export class ChatStore {
       if (this.paged) this.resetPages();
       const pendingCompacts = { ...this.state.pendingCompacts }, compactInstructions = { ...this.state.compactInstructions };
       delete pendingCompacts[previousSelected.id]; delete compactInstructions[previousSelected.id];
-      this.update({ runs: [], messages: [], pendingTurn: null, sending: false, ...submissionPatch, nativeHistory: null, contextUsage: null,
+      this.update({ runs: [], messages: [], pendingTurn: null, sending: false, nativeHistory: null, contextUsage: null,
         compactState: null, compactions: [], compactDialog: "", compactError: "", pendingCompacts, compactInstructions,
         interactions: [], handoffApprovals: [], interactionError: "", pendingInputs: null, pendingInputOperations: {}, actionBusy: false, actionNotice: "",
         availability: { canSend: false }, connected: false, loading: !!selected,
@@ -872,11 +1299,11 @@ export class ChatStore {
   private cacheable = false;
   private started = false;
   private modelRequest = 0;
+  private grokModelRequest = 0;
   private replied = new Set<string>();
   private nativeHistoryLoaded = false;
   private selectionEpoch = 0;
   private actionSerial = 0;
-  private submissionSerial = 0;
   private compactInFlight = new Set<string>();
   private compactReadSerial = 0;
   private pageFence = 0;
@@ -903,6 +1330,7 @@ export class ChatStore {
   private get paged() { return !!(this.client.transcriptPage && this.client.transcriptMeta && this.client.transcriptRefresh); }
   private cacheConversation() {
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
+    if (conversation?.harness === "grok") return;
     if (this.state.phase !== "ready" || !this.cacheable || !conversation || this.compactInFlight.has(conversation.id) || conversationKey(conversation) !== this.transcriptKey) return;
     // pendingTurn is presentation only, never recorded transcript evidence.
     this.conversationCache.put(conversation, { runs: this.runMap, messages: this.state.messages, nativeHistory: this.state.nativeHistory, nativeHistoryLoaded: this.nativeHistoryLoaded, transcript: this.state.transcript });
@@ -921,6 +1349,7 @@ export class ChatStore {
     this.update({ connected: false, loading: true, availability: { canSend: false }, compactState: null, contextUsage: null, interactions: [], handoffApprovals: [] });
   }
   private clearCachedHistory() {
+    this.grokViews.clear(); this.grokUnconfirmed.clear(); this.update({ grokView: null });
     this.sessionTitleMutations.clear();
     // Authentication starts a new browsing scope, even if the previous owner
     // signed out from flat search. Capable clients boot directory-only again.
@@ -930,7 +1359,6 @@ export class ChatStore {
     for (const controller of this.summaryRequests) controller.abort();
     this.summaryRequests.clear();
     this.catalogSummaryVersions.clear(); this.catalogMissing.clear();
-    this.activeSubmission = undefined;
     this.update({ conversations: [], conversationsReady: false, globalAvailability: { canSend: false }, unconfirmedSubmissions: {}, sessionNameDialog: undefined, sessionTitleRequests: {},
       ...(!this.groupListing.enabled ? { conversationGroups: undefined, conversationGroupDirectory: undefined } : {}) });
     clearWorkerStates();
@@ -1074,12 +1502,21 @@ export class ChatStore {
     else if (client.conversationSummaries) this.resetConversationPages();
     if (typeof window !== "undefined") window.addEventListener("storage", event => {
       if (event.key === this.pendingInputKey()) { this.loadPendingInputLedger(); if (this.pendingInputVisible) void this.refreshPendingInputs(); }
+      if (this.appAdmissionLedger && (event.key === null || event.key.startsWith(this.appAdmissionLedger.prefix))) {
+        this.appAdmissionLoaded = false;
+        void this.loadAppAdmissions(true).then(() => this.appAdmissionPolling(true));
+      }
     });
   }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   snapshot = () => this.state;
   shellSnapshot = () => this.shellRevision;
   private update(patch: Partial<State>, publishShell = true) {
+    if (patch.drafts) {
+      for (const key of new Set([...Object.keys(this.state.drafts), ...Object.keys(patch.drafts)])) {
+        if (this.state.drafts[key] !== patch.drafts[key]) this.composerStamps.set(key, advanceComposerStamp(this.composerStamp(key)));
+      }
+    }
     if (patch.conversations) {
       const previousRows = new Map(this.state.conversations.map(c => [c.id, c]));
       patch.conversations = patch.conversations.map(row => {
@@ -1173,30 +1610,48 @@ export class ChatStore {
       this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: remaining }, scienceSubmissionError: "" });
     } catch (error) { this.update({ scienceSubmissionError: error instanceof Error ? error.message : "Science draft recovery unavailable" }); }
   };
-  private async refreshScienceSubmissions(id: string, current: () => boolean, signal: AbortSignal) {
-    if (!this.client.scienceSubmissions || !this.state.config?.storeId) return;
+  private async refreshScienceSubmissions(id: string, current: () => boolean, signal: AbortSignal, supplied?: ScienceSubmissionView[]) {
+    if (!this.state.config?.storeId || !supplied && !this.client.scienceSubmissions) return;
     try {
-      const pending = this.readSciencePending(id), submissions = await this.client.scienceSubmissions(id, signal);
+      const pending = this.readSciencePending(id), submissions = supplied ?? await this.client.scienceSubmissions!(id, signal);
       if (!current()) return;
       // Another tab can replace the durable marker while discovery is in flight.
       // Leave that newer intent and its composer untouched until the next read.
       if (this.readSciencePending(id)?.requestId !== pending?.requestId) return;
       if (!Array.isArray(submissions) || submissions.some(s => s.conversationId !== id || !["prepared", "unknown", "submitted", "not-submitted"].includes(s.state) || !Array.isArray(s.snapshots))) throw new Error("Science send evidence is unavailable");
       const resolved = pending && submissions.find(s => s.requestId === pending.requestId && ["submitted", "not-submitted"].includes(s.state));
-      const draft = this.draft(id);
+      if (pending) {
+        const evidence = submissions.find(item => item.requestId === pending.requestId);
+        if (evidence && (!equalValue(evidence.snapshots, pending.snapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })))
+          || evidence.state === "submitted" && !evidence.runId)) throw new Error("Science receipt does not match the original request and snapshots. Nothing was resent.");
+      }
       let consumed = resolved?.state === "submitted";
+      const recoveries = this.readScienceRecoveries(id);
       if (resolved?.state === "not-submitted" && pending) {
-        // Recover only an untouched composer; a newer draft keeps the durable
-        // recovery record until it can be consumed without losing either input.
-        if (!draft.text && !(draft.scienceSnapshots?.length)) {
-          this.setDraft({ text: pending.text, scienceSnapshots: pending.snapshots }, id);
-          consumed = true;
-        } else consumed = draft.text === pending.text && equalValue(draft.scienceSnapshots ?? [], pending.snapshots);
+        // Legacy markers have no editor stamp. Preserve them as explicit
+        // recovery, never infer ownership from empty or matching draft text.
+        if (!recoveries.some(item => item.requestId === pending.requestId)) recoveries.push({ ...pending, status: "rejected" });
+        const key = `${this.scienceStorageKey(id)}:rejected`, raw = JSON.stringify(recoveries);
+        localStorage.setItem(key, raw);
+        if (localStorage.getItem(key) !== raw) throw new Error("Science recovery could not be verified after writing");
+        consumed = true;
       }
       if (consumed && pending && this.readSciencePending(id)?.requestId === pending.requestId) localStorage.removeItem(this.scienceStorageKey(id));
-      if (resolved?.state === "submitted" && pending && draft.text === pending.text && equalValue(draft.scienceSnapshots ?? [], pending.snapshots)) this.setDraft({ text: "", scienceSnapshots: [] }, id);
-      const recoveries = this.readScienceRecoveries(id);
-      this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: recoveries }, scienceSubmissions: { ...this.state.scienceSubmissions, [id]: submissions }, sciencePending: { ...this.state.sciencePending, [id]: consumed ? null : pending }, scienceSubmissionError: "" });
+      if (resolved?.state === "submitted" && id === this.state.selected && this.harness() === "grok") {
+        const draft = this.draft(id);
+        if (draft.upgradeId && draft.upgradeId === this.state.grokView?.profileId) this.setDraft({ upgradeId: "" }, id);
+      }
+      for (const record of this.appAdmissionRecords.values()) {
+        if (record.scope.storeId !== this.state.config?.storeId || record.envelope.intent.operation !== "science-message" || record.envelope.intent.conversationId !== id) continue;
+        const evidence = this.appAdmissionScienceEvidence(record, submissions);
+        if (evidence?.state === "not-submitted") this.restoreOwnedAppAdmission(record);
+        if (evidence?.state === "submitted" && this.appAdmissionOwnsConsumed(record)) {
+          const draft = this.state.drafts[record.draftKey];
+          if (draft?.upgradeId) this.update({ drafts: { ...this.state.drafts, [record.draftKey]: { ...draft, upgradeId: "" } } });
+        }
+      }
+      this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: recoveries }, scienceSubmissions: { ...this.state.scienceSubmissions, [id]: submissions }, sciencePending: { ...this.state.sciencePending, [id]: consumed ? null : pending }, scienceSubmissionError: "",
+        ...(consumed && id === this.state.selected && (this.state.submissionError.startsWith("Science send outcome is unresolved.") || this.state.submissionError.startsWith("A previous science send is unresolved.")) ? { submissionError: "" } : {}) });
       return true;
     } catch (error) { if (current() && !this.expired(error)) this.update({ scienceSubmissionError: error instanceof Error ? error.message : "Science submission evidence unavailable" }); }
   }
@@ -1210,10 +1665,14 @@ export class ChatStore {
     const worktree = catalog.state.workspaces.find(w => w.workspaceId === nav.workspaceId)?.worktrees.find(w => w.worktreeId === nav.worktreeId);
     return !catalog.state.ready || !worktree || worktree.state !== "available" ? "Choose an available workspace and worktree to start a conversation." : "";
   };
-  harness = (): Harness => this.state.selected ? this.state.conversations.find(c => c.id === this.state.selected)?.harness ?? "claude-code" : this.draftProfile().harness;
+  harness = (): Harness => this.state.selected ? this.state.conversations.find(c => c.id === this.state.selected)?.harness
+    ?? (this.grokViews.has(this.state.selected) || this.grokUnconfirmed.has(this.state.selected) ? "grok" : "claude-code") : this.draftProfile().harness;
   profileSet = (): AgentProfiles => this.state.profiles ?? this.state.config?.agentProfiles ?? fallbackProfiles;
   profileList = (): AgentProfile[] => [...this.profileSet().profiles].sort((a, b) => a.order - b.order);
   profile = (id: string | undefined): AgentProfile | undefined => id ? this.profileSet().profiles.find(p => p.id === id) : undefined;
+  profileChoices = (profile: Pick<AgentProfile, "harness" | "model" | "effort">): { model: string; effort: string } => profile.harness === "grok"
+    ? grokProfileChoices(profile, this.profile(BASE_PROFILE_IDS.grok)) : { model: profile.model, effort: profile.effort };
+  grokProfileUpgradesSupported = (): boolean => this.state.config?.grokCapability?.profileUpgrades === true;
   defaultProfile = (): AgentProfile => { const set = this.profileSet(); return this.profile(set.defaultId) ?? this.profile(BASE_PROFILE_IDS["claude-code"]) ?? fallbackProfiles.profiles[0]!; };
   /** New-conversation profile: the draft pick when still visible, else the default. */
   draftProfile = (): AgentProfile => { const picked = this.profile(this.draft("").profileId); return picked && !picked.hidden && (picked.kind === "base" || picked.kind === "assistant") ? picked : this.defaultProfile(); };
@@ -1227,7 +1686,10 @@ export class ChatStore {
   private latestStoredRun = (id: string): Run | undefined => [...this.runMap.values()].filter(r => r.conversationId === id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
   conversationSnapshot = (id: string): ProfileSnapshot => {
     const conversation = this.state.conversations.find(c => c.id === id);
-    return savedProfileSnapshot(conversation ?? { harness: "claude-code" }, id === this.state.selected ? this.latestStoredRun(id) : undefined);
+    const grok = this.grokViews.get(id);
+    return savedProfileSnapshot(conversation ?? (grok || this.grokUnconfirmed.has(id) ? { harness: "grok", model: grok?.model, effort: grok?.effort,
+      profileId: grok?.profileId, agent: grok?.agent, agentKind: grok?.agentKind, nativeAgentSelected: grok?.nativeAgentSelected } : { harness: "claude-code" }),
+      grok?.runs.at(-1) ?? (id === this.state.selected ? this.latestStoredRun(id) : undefined));
   };
   conversationProfile = (id: string): DisplayProfile | undefined => displayProfile(this.profileSet(), this.conversationSnapshot(id));
   conversationProfileLabel = (id: string): string => profileDisplayLabel(this.conversationProfile(id), this.conversationSnapshot(id));
@@ -1243,12 +1705,15 @@ export class ChatStore {
   pendingUpgrade = (): AgentProfile | undefined => this.state.selected ? this.profile(this.draft().upgradeId) : undefined;
   /** Profile the next send runs with: pending upgrade, else the conversation's, else the draft's. */
   effectiveProfile = (): DisplayProfile | undefined => this.state.selected ? this.pendingUpgrade() ?? this.conversationProfile(this.state.selected) : this.draftProfile();
-  assignable = (profile: AgentProfile) => canAssign(this.currentShape(), profile);
+  assignable = (profile: AgentProfile) => this.harness() === "grok" && !!this.state.selected && !this.grokProfileUpgradesSupported()
+    ? { ok: false as const, reason: "Existing Grok sessions keep their saved profile. Choose a profile for a new chat instead." }
+    : canAssign(this.currentShape(), profile);
   pickProfile = (id: string) => {
     if (this.pendingInputChainLocked()) return;
     const next = this.profile(id);
     if (this.state.sending || !next || !this.assignable(next).ok) return;
     if (this.state.selected) this.setDraft({ upgradeId: id }); else this.setDraft({ profileId: id }, "");
+    if (next.harness === "grok" && this.state.submissionError.startsWith("App admission requires initialization")) this.update({ submissionError: "" });
   };
   clearUpgrade = () => { if (this.state.selected && !this.state.sending && !this.pendingInputChainLocked()) this.setDraft({ upgradeId: "" }); };
   workspace = () => {
@@ -1290,7 +1755,7 @@ export class ChatStore {
     if (this.pendingInputChainLocked()) { this.update({ compactError: "Resolve the existing input chain before compacting." }); return; }
     if (!this.state.selected) { this.update({ submissionError: "Choose an existing conversation before using /compact." }); return; }
     if (!this.supportedCapabilities().compaction) { this.update({ submissionError: "Context compaction is unavailable for this harness. Your draft is unchanged." }); return; }
-    if (instructions && !this.supportedCapabilities().compactionInstructions) { this.update({ submissionError: "OpenCode /compact does not support instructions. Your draft is unchanged." }); return; }
+    if (instructions && !this.supportedCapabilities().compactionInstructions) { this.update({ submissionError: `${getHarnessDescriptor(this.harness())?.label ?? "This harness"} /compact does not support instructions. Your draft is unchanged.` }); return; }
     this.update({ compactDialog: this.state.selected, compactError: "", ...(instructions !== undefined ? { compactInstructions: { ...this.state.compactInstructions, [this.state.selected]: instructions } } : {}) });
     void this.refreshCompact();
   };
@@ -1317,7 +1782,7 @@ export class ChatStore {
     }
   };
   private applyCompactState(compactState: CompactState) {
-    if (this.paged) {
+    if (this.paged && this.harness() !== "grok") {
       const pending = this.state.pendingCompacts?.[compactState.sessionId];
       const recovered = pending && compactState.operations.find(record => record.requestId === pending.payload.requestId);
       const records = new Map<string, CompactionRecord>((this.state.transcript?.compactions ?? []).map(record => [record.id, record]));
@@ -1386,7 +1851,27 @@ export class ChatStore {
       if (auth === this.authEpoch && sameIdentity() && this.state.selected === id) this.reconnect();
     }
   };
-  loadModels = async (harness: unknown = this.harness()) => {
+  loadModels = async (harness: unknown = this.harness(), refresh = false) => {
+    if (harness === "grok") {
+      if (!this.supportedCapabilities(harness).listModels || !this.client.grokModels) return;
+      const cwd = this.workspace(), cached = this.state.grokModelCatalog?.cwd === cwd ? this.state.grokModelCatalog : undefined;
+      if (cached?.loading) return;
+      const auth = this.authEpoch, request = ++this.grokModelRequest;
+      const starting = { models: cached?.models ?? [], fetchedAt: cached?.fetchedAt ?? "", stale: cached?.stale ?? true,
+        cwd, loading: true, loaded: cached?.loaded ?? false, error: "" };
+      this.update({ grokModelCatalog: starting });
+      try {
+        const result = await this.client.grokModels(cwd, AbortSignal.timeout(25000), refresh);
+        if (auth !== this.authEpoch || request !== this.grokModelRequest) return;
+        if (!Array.isArray(result.models) || result.models.some(m => !m || typeof m.id !== "string" || typeof m.name !== "string" || !Array.isArray(m.efforts))) throw new Error("Invalid Grok model catalog");
+        this.update({ grokModelCatalog: { ...result, cwd, loading: false, loaded: true, error: result.error ?? "" } });
+      } catch (error) {
+        if (auth !== this.authEpoch || request !== this.grokModelRequest || this.expired(error)) return;
+        this.update({ grokModelCatalog: { ...starting, loading: false, stale: true,
+          error: `Grok catalog unavailable: ${error instanceof Error ? error.message : "Could not load models."} You can still enter model and effort IDs manually.` } });
+      }
+      return;
+    }
     if (!this.supportedCapabilities(harness).listModels || !this.client.models) return;
     const cwd = this.workspace();
     if (this.state.modelsLoading && this.state.modelsCwd === cwd) return;
@@ -1411,12 +1896,16 @@ export class ChatStore {
   /** Model/variant the next OC send resolves (profile first, then saved session values). */
   effectiveModel = (): { model: string; effort: string } => {
     const profile = this.state.selected ? this.pendingUpgrade() : this.draftProfile();
+    if (profile?.harness === "grok") return this.profileChoices(profile);
     if (profile?.model) return { model: profile.model, effort: profile.effort };
     const saved = this.state.selected ? this.storedDefaults(this.state.selected) : { model: "", effort: "" };
     return { model: saved.model, effort: saved.effort };
   };
   /** Warn-not-fail: a model absent from the live catalog still sends for native resolution. */
   missingModel = (): string => {
+    // Grok's optional catalog is presented in profile settings, not the shared
+    // OpenCode send gate. Unknown/custom Grok IDs remain valid selections.
+    if (this.harness() === "grok") return "";
     if (getHarnessDescriptor(this.harness())?.policies.modelInput !== "live-catalog" || this.modelUnavailable()) return "";
     const { model, effort } = this.effectiveModel();
     if (!model) return "";
@@ -1494,6 +1983,20 @@ export class ChatStore {
     } finally { if (current()) this.update({ actionBusy: false }); }
   };
   cancel = async () => {
+    if (this.harness() === "grok") {
+      if (this.state.actionBusy || !this.state.selected || !this.client.grokStop || !this.supportedCapabilities().cancelRun) return;
+      const id = this.state.selected, current = this.beginAction();
+      try {
+        const result = await this.client.grokStop(id);
+        if (current()) {
+          this.update({ actionNotice: `${result.wrapperClosed ? "Grok wrapper closed." : "Grok wrapper closure is unconfirmed."} Native cancellation is ${result.nativeCancellation === "unproven" ? "unproven" : "not attempted"}. ${result.reason}` });
+          this.requestSelectedRefresh();
+        }
+      } catch (error) {
+        if (current() && !this.expired(error)) this.update({ interactionError: `${error instanceof Error ? error.message : "Grok Stop unavailable."} Native cancellation is unproven; no automatic retry was made.` });
+      } finally { if (current()) this.update({ actionBusy: false }); }
+      return;
+    }
     if (this.state.actionBusy || !this.state.selected || !this.client.cancel) return;
     this.loadPendingInputLedger();
     const id = this.state.selected, source = this.pendingInputSource(), namespace = this.pendingInputKey(), fence = this.pendingInputFence();
@@ -1526,8 +2029,8 @@ export class ChatStore {
         // Invalidate older reads even if reconnect is deferred while hidden.
         this.stop(); this.nativeHistoryLoaded = true;
         this.invalidateConversationCache(id);
-        if (this.paged) { this.resetPages(); this.update({ messages: [], nativeHistory: null, contextUsage: null, compactState: null, compactions: [], loading: true, connected: false, availability: { canSend: false }, actionNotice: "Conversation history refreshed." }); }
-        else this.update({ nativeHistory: history, messages: transcriptMessages(history, this.state.runs), contextUsage: null, compactState: null, compactions: [], actionNotice: "Conversation history refreshed." });
+        if (this.paged && this.harness() !== "grok") { this.resetPages(); this.update({ messages: [], nativeHistory: null, contextUsage: null, compactState: null, compactions: [], loading: true, connected: false, availability: { canSend: false }, actionNotice: "Conversation history refreshed." }); }
+        else this.update({ nativeHistory: history, messages: this.harness() === "grok" ? grokMessages(this.grokViews.get(id), history) : transcriptMessages(history, this.state.runs), contextUsage: null, compactState: null, compactions: [], actionNotice: "Conversation history refreshed." });
         this.reconnect();
       }
     } catch (error) {
@@ -1713,6 +2216,7 @@ export class ChatStore {
     }
   }
   private loginRequired() {
+    this.suspendAppAdmissions();
     this.update({ scienceSubmissions: {}, sciencePending: {}, scienceRecoveries: {}, scienceSubmissionError: "" });
     this.clearPendingInputDisplay();
     this.stopNotifications();
@@ -1723,7 +2227,7 @@ export class ChatStore {
     clearWorkstreamMembership();
     this.replied.clear();
     this.update({ pendingCompacts: {}, compactState: null, compactions: [], compactDialog: "", compactError: "", compactInstructions: {} });
-    this.update({ phase: "login", config: undefined, conversations: [], conversationsReady: false, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
+    this.update({ phase: "login", config: undefined, conversations: [], conversationsReady: false, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", grokModelCatalog: undefined, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
   }
   private expired(error: unknown) { if ((error instanceof ApiError || error instanceof PendingInputApiError) && error.status === 401) { this.loginRequired(); return true; } return false; }
   start = () => { if (this.started) return; this.started = true; void this.boot(); };
@@ -1735,6 +2239,7 @@ export class ChatStore {
     this.stopNotificationPolling();
     if (typeof document !== "undefined" && document.hidden) { this.groupListing.pause(); if (!this.state.sending) this.stop(); return; }
     if (this.state.phase === "login") return;
+    this.appAdmissionPolling(true);
     this.groupListing.refresh();
     if (this.state.sending) { void this.pollNotifications(); return; }
     this.pendingInputFresh = ""; this.pendingInputPolling();
@@ -1752,7 +2257,10 @@ export class ChatStore {
       if (generation !== this.generation || auth !== this.authEpoch) return;
       if (config.authRequired && !config.authenticated) { this.loginRequired(); return; }
       this.pendingInputSuspended = false;
+      this.appAdmissionSuspended = false;
       this.update({ config, phase: "ready", authError: "", connectionError: "", ...(config.agentProfiles ? { profiles: config.agentProfiles } : {}) });
+      if (this.harness() !== "grok" && !this.appAdmissionSupported()) this.update({ submissionError: "App admission requires initialization on this bridge. Update and initialize the App admission store before sending; your draft is unchanged. Legacy submission is not used." });
+      void this.loadAppAdmissions(true).then(() => this.appAdmissionPolling(true));
       this.groupListing.refresh();
       this.loadPendingInputLedger(); if (this.pendingInputVisible && !document.hidden) void this.refreshPendingInputs();
       this.configureNotifications(config);
@@ -1765,6 +2273,7 @@ export class ChatStore {
     } finally { clearTimeout(deadline); }
   }
   login = async (password: string) => {
+    this.suspendAppAdmissions();
     this.clearPendingInputDisplay();
     this.stopNotifications();
     notificationStore.suspend();
@@ -1775,6 +2284,7 @@ export class ChatStore {
     catch (error) { if (auth === this.authEpoch) this.update({ authError: error instanceof Error ? error.message : "Sign-in failed." }); }
   };
   logout = async () => {
+    this.suspendAppAdmissions();
     this.clearPendingInputDisplay();
     this.stopNotifications();
     notificationStore.suspend();
@@ -1847,10 +2357,20 @@ export class ChatStore {
     // Same-id sends do not reach here; their transcript remains mounted.
     this.update(selected
       ? { selected, runs, messages: cached?.messages ?? [], compactions, pendingTurn, availability: { canSend: false }, nativeHistory: cached?.nativeHistory ?? null, contextUsage: null, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
-       : { selected, runs: [], messages: [], pendingTurn, availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
+        : { selected, runs: [], messages: [], pendingTurn, availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
+    this.update({ grokView: null, transcriptPaged: conversation?.harness !== "grok" && this.paged });
     this.pendingInputFresh = ""; this.loadPendingInputLedger();
     this.update({ pendingInputs: this.pendingInputViews.get(selected) ?? null, pendingInputLoading: false, pendingInputError: "" }); this.publishPendingInputOperations();
     if (this.pendingInputVisible && !document.hidden) void this.refreshPendingInputs();
+    if (conversation?.harness === "grok") {
+      const view = this.grokViews.get(selected);
+      if (view) this.publishGrok(view);
+      this.update({ availability: { canSend: false }, loading: true, interactive: false, transcript: null,
+        transcriptPaged: false, transcriptInitialLoading: false, workerLoading: false });
+      this.sciencePolling(true);
+      void this.poll();
+      return;
+    }
     if (this.paged) this.update({ transcript: cached?.transcript ?? null, transcriptInitialLoading: !!selected && !cached?.messages.length, transcriptError: "", metadataError: "", pageBusy: "", pageErrors: {}, workerLoading: !!selected && !!this.client.workers, compactions: cached?.transcript?.compactions ?? [] });
     this.sciencePolling(true);
     void this.poll();
@@ -2063,8 +2583,20 @@ export class ChatStore {
   private scienceController?: AbortController;
   private scienceDiscoveryPending = false;
   private scienceListing?: Conversation;
+  private appAdmissionScienceEvidence(record: AppAdmissionRecoveryRecord, submissions = this.state.scienceSubmissions?.[record.envelope.intent.conversationId ?? ""] ?? []) {
+    const requestId = record.envelope.intent.payload.requestId;
+    return submissions.find(item => typeof requestId === "string" && item.requestId === requestId
+      && item.conversationId === record.envelope.intent.conversationId
+      && equalValue(item.snapshots, record.recovery.scienceSnapshots ?? [])
+      && (item.state !== "submitted" || record.receipt?.state !== "admitted" || item.runId === record.receipt.target.dispatch.runId));
+  }
   private sciencePendingFor(id: string) {
     if (this.state.sciencePending?.[id] || this.state.scienceSubmissions?.[id]?.some(item => item.state === "prepared" || item.state === "unknown")) return true;
+    for (const record of this.appAdmissionRecords.values()) {
+      if (record.scope.storeId !== this.state.config?.storeId || record.envelope.intent.operation !== "science-message" || record.envelope.intent.conversationId !== id || record.receipt?.state === "rejected") continue;
+      const evidence = this.appAdmissionScienceEvidence(record);
+      if (!evidence || evidence.state === "prepared" || evidence.state === "unknown") return true;
+    }
     try { return !!this.readSciencePending(id); }
     catch { return true; }
   }
@@ -2092,6 +2624,10 @@ export class ChatStore {
   /** Live sessions (running work or pending submission state) poll fast; static opened sessions back off. */
   private pollBusy() {
     return this.state.loading || this.state.sending || !!this.state.pendingTurn || this.state.actionBusy
+      // Run completion can precede release of the conversation reservation.
+      // Keep checking that transition rather than backing off for a full minute.
+      || !!this.state.selected && (this.state.availability.code === "conversation-busy" || !this.state.availability.code
+        && this.state.availability.reason === "This conversation already has an active run or reconciliation")
       || !!this.state.transcriptInitialLoading || !!this.state.transcriptError || !!this.state.metadataError
       || this.state.interactions.length > 0 || this.state.handoffApprovals.length > 0
       || this.state.conversations.some(conversation => conversation.status === "running" || conversation.status === "starting" || conversation.lastRunStatus === "running" || conversation.lastRunStatus === "starting")
@@ -2123,8 +2659,12 @@ export class ChatStore {
         this.nativeHistoryLoaded = false; this.refreshedRevision = "";
         this.runGateId = ""; this.runGateMarkers = ""; this.workerPollAfter = 0;
       }
+      const selectedGrok = !!selected && this.harness() === "grok";
       this.pendingInputPolling();
       this.sciencePolling();
+      if (!selectedGrok && this.harness() !== "grok") {
+        this.appAdmissionPolling();
+      }
       // Sidebar head acquisition has its own scope/auth fences. With targeted
       // support it runs alongside the selected read, not in front of it.
       const head = this.groupListing.enabled ? Promise.resolve() : this.refreshConversationHead();
@@ -2146,6 +2686,54 @@ export class ChatStore {
       if (!current()) return;
       registerWorkerSessions(listing.conversations, !!this.state.conversationPage);
       const currentConversation = listing.conversations.find(c => c.id === selected);
+      if (currentConversation?.harness === "grok") {
+        let history = this.state.nativeHistory?.sessionId === selected && this.state.nativeHistory.nativeSessionId === currentConversation.nativeSessionId ? this.state.nativeHistory : null;
+        let historyError = "";
+        if (this.supportedCapabilities("grok").nativeHistoryRefresh && this.client.nativeHistory) {
+          try {
+            const result = await this.client.nativeHistory(selected, controller.signal);
+            if (!current()) return;
+            if (result.history && (result.history.sessionId !== selected || result.history.nativeSessionId !== currentConversation.nativeSessionId)) throw new Error("Native history identity does not match this Grok conversation.");
+            history = result.history;
+            this.nativeHistoryLoaded = true;
+            // Imported conversations can display their genuine native history
+            // even if the capture-status endpoint is temporarily unavailable.
+            const cached = this.grokViews.get(selected);
+            this.update({ nativeHistory: history, messages: grokMessages(cached?.nativeSessionId === currentConversation.nativeSessionId ? cached : undefined, history) });
+          } catch (error) {
+            if (!current() || this.expired(error)) return;
+            historyError = `Native history unavailable: ${error instanceof Error ? error.message : "connection error"}`;
+          }
+        }
+        if (!this.client.grokSession) throw new Error("Grok capture status is unavailable on this bridge.");
+        const view = grokSessionView(await this.client.grokSession(selected, controller.signal), selected);
+        if (current()) {
+          this.publishGrok(view, currentConversation.availability, history);
+          if (historyError) this.update({ metadataError: historyError });
+          if (!equalValue(this.scienceListing, currentConversation)) { this.scienceListing = currentConversation; this.sciencePolling(true); }
+        }
+        if (!current()) return;
+        if (this.supportedCapabilities("grok").compaction && this.client.compactState) {
+          try { const compact = await this.client.compactState(selected, controller.signal); if (current()) this.applyCompactState(compact); }
+          catch (error) { if (current() && !this.expired(error)) this.update({ compactError: this.compactReadFeedback(error) }); }
+        }
+        // These are ordinary App endpoints. Grok's capture transport does not
+        // expose a native interaction inbox or pretend to be a CC transcript.
+        if (this.client.workers && this.workerPollDue(currentConversation)) {
+          try { const projection = await this.client.workers(selected, controller.signal); if (current()) publishWorkers(selected, projection); }
+          catch (error) { if (current() && !this.expired(error)) publishWorkers(selected, { ...workersFor(selected), error: error instanceof Error ? error.message : "Worker status unavailable" }); }
+          if (current()) this.recordWorkerPoll(currentConversation);
+        }
+        if (current() && this.supportedCapabilities("grok").listHandoffApprovals && this.client.handoffApprovals) {
+          try {
+            const approvals = await this.client.handoffApprovals(selected, controller.signal);
+            if (current()) this.update({ handoffApprovals: approvals.filter(item => !this.replied.has(item.id)), ...(this.state.interactionError.startsWith("Handoff approvals unavailable:") ? { interactionError: "" } : {}) });
+          } catch (error) {
+            if (current() && !this.expired(error)) this.update({ interactionError: `Handoff approvals unavailable: ${error instanceof Error ? error.message : "connection error"}` });
+          }
+        }
+        return;
+      }
       if (selected && (!currentConversation || this.transcriptKey && this.transcriptKey !== conversationKey(currentConversation))) {
         // A listing can remove or rebind an App id even while its history GET
         // fails. Never keep the old native transcript/actions under that id.
@@ -2361,11 +2949,170 @@ export class ChatStore {
       }
     }
   }
+  private async sendGrok(text: string, options: { preserveDraft?: boolean }, nativeStopped = false): Promise<SendOutcome> {
+    const selected = this.state.selected, conversation = this.state.conversations.find(item => item.id === selected);
+    const profile = options.preserveDraft && selected ? this.conversationProfile(selected) : this.effectiveProfile();
+    const upgrade = options.preserveDraft ? undefined : this.pendingUpgrade();
+    const scienceSnapshots = options.preserveDraft ? [] : structuredClone(this.draft().scienceSnapshots ?? []);
+    if (!this.grokCaptureSupported()) {
+      this.update({ submissionError: this.state.config?.grokCapability?.reason || "Grok capture is not configured on this bridge. Your draft is unchanged." });
+      return { status: "blocked" };
+    }
+    const command = compactCommand(text);
+    if (command && scienceSnapshots.length) { this.update({ submissionError: "Remove staged science snapshots before compacting." }); return { status: "blocked" }; }
+    if (command) { this.openCompact(command.instructions); return { status: "blocked" }; }
+    const unsupported = !selected && (scienceSnapshots.length || options.preserveDraft) ? "Start a conversation before sharing snapshots or a document review."
+      : scienceSnapshots.length && this.draft().text !== text ? "Send snapshots from their original conversation draft."
+      : !options.preserveDraft && this.draft().upgradeId && (!upgrade || !this.assignable(upgrade).ok) ? "This bridge does not support the selected Grok profile upgrade."
+      : this.pendingInputChainLocked() ? "Resolve the existing input chain before sending ordinary input."
+      : this.state.availability.queueAfterRunId || this.state.availability.nativeQueue ? "Wait for the current run to finish before sending."
+      : selected ? conversation?.harness !== "grok" ? "The selected conversation is not a Grok session." : ""
+      : !profile || profile.harness !== "grok" ? "Choose a Grok conversation profile." : "";
+    if (unsupported) {
+      this.update({ submissionError: `${unsupported} Your draft is unchanged.` });
+      return { status: "blocked" };
+    }
+    if (conversation?.attachment && this.supportedCapabilities("grok").attachedSendRequiresNativeStopped && !nativeStopped) {
+      this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" };
+    }
+    if (selected && this.state.config?.storeId && this.sciencePendingFor(selected)) {
+      this.update({ submissionError: "A previous science send is unresolved. Check its original receipt before sending; nothing was resent." });
+      this.sciencePolling(true); return { status: "blocked" };
+    }
+    if (!text.trim() && !scienceSnapshots.length || this.state.sending || this.state.actionBusy || this.executionUnavailable()
+      || !(this.state.interactive ?? this.state.connected) || selected && (!this.state.availability.canSend || this.grokUnconfirmed.has(selected))) return { status: "blocked" };
+    // Use the same synchronous guard and composer lineage as ordinary sends.
+    this.appAdmissionSendGuard = true;
+    const draft = structuredClone(this.draft()), draftKey = this.draftKey(), stamp = this.composerStamp(draftKey);
+    const navigation = { ...catalog.state.navigation }, auth = this.authEpoch, selection = this.selectionEpoch;
+    const sessionId = selected || crypto.randomUUID();
+    const scienceRequestId = scienceSnapshots.length ? crypto.randomUUID() : undefined;
+    const choices = profile ? this.profileChoices(profile) : { model: "", effort: "" };
+    const saved = selected ? this.storedDefaults(selected) : undefined;
+    const model = selected && !upgrade ? saved?.model || choices.model : choices.model;
+    const effort = selected && !upgrade ? saved?.effort || choices.effort : choices.effort;
+    const cwd = selected ? conversation?.cwd : this.workspace();
+    this.stop();
+    const generation = this.generation;
+    const current = () => auth === this.authEpoch && selection === this.selectionEpoch && generation === this.generation
+      && selected === this.state.selected && draftKey === this.draftKey();
+    this.update({ sending: true, submissionError: "", scienceSubmissionError: "" });
+    let posted = false, input: GrokTurnInput | undefined;
+    try {
+      const before = selected ? grokSessionView(await this.client.grokSession!(sessionId, AbortSignal.timeout(25000)), sessionId) : undefined;
+      if (!current()) return { status: "blocked" };
+      if (before) {
+        this.publishGrok(before);
+        if (!this.state.availability.canSend) return { status: "blocked" };
+      }
+      input = { sessionId, turnIndex: before?.nextTurnIndex ?? 0, prompt: text,
+        model: upgrade ? model : before?.model || model, effort: upgrade ? effort : before?.effort || effort, cwd: before?.cwd || cwd,
+        profileId: upgrade?.id ?? (selected ? before?.profileId ?? conversation?.profileId : profile?.id),
+        workspaceId: selected ? before?.workspaceId ?? conversation?.workspaceId : navigation.workspaceId,
+        worktreeId: selected ? before?.worktreeId ?? conversation?.worktreeId : navigation.worktreeId,
+        ...(scienceRequestId ? { requestId: scienceRequestId, scienceSnapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) } : {}),
+        ...(nativeStopped ? { nativeStopped: true } : {}) };
+      if (!input.model.trim() || !input.effort.trim()) throw new Error("Grok requires explicit nonempty model and effort strings in its profile.");
+      if (scienceRequestId) {
+        if (this.readSciencePending(sessionId)) throw new Error("A previous science request is unresolved. No replacement request was posted.");
+        const pending: SciencePendingSend = { version: 1, requestId: scienceRequestId, conversationId: sessionId, text, snapshots: scienceSnapshots };
+        const key = this.scienceStorageKey(sessionId), encoded = JSON.stringify(pending);
+        localStorage.setItem(key, encoded);
+        if (localStorage.getItem(key) !== encoded) throw new Error("The original science request could not be saved. Nothing was posted.");
+        this.update({ sciencePending: { ...this.state.sciencePending, [sessionId]: pending } });
+        if (sameComposerStamp(this.composerStamp(draftKey), stamp)) this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "", scienceSnapshots: [] } } });
+      }
+      posted = true;
+      let view: GrokSessionView;
+      try {
+        view = grokSessionView(await this.client.grokTurn!(input, AbortSignal.timeout(25000)), sessionId);
+      } catch (error) {
+        if (!current() || this.expired(error)) return { status: "unknown" };
+        if (!scienceRequestId) this.grokUnconfirmed.set(sessionId, { turnIndex: input.turnIndex, draftKey, stamp, preserveDraft: options.preserveDraft });
+        if (scienceRequestId) await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000));
+        // Never repeat the POST, including when this exact GET is absent/stale.
+        view = grokSessionView(await this.client.grokSession!(sessionId, AbortSignal.timeout(25000)), sessionId);
+      }
+      if (!current()) return { status: "unknown" };
+      this.publishGrok(view);
+      if (scienceRequestId) {
+        if (view.scienceSubmission) {
+          if (view.scienceSubmission.requestId !== scienceRequestId || !equalValue(view.scienceSubmission.snapshots, input.scienceSnapshots)) throw new Error("Science response does not match the original request.");
+          const supplied = [...(this.state.scienceSubmissions?.[sessionId] ?? []).filter(item => item.requestId !== scienceRequestId), view.scienceSubmission];
+          await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000), supplied);
+        } else await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000));
+        if (!current()) return { status: "unknown" };
+        const receipt = this.state.scienceSubmissions?.[sessionId]?.find(item => item.requestId === scienceRequestId);
+        if (receipt?.state === "submitted" && receipt.runId && !this.state.sciencePending?.[sessionId]) return { status: "accepted", conversationId: sessionId, runId: receipt.runId };
+        if (receipt?.state === "not-submitted" && !this.state.sciencePending?.[sessionId]) return { status: "rejected" };
+        this.update({ submissionError: "Science send outcome is unresolved. The original request is retained; check its receipt. Nothing will be resent automatically." });
+        return { status: "unknown" };
+      }
+      const unresolved = this.grokUnconfirmed.has(sessionId);
+      if (!options.preserveDraft && !unresolved && view.phase !== "not-submitted" && sameComposerStamp(this.composerStamp(draftKey), stamp)) {
+        this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "",
+          ...(upgrade && view.profileId === upgrade.id ? { upgradeId: "" } : {}) } } });
+      }
+      if (!selected) {
+        // A definitely withheld first turn retains its editable draft under the
+        // original capture ID, so an explicit retry does not require a new chat.
+        if (!unresolved && view.phase === "not-submitted" && !this.state.drafts[sessionId] && !this.composerStamps.has(sessionId)
+          && sameComposerStamp(this.composerStamp(draftKey), stamp)) {
+          this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "" },
+            [sessionId]: { ...draft, profileId: "", upgradeId: "" } } });
+        }
+        this.update({ conversations: this.state.conversations.map(item => item.id === sessionId ? { ...item,
+          cwd: item.cwd || input!.cwd || "", model: item.model || input!.model, effort: item.effort || input!.effort,
+          workspaceId: item.workspaceId ?? input!.workspaceId ?? undefined, worktreeId: item.worktreeId ?? input!.worktreeId ?? undefined, association: "resolved",
+          profileId: item.profileId ?? input!.profileId, title: item.title ?? text.slice(0, 160) } : item), sending: false });
+        this.choose(sessionId); this.publishGrok(view); catalog.navigate({ conversationId: sessionId });
+      }
+      if (unresolved) this.update({ submissionError: GROK_UNKNOWN_NOTICE });
+      return unresolved ? { status: "unknown" } : view.phase === "not-submitted" ? { status: "rejected" }
+        : { status: "recorded", requestId: `${sessionId}:${input.turnIndex}`, conversationId: sessionId };
+    } catch (error) {
+      if (current() && !this.expired(error)) {
+        if (posted && input) {
+          if (scienceRequestId) {
+            this.update({ submissionError: `Science send outcome is unresolved. ${error instanceof Error ? error.message : "Science response unavailable."} The original science request is retained; check its receipt. Nothing was resent.` });
+            await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000));
+            const receipt = this.state.scienceSubmissions?.[sessionId]?.find(item => item.requestId === scienceRequestId);
+            if (current() && receipt?.state === "submitted" && receipt.runId && !this.state.sciencePending?.[sessionId]) return { status: "accepted", conversationId: sessionId, runId: receipt.runId };
+            if (current() && receipt?.state === "not-submitted" && !this.state.sciencePending?.[sessionId]) return { status: "rejected" };
+            return { status: "unknown" };
+          }
+          this.grokUnconfirmed.set(sessionId, { turnIndex: input.turnIndex, draftKey, stamp, preserveDraft: options.preserveDraft });
+          if (!selected) {
+            // Keep the original App UUID reachable even if both responses were
+            // lost. This is local uncertain metadata, not a native acknowledgement.
+            const row: Conversation = { id: sessionId, harness: "grok", cwd: input.cwd ?? "", model: input.model, effort: input.effort,
+              workspaceId: input.workspaceId ?? undefined, worktreeId: input.worktreeId ?? undefined, association: "resolved", profileId: input.profileId,
+              title: text.slice(0, 160), lastRunId: null, status: "unknown", availability: { canSend: false, reason: GROK_UNKNOWN_NOTICE } };
+            this.update({ conversations: [row, ...this.state.conversations], sending: false });
+            this.choose(sessionId); catalog.navigate({ conversationId: sessionId });
+          }
+          this.update({ availability: { canSend: false, reason: GROK_UNKNOWN_NOTICE }, submissionError: GROK_UNKNOWN_NOTICE });
+        } else {
+          if (scienceRequestId) {
+            try { if (this.readSciencePending(sessionId)?.requestId === scienceRequestId) localStorage.removeItem(this.scienceStorageKey(sessionId)); }
+            catch { /* Keep any unremovable identity fenced; never repost it. */ }
+          }
+          this.update({ submissionError: `${error instanceof Error ? error.message : "Grok capture unavailable."} Your draft is unchanged; nothing was posted.` });
+        }
+      }
+      return { status: posted ? "unknown" : "blocked" };
+    } finally {
+      this.appAdmissionSendGuard = false;
+      if (auth === this.authEpoch) { this.update({ sending: false }); this.sciencePolling(true); void this.poll(); }
+    }
+  }
   send = async (text: string, nativeStopped = false, options: { preserveDraft?: boolean } = {}): Promise<SendOutcome> => {
-    // Ordinary sends go directly to the authoritative POST, which checks durable
-    // input chains both before preparation and at dispatch. Queue/config GETs
-    // cannot make that check atomic and used to delay even the local feedback.
-    // Explicit queue mutations retain their fresh-context/recovery preflights.
+    if (this.appAdmissionSendGuard) return { status: "blocked" };
+    if (this.harness() === "grok" || this.effectiveProfile()?.harness === "grok") return this.sendGrok(text, options, nativeStopped);
+    if (!this.appAdmissionSupported() && !compactCommand(text)) {
+      this.update({ submissionError: "App admission requires initialization on this bridge. Update and initialize the App admission store before sending; your draft is unchanged. Legacy submission is not used." });
+      return { status: "blocked" };
+    }
     if (this.pendingInputChainLocked()) { this.update({ submissionError: "Resolve the existing input chain before sending ordinary input." }); return { status: "blocked" }; }
     if (this.state.availability.queueAfterRunId || this.state.availability.nativeQueue) { this.update({ submissionError: "Wait for the current run to finish before sending." }); return { status: "blocked" }; }
     if (options.preserveDraft && !this.state.selected) return { status: "blocked" };
@@ -2381,103 +3128,98 @@ export class ChatStore {
     const running = conversation?.status === "starting" || conversation?.status === "running" || this.state.runs.some(r => r.status === "starting" || r.status === "running");
     if (scienceSnapshots.length && running) { this.update({ submissionError: "Science snapshots require an idle conversation." }); return { status: "blocked" }; }
     if (!text.trim() && !scienceSnapshots.length || running && !liveInputReady(conversation, this.state.availability) || this.state.sending || !(this.state.interactive ?? this.state.connected) || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
-    const selected = this.state.selected, draft = this.draft(), draftKey = this.draftKey();
-    // Flow submissions are independent of the ordinary chat draft and any
-    // staged agent upgrade. They never consume or replace that draft.
-    const preserveDraft = !!options.preserveDraft;
-    const pendingTurn: PendingTurn = { id: `pending:${++this.submissionSerial}`, conversationId: selected, text, time: new Date().toISOString() };
+    // Acquire synchronously, before hashing or any other await. Freeze every
+    // wire selector now; later composer/navigation/profile changes cannot alter
+    // either the persisted intent or the single POST body.
+    this.appAdmissionSendGuard = true;
+    const selected = this.state.selected, draft = structuredClone(this.draft()), draftKey = this.draftKey();
+    const capturedStamp = this.composerStamp(draftKey), preserveDraft = !!options.preserveDraft;
+    const clientRequestId = crypto.randomUUID(), scienceRequestId = scienceSnapshots.length ? crypto.randomUUID() : undefined;
+    const pendingTurn: PendingTurn = { id: `admission:${clientRequestId}`, conversationId: selected, text, time: new Date().toISOString() };
     const upgrade = selected && !preserveDraft ? this.pendingUpgrade() : undefined;
     const profileId = selected ? upgrade && this.assignable(upgrade).ok ? upgrade.id : "" : this.draftProfile().id;
-    let sciencePending: SciencePendingSend | undefined, scienceStorage: string | undefined;
-    if (scienceSnapshots.length) {
-      try {
-        const prior = this.readSciencePending(selected);
-        if (prior) { this.update({ sciencePending: { ...this.state.sciencePending, [selected]: prior }, submissionError: "A previous science send is unresolved. Check its original request; it will not be resent automatically." }); return { status: "blocked" }; }
-        sciencePending = { version: 1, requestId: crypto.randomUUID(), conversationId: selected, text, snapshots: scienceSnapshots };
-        scienceStorage = this.scienceStorageKey(selected);
-        // Persist before POST or clearing either part of the composer draft.
-        localStorage.setItem(scienceStorage, JSON.stringify(sciencePending));
-        this.update({ sciencePending: { ...this.state.sciencePending, [selected]: sciencePending } });
-      } catch (error) { this.update({ submissionError: error instanceof Error ? error.message : "Science send cannot be recorded durably" }); return { status: "blocked" }; }
-    }
-    this.stop(); const generation = this.generation, auth = this.authEpoch;
-    const submission = this.activeSubmission = { recovery: { conversationId: selected, sourceKey: conversation ? conversationKey(conversation) : "", localId: pendingTurn.id,
-      ...(sciencePending ? { requestId: sciencePending.requestId } : {}), text, draft: structuredClone(draft) }, draftKey, preserveDraft };
-    // Move text into a local bubble immediately; retain it here for failure recovery.
-    // This is presentation, not acceptance evidence. Never auto-retry POST.
-    this.update({ ...(!preserveDraft ? { drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "", ...(scienceSnapshots.length ? { scienceSnapshots: [] } : {}) } } } : {}), pendingTurn, sending: true, submissionError: "", availability: { canSend: false, reason: "Submitting…" } });
+    const navigation = { ...catalog.state.navigation };
+    const live = !!selected && !scienceRequestId && liveInputReady(conversation, this.state.availability);
+    const expectedLiveRunId = live ? this.state.availability.liveInputRunId ?? null : null;
+    const expectedSource = selected ? this.appAdmissionSource(conversation) : null;
+    const auth = this.authEpoch;
+    let ledger: AppAdmissionLedger | undefined, record: AppAdmissionRecoveryRecord | undefined, posted = false;
     try {
-      const navigation = catalog.state.navigation;
-      const result = await this.listingMutation(() => this.client.submit({ text, ...(sciencePending ? { requestId: sciencePending.requestId, scienceSnapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) } : {}), ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) }));
-      if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
-      if (this.activeSubmission === submission) this.activeSubmission = undefined;
-      // Local activity: pull idle handoff/worker polls back to fast cadence.
-      wakePolls(result.conversationId);
-      if (sciencePending) {
-        if (result.queued) throw new Error("Science queue receipt is unsupported; original request needs reconciliation");
-        if (scienceStorage && this.readSciencePending(selected)?.requestId === sciencePending.requestId) localStorage.removeItem(scienceStorage);
-        const receipt: ScienceSubmissionView = { requestId: sciencePending.requestId, conversationId: selected, state: "submitted", runId: result.runId, snapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) };
-        this.update({ sciencePending: { ...this.state.sciencePending, [selected]: null }, scienceSubmissions: { ...this.state.scienceSubmissions, [selected]: [...(this.state.scienceSubmissions?.[selected] ?? []).filter(s => s.requestId !== receipt.requestId), receipt] } });
+      const scope = this.appAdmissionScope();
+      if (!scope) throw new Error("Sign in to an identified App store before sending.");
+      if (selected && !expectedSource) throw new Error("The original conversation source is unavailable. Refresh it before sending; no request was posted.");
+      if (scienceRequestId === clientRequestId) throw new Error("Science and App admission request identities must be distinct.");
+      const intent: AppAdmissionIntent = decodeAppAdmissionIntent({ version: 1,
+        operation: !selected ? "new-conversation" : scienceRequestId ? "science-message" : live ? "live-input" : "message",
+        conversationId: selected || null, expectedSource, expectedLiveRunId, chainId: capturedStamp.chainId,
+        payload: { prompt: text, ...(selected ? { sessionId: selected } : {
+          ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}),
+          ...(navigation.workspaceId !== undefined ? { workspaceId: navigation.workspaceId } : {}),
+          ...(navigation.worktreeId !== undefined ? { worktreeId: navigation.worktreeId } : {}) }),
+          ...(profileId ? { profileId } : {}), ...(nativeStopped ? { nativeStopped: true } : {}),
+          ...(scienceRequestId ? { requestId: scienceRequestId, scienceSnapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) } : {}) } });
+      const consumedStamp = preserveDraft ? null : advanceComposerStamp(capturedStamp);
+      // A pre-existing legacy science marker is also unresolved; never bypass it
+      // by minting an App UUID, even though new sends no longer write that format.
+      if (selected && this.readSciencePending(selected)) throw new Error("A previous science request is unresolved. Check its original evidence; no replacement send is allowed.");
+      this.stop();
+      const context = { draft, preserveDraft, consumed: false, auth, selection: this.selectionEpoch, generation: this.generation,
+        selected, sourceKey: this.pendingInputSource(selected), pendingTurn };
+      this.update({ sending: true, submissionError: "" });
+      const envelope = await createAppAdmissionEnvelope(intent, scope.storeId, clientRequestId);
+      if (!await this.loadAppAdmissions(true)) return { status: "blocked" };
+      ledger = this.appAdmissionLedger;
+      if (!ledger || !this.appAdmissionCurrent(ledger, auth) || context.selection !== this.selectionEpoch || selected !== this.state.selected
+        || draftKey !== this.draftKey(selected)
+        || context.generation !== this.generation || !sameComposerStamp(this.composerStamp(draftKey), capturedStamp)
+        || context.sourceKey !== this.pendingInputSource(selected) || !this.appAdmissionSupported()) return { status: "blocked" };
+      record = await ledger.reserve({ version: 1, scope, envelope, draftKey, capturedStamp, consumedStamp,
+        recovery: { text, cwd: draft.cwd, ...(draft.profileId ? { profileId: draft.profileId } : {}),
+          ...(draft.upgradeId ? { upgradeProfileId: draft.upgradeId } : {}),
+          ...(scienceSnapshots.length ? { scienceSnapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) } : {}) },
+        receipt: null, uncertain: true });
+      this.appAdmissionContexts.set(clientRequestId, context);
+      if (this.appAdmissionCurrent(ledger, auth)) {
+        this.appAdmissionRecords.set(clientRequestId, record); this.publishAppAdmissions();
       }
-      if (result.queued) {
-        const receipts = this.queuedNotificationReceipts.get(result.conversationId) ?? new Set<string>();
-        receipts.add(result.receipt.requestId); this.queuedNotificationReceipts.set(result.conversationId, receipts);
-        // Replace the Sending bubble with the durable receipt, not the old run
-        // ID. Listing reloads/selection changes reconstruct it from the journal.
-        this.update({ sending: false, pendingTurn: null, conversations: this.state.conversations.map(c => c.id !== result.conversationId ? c : { ...c, queuedFollowups: [...(c.queuedFollowups ?? []).filter(r => r.requestId !== result.receipt.requestId), result.receipt], availability: { canSend: false } }), availability: { canSend: false } });
-        if (selected && profileId) this.setDraft({ upgradeId: "" }, selected);
-        void this.poll();
-        return { status: "queued", conversationId: result.conversationId, requestId: result.receipt.requestId };
+      if (!this.appAdmissionCurrent(ledger, auth) || context.selection !== this.selectionEpoch || selected !== this.state.selected
+        || draftKey !== this.draftKey(selected)
+        || context.generation !== this.generation || context.sourceKey !== this.pendingInputSource(selected)) return { status: "unknown" };
+      // The durable record contains the planned consumed stamp BEFORE this write.
+      // A write during hashing/storage leaves the newer composer untouched.
+      if (!preserveDraft && sameComposerStamp(this.composerStamp(draftKey), capturedStamp)) {
+        context.consumed = true;
+        this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "", scienceSnapshots: [] } } });
       }
-      // A successful prompt receipt is trusted run evidence for both existing
-      // and new conversations. The notification store binds it to the actual
-      // native identity from a subsequent listing, never a placeholder.
-      notificationStore.acceptRun(result.conversationId, result.runId);
-      if (selected && profileId) this.setDraft({ upgradeId: "" }, selected);
-      if (!selected) {
-        const nextDraft = this.state.drafts[draftKey] ?? { ...draft, text: "" };
-        this.update({ drafts: { ...this.state.drafts, [result.conversationId]: { ...nextDraft, profileId: "", upgradeId: "" }, [draftKey]: { ...nextDraft, text: "" } } });
-      }
-      const acceptedTurn = { ...pendingTurn, conversationId: result.conversationId, runId: result.runId, ...(result.messageId ? { messageId: result.messageId } : {}) };
-      // Keep the local bubble in the old selection until choose switches both
-      // identities together. There must be no empty/welcome frame in between.
-      this.update({ sending: false, pendingTurn: result.conversationId === selected ? acceptedTurn : pendingTurn });
-      if (result.conversationId === selected) {
-        // Same-conversation follow-up: keep the mounted transcript and let the
-        // next poll merge the new run as a delta. choose() would wipe
-        // runs/messages and flash the welcome empty-state.
-        void this.poll();
-        return { status: "accepted", conversationId: result.conversationId, runId: result.runId };
-      }
-      this.choose(result.conversationId, acceptedTurn);
-      if (!selected) catalog.navigate({ conversationId: result.conversationId });
-      return { status: "accepted", conversationId: result.conversationId, runId: result.runId };
+      this.update({ pendingTurn, availability: { canSend: false, reason: "Recording App admission…" } });
+      posted = true;
+      const receipt = await this.client.submitAdmission!(envelope, AbortSignal.timeout(25000));
+      const settled = await this.settleAppAdmission(ledger, record, receipt, auth);
+      if (!this.appAdmissionCurrent(ledger, auth)) return { status: "unknown" };
+      if (settled.receipt?.state === "rejected") return { status: "rejected" };
+      if (settled.receipt?.state === "admitted") return { status: "accepted", conversationId: settled.receipt.target.dispatch.source.sessionId, runId: settled.receipt.target.dispatch.runId };
+      return { status: "recorded", requestId: clientRequestId };
     } catch (error) {
-      if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
-      if (this.activeSubmission === submission) this.activeSubmission = undefined;
-      const definite = error instanceof ApiError && error.status >= 400 && error.status < 500 && error.code !== "science-submission-unknown";
-      if (sciencePending && definite && scienceStorage) {
-        try {
-          // Persist recovery separately BEFORE releasing the no-replay fence.
-          // A later science send must not overwrite a rejected draft's snapshots.
-          const recoveries = this.readScienceRecoveries(selected);
-          if (!recoveries.some(item => item.requestId === sciencePending.requestId)) recoveries.push({ ...sciencePending, status: "rejected" });
-          localStorage.setItem(`${scienceStorage}:rejected`, JSON.stringify(recoveries));
-          if (this.readSciencePending(selected)?.requestId === sciencePending.requestId) localStorage.removeItem(scienceStorage);
-          this.update({ sciencePending: { ...this.state.sciencePending, [selected]: null }, scienceRecoveries: { ...this.state.scienceRecoveries, [selected]: recoveries } });
-        } catch { /* Storage uncertainty preserves the durable no-replay fence. */ }
+      if (auth === this.authEpoch && !this.expired(error)) {
+        // An exact GET may have durably settled while the original POST timed
+        // out. Never downgrade that terminal to this call's captured null state.
+        const known = record && ledger && this.appAdmissionCurrent(ledger, auth) ? this.appAdmissionRecords.get(clientRequestId)?.receipt : undefined;
+        if (known?.state === "admitted") return { status: "accepted", conversationId: known.target.dispatch.source.sessionId, runId: known.target.dispatch.runId };
+        if (known?.state === "rejected") return { status: "rejected" };
+        // A failed persistence/read-back can leave a durable record even without
+        // returning it. Force a strict reload before any later send.
+        this.appAdmissionLoaded = false;
+        const message = `${error instanceof Error ? error.message : "App admission unavailable."} ${posted || record ? "Original request retained. Acceptance is unconfirmed; use exact status lookup only. No automatic retry occurs." : "Your draft is unchanged; nothing was posted."}`;
+        this.appAdmissionSubmissionError = { requestId: clientRequestId, message };
+        this.update({ submissionError: message });
       }
-      // Do not overwrite a new draft typed while this submission was in flight.
-      const currentDraft = this.state.drafts[draftKey] ?? draft;
-      const restored = !preserveDraft && !currentDraft.text && !(currentDraft.scienceSnapshots?.length);
-      if (error instanceof ApiError && error.status === 401) {
-        if (restored) this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...currentDraft, text, ...(scienceSnapshots.length ? { scienceSnapshots } : {}) } } });
-        this.expired(error);
-        return { status: "rejected" };
+      return { status: posted || record ? "unknown" : "blocked" };
+    } finally {
+      this.appAdmissionSendGuard = false;
+      if (auth === this.authEpoch) {
+        this.update({ sending: false });
+        void this.poll(); this.appAdmissionPolling(true);
       }
-      this.update({ sending: false, pendingTurn: null, ...(restored ? { drafts: { ...this.state.drafts, [draftKey]: { ...currentDraft, text, ...(scienceSnapshots.length ? { scienceSnapshots } : {}) } } } : {}), submissionError: `${error instanceof Error ? error.message : "Submission failed."} ${definite ? "" : "Acceptance is unknown. Check history before sending again; this request will not be retried automatically. "}${preserveDraft ? "Your chat draft and review feedback are preserved." : restored ? "Your draft is restored." : `Your new draft is preserved. Submitted message: ${text}`}` });
-      void this.poll();
-      return { status: definite ? "rejected" : "unknown" };
     }
   };
 }

@@ -1,20 +1,23 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
-import { AgentLaunchConfigurationError, claudeAgentSettings, saneContextText, sha256, snapshotIdentity } from "./agent-launch";
+import { AgentLaunchConfigurationError, claudeAgentSettings, sha256, snapshotIdentity } from "./agent-launch";
 import { projectCompactions } from "./compaction";
 import type { Event, Run, Session, TerminationUncertainty } from "./history";
 import type { RunOwner } from "./run-owner";
+import type { RunControlOperations } from "./run-controls";
 import { WorkstreamAdapterError, type ExecutionContext } from "./workstreams";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
-import { CLAUDE_RESULT_TEXT_LIMIT, consumeClaudeResultRecord, createClaudeResultSequenceState, rejectUndeliveredClaudeFramework, type ClaudeResultSequenceState } from "../shared/conversation/cc-result";
+import { CLAUDE_RESULT_TEXT_LIMIT, consumeClaudeResultRecord, createClaudeResultSequenceState, type ClaudeResultSequenceState } from "../shared/conversation/cc-result";
 import type { QueuedSendConfiguration } from "../shared/conversation/queued-followup";
 import type { ConversationActivity } from "../shared/conversation/activity";
 import { ClaudeActivity } from "./claude-activity";
 import { synchronousDispatchHook } from "./dispatch-evidence";
 import { HarnessDispatchError } from "./harness-dispatch";
-import { prepareContextDelivery, assertContextCurrent, contextReceipt, type ContextProvider } from "./context-delivery";
-import type { ContextDelivery } from "./context-package";
+import type { ActualContextSubmission, OwnedContextMessages, OwnedSubmissionPublication } from "./context-message-transport";
+import { coordinateRunSubmission, type RunSubmissionPreparationSteps } from "./run-submission-preparation";
+import { createRunSubmissionTiming, type RunSubmissionTimingSnapshot } from "./run-submission-timing";
+import type { DispatchIdentity } from "../shared/conversation/dispatch-contract";
 import { claudeExecutionConfiguration } from "./canonical-agent-operations";
 import type { CanonicalExecutionProvider } from "./canonical-execution-store";
 import type { WorkerProtocolPin } from "./worker-contract";
@@ -54,9 +57,6 @@ export type ClaudeRunDependencies = {
   compactExecution: (session: Session) => Promise<string>;
   refreshCompactHistory: (owner: RunOwner) => Promise<void>;
   assertWorkerDeliverySubmission: (owner: RunOwner) => void;
-  /** The startup SANE Session block from current membership, or null. */
-  saneSession: (sessionId: string) => Promise<string | null>;
-  canonicalContext?: ContextProvider;
   canonicalExecution?: CanonicalExecutionProvider;
   /** Recorded worker pin only. Absent must not upgrade an unpinned resume. */
   explicitProtocol?: (sessionId: string) => WorkerProtocolPin | undefined;
@@ -71,6 +71,7 @@ type SpawnOptions = {
   stderr: "pipe";
   env: Record<string, string>;
 };
+type ClaudeLaunchSetup = { args: string[]; options: SpawnOptions; launch: Record<string, unknown> };
 
 /** Injectable local primitives for deterministic supervision tests; production
  * uses Bun children and signals only the group created by this live owner. */
@@ -117,16 +118,24 @@ type Supervision = {
   streamsDrained: boolean; finished: boolean; valid: boolean; terminal: ClaudeLocalSupervision["terminal"];
 };
 type QueuedFollowup = { owner: RunOwner; input: ClaudeQueuedFollowup; cancelled?: boolean; persisted: Promise<void>; draining?: Promise<void> };
-/** failure: the first non-success result record; framework: the SessionStart text this run must deliver. */
-type Result = ClaudeResultSequenceState & { stderr: string; canonical?: { delivery: ContextDelivery; dynamicAccepted: boolean; rejected: boolean } };
-type LiveInput = { closed: boolean; sending: boolean; turnComplete: boolean; pendingUuid?: string; result: Result };
+type Result = ClaudeResultSequenceState & { stderr: string };
+type LiveInput = { closed: boolean; sending: boolean; turnComplete: boolean; pendingUuid?: string; result: Result;
+  contextMessages: OwnedContextMessages; contextIdentity: DispatchIdentity };
 const resultTextLimit = CLAUDE_RESULT_TEXT_LIMIT;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 const compactCommand = (text: string) => /^\s*\/compact(?:\s|$)/i.test(text);
-/** Claude replaces larger hook context with a file preview; the framework must arrive whole. */
-const hookContextLimit = 10000;
 const equal = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
+
+/** Decode the immutable wire line, not the composer candidate. CC's wire UUID
+ * and journal message ID are different identities, correlated here explicitly. */
+function readContextLine(encoded: string, uuid: string, nativeSessionId: string, messageId: string, identity: DispatchIdentity): ActualContextSubmission {
+  const line = JSON.parse(encoded);
+  if (line.type !== "user" || line.uuid !== uuid || line.session_id !== nativeSessionId
+    || line.message?.role !== "user" || typeof line.message.content !== "string"
+    || (messageId === `${identity.runId}:user` ? uuid !== identity.runId : messageId !== `${identity.runId}:user:${uuid}`)) throw new Error("Claude context wire identity mismatch");
+  return { identity, messageId, text: line.message.content };
+}
 
 export class ClaudeRunService {
   private readonly secrets = new Map<string, { secret: string; supervised: Supervision }>();
@@ -136,6 +145,9 @@ export class ClaudeRunService {
   private readonly activities = new Map<string, ClaudeActivity>();
   private readonly inputs = new WeakMap<RunOwner, LiveInput>();
   private readonly supervision = new WeakMap<RunOwner, Supervision>();
+  /** Diagnostics only: never append through the authoritative fail-closed journal.
+   * Keep at most the initial and latest live-input snapshot per original owner. */
+  private readonly submissionTimings = new WeakMap<RunOwner, Readonly<{ initial?: RunSubmissionTimingSnapshot; liveInput?: RunSubmissionTimingSnapshot }>>();
   /** All unretired local groups/attempts, not the bridge's execution owners. */
   private readonly supervised = new Map<string, Set<Supervision>>();
   private readonly runtime: ClaudeRunRuntime;
@@ -153,6 +165,34 @@ export class ClaudeRunService {
       version: executable => new Promise((resolve, reject) => execFile(executable, ["--version"], { timeout: 10000, maxBuffer: 4096 }, (error, stdout) => error ? reject(error) : resolve(stdout.trim()))),
       ...runtime,
     };
+  }
+
+  readSubmissionTiming(owner: RunOwner): Readonly<{ initial?: RunSubmissionTimingSnapshot; liveInput?: RunSubmissionTimingSnapshot }> | undefined {
+    return this.submissionTimings.get(owner);
+  }
+
+  /** Bound to the original owner, never a later session owner or DTO lookup. */
+  controls(owner: RunOwner): RunControlOperations {
+    const done = owner.done;
+    return {
+      cancellation: "retain-result",
+      interrupt: async () => ({ interrupted: await this.terminate(owner) }),
+      cleanup: () => owner.child ? this.terminate(owner) : Promise.resolve(true),
+      shutdown: async () => {
+        // Preparation rechecks closing before spawn. Still observe the live child
+        // after draining, rather than caching a prelaunch no-child observation.
+        if (owner.child) await this.terminate(owner);
+        const drained = await Promise.race([done.then(() => true), this.runtime.sleep(3000).then(() => false)]);
+        if (!drained || (owner.child && this.groupAlive(owner))) return { drained: false, reconciliationRequired: true };
+        return { drained: true, reconciliationRequired: false };
+      },
+      readPreparationTiming: () => this.readSubmissionTiming(owner),
+    };
+  }
+
+  private retainSubmissionTiming(owner: RunOwner, kind: "initial" | "liveInput", timing: ReturnType<typeof createRunSubmissionTiming>): void {
+    try { this.submissionTimings.set(owner, Object.freeze({ ...this.submissionTimings.get(owner), [kind]: timing.snapshot() })); }
+    catch { /* Optional diagnostics cannot gate response, supervision or settlement. */ }
   }
 
   groupAlive(owner: RunOwner): boolean {
@@ -261,36 +301,85 @@ export class ClaudeRunService {
     return !!input && !input.sending && input.turnComplete && this.inputCurrent(owner, input)
       && this.activities.get(owner.run.runId)?.get().phase === "background";
   }
-  async sendInput(owner: RunOwner, prompt: string, assertCurrent: () => void): Promise<{ runId: string; messageId: string }> {
+  async sendInput(owner: RunOwner, prompt: string, assertCurrent: () => void, publication?: OwnedSubmissionPublication): Promise<{ runId: string; messageId: string }> {
     const input = this.inputs.get(owner);
     if (!prompt.trim() || compactCommand(prompt) || !input || !this.canSendInput(owner)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Claude is not ready for a background follow-up");
     input.sending = true;
     const uuid = this.runtime.randomUUID(), messageId = `${owner.run.runId}:user:${uuid}`;
-    let attempted = false;
+    const contextMessages = owner.contextMessages, contextIdentity = owner.contextIdentity;
+    // Per-send publication is independent of the owner's initial publication.
+    // Capture before awaits; the shared coordinator captures its callbacks.
+    const submissionPublication = publication;
+    const child = owner.child!, supervised = this.supervision.get(owner)!;
+    const current = () => {
+      assertCurrent();
+      if (!contextMessages || !contextIdentity || owner.contextMessages !== contextMessages || owner.contextIdentity !== contextIdentity
+        || input.contextMessages !== contextMessages || input.contextIdentity !== contextIdentity || owner.child !== child
+        || !this.inputCurrent(owner, input)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Claude stopped or its context owner changed before the follow-up could be sent");
+    };
+    const timing = createRunSubmissionTiming({ harness: "claude-code", mode: "live-input" });
+    let attempted = false, turnStarted = false;
+    const previousTurn = { pendingUuid: input.pendingUuid, stopped: this.stoppedTurns.has(owner.run.runId), hook: this.turnHooks.get(owner.run.runId) };
     try {
-      assertCurrent();
-      await this.deps.emit(owner.run, "submission", { messageId, text: prompt, liveInput: true });
-      assertCurrent();
-      // If a task finishes during journal I/O, the same CLI serializes its
-      // continuation and this message; do not drop an already-admitted send.
-      if (!this.inputCurrent(owner, input)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Claude stopped before the follow-up could be sent");
-      input.turnComplete = false;
-      input.pendingUuid = uuid;
-      this.stoppedTurns.delete(owner.run.runId);
-      this.turnHooks.set(owner.run.runId, undefined);
-      this.activities.get(owner.run.runId)?.running();
-      attempted = true;
-      owner.child!.stdin.write(JSON.stringify({ type: "user", uuid, session_id: this.supervision.get(owner)!.identity.nativeSessionId,
-        message: { role: "user", content: prompt }, parent_tool_use_id: null }) + "\n");
-      await owner.child!.stdin.flush();
+      const observe = () => {
+        // Observation must survive cancellation, exit and terminal DTO changes.
+        // Only the original source/process association qualifies these bytes.
+        if (owner.contextMessages !== contextMessages || owner.contextIdentity !== contextIdentity || owner.child !== child
+          || owner.run !== supervised.run || owner.run.runId !== supervised.identity.runId || owner.run.sessionId !== supervised.identity.sessionId
+          || owner.run.cwd !== supervised.identity.cwd || child.pid !== supervised.pid || !this.sameOriginalSource(supervised)) throw new Error("Claude context owner changed");
+      };
+      await coordinateRunSubmission({
+        mode: "live-input", request: { messageId, body: prompt, liveInput: true, boundary: "message" },
+        contextMessages: contextMessages!, evidence: owner.dispatchEvidence!, assertCurrent: current,
+        assertObservationCurrent: observe, failClosed: () => this.deps.failClosed(), publication: submissionPublication, timing,
+        journal: { status: async () => {}, submission: submission => this.deps.emit(owner.run, "submission", submission), launch: async () => {} },
+        publishMetadata: phase => phase === "submission" ? this.deps.persist() : Promise.resolve(),
+        native: {
+          capabilities: { "live-input": { supported: true } },
+          encode: text => {
+            const encoded = JSON.stringify({ type: "user", uuid, session_id: supervised.identity.nativeSessionId,
+              message: { role: "user", content: text }, parent_tool_use_id: null }) + "\n";
+            return { payload: encoded,
+              readActual: () => { observe(); return readContextLine(encoded, uuid, supervised.identity.nativeSessionId!, messageId, contextIdentity!); },
+              assertWire: wire => { if (wire !== encoded) throw new Error("Claude context wire changed"); } };
+          },
+          setup: async () => undefined,
+          preflight: async () => {},
+          beforeNative: () => {
+            // The same CLI serializes a task continuation and this admitted send.
+            turnStarted = true;
+            input.turnComplete = false; input.pendingUuid = uuid;
+            this.stoppedTurns.delete(owner.run.runId);
+            this.turnHooks.set(owner.run.runId, undefined);
+            this.activities.get(owner.run.runId)?.running();
+            current();
+          },
+          send: async (encoded, _setup, boundary) => {
+            boundary.beforeNative(encoded);
+            attempted = true;
+            try { child.stdin.write(encoded); await child.stdin.flush(); }
+            catch (error) { void this.terminate(owner); throw error; }
+            boundary.outcome("submitted");
+          },
+        },
+      });
       return { runId: owner.run.runId, messageId };
     } catch (error) {
       // A partial pipe write is not safe to retry or accept more input behind.
       if (attempted) void this.terminate(owner);
+      else if (turnStarted) {
+        // A synchronous refusal must not leave a UUID that never reached stdin
+        // awaiting acknowledgement or strand the original background process.
+        input.turnComplete = true; input.pendingUuid = previousTurn.pendingUuid;
+        if (previousTurn.stopped) this.stoppedTurns.add(owner.run.runId);
+        this.turnHooks.set(owner.run.runId, previousTurn.hook);
+        this.activities.get(owner.run.runId)?.turnFinished();
+      }
       throw error;
     } finally {
       input.sending = false;
       this.finishInput(owner);
+      this.retainSubmissionTiming(owner, "liveInput", timing);
     }
   }
   private finishInput(owner: RunOwner) {
@@ -438,24 +527,7 @@ export class ClaudeRunService {
           this.stoppedTurns.delete(run.runId); this.turnHooks.set(run.runId, undefined);
         }
         const observation = consumeClaudeResultRecord(result, data, nativeSessionId);
-        const canonical = result.canonical;
-        if (canonical && isClaudeRootRecord(data) && (data.session_id === undefined || data.session_id === nativeSessionId)) {
-          if (data.type === "system" && data.subtype === "hook_response" && data.hook_event === "UserPromptSubmit") {
-            let output: any;
-            try { output = JSON.parse(data.stdout); } catch { /* An unrelated hook response. */ }
-            if (data.outcome === "success" && (data.exit_code === undefined || data.exit_code === 0)
-              && output?.hookSpecificOutput?.hookEventName === "UserPromptSubmit" && output.hookSpecificOutput.additionalContext === canonical.delivery.dynamic && !canonical.dynamicAccepted) {
-              canonical.dynamicAccepted = true;
-              await this.deps.emit(run, "context", { ...contextReceipt(canonical.delivery, "configured", "UserPromptSubmit"), stage: "hook-accepted", dynamicDelivered: true });
-            }
-          }
-          if ((data.type === "assistant" || data.type === "result") && !canonical.dynamicAccepted) {
-            canonical.rejected = result.error = true;
-            result.diagnostic = "Canonical dynamic context was not acknowledged before native output";
-            void this.terminate(owner);
-          }
-        }
-        // Fail fast: Claude must not proceed without this run's framework.
+        // Retain historical framework decoding without requiring new delivery.
         if (observation.frameworkRejected || result.integrityRejected) void this.terminate(owner);
       }
       else result.stderr = (result.stderr + text + "\n").slice(-resultTextLimit);
@@ -496,6 +568,9 @@ export class ClaudeRunService {
     owner.nativeDispatched = false;
     const runId = run.runId, sessionId = run.sessionId, cwd = run.cwd;
     const sessionAtEntry = deps.session(sessionId), operation = run.operation, model = run.model, effort = run.effort, dispatchEvidence = owner.dispatchEvidence;
+    const contextMessages = operation === "compact" ? undefined : owner.contextMessages;
+    const contextIdentity = operation === "compact" ? undefined : owner.contextIdentity;
+    const submissionPublication = operation === "compact" ? undefined : owner.submissionPublication;
     const source = Object.freeze({ harness: sessionAtEntry?.harness, authorityId: sessionAtEntry?.authorityId, nativeSessionId: sessionAtEntry?.nativeSessionId ?? null, cwd: sessionAtEntry?.cwd });
     // Bridge creation normally preallocates the native UUID. Legacy new-session
     // callers without one use this run's UUID, never an ID selected by stdout.
@@ -515,11 +590,32 @@ export class ClaudeRunService {
       }
       return session;
     };
-    // Every awaited preparation step is surrounded by a fresh lookup, including
-    // replacement Session objects. Optional bridge gates cannot replace this pin.
-    const prepare = async <T>(action: () => Promise<T>): Promise<T> => {
+    const assertContextOwner = () => {
       assertSource();
-      try { return await action(); } finally { assertSource(); }
+      if (!contextMessages || !contextIdentity || owner.contextMessages !== contextMessages || owner.contextIdentity !== contextIdentity
+        || contextIdentity.runId !== runId || contextIdentity.source.harnessId !== "claude-code"
+        || contextIdentity.source.sessionId !== sessionId || contextIdentity.source.authorityId !== (source.authorityId ?? null)
+        || contextIdentity.source.nativeSessionId !== nativeSessionId || contextIdentity.source.cwd !== cwd) throw new Error("Original Claude context owner identity is unavailable or changed");
+    };
+    const assertDispatchCurrent = () => {
+      assertSource();
+      if (operation !== "compact") {
+        assertContextOwner();
+        if (!dispatchEvidence || owner.dispatchEvidence !== dispatchEvidence) throw new Error("Original Claude dispatch evidence is unavailable or changed");
+        // Publication replacement denies new native effects, never original outcomes.
+        if (owner.submissionPublication !== submissionPublication) throw new Error("Original Claude submission publication changed");
+      }
+      if (deps.closing() || deps.storageFailed() || deps.retained() || owner.stopRequested || owner.cancelling || owner.stopping || owner.settled || !deps.owns(owner)) throw new Error("Context message preparation cancelled");
+    };
+    // Keep setup awaits cheap, but freshly guard source/owner/cancellation on
+    // both sides. Terminal/cleanup writes retain only the original source pin.
+    const assertPreparationCurrent = () => {
+      if (supervised.preparing) assertDispatchCurrent();
+      else assertSource();
+    };
+    const prepare = async <T>(action: () => Promise<T>): Promise<T> => {
+      assertPreparationCurrent();
+      try { return await action(); } finally { assertPreparationCurrent(); }
     };
     const classify = (status: "completed" | "failed" | "interrupted", cause: ClaudeTerminalCause) => {
       supervised.terminal = Object.freeze({ status, cause });
@@ -535,142 +631,142 @@ export class ClaudeRunService {
     const activity = new ClaudeActivity(runId, run.createdAt);
     this.activities.set(runId, activity);
     let streams: Promise<unknown>[] = [], intentWritten = false;
+    const mode = owner.nativeDeliveryPolicy === "native-queued-handoff" || owner.nativeQueuedHandoff ? "queued-handoff"
+      : run.nativeDelivery === "queue" ? "queued" : owner.nativeDeliveryPolicy === "idle-only" ? "idle-only" : "initial";
+    const timing = operation === "compact" ? undefined : createRunSubmissionTiming({ harness: "claude-code", mode });
     try {
       assertSource();
       const identity = snapshotIdentity(run), agent = run.agent, saneContextVersion = run.saneContextVersion;
-      const frameworkPath = !resume && sessionAtEntry?.saneContext && !sessionAtEntry.saneContext.package ? join(this.options.dataDir, `${runId}.session-start.md`) : undefined;
-      const framework = frameworkPath ? saneContextText(sessionAtEntry!.saneContext!) : undefined;
       if (operation !== "compact" && compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
-      // Write the first log record before publishing its metadata reference.
-      await prepare(() => deps.emit(run, "status", { status: "running" }));
-      if (operation !== "compact") await prepare(() => deps.emit(run, "submission", { messageId: `${runId}:user`, text: prompt, ...(run.queuedFollowupId ? { queuedFollowupId: run.queuedFollowupId } : {}) }));
-      await prepare(() => deps.persist());
-      if (deps.closing()) throw new Error("Closing before launch");
-      const execution = () => prepare(() => operation === "compact" ? deps.compactExecution(assertSource()) : deps.execution(sessionId));
-      const checkExecution = async () => {
-        if (await execution() !== cwd) {
+      const checkExecution = async (steps: RunSubmissionPreparationSteps) => {
+        if (await steps.step("execution.resolve", () => operation === "compact" ? deps.compactExecution(assertSource()) : deps.execution(sessionId)) !== cwd) {
           supervised.valid = false;
           throw new HarnessDispatchError("dispatch-source-mismatch", "Original Claude execution checkout changed during preparation");
         }
       };
-      await checkExecution();
-      const assertContextDispatch = () => {
+      const setupLaunch = async (_payload: string, steps: RunSubmissionPreparationSteps): Promise<ClaudeLaunchSetup> => {
+        await checkExecution(steps);
+        const secret = runtime.randomUUID() + runtime.randomUUID(); this.secrets.set(runId, { secret, supervised });
+        const hooks: Record<string, { hooks: { type: "command"; command: string; timeout: number }[] }[]> = Object.fromEntries(hookEvents.map(event => [event, [{ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/forward.ts"))} ${quote(event)}`, timeout: 3 }] }]]));
+        const executionPolicy = await steps.step("execution.configure", async () => await deps.canonicalExecution?.(sessionId) ?? null);
+        if (executionPolicy && (!identity || executionPolicy.policy.spec.name !== `sane/${identity.kind}/${identity.role}`)) throw new Error("Canonical execution role differs from the run");
+        const privateExecution = executionPolicy ? claudeExecutionConfiguration({ policy: executionPolicy.policy, children: executionPolicy.children, protocol: deps.explicitProtocol?.(sessionId) }) : undefined;
+        let claudeVersion: string | null = null;
+        if (privateExecution) {
+          claudeVersion = await steps.step("native.inspect", () => runtime.version!(this.options.claudeBin));
+          const version = /^(\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(claudeVersion);
+          if (!version || Number(version[1]) < 2 || Number(version[1]) === 2 && (Number(version[2]) < 1 || Number(version[2]) === 1 && Number(version[3]) < 281)) throw new AgentLaunchConfigurationError("Canonical execution requires Claude Code 2.1.281 or newer");
+        }
+        if (identity && !privateExecution) throw new AgentLaunchConfigurationError("SANE Claude roles require canonical execution configuration");
+        // Base sessions grant parent messaging without inheriting bridge context.
+        const ccAgent = privateExecution?.agent, permissions = privateExecution?.permissions ?? { allow: ["mcp__sane__sane_worker_message"] };
+        const session = assertSource();
+        // Browser MCP is a Claude launch argument, not a pinned policy or a shared Stop control.
+        // Compact, workers, and an omitted harness do not receive it. Tool names are visible
+        // only on the synthetic Base allow list; canonical permissions stay byte-stable.
+        const browserMcp = operation !== "compact" && session.harness === "claude-code" && session.agentKind !== "worker" && deps.browserMcp
+          ? await steps.step("transport.setup", () => { assertSource(); return deps.browserMcp!(sessionId, runId); })
+          : null;
         assertSource();
-        if (deps.closing() || deps.storageFailed() || owner.stopRequested || owner.cancelling || owner.settled || !deps.owns(owner)) throw new Error("Canonical context preparation cancelled");
+        const launchPermissions = browserMcp && !privateExecution
+          ? { allow: [...(Array.isArray(permissions.allow) ? permissions.allow : []), ...browserMcp.allowedTools] }
+          : permissions;
+        const settingsPath = join(this.options.dataDir, `${runId}.settings.json`);
+        const settings = JSON.stringify({ hooks, ...(launchPermissions ? { permissions: launchPermissions } : {}) });
+        await steps.step("transport.setup", () => deps.enqueue(() => runtime.writeSettings(settingsPath, settings)));
+        const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", nativeSessionId!, "--settings", settingsPath];
+        if (operation !== "compact") args.push("--input-format", "stream-json");
+        if (browserMcp) args.push("--mcp-config", browserMcp.mcpConfigPath);
+        if (privateExecution) args.push(...privateExecution.args);
+        // Never revive an old system-context snapshot on a canonical SANE resume.
+        if (resume && privateExecution) args.push("--system-prompt-snapshot", "off");
+        if (model !== undefined) args.push("--model", model);
+        if (effort !== undefined) args.push("--effort", effort);
+        const env = Object.fromEntries(Object.entries(runtime.env).filter(([name, value]) => value !== undefined && !/^(CC_WEB_|OPENCODE_SERVER_|OPENCODE_SESSION_ID$|OPENCODE_TOKEN$|SANE_|BUN_INSPECT|NODE_OPTIONS$)/i.test(name))) as Record<string, string>;
+        const context = await steps.step("execution.resolve", () => deps.executionContext(sessionId));
+        return { args, options: {
+          cwd, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...env, CLAUDE_CONFIG_DIR: this.options.claudeRoot, CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: this.options.hookUrl(), CC_WEB_RUN_ID: runId, CC_WEB_HOOK_SECRET: secret, CC_WEB_HOOK_ERRORS: join(this.options.dataDir, `${runId}.hook-errors.jsonl`) },
+        }, launch: {
+          harness: "claude-code", resume, operation: operation ?? "prompt", workstreamId: context.workstreamId, workstreamRoot: context.artifactsRoot, implementationRoot: cwd,
+          agent: agent ?? null, saneContextVersion: saneContextVersion ?? null, args: [...args], claudeVersion,
+          ...(executionPolicy ? { executionPolicy: { revision: executionPolicy.revision, agent: ccAgent, nativeRoleRegistration: false, policyTranslation: privateExecution!.policyTranslation } } : {}),
+          agentFile: null, settings: { path: settingsPath, sha256: sha256(settings) },
+        } };
       };
-      const canonical = await prepareContextDelivery(assertSource(), run, deps.canonicalContext, deps.emit, assertContextDispatch);
-      const appendPath = canonical ? join(this.options.dataDir, `${runId}.canonical-context.md`) : undefined;
-      if (appendPath) await prepare(() => deps.enqueue(() => runtime.writeSettings(appendPath, canonical!.standing)));
-      const secret = runtime.randomUUID() + runtime.randomUUID(); this.secrets.set(runId, { secret, supervised });
-      const hooks: Record<string, { hooks: { type: "command"; command: string; timeout: number }[] }[]> = Object.fromEntries(hookEvents.map(event => [event, [{ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/forward.ts"))} ${quote(event)}`, timeout: 3 }] }]]));
-      // The framework enters native history once, from the run that creates the native session.
-      if (frameworkPath) {
-        if (framework!.length > hookContextLimit) throw new AgentLaunchConfigurationError(`SANE framework exceeds the ${hookContextLimit}-character SessionStart context limit`);
-        await prepare(() => deps.enqueue(() => runtime.writeSettings(frameworkPath, framework!)));
-        result.framework = { text: framework!, delivered: false, rejected: false, failures: [] };
-        hooks.SessionStart!.push({ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/session-start.ts"))} ${quote(frameworkPath)}`, timeout: 10 }] });
-      }
-      const executionPolicy = await prepare(async () => await deps.canonicalExecution?.(sessionId) ?? null);
-      if (executionPolicy && (!identity || executionPolicy.policy.spec.name !== `sane/${identity.kind}/${identity.role}`)) throw new Error("Canonical execution role differs from the run");
-      const privateExecution = executionPolicy ? claudeExecutionConfiguration({ policy: executionPolicy.policy, children: executionPolicy.children, protocol: deps.explicitProtocol?.(sessionId) }) : undefined;
-      let claudeVersion: string | null = null;
-      if (privateExecution) {
-        claudeVersion = await prepare(() => runtime.version!(this.options.claudeBin));
-        const version = /^(\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(claudeVersion);
-        if (!version || Number(version[1]) < 2 || Number(version[1]) === 2 && (Number(version[2]) < 1 || Number(version[2]) === 1 && Number(version[3]) < 281)) throw new AgentLaunchConfigurationError("Canonical execution requires Claude Code 2.1.281 or newer");
-      }
-      const installed = identity && !privateExecution ? await prepare(() => runtime.agentSettings(this.options.claudeRoot, identity)) : undefined;
-      // Base sessions carry no role policy; grant the parent messaging tool so
-      // explicit-protocol workers they launch can consult them.
-      const ccAgent = privateExecution?.agent ?? installed?.agent, permissions = privateExecution?.permissions ?? installed?.permissions ?? (identity ? undefined : { allow: ["mcp__sane__sane_worker_message"] });
-      const browserMcp = operation !== "compact" && this.deps.browserMcp ? await prepare(() => this.deps.browserMcp!(sessionId, runId)) : null;
-      const launchPermissions = browserMcp && permissions ? { ...permissions, allow: [...(Array.isArray(permissions.allow) ? permissions.allow : []), ...browserMcp.allowedTools] } : permissions;
-      // Canonical static context stays pinned across resumes; mutable membership
-      // travels through UserPromptSubmit rather than Claude's prompt snapshot.
-      const saneSession = canonical && operation !== "compact" ? canonical.dynamic : !resume ? await prepare(() => deps.saneSession(sessionId)) : null;
-      if (canonical && operation !== "compact") result.canonical = { delivery: canonical, dynamicAccepted: false, rejected: false };
-      const sessionPath = saneSession === null ? undefined : join(this.options.dataDir, `${runId}.sane-session.md`);
-      if (sessionPath) {
-        if (saneSession!.length > hookContextLimit) throw new AgentLaunchConfigurationError(`SANE Session context exceeds the ${hookContextLimit}-character hook context limit`);
-        await prepare(() => deps.enqueue(() => runtime.writeSettings(sessionPath, saneSession!)));
-        hooks.UserPromptSubmit!.push({ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/session-context.ts"))} ${quote(sessionPath)}`, timeout: 10 }] });
-      }
-      const settingsPath = join(this.options.dataDir, `${runId}.settings.json`);
-      const settings = JSON.stringify({ hooks, ...(launchPermissions ? { permissions: launchPermissions } : {}) });
-      await prepare(() => deps.enqueue(() => runtime.writeSettings(settingsPath, settings)));
-      if (deps.closing() || deps.storageFailed() || owner.stopRequested) throw new Error("Closing before launch");
-      const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", nativeSessionId!, "--settings", settingsPath];
-      if (operation !== "compact") args.push("--input-format", "stream-json");
-      if (browserMcp) args.push("--mcp-config", browserMcp.mcpConfigPath);
-      if (canonical) args.push("--include-hook-events");
-      if (privateExecution) args.push(...privateExecution.args);
-      else if (ccAgent !== undefined) args.push("--agent", ccAgent);
-      if (appendPath) args.push("--append-system-prompt-file", appendPath);
-      // This durable activation marker applies to every later launch too: CC
-      // otherwise restores the pre-upgrade Base snapshot on the next resume.
-      if (appendPath && sessionAtEntry?.saneContext?.package?.activation === "upgrade") args.push("--system-prompt-snapshot", "off");
-      if (model !== undefined) args.push("--model", model);
-      if (effort !== undefined) args.push("--effort", effort);
-      // Native HOME/hooks stay shared, but bridge credentials/context do not.
-      const env = Object.fromEntries(Object.entries(runtime.env).filter(([name, value]) => value !== undefined && !/^(CC_WEB_|OPENCODE_SERVER_|OPENCODE_SESSION_ID$|OPENCODE_TOKEN$|SANE_|BUN_INSPECT|NODE_OPTIONS$)/i.test(name))) as Record<string, string>;
-      // Exact launch inputs as evidence; the prompt is the submission and the hook secret stays in env.
-      const context = await prepare(() => deps.executionContext(sessionId));
-      await prepare(() => deps.emit(run, "launch", {
-        harness: "claude-code", resume, operation: operation ?? "prompt", workstreamId: context.workstreamId, workstreamRoot: context.artifactsRoot, implementationRoot: cwd,
-        agent: agent ?? null, saneContextVersion: saneContextVersion ?? null, args: [...args], claudeVersion,
-        ...(executionPolicy ? { executionPolicy: { revision: executionPolicy.revision, agent: ccAgent, nativeRoleRegistration: false, policyTranslation: privateExecution!.policyTranslation } } : {}),
-        agentFile: installed?.agentFile ?? null, settings: { path: settingsPath, sha256: sha256(settings) },
-        framework: frameworkPath ? { path: frameworkPath, sha256: sha256(framework!) } : null,
-        sessionBlock: sessionPath ? { path: sessionPath, sha256: sha256(saneSession!) } : null,
-      }));
-      await checkExecution();
-      await assertContextCurrent(canonical, deps.canonicalContext, assertContextDispatch);
-      if (canonical) await prepare(() => deps.emit(run, "context", { ...contextReceipt(canonical, "configured", operation === "compact" ? "append-system-prompt-file" : "append-system-prompt-file + UserPromptSubmit"), dynamicDelivered: false, snapshot: sessionAtEntry?.saneContext?.package?.activation === "upgrade" ? "off" : "default" }));
-      deps.assertWorkerDeliverySubmission(owner);
-      if (deps.closing() || deps.storageFailed() || owner.stopRequested || owner.cancelling || owner.settled || !deps.owns(owner)) throw new Error("Execution unavailable before launch");
-      assertSource();
-      synchronousDispatchHook(() => owner.beforeSend?.());
-      assertSource();
-      // spawn can execute SessionStart hooks before stdin receives the prompt.
-      // Durable intent must precede spawn, not ready(true) or stdin.write.
-      try { synchronousDispatchHook(() => dispatchEvidence?.beforeNative()); }
-      finally { supervised.preparing = false; }
-      intentWritten = !!dispatchEvidence;
-      assertSource();
-      const spawnOptions: SpawnOptions = {
-        cwd, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...env, CLAUDE_CONFIG_DIR: this.options.claudeRoot, CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: this.options.hookUrl(), CC_WEB_RUN_ID: runId, CC_WEB_HOOK_SECRET: secret, CC_WEB_HOOK_ERRORS: join(this.options.dataDir, `${runId}.hook-errors.jsonl`) },
+      const beforeLaunch = () => {
+        deps.assertWorkerDeliverySubmission(owner);
+        assertDispatchCurrent();
+        synchronousDispatchHook(() => owner.beforeSend?.());
+        assertDispatchCurrent();
       };
-      assertSource();
-      supervised.nativeAttempted = true;
-      owner.nativeDispatched = true;
-      const child = runtime.spawn(args, spawnOptions);
-      owner.child = child;
-      supervised.child = child; supervised.pid = child.pid;
-      void child.exited.then(exit => {
-        supervised.exitObserved = true; supervised.exitCode = exit;
-        supervised.exitSignal = (child as unknown as { signalCode?: string | number | null }).signalCode ?? null;
-      }, () => {});
-      activity.running();
-      ready(true);
-      streams = [this.consume(owner, run, nativeSessionId!, child.stdout, "stdout", result), this.consume(owner, run, nativeSessionId!, child.stderr, "stderr", result)];
-      // Observe both consumers before a synchronous stdin failure can occur.
-      const output = Promise.all([child.exited, ...streams]);
-      void output.catch(() => {});
-      if (operation !== "compact") this.inputs.set(owner, { closed: false, sending: false, turnComplete: false, pendingUuid: runId, result });
-      child.stdin.write(operation === "compact" ? prompt : JSON.stringify({ type: "user", uuid: runId, session_id: nativeSessionId,
-        message: { role: "user", content: prompt }, parent_tool_use_id: null }) + "\n");
-      const [exit] = await Promise.all([output.then(values => values[0] as number), Promise.resolve(operation === "compact" ? child.stdin.end() : child.stdin.flush()).then(() => {
-        // Pipe completion proves submission only, never native acceptance.
-        dispatchEvidence?.outcome("submitted");
-      })]);
+      const beforeIntent = () => {
+        // SessionStart can execute at spawn, before any stdin message arrives.
+        try { synchronousDispatchHook(() => dispatchEvidence?.beforeNative()); }
+        finally { supervised.preparing = false; }
+        intentWritten = !!dispatchEvidence;
+      };
+      const startLaunch = (encoded: string, setup: ClaudeLaunchSetup, beforeNative: (wire: string) => void, outcome: () => void) => {
+        beforeNative(encoded);
+        assertDispatchCurrent();
+        supervised.nativeAttempted = true; owner.nativeDispatched = true;
+        const child = runtime.spawn(setup.args, setup.options);
+        owner.child = child;
+        supervised.child = child; supervised.pid = child.pid;
+        void child.exited.then(exit => {
+          supervised.exitObserved = true; supervised.exitCode = exit;
+          supervised.exitSignal = (child as unknown as { signalCode?: string | number | null }).signalCode ?? null;
+        }, () => {});
+        activity.running(); ready(true);
+        streams = [this.consume(owner, run, nativeSessionId!, child.stdout, "stdout", result), this.consume(owner, run, nativeSessionId!, child.stderr, "stderr", result)];
+        const output = Promise.all([child.exited, ...streams]);
+        void output.catch(() => {});
+        if (operation !== "compact") this.inputs.set(owner, { closed: false, sending: false, turnComplete: false, pendingUuid: runId, result, contextMessages: contextMessages!, contextIdentity: contextIdentity! });
+        child.stdin.write(encoded);
+        // Retain these promises for lifecycle supervision outside preparation.
+        const submitted = Promise.resolve(operation === "compact" ? child.stdin.end() : child.stdin.flush()).then(outcome);
+        void submitted.catch(() => {});
+        return { output, submitted };
+      };
+      let started: ReturnType<typeof startLaunch>;
+      if (operation === "compact") {
+        // Compaction is a native non-message operation, not an ordinary prompt.
+        const steps: RunSubmissionPreparationSteps = { assertCurrent: assertPreparationCurrent, step: (_stage, action) => prepare(action) };
+        await prepare(() => deps.emit(run, "status", { status: "running" }));
+        await prepare(() => deps.persist());
+        const setup = await setupLaunch(prompt, steps);
+        await prepare(() => deps.emit(run, "launch", setup.launch));
+        await checkExecution(steps);
+        started = startLaunch(prompt, setup, () => { beforeLaunch(); beforeIntent(); }, () => dispatchEvidence?.outcome("submitted"));
+      } else {
+        const messageId = `${runId}:user`;
+        started = await coordinateRunSubmission({
+          mode, request: { messageId, body: prompt, boundary: "run-initial", ...(run.queuedFollowupId ? { queuedFollowupId: run.queuedFollowupId } : {}) },
+          contextMessages: contextMessages!, evidence: dispatchEvidence!,
+          assertCurrent: assertDispatchCurrent, assertObservationCurrent: assertContextOwner, failClosed: () => deps.failClosed(), publication: submissionPublication, timing,
+          journal: { status: () => deps.emit(run, "status", { status: "running" }),
+            submission: submission => deps.emit(run, "submission", submission), launch: (_packet, setup) => deps.emit(run, "launch", setup.launch) },
+          // CC launch evidence has no new metadata phase; retain the existing publication.
+          publishMetadata: phase => phase === "submission" ? deps.persist() : Promise.resolve(),
+          native: {
+            capabilities: { initial: { supported: true }, "idle-only": { supported: true } },
+            encode: text => {
+              const encoded = JSON.stringify({ type: "user", uuid: runId, session_id: nativeSessionId,
+                message: { role: "user", content: text }, parent_tool_use_id: null }) + "\n";
+              return { payload: encoded, readActual: () => { assertContextOwner(); return readContextLine(encoded, runId, nativeSessionId!, messageId, contextIdentity!); },
+                assertWire: wire => { if (wire !== encoded) throw new Error("Claude context wire changed"); } };
+            },
+            setup: setupLaunch,
+            preflight: (_packet, _setup, steps) => checkExecution(steps),
+            beforeNative: beforeLaunch,
+            onIntentRecorded: () => { intentWritten = true; supervised.preparing = false; },
+            send: (encoded, setup, boundary) => startLaunch(encoded, setup, boundary.beforeNative, () => boundary.outcome("submitted")),
+          },
+        });
+      }
+      const [exit] = await Promise.all([started.output.then(values => values[0] as number), started.submitted]);
       activity.finishing();
       if (this.groupAlive(owner) && !(await this.terminate(owner))) throw new Error("Process group termination unconfirmed");
       assertSource();
-      rejectUndeliveredClaudeFramework(result);
-      if (result.canonical && (!result.canonical.dynamicAccepted || result.canonical.rejected)) {
-        result.error = true;
-        result.diagnostic = "Canonical dynamic context delivery was not confirmed";
-      }
       const closing = deps.closing(), stopRequested = owner.stopRequested, storageFailed = deps.storageFailed();
       const exitSignal = supervised.exitSignal, exitedNormally = exit === 0 && exitSignal === null;
       const status = closing || stopRequested ? "interrupted" : !storageFailed && exitedNormally && result.seen && !result.error ? "completed" : "failed";
@@ -720,6 +816,7 @@ export class ClaudeRunService {
       this.inputs.delete(owner);
       supervised.finished = true;
       this.retireSupervision(supervised);
+      if (timing) this.retainSubmissionTiming(owner, "initial", timing);
     }
   }
 }

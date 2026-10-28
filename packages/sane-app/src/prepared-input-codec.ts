@@ -6,6 +6,8 @@ import { builtinProfiles, historicalAgentProfile, legacyProfileId, resolveAgentL
 import { uuid, validAgentSnapshot, validEffort, validModel, validProfileId, validVariant, validateMetadata } from "./history";
 import type { PreparedUserInput } from "./user-input-preparation";
 import { PendingInputCodecError } from "./pending-input-contract";
+import { validGrokChoice } from "../shared/conversation/grok-contract";
+import { toNativeHarness } from "./harness-names";
 
 export const canonicalPath = (v: unknown): v is string => typeof v === "string" && isAbsolute(v) && resolve(v) === v && !/[\x00-\x1f\x7f]/.test(v);
 export const token = (v: unknown): v is string => typeof v === "string" && !!v && v.trim() === v && !/[\x00-\x1f\x7f]/.test(v);
@@ -39,10 +41,12 @@ export function canonicalJSON(v: unknown): string {
 }
 export const fingerprint = (v: unknown) => createHash("sha256").update(canonicalJSON(v)).digest("hex");
 export const equal = (a: unknown, b: unknown) => canonicalJSON(a) === canonicalJSON(b);
+export const validPreparedModel = (harness: string, value: unknown) => harness === "grok" ? validGrokChoice(value) : validModel(value);
+export const validPreparedEffort = (harness: string, value: unknown) => harness === "grok" ? validGrokChoice(value) : harness === "opencode" ? validVariant(value) && !/\x7f/.test(value) : validEffort(value);
 export function validateBinding(v: unknown) {
   shape(v, ["conversationId", "harness", "authorityId", "cwd"], ["nativeSessionId"]);
-  requireRecord(uuid(v.conversationId) && ["claude-code", "opencode"].includes(v.harness) && canonicalPath(v.cwd));
-  const native = v.harness === "opencode" ? "oc" : "cc";
+  requireRecord(uuid(v.conversationId) && ["claude-code", "opencode", "grok"].includes(v.harness) && canonicalPath(v.cwd));
+  const native = toNativeHarness(v.harness);
   requireRecord(typeof v.authorityId === "string" && new RegExp(`^sane-native-v1:${native}:[a-f0-9]{64}$`).test(v.authorityId));
   if ("nativeSessionId" in v) requireRecord(v.harness === "opencode" ? typeof v.nativeSessionId === "string" && /^ses[a-zA-Z0-9_-]{1,200}$/.test(v.nativeSessionId) : uuid(v.nativeSessionId));
 }
@@ -50,8 +54,8 @@ export function validateConfiguration(v: unknown, harness: string) {
   shape(v, ["profileId"], ["model", "effort", "agent", "agentKind", "nativeAgentSelected", "saneExecution", "saneContext", "attachment"]);
   if ("saneExecution" in v) shape(v.saneExecution, ["schema", "revision"]);
   requireRecord(validProfileId(v.profileId) && validAgentSnapshot(v));
-  if ("model" in v) requireRecord(validModel(v.model));
-  if ("effort" in v) requireRecord(harness === "opencode" ? validVariant(v.effort) && !/\x7f/.test(v.effort) : validEffort(v.effort));
+  if ("model" in v) requireRecord(validPreparedModel(harness, v.model));
+  if ("effort" in v) requireRecord(validPreparedEffort(harness, v.effort));
   if ("saneContext" in v) {
     shape(v.saneContext, ["version", "framework"], ["assignment", "package"]);
     if ("package" in v.saneContext) shape(v.saneContext.package, ["schema", "revision", "delivery"], ["activation"]);
@@ -61,12 +65,13 @@ export function validateConfiguration(v: unknown, harness: string) {
   // Existing actual metadata validator remains authoritative for nested agent,
   // framework, canonical reference schemas/pairing and attachment relationships;
   // the synthetic row has no run. Ref bytes remain part of exact pin equality.
-  try { validateMetadata({ sessions: [{ ...v, sessionId: "00000000-0000-4000-8000-000000000001", harness, authorityId: `sane-native-v1:${harness === "opencode" ? "oc" : "cc"}:${"a".repeat(64)}`, nativeSessionId: harness === "opencode" ? "ses_codec" : "00000000-0000-4000-8000-000000000002", cwd: "/codec", lastStatus: "unknown", lastRunId: null }], runs: [], reconciliationRequired: false }); }
+  requireRecord(harness === "claude-code" || harness === "opencode" || harness === "grok");
+  try { validateMetadata({ sessions: [{ ...v, sessionId: "00000000-0000-4000-8000-000000000001", harness, authorityId: `sane-native-v1:${toNativeHarness(harness)}:${"a".repeat(64)}`, nativeSessionId: harness === "opencode" ? "ses_codec" : "00000000-0000-4000-8000-000000000002", cwd: "/codec", lastStatus: "unknown", lastRunId: null }], runs: [], reconciliationRequired: false }); }
   catch { throw new PendingInputCodecError("Invalid prepared configuration"); }
 }
 function profile(v: unknown) {
   shape(v, ["id", "kind", "role", "harness", "model", "effort", "label", "description", "icon", "color", "builtin", "locked", "order", "updatedAt"], ["hidden", "workerProfiles"]);
-  requireRecord(["claude-code", "opencode"].includes(v.harness));
+  requireRecord(["claude-code", "opencode", "grok"].includes(v.harness));
   const profiles = builtinProfiles();
   // Validate the snapshot with the actual profile validator, but not mutable
   // global mappings or current referenced target availability.
@@ -104,8 +109,8 @@ function validateRequestedNormalization(value: Record<string, any>) {
     for (const key of ["harness", "model", "effort", "agent"]) delete input[key];
   }
   requireRecord((input.harness ?? (value.resume ? value.expectedPrior.binding.harness : "claude-code")) === value.binding.harness, "Prepared requested harness mismatch");
-  if ("model" in input) requireRecord(validModel(input.model), "Invalid requested model");
-  if ("effort" in input) requireRecord(value.binding.harness === "opencode" ? validVariant(input.effort) && !/\x7f/.test(input.effort) : validEffort(input.effort), "Invalid requested effort");
+  if ("model" in input) requireRecord(validPreparedModel(value.binding.harness, input.model), "Invalid requested model");
+  if ("effort" in input) requireRecord(validPreparedEffort(value.binding.harness, input.effort), "Invalid requested effort");
   if ("agent" in input) requireRecord(isAssistantAgentId(input.agent), "Invalid requested agent");
   if (value.resume && prior.agent !== undefined && input.agent !== undefined) requireRecord(prior.agent === input.agent, "Prepared requested agent cannot change");
   if (value.nativeLaunch?.model) {
@@ -117,17 +122,17 @@ function validateRequestedNormalization(value: Record<string, any>) {
 }
 export function decodePreparedUserInput(value: unknown): PreparedUserInput {
   canonicalJSON(value);
-  shape(value, ["version", "prompt", "binding", "resume", "requested", "normalized", "configuration", "associationSelection", "nativeStopped"], ["expectedPrior", "selectedProfile", "stagedUpgrade", "nativeLaunch"]);
+  shape(value, ["version", "prompt", "binding", "resume", "requested", "normalized", "configuration", "associationSelection", "nativeStopped"], ["expectedPrior", "selectedProfile", "stagedUpgrade", "nativeLaunch", "canonicalActivation"]);
   requireRecord(value.version === 1 && typeof value.prompt === "string" && !!value.prompt.trim() && !/^\s*\/compact(?:\s|$)/i.test(value.prompt) && typeof value.resume === "boolean" && typeof value.nativeStopped === "boolean");
   validateBinding(value.binding); const harness = value.binding.harness;
   shape(value.requested, [], ["harness", "model", "effort", "agent", "profileId"]); // Ignored legacy selections remain JSON, exactly as submitted.
-  requireRecord(!("harness" in value.requested) || ["claude-code", "opencode"].includes(value.requested.harness));
+  requireRecord(!("harness" in value.requested) || ["claude-code", "opencode", "grok"].includes(value.requested.harness));
   requireRecord(!("profileId" in value.requested) || validProfileId(value.requested.profileId));
   shape(value.normalized, [], ["harness", "model", "effort", "agent", "profileId"]);
   const n = value.normalized;
   requireRecord(!("harness" in n) || n.harness === harness);
-  requireRecord(!("model" in n) || validModel(n.model));
-  requireRecord(!("effort" in n) || (harness === "opencode" ? validVariant(n.effort) && !/\x7f/.test(n.effort) : validEffort(n.effort)));
+  requireRecord(!("model" in n) || validPreparedModel(harness, n.model));
+  requireRecord(!("effort" in n) || validPreparedEffort(harness, n.effort));
   requireRecord(!("agent" in n) || isAssistantAgentId(n.agent));
   requireRecord(!("profileId" in n) || validProfileId(n.profileId));
   validateConfiguration(value.configuration, harness);
@@ -151,17 +156,45 @@ export function decodePreparedUserInput(value: unknown): PreparedUserInput {
   if ("profileId" in n) requireRecord(n.profileId === value.configuration.profileId);
   const expected = value.resume ? structuredClone(value.expectedPrior.configuration) : { profileId: value.configuration.profileId };
   const upgrade = value.stagedUpgrade;
+  const canonical = value.canonicalActivation;
+  if ("canonicalActivation" in value) {
+    shape(canonical, ["saneExecution", "saneContext"], ["model", "effort"]);
+    const role = upgrade ? upgrade.role : n.agent;
+    requireRecord(isAssistantAgentId(role) && (!value.resume || value.expectedPrior.configuration.agent === undefined), "Prepared canonical activation requires a new assistant identity");
+    validateConfiguration({ profileId: value.configuration.profileId, agent: role, agentKind: "assistant", saneExecution: canonical.saneExecution, saneContext: canonical.saneContext }, harness);
+    if ("model" in canonical) requireRecord(validModel(canonical.model) && canonical.model.indexOf("/") > 0
+      && canonical.model.indexOf("/") < canonical.model.length - 1, "Invalid prepared canonical model");
+    // These are pinned policy defaults, not a CC effort selection. CC ignores
+    // them; OC may use the model's variant only within its model-fallback branch.
+    if ("effort" in canonical) requireRecord("model" in canonical && validVariant(canonical.effort) && !/\x7f/.test(canonical.effort), "Invalid prepared canonical variant");
+    requireRecord(canonical.saneContext.package && canonical.saneContext.assignment === undefined
+      && canonical.saneContext.package.activation === (value.resume ? "upgrade" : undefined), "Prepared canonical activation placement mismatch");
+  }
   expected.profileId = upgrade ? upgrade.id : value.resume ? value.expectedPrior.configuration.profileId : value.selectedProfile?.id ?? value.configuration.profileId;
   for (const key of ["model", "effort", "agent"]) {
     const setting = upgrade ? key === "agent" ? upgrade.role : upgrade[key] || undefined : key in n ? n[key] : value.resume ? value.expectedPrior.configuration[key] : undefined;
     if (setting === undefined) delete expected[key]; else expected[key] = setting;
   }
-  if (!value.resume && expected.agent !== undefined) { expected.agentKind = "assistant"; expected.nativeAgentSelected = true; }
+  if (canonical && harness === "opencode" && !expected.model) {
+    if (canonical.model !== undefined) expected.model = canonical.model;
+    if (expected.effort === undefined && canonical.effort !== undefined) expected.effort = canonical.effort;
+  }
+  // Captured native resolution is the final model/variant selection for creation.
+  if (value.nativeLaunch?.model) {
+    expected.model = `${value.nativeLaunch.model.providerID}/${value.nativeLaunch.model.id}`;
+    if (value.nativeLaunch.model.variant === undefined) delete expected.effort;
+    else expected.effort = value.nativeLaunch.model.variant;
+  }
+  if ((!value.resume && expected.agent !== undefined) || canonical) {
+    expected.agentKind = "assistant"; expected.nativeAgentSelected = harness !== "grok" && (!canonical || harness !== "opencode");
+  }
+  if (canonical) { expected.saneExecution = canonical.saneExecution; expected.saneContext = canonical.saneContext; }
   requireRecord(equal(expected, value.configuration), "Prepared prior/effective configuration mismatch");
+  requireRecord(value.resume || harness !== "opencode" || "nativeLaunch" in value, "Prepared OpenCode creation requires its captured native launch");
   if ("nativeLaunch" in value) {
     requireRecord(!value.resume && harness === "opencode"); shape(value.nativeLaunch, [], ["agent", "model"]);
     if ("agent" in value.nativeLaunch) requireRecord(token(value.nativeLaunch.agent) && !value.nativeLaunch.agent.startsWith("sane/utility/") && !value.nativeLaunch.agent.startsWith("sane-utility-"), "Utilities cannot be selected for conversation input");
-    if (isAssistantAgentId(value.configuration.agent)) requireRecord(value.nativeLaunch.agent === nativeAgentId({ kind: "assistant", role: value.configuration.agent }, "opencode"), "Prepared native agent mismatch");
+    if (isAssistantAgentId(value.configuration.agent)) requireRecord(value.nativeLaunch.agent === (canonical ? "build" : nativeAgentId({ kind: "assistant", role: value.configuration.agent }, "opencode")), "Prepared native agent mismatch");
     if ("model" in value.nativeLaunch) {
       const model = value.nativeLaunch.model; shape(model, ["id", "providerID"], ["variant"]);
       requireRecord(validModel(`${model.providerID}/${model.id}`) && token(model.id) && token(model.providerID) && (!("variant" in model) || validVariant(model.variant) && !/\x7f/.test(model.variant)));

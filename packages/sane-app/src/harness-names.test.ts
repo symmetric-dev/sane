@@ -17,4 +17,27 @@ describe("harness-names", () => {
     expect(isNativeHarness("cc")).toBe(true);
     expect(isNativeHarness("opencode")).toBe(false);
   });
+  test("known Grok session is refused as a repository harness and is not Claude", () => {
+    let mapped: string | undefined;
+    expect(() => { mapped = toNativeHarness("grok"); }).toThrow(TypeError);
+    expect(() => toNativeHarness("grok")).toThrow("Grok is not a repository harness");
+    expect(() => toNativeHarness("grok")).not.toThrow(/Claude/);
+    expect(mapped).toBeUndefined();
+    expect(mapped).not.toBe("cc");
+    expect(mapped).not.toBe("oc");
+  });
+  test("session conversion never defaults missing or unknown values to Claude", () => {
+    for (const value of [undefined, null, "", "gk", "cc", "oc", "constructor", "__proto__", 0, false, {}, []]) {
+      // Exercise the runtime boundary despite its deliberately narrow public type.
+      expect(() => toNativeHarness(value as Parameters<typeof toNativeHarness>[0])).toThrow(TypeError);
+      expect(() => toNativeHarness(value as Parameters<typeof toNativeHarness>[0])).toThrow("Unknown session harness");
+    }
+  });
+  test("native conversion never defaults missing or unknown values to Claude", () => {
+    for (const value of [undefined, null, "", "gk", "grok", "claude-code", "opencode", "constructor", "__proto__", 0, false, {}, []]) {
+      expect(() => toSessionHarness(value as Parameters<typeof toSessionHarness>[0])).toThrow(TypeError);
+      expect(() => toSessionHarness(value as Parameters<typeof toSessionHarness>[0])).toThrow("Unknown native harness");
+      expect(isNativeHarness(value)).toBe(false);
+    }
+  });
 });

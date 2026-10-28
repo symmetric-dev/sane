@@ -54,7 +54,7 @@ function ActivityTiming({ status }: { status: ChatStatus }) {
 
 /** The highest-priority active state occupies the lid. Details retain a bounded,
  * conversation-scoped history without creating synthetic chat messages. */
-export function ComposerStatus({ statuses, active, actions, restoreFocus, queue, detailsRequest = 0 }: { statuses: ChatStatus[]; active: boolean; actions?: ReactNode; restoreFocus: () => HTMLElement | null; queue?: { lid: PendingInputLid; details: ReactNode }; detailsRequest?: number }) {
+export function ComposerStatus({ statuses, active, actions, restoreFocus, queue, receiptDetails, detailsRequest = 0 }: { statuses: ChatStatus[]; active: boolean; actions?: ReactNode; restoreFocus: () => HTMLElement | null; queue?: { lid: PendingInputLid; details: ReactNode }; receiptDetails?: (close: () => void) => ReactNode; detailsRequest?: number }) {
   const [open, setOpen] = useState(false);
   const [verification, setVerification] = useState<{ confirm: () => Promise<void>; sessionId: string }>();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -134,6 +134,7 @@ export function ComposerStatus({ statuses, active, actions, restoreFocus, queue,
         {!!recent.length && <><h3>Recent updates</h3><ol>{recent.map(event => <li key={event.sequence}><time dateTime={new Date(event.time).toISOString()}>{new Date(event.time).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</time><div><strong>{event.text}</strong>{event.detail && <p>{event.detail}</p>}</div></li>)}</ol></>}
         </section>
         {queue?.details}
+        {receiptDetails?.(() => { setOpen(false); setVerification(undefined); })}
       </div>
     </ShellDialog>}
   </>;

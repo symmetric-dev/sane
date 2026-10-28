@@ -25,6 +25,7 @@ import { RequestToggle } from "./composer-request";
 import { pendingInteractions } from "./interaction-presentation";
 import { active as runtimeActive, liveInputReady } from "./types";
 import { PendingInputDetails } from "./pending-input-ui";
+import { AppAdmissionRecoveryPanel } from "./app-admission-recovery-panel";
 import { pendingInputContextReady, pendingInputLid, pendingInputPrimaryAction, unresolvedOperations } from "./pending-input-primary-action";
 import { ScienceComposer, type ScienceChatController } from "./science-chat";
 import { ScienceShareDraftPreview } from "./science-sharing";
@@ -99,6 +100,10 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   const normalComposer = useRef<HTMLFormElement>(null);
   const flowComposer = useRef<HTMLDivElement>(null);
   const conversation = state.conversations.find(c => c.id === state.selected);
+  const grok = store.harness() === "grok";
+  const grokNotice = !grok ? "" : state.config?.grokCapability?.configured !== true
+    ? state.config?.grokCapability?.reason || "Set up the Grok runtime on this bridge before sending."
+    : state.grokView?.blocked || state.grokView?.phase === "not-submitted" ? state.grokView.reason || "" : "";
   const draftIdentity = store.draftKey();
   useEffect(() => { composingRef.current = false; setComposing(false); }, [draftIdentity]);
   const pendingSupported = store.pendingInputSupported();
@@ -225,11 +230,11 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   const draft = useStore(current => current.drafts[store.draftKey()]) ?? store.draft();
   const profile = store.effectiveProfile();
   // New conversations pick freely; a Base may upgrade once; an assistant is fixed.
-  const fixed = !!state.selected && (store.conversationKind() === "assistant" || !!parentId);
+  const fixed = !!state.selected && (grok && !store.grokProfileUpgradesSupported() || store.conversationKind() === "assistant" || !!parentId);
   const infoError = state.submissionError || (capabilities.catalogRequiredForSend ? state.modelsError : "");
   const statuses = chatStatuses(state, statusContext ?? { workspaceReady: true });
   const infoText = infoError || chatStatusSummary(statuses)?.text;
-  const reviewBlocked = !active || hasRequests || chainLocked || !capabilities.prompt || sendDisabled || (needsAck && ack !== state.selected);
+  const reviewBlocked = !active || hasRequests || chainLocked || !capabilities.prompt || !store.captureSendSupported() || sendDisabled || (needsAck && ack !== state.selected);
   const deriveAction = (current: State, text: string) => {
     const currentConversation = current.conversations.find(item => item.id === current.selected);
     const currentCapabilities = store.capabilities();
@@ -244,12 +249,15 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     const busyInput = running && !liveInputReady(currentConversation, current.availability) || !!current.availability.nativeQueue || !!current.availability.queueAfterRunId;
     const ordinaryBlocked = locked || supported && (current.phase !== "ready" || current.config?.authenticated !== true)
       || (command ? current.sending || !currentCapabilities.compaction
-      : sendDisabled || !currentCapabilities.prompt || ackMissing || current.sending || current.actionBusy
+        : !store.captureSendSupported() || sendDisabled || !currentCapabilities.prompt || ackMissing || current.sending || current.actionBusy
         || !(current.interactive ?? current.connected) || !current.availability.canSend || busyInput
         || store.compactBlocked() || store.modelUnavailable() || !!store.executionUnavailable());
     const sendReason = locked ? command ? "Resolve the existing input chain before compacting." : "Resolve existing queued messages in the queue details before sending."
       : current.sending ? "Sending your message…"
       : current.phase !== "ready" || current.config?.authenticated !== true ? "Waiting for an authenticated connection."
+      : !command && !store.captureSendSupported() ? grok
+        ? current.config?.grokCapability?.reason || (current.config?.grokCapability?.configured === true ? "Grok sending is unavailable on this bridge." : "Set up the Grok runtime on this bridge before sending.")
+        : "Ordinary sending requires an updated, explicitly initialized App admission store."
       : command && !currentCapabilities.compaction ? "Context compaction is unavailable for this harness."
       : !command && pendingInteractions(current, currentCapabilities).length ? "Respond to the pending conversation request before sending."
       : !command && ackMissing ? "Confirm external assistant execution is stopped before sending."
@@ -293,9 +301,10 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
 
   return <>
     {state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}
+    {grokNotice && <p className="notice" role="status">{grokNotice}</p>}
     {conversation?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {conversation.attachment.error}</p>}
     <div className="composer-surface">
-    <ComposerStatus key={flowScope} statuses={statuses} active={active} actions={statusActions}
+    <ComposerStatus key={flowScope} statuses={statuses} active={active} actions={statusActions} receiptDetails={grok ? undefined : close => <AppAdmissionRecoveryPanel active={active} onActionComplete={close} />}
       queue={lid ? { lid, details: pendingSupported
         ? <PendingInputDetails state={state} active={active && !flowOpen && !conversation?.replacedBy} busy={pendingBusy} operate={operatePending} />
         : <RetainedInputDetails state={state} disabled={!active || flowOpen || !!conversation?.replacedBy || pendingBusy || state.actionBusy || state.sending || state.loading || !!state.pendingInputLoading} operate={operatePending} /> } : undefined}
@@ -326,13 +335,17 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
           <button type="button" className="composer-flows" disabled={paired && !onOpenChatFlow} title={paired ? "Open Flows in Chat" : `Flows (${shortcutHint(FLOWS_SHORTCUT)})`} aria-keyshortcuts={`${isMacPlatform() ? "Meta" : "Control"}+p`} aria-expanded={localPage === "flows"} onClick={openFlows}><FiGrid size={14} aria-hidden="true" />Flows</button>
         </div>
       </div><div className="composer-actions">
-        <button ref={helpTrigger} type="button" className={`composer-help${infoError ? " has-issue" : ""}`} disabled={!active} aria-label={infoText ? `Sending messages help: ${infoText}` : "Sending messages help"} title="Sending messages" onClick={() => setHelpOpen(true)}><FiInfo size={14} aria-hidden="true" />{infoError ? <span className="composer-help-dot" aria-hidden="true" /> : null}</button>
+        <button ref={helpTrigger} type="button" className={`composer-help${infoError ? " has-issue" : ""}`} disabled={!active} aria-label={infoText ? `Sending messages and receipts: ${infoText}` : "Sending messages and message receipts"} title="Sending messages and message receipts" onClick={() => setHelpOpen(true)}><FiInfo size={14} aria-hidden="true" />{infoError ? <span className="composer-help-dot" aria-hidden="true" /> : null}</button>
         {navigation}
       </div></div>
     </form> : navigation ? <footer className="composer-toolbar composer-navigation-only"><div className="composer-actions">{navigation}</div></footer> : null}
     </div>
     </div>
     {active && pickerOpen && <AgentPicker close={() => setPickerOpen(false)} restoreFocus={restoreAgentFocus} />}
-    {active && helpOpen && <ShellDialog title="Sending messages" close={() => setHelpOpen(false)} restoreFocus={restoreHelpFocus}><div className="composer-help-notes">{state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}<p className="muted">Background progress and connection details appear in the activity row above the composer.</p><p className="muted">Enter inserts a newline · Ctrl/Cmd+Enter uses the visible primary action. Other conversations can run concurrently.</p><p className="muted">Type @ for paths in the execution directory. Arrow keys choose; Enter inserts text, not an attachment. Escape dismisses.</p><p className="muted">Concurrent conversations in this checkout share files; their edits can overlap.</p>{needsAck && <p className="muted">External assistant activity cannot be detected here. Stop it in its native harness before sending to this same conversation.</p>}</div></ShellDialog>}
+    {active && helpOpen && <ShellDialog title="Sending messages" close={() => setHelpOpen(false)} restoreFocus={restoreHelpFocus}><div className="composer-help-notes">
+      {state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}
+      {!grok && <AppAdmissionRecoveryPanel active={active} onActionComplete={() => setHelpOpen(false)} />}
+      <p className="muted">Background progress and connection details appear in the activity row above the composer.</p><p className="muted">Enter inserts a newline · Ctrl/Cmd+Enter uses the visible primary action. Other conversations can run concurrently.</p><p className="muted">Type @ for paths in the execution directory. Arrow keys choose; Enter inserts text, not an attachment. Escape dismisses.</p><p className="muted">Concurrent conversations in this checkout share files; their edits can overlap.</p>{needsAck && <p className="muted">External assistant activity cannot be detected here. Stop it in its native harness before sending to this same conversation.</p>}
+    </div></ShellDialog>}
   </>;
 }

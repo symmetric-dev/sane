@@ -1,26 +1,50 @@
-import { normalizeNativeSource, discoverRepository, revalidateCheckout } from "sane-core/server";
-import type { ConversationRef } from "sane-core/contracts";
-import { atomicAppRecord, validateAdmissions, type Admission, type AdmissionRecords, type SourceRecords } from "./app-store";
+import { DomainError, normalizeNativeSource, discoverRepository, revalidateCheckout } from "sane-core/server";
+import type { ConversationRef, GrokSourceDescriptor } from "sane-core/contracts";
+import { atomicAppRecord, validateStoredAdmissions, type Admission, type StoredAdmissions, type StoredSourceRecords } from "./app-store";
 import type { CatalogService } from "./catalog";
+import { uuid } from "./history";
 import { RepositoryRouter, WorkstreamAdapterError } from "./workstreams";
+import { toSessionHarness } from "./harness-names";
+import type { GrokSourceRecord } from "./app-sources";
+
+/** Grok create (possibly later enrolled) with its caller-allocated native identity. */
+export type GrokCreateAdmission = Omit<Admission, "source" | "operation" | "nativeId"> & {
+  source: { descriptor: GrokSourceDescriptor; authorityId: string };
+  operation: "create" | "enroll" | "attach";
+  nativeId: string;
+};
 
 /** Serialized by the bridge admission gate. All writes are synchronous durable publication. */
 export class AdmissionService {
-  private records: AdmissionRecords;
-  constructor(private dataDir: string, initial: AdmissionRecords, private sources: SourceRecords, private catalog: CatalogService, private router: RepositoryRouter, private save = atomicAppRecord) { this.records = structuredClone(validateAdmissions(initial)); }
+  private records: StoredAdmissions;
+  constructor(private dataDir: string, initial: StoredAdmissions, private sources: StoredSourceRecords, private catalog: CatalogService, private router: RepositoryRouter, private save = atomicAppRecord) { this.records = structuredClone(validateStoredAdmissions(initial)); }
   get(sessionId: string): Admission | undefined { const a = this.records.admissions.find(a => a.sessionId === sessionId); return a && structuredClone(a); }
+  /** Configured pin only: no home resolution, stat, or other filesystem work. */
+  getGrokSourcePin(): GrokSourceRecord | null {
+    const pin = this.sources.version === 2 ? this.sources.gk : undefined;
+    return pin ? structuredClone(pin) : null;
+  }
+  getGrokCreate(sessionId: string): GrokCreateAdmission | undefined {
+    const a = this.records.admissions.find(row => row.sessionId === sessionId);
+    return a && a.source.descriptor.harness === "gk" && a.nativeId !== null ? structuredClone(a) as GrokCreateAdmission : undefined;
+  }
   getByNative(ref: ConversationRef): Admission | undefined {
     const a = this.records.admissions.find(a => a.source.descriptor.harness === ref.harness && a.source.authorityId === ref.authorityId && a.nativeId === ref.nativeId);
     return a && structuredClone(a);
   }
   list(): Admission[] { return structuredClone(this.records.admissions); }
-  private persist(next: AdmissionRecords) { validateAdmissions(next); this.save(this.dataDir, "admissions.json", next); this.records = next; }
+  private persist(next: StoredAdmissions) { validateStoredAdmissions(next); this.save(this.dataDir, "admissions.json", next); this.records = next; }
   private update(sessionId: string, change: Partial<Admission>) {
     const next = structuredClone(this.records), a = next.admissions.find(a => a.sessionId === sessionId);
     if (!a) throw new WorkstreamAdapterError(404, "admission-missing", "Unknown admission");
     Object.assign(a, change); this.persist(next); return structuredClone(a);
   }
-  async begin(input: { sessionId: string; operation: "create" | "attach"; harness: "cc" | "oc"; cwd: string; workspaceId: string; worktreeId: string; nativeId: string | null; parent?: ConversationRef | null }) {
+  async begin(input: { sessionId: string; operation: "create" | "attach"; harness: "cc" | "oc" | "gk"; cwd: string; workspaceId: string; worktreeId: string; nativeId: string | null; parent?: ConversationRef | null }): Promise<Admission> {
+    if (input.harness === "gk") {
+      if (!input.nativeId) throw new WorkstreamAdapterError(409, "invalid-native-id", "Grok requires its allocated native UUID");
+      const admission = await this.beginGrokCreate({ ...input, nativeId: input.nativeId, deferReady: true });
+      return input.operation === "attach" ? this.update(input.sessionId, { operation: "attach" }) : admission;
+    }
     if (this.get(input.sessionId)) throw new WorkstreamAdapterError(409, "admission-exists", "Use explicit same-identity admission retry");
     const configured = this.sources[input.harness], source = normalizeNativeSource(configured.descriptor);
     if (configured.authorityId !== source.authorityId) throw new WorkstreamAdapterError(409, "source-unavailable", "Native source requires explicit configuration refresh");
@@ -36,7 +60,55 @@ export class AdmissionService {
     }
     if (input.parent && domain.mode !== "repository") throw new WorkstreamAdapterError(409, "parent-domain-required", "Parents require repository registration");
     const a: Admission = { version: 1, requestId: crypto.randomUUID(), sessionId: input.sessionId, operation: input.operation, state: input.nativeId === null ? "intent" : "identity_known", source, binding: { workspaceId: input.workspaceId, worktreeId: input.worktreeId, bindingRevision: binding.bindingRevision, executionCheckout: input.cwd, checkoutPin, domain }, nativeId: input.nativeId, parent: input.parent ?? null, createdAt: new Date().toISOString(), error: null };
-    this.persist({ version: 1, admissions: [...this.records.admissions, a] }); return structuredClone(a);
+    this.persist({ version: this.records.version, admissions: [...this.records.admissions, a] }); return structuredClone(a);
+  }
+  /**
+   * Create-only Grok admission. The caller allocates the native UUID before the
+   * prompt. The selected checkout is pinned and initialized repository domains
+   * are registered before ready is published. No native process is launched.
+   * Only this explicit create publishes admissions version 2.
+   * Production wiring must call it inside the bridge admission gate.
+   */
+  async beginGrokCreate(input: { sessionId: string; nativeId: string; cwd: string; workspaceId: string; worktreeId: string; authorityId?: string | null; parent?: ConversationRef | null; deferReady?: boolean }) {
+    if (!uuid(input.sessionId)) throw new WorkstreamAdapterError(409, "invalid-session", "Grok session id must be a UUID");
+    if (!uuid(input.nativeId)) throw new WorkstreamAdapterError(409, "invalid-native-id", "Grok native id must be a caller-allocated UUID");
+    const gk = this.sources.version === 2 ? this.sources.gk : undefined;
+    if (!gk) throw new WorkstreamAdapterError(409, "grok-unconfigured", "Grok source is unconfigured");
+    if (gk.authorityId === null || input.authorityId === null) throw new WorkstreamAdapterError(409, "grok-unresolved", "Grok authority is unresolved");
+    if (input.authorityId !== undefined && input.authorityId !== gk.authorityId) throw new WorkstreamAdapterError(409, "source-mismatch", "Grok authority does not match the configured home");
+    let normalizedAuthority: string;
+    try { normalizedAuthority = normalizeNativeSource(gk.descriptor).authorityId; }
+    catch (error) {
+      if (error instanceof DomainError) throw new WorkstreamAdapterError(409, "source-mismatch", "Grok authority does not match the configured home");
+      throw error;
+    }
+    if (normalizedAuthority !== gk.authorityId) throw new WorkstreamAdapterError(409, "source-mismatch", "Grok authority does not match the configured home");
+    const catalogBinding = await this.catalog.binding(input.workspaceId, input.worktreeId);
+    if (catalogBinding.cwd !== input.cwd) throw new WorkstreamAdapterError(409, "execution-mismatch", "Use the canonical selected execution root");
+    const workspace = await this.catalog.get(input.workspaceId);
+    let domain: Admission["binding"]["domain"] = { mode: "app-only" }, checkoutPin: Admission["binding"]["checkoutPin"] = null;
+    if (workspace.kind === "repository") {
+      const inspected = await this.router.inspect(input.workspaceId);
+      if (inspected.state !== "ready" && inspected.state !== "uninitialized") throw new WorkstreamAdapterError(409, inspected.code, inspected.message);
+      checkoutPin = discoverRepository(input.cwd).invocationCheckout;
+      if (inspected.state === "ready") { domain = { mode: "repository", repositoryId: inspected.context.repositoryId, primaryCheckout: inspected.context.primaryCheckout }; revalidateCheckout(inspected.context, checkoutPin); }
+    }
+    if (input.parent && domain.mode !== "repository") throw new WorkstreamAdapterError(409, "parent-domain-required", "Parents require repository registration");
+    // Check current records after the awaited catalog work, contiguous with
+    // publication. The production admission gate remains the serialization owner.
+    const same = (left: string | null, right: string) => left !== null && left.toLowerCase() === right.toLowerCase();
+    if (this.records.admissions.some(row => same(row.sessionId, input.sessionId))) throw new WorkstreamAdapterError(409, "admission-exists", "Grok admission refuses a duplicate session id; no retry");
+    if (this.records.admissions.some(row => same(row.nativeId, input.nativeId))) throw new WorkstreamAdapterError(409, "admission-exists", "Grok admission refuses a duplicate native id; no replay");
+    const source = structuredClone({ descriptor: gk.descriptor, authorityId: gk.authorityId });
+    const a = {
+      version: 1 as const, requestId: crypto.randomUUID(), sessionId: input.sessionId, operation: "create" as const, state: "identity_known" as const,
+      source, binding: { workspaceId: input.workspaceId, worktreeId: input.worktreeId, bindingRevision: catalogBinding.bindingRevision, executionCheckout: input.cwd, checkoutPin, domain },
+      nativeId: input.nativeId, parent: input.parent ?? null, createdAt: new Date().toISOString(), error: null,
+    } satisfies GrokCreateAdmission;
+    this.persist({ version: 2, admissions: [...this.records.admissions, a] });
+    if (input.deferReady) return structuredClone(a);
+    await this.register(input.sessionId);
+    return this.ready(input.sessionId) as GrokCreateAdmission;
   }
   async createNative(sessionId: string, create: () => Promise<string>) {
     const a = this.get(sessionId);
@@ -57,7 +129,7 @@ export class AdmissionService {
     if (adapter) {
       revalidateCheckout(adapter.domain.context, b.checkoutPin!);
       // Core retry is identity/pin/parent-only: it never reapplies membership or phases.
-      adapter.register({ sessionId, harness: a.source.descriptor.harness === "cc" ? "claude-code" : "opencode", nativeSessionId: a.nativeId, authorityId: a.source.authorityId, cwd: b.executionCheckout }, a.parent);
+      adapter.register({ sessionId, harness: toSessionHarness(a.source.descriptor.harness), nativeSessionId: a.nativeId, authorityId: a.source.authorityId, cwd: b.executionCheckout }, a.parent);
     }
     return a;
   }

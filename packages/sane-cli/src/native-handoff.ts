@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import { DomainError, handoffInput, handoffSchema } from "../../sane-core/src/server.ts"
-import { nativeKickoffCaller, openNativeCaller, type NativeCaller } from "./native-caller.ts"
+import { nativeKickoffCaller, nativeRuntimeHeaders, openNativeCaller, type NativeCaller } from "./native-caller.ts"
 
 export { handoffSchema as nativeHandoffSchema }
 export const nativeHandoffStatusSchema = { type: "object", properties: { requestId: { type: "string", minLength: 1, maxLength: 200 } }, required: ["requestId"], additionalProperties: false } as const
@@ -64,7 +64,7 @@ export async function handoffNativeCaller(caller: NativeCaller, input: unknown, 
   }
   let response: Response
   try {
-    response = await fetch(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json", authorization: `Bearer ${connection.token}` }, body: JSON.stringify({ operation: status ? "status" : "enqueue", caller: envelope, ...(status ? { requestId: args.requestId } : { input: args }) }), signal: AbortSignal.timeout(15000) })
+    response = await fetch(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json", authorization: `Bearer ${connection.token}`, ...nativeRuntimeHeaders(caller) }, body: JSON.stringify({ operation: status ? "status" : "enqueue", caller: envelope, ...(status ? { requestId: args.requestId } : { input: args }) }), signal: AbortSignal.timeout(15000) })
   } catch {
     // Admission (and, for a first kickoff, enrollment) may or may not have
     // happened; only a same-requestId retry is guaranteed to converge.

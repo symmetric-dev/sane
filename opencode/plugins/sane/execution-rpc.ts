@@ -8,6 +8,13 @@ export const SaneExecution = Rpc.define({
   id: "sane-execution",
   events: {},
   methods: {
+    runtime: {
+      input: { type: "object", additionalProperties: false, properties: {} },
+      output: { type: "object", additionalProperties: false,
+        required: ["schema", "directory", "pluginDirectory", "registrationFile", "appConnectionFile", "tools"],
+        properties: { schema: { const: 1 }, directory: { type: "string" }, pluginDirectory: { type: "string" },
+          registrationFile: { type: "string" }, appConnectionFile: { type: "string" }, tools: { type: "array", items: { type: "string" } } } },
+    },
     configure: {
       input: {
         type: "object", additionalProperties: false,
