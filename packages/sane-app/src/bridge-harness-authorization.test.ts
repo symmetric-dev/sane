@@ -10,8 +10,9 @@ import { body, json } from "./bridge-http";
 import { synchronousDispatchHook } from "./dispatch-evidence";
 import { requireOperation } from "./harness-operations";
 import { toNativeHarness, toSessionHarness } from "./harness-names";
-import { uuid } from "./history";
+import { uuid, type Run } from "./history";
 import { OpenCodeError } from "./opencode";
+import { preparedAdmissionNativeCommandId } from "./prepared-admission-command";
 import { canonicalJSON } from "./prepared-input-codec";
 import { UserInputPreparationError } from "./user-input-preparation";
 import { WorkspaceError } from "./workspace";
@@ -111,6 +112,49 @@ describe("bridge harness authorization refuses unknown identities", () => {
     expect(() => assertQualifiedContinuation(session("claude-code"), run)).toThrow("Unknown native harness");
   });
 
+  for (const [harness, native] of [["claude-code", "cc"], ["opencode", "oc"]] as const) {
+    test(`assertQualifiedContinuation: ${harness} allows proven unsubmitted compaction only`, () => {
+      const compact: Pick<Run, "runId" | "sessionId" | "operation" | "status" | "nativePhase" | "nativeAcceptedAt" | "compact"> = {
+        runId: "compact-1", sessionId, operation: "compact", status: "failed", nativePhase: "preparing",
+      };
+      const meta = { runs: [compact] };
+      const withheld = { kind: "status", runId: compact.runId, sessionId, data: { operation: "compact", compactNotSubmitted: true } };
+      const events = new Map<string, unknown[]>([[compact.runId, [withheld]]]);
+      const qualify = bridgeConst("assertQualifiedContinuation", {
+        admissions: { get: () => admission(native) }, toSessionHarness, WorkstreamAdapterError,
+        branches: { list: () => [] }, meta, events,
+      });
+      const check = () => qualify(session(harness), { sessionId });
+      expect(check).not.toThrow();
+      for (const status of ["failed", "interrupted"]) {
+        events.set(compact.runId, [{ ...withheld, data: { status } }]);
+        expect(check).toThrow("Compaction retention requires explicit qualification");
+      }
+      for (const foreign of [{ ...withheld, runId: "another-run" }, { ...withheld, sessionId: "another-session" }]) {
+        events.set(compact.runId, [foreign]);
+        expect(check).toThrow("Compaction retention requires explicit qualification");
+      }
+      events.set(compact.runId, [withheld]);
+      // OC persists "sending" before its final idle check. Original explicit
+      // withholding still proves that a failed preflight never submitted it.
+      compact.nativePhase = "sending";
+      expect(check).not.toThrow();
+      compact.nativePhase = "accepted";
+      expect(check).toThrow("Compaction retention requires explicit qualification");
+      compact.nativePhase = "preparing";
+      compact.nativeAcceptedAt = 0;
+      expect(check).toThrow("Compaction retention requires explicit qualification");
+      delete compact.nativeAcceptedAt;
+      compact.compact = { requestId: "request-1", nativeAdmittedId: "msg_admitted" };
+      expect(check).toThrow("Compaction retention requires explicit qualification");
+      delete compact.compact;
+      events.set(compact.runId, [withheld, { kind: "message", data: { compaction: {} } }]);
+      expect(check).toThrow("Observed context reset or compaction");
+      events.set(compact.runId, [withheld, { kind: "context", data: { contextReset: true } }]);
+      expect(check).toThrow("Observed context reset or compaction");
+    });
+  }
+
   test("launchCurrent: omitted session and unknown native refuse; known pairs match", () => {
     let row = admission("cc");
     let current = session("claude-code");
@@ -155,13 +199,15 @@ describe("bridge harness authorization refuses unknown identities", () => {
     let harness: string = "claude-code";
     let row = admission("cc");
     let matched = false;
+    let idleReads = 0;
     const active = session("claude-code");
     const meta = { sessions: [active], runs: [] as unknown[], reconciliationRequired: false };
     const admitPreparedInput = bridgeFunction("admitPreparedInput", {
       meta, store: { manifest: { storeId: "store-1" } }, closing: false, storageFailed: false, retainOwner: false, toNativeHarness, canonicalJSON, UserInputPreparationError, WorkstreamAdapterError,
-      isAssistantAgentId, synchronousDispatchHook, saneContextSnapshot, sessionHarness: (value: { harness?: string }) => value.harness,
+      isAssistantAgentId, synchronousDispatchHook, saneContextSnapshot, preparedAdmissionNativeCommandId, sessionHarness: (value: { harness?: string }) => value.harness,
       nativeSource: () => authorityId, execution: async () => {}, ensureDirectory: async () => {},
-      oc: { activity: async () => ({ active: false, pending: false }), assertIdle: async () => {} },
+      oc: { activity: async () => { idleReads++; return { active: false, pending: false }; },
+        assertIdle: async () => { throw new Error("Duplicate idle read without intervening setup"); } },
       assertPreparedUserInputCurrent: () => {}, revalidatePreparedUserInput: async () => {}, preparationState: () => ({}),
       coordinator: { holdsAdmission: () => true, hasOwner: () => false, hasReconciliation: () => false, inspectReadiness: () => ({ ready: true }) },
       dispatchRegistry: { assertSupport: () => {} },
@@ -190,12 +236,13 @@ describe("bridge harness authorization refuses unknown identities", () => {
     harness = "opencode"; row = admission("oc"); active.harness = "opencode";
     await admitPreparedInput(prepared(), { id: "lease" });
     expect(matched).toBe(true);
+    expect(idleReads).toBe(1);
     harness = "claude-code"; row = admission("oc"); active.harness = "claude-code"; matched = false;
     await expect(admitPreparedInput(prepared(), { id: "lease" })).rejects.toThrow("Activation journal has no exact ready original native admission and pinned pair");
     expect(matched).toBe(false);
     harness = "grok"; row = admission("cc"); active.harness = "grok";
-    await expect(admitPreparedInput(prepared(), { id: "lease" })).rejects.toThrow(TypeError);
-    await expect(admitPreparedInput(prepared(), { id: "lease" })).rejects.toThrow("Grok is not a repository harness");
+    await expect(admitPreparedInput(prepared(), { id: "lease" })).rejects.toThrow(WorkstreamAdapterError);
+    await expect(admitPreparedInput(prepared(), { id: "lease" })).rejects.toThrow("Grok prepared admission is not available");
   });
 
   test("admitExplicitWorker: unknown launch harness throws; known launches prove cc/oc", async () => {

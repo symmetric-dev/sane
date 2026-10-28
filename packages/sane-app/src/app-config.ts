@@ -15,7 +15,7 @@ export type AppConfig = {
   contextDelivery?: "startup" | "canonical";
   agentModelConfig?: string;
   nativeRuntime?: NativeRuntimeSelection;
-  native: { claude: { executable: string; profileRoot: string }; opencode: { mode: "managed"; registrationFile: string }; grok?: { homeRoot: string } };
+  native: { claude: { executable: string; profileRoot: string }; opencode: { mode: "managed"; registrationFile: string }; grok?: { homeRoot: string; executable?: string } };
 };
 export type SourceCapability = { state: "available" | "unavailable"; locator: string; authority?: NativeAuthority };
 const invalid = (message: string): never => { throw new AppConfigError(message); };
@@ -89,8 +89,10 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   if (configExists && (raw.format !== "sane-app-config" || (raw.version !== 1 && raw.version !== 2))) invalid("Expected sane-app-config version 1 or 2");
   const server = raw.server === undefined ? {} : object(raw.server, ["host", "port", "publicOrigin", "allowRemote"], "server");
   const native = raw.native === undefined ? {} : object(raw.native, raw.version === 2 ? ["claude", "opencode", "grok"] : ["claude", "opencode"], "native");
-  const gk = raw.version === 2 && native.grok !== undefined ? object(native.grok, ["homeRoot"], "grok") : undefined;
+  const gk = raw.version === 2 && native.grok !== undefined ? object(native.grok, ["homeRoot", "executable"], "grok") : undefined;
   if (gk && !isAbsolute(text(gk.homeRoot, "grok.homeRoot"))) invalid("Grok home must be an absolute path");
+  // Saved absolute path only. Never resolve a relative name against the config directory or PATH.
+  const grokExecutable = gk?.executable === undefined ? undefined : absoluteGrokExecutable(text(gk.executable, "grok.executable"));
   const cc = native.claude === undefined ? {} : object(native.claude, ["executable", "profileRoot"], "claude");
   const oc = native.opencode === undefined ? {} : object(native.opencode, ["mode", "registrationFile"], "opencode");
   if (oc.mode !== undefined && oc.mode !== "managed") invalid("Only managed OpenCode is supported");
@@ -120,7 +122,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
     contextDelivery: contextDelivery as "startup" | "canonical",
     ...(raw.agentModelConfig !== undefined ? { agentModelConfig: resolve(base, text(raw.agentModelConfig, "agentModelConfig")) } : {}),
     ...(nativeRuntime ? { nativeRuntime } : {}),
-    native: { claude: { executable: executable.includes("/") ? resolve(flags.has("executable") ? invocation : base, executable) : executable, profileRoot: path("profile", cc.profileRoot, resolve(invocation, env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"))) }, opencode: { mode: "managed", registrationFile: path("registration", oc.registrationFile, resolve(invocation, env.XDG_STATE_HOME ?? join(home, ".local/state"), "opencode/service.json")) }, ...(gk ? { grok: { homeRoot: resolve(base, gk.homeRoot) } } : {}) },
+    native: { claude: { executable: executable.includes("/") ? resolve(flags.has("executable") ? invocation : base, executable) : executable, profileRoot: path("profile", cc.profileRoot, resolve(invocation, env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"))) }, opencode: { mode: "managed", registrationFile: path("registration", oc.registrationFile, resolve(invocation, env.XDG_STATE_HOME ?? join(home, ".local/state"), "opencode/service.json")) }, ...(gk ? { grok: { homeRoot: resolve(base, gk.homeRoot), ...(grokExecutable !== undefined ? { executable: grokExecutable } : {}) } } : {}) },
   };
   const contradiction = (name: string) => invalid(`Native selector contradicts configuration: ${name}`);
   const sameSource = (harness: "cc" | "oc", a: string, b: string) => {
@@ -162,14 +164,23 @@ export function validateAppOrigin(config: AppConfig, password?: string): void {
     if (!loopback(u.hostname) && !password) invalid("Remote publicOrigin requires SANE_APP_PASSWORD");
   }
 }
-/** Explicit config publication. Does not run from startup and does not rewrite Claude or OpenCode fields. */
-export function publishGrokConfig(configPath: string, homeRoot: string): void {
-  if (!isAbsolute(homeRoot) || homeRoot.includes("\0")) invalid("Grok home must be an absolute path");
-  const raw = parseConfigJson(readFileSync(configPath, "utf8"));
-  if (raw.format !== "sane-app-config" || (raw.version !== 1 && raw.version !== 2)) invalid("Expected sane-app-config version 1 or 2");
-  const native = raw.native && typeof raw.native === "object" && !Array.isArray(raw.native) ? { ...raw.native } : {};
-  if (raw.version === 1 && Object.keys(native).some(key => key !== "claude" && key !== "opencode")) invalid("Unknown native key");
-  const next = { ...raw, version: 2, native: { ...native, grok: { homeRoot } } };
+/** Saved absolute executable, or undefined. Never a PATH name such as "grok". */
+export function explicitGrokExecutable(config: AppConfig): string | undefined {
+  const executable = config.native.grok?.executable;
+  if (typeof executable !== "string" || !executable.trim() || executable.includes("\0") || !isAbsolute(executable)) return undefined;
+  return executable;
+}
+function absoluteGrokExecutable(value: string): string {
+  if (!isAbsolute(value) || value.includes("\0")) invalid("Grok executable must be an absolute path");
+  return value;
+}
+function savedAbsoluteGrokExecutable(grok: unknown): string | undefined {
+  if (!grok || typeof grok !== "object" || Array.isArray(grok) || !Object.hasOwn(grok, "executable")) return undefined;
+  const executable = (grok as { executable: unknown }).executable;
+  if (typeof executable !== "string" || !executable.trim() || executable.includes("\0") || !isAbsolute(executable)) return invalid("Grok executable must be an absolute path");
+  return executable;
+}
+function writeConfigAtomically(configPath: string, next: unknown): void {
   const temporary = `${configPath}.${crypto.randomUUID()}.tmp`;
   const fd = openSync(temporary, "wx", 0o600);
   try { writeFileSync(fd, JSON.stringify(next, null, 2) + "\n"); fsyncSync(fd); }
@@ -178,4 +189,26 @@ export function publishGrokConfig(configPath: string, homeRoot: string): void {
   renameSync(temporary, configPath);
   const directory = openSync(dirname(configPath), "r");
   try { fsyncSync(directory); } finally { closeSync(directory); }
+}
+/** Explicit config publication. Does not run from startup and does not rewrite Claude or OpenCode fields. */
+export function publishGrokConfig(configPath: string, homeRoot: string): void {
+  if (!isAbsolute(homeRoot) || homeRoot.includes("\0")) invalid("Grok home must be an absolute path");
+  const raw = parseConfigJson(readFileSync(configPath, "utf8"));
+  if (raw.format !== "sane-app-config" || (raw.version !== 1 && raw.version !== 2)) invalid("Expected sane-app-config version 1 or 2");
+  const native = raw.native && typeof raw.native === "object" && !Array.isArray(raw.native) ? { ...raw.native } : {};
+  if (raw.version === 1 && Object.keys(native).some(key => key !== "claude" && key !== "opencode")) invalid("Unknown native key");
+  const executable = savedAbsoluteGrokExecutable(native.grok);
+  const next = { ...raw, version: 2, native: { ...native, grok: executable === undefined ? { homeRoot } : { homeRoot, executable } } };
+  writeConfigAtomically(configPath, next);
+}
+/** Explicit executable publication. Requires a v2 home. Does not run from startup and does not rewrite Claude, OpenCode, or homeRoot. */
+export function publishGrokExecutable(configPath: string, executable: string): void {
+  if (typeof executable !== "string" || !executable.trim() || executable.includes("\0") || !isAbsolute(executable)) invalid("Grok executable must be an absolute path");
+  const raw = parseConfigJson(readFileSync(configPath, "utf8"));
+  if (raw.format !== "sane-app-config" || raw.version !== 2) invalid("Grok executable requires an existing home");
+  const native = raw.native && typeof raw.native === "object" && !Array.isArray(raw.native) ? { ...raw.native } : {};
+  const grok = native.grok;
+  if (!grok || typeof grok !== "object" || Array.isArray(grok) || typeof grok.homeRoot !== "string" || !grok.homeRoot.trim() || grok.homeRoot.includes("\0") || !isAbsolute(grok.homeRoot)) invalid("Grok executable requires an existing home");
+  const next = { ...raw, version: 2, native: { ...native, grok: { homeRoot: grok.homeRoot, executable } } };
+  writeConfigAtomically(configPath, next);
 }

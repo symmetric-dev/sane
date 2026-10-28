@@ -37,6 +37,32 @@ function fixture(harness: "opencode" | "claude-code" = "opencode", configured = 
 const absent = {} as CommittedMetadataReceipt;
 
 describe("bridge-owned synchronous metadata publication", () => {
+  for (const proof of ["committed", "original association"] as const) test(`${proof} reads guard once and read each pinned file once, including invalid receipts`, () => {
+    const f = fixture(), receipt = f.publisher.commitSerialized(f.serialize()), binding = f.binding();
+    let guards = 0;
+    f.guard(() => { guards++; });
+    const reads = spyOn(fs, "readFileSync");
+    const assertProof = (token: CommittedMetadataReceipt) => proof === "committed"
+      ? f.publisher.assertCommitted(token, binding) : f.publisher.assertOriginalAssociation(token, f.dispatch);
+    try {
+      assertProof(receipt);
+      expect(guards).toBe(1); expect(reads).toHaveBeenCalledTimes(2);
+      expect(() => assertProof(absent)).toThrow(MetadataCommitProofError);
+      expect(guards).toBe(2); expect(reads).toHaveBeenCalledTimes(4);
+      assertProof(receipt);
+      expect(guards).toBe(3); expect(reads).toHaveBeenCalledTimes(6);
+    } finally { reads.mockRestore(); }
+    expect(f.failures).toEqual([]);
+  });
+
+  test("publication retains entry, pre-rename, post-rename, post-fsync and trailing guards", () => {
+    const f = fixture(); let guards = 0;
+    f.guard(() => { guards++; });
+    f.publisher.commitSerialized(f.serialize());
+    expect(guards).toBe(5);
+    expect(f.failures).toEqual([]);
+  });
+
   test("real exact-byte publication fsyncs file then directory and returns an opaque frozen receipt", () => {
     const f = fixture(), bytes = JSON.stringify(f.metadata, null, 2) + "\n", previous = fs.statSync(f.path);
     const sync = fs.fsyncSync, order: string[] = [];

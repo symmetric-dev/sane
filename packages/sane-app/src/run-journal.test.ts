@@ -11,17 +11,133 @@ function fixture() {
   const root = fs.realpathSync(fs.mkdtempSync(join(temporary, "run-journal-test-"))); roots.push(root);
   const run: Run = { runId: crypto.randomUUID(), sessionId: crypto.randomUUID(), cwd: root, status: "running", createdAt: new Date().toISOString() };
   const events: Event[] = [], published: number[] = [], failures: unknown[] = [];
-  let owned = true;
-  const writer = new RunJournalWriter(root, { assertStorage: () => { if (!owned) throw new Error("ownership lost"); }, failClosed: error => { failures.push(error); } });
+  let owned = true, guard: () => void = () => {};
+  const storageChecks = { count: 0 };
+  const writer = new RunJournalWriter(root, { assertStorage: () => { storageChecks.count++; guard(); if (!owned) throw new Error("ownership lost"); }, failClosed: error => { failures.push(error); } });
   const reserve = (kind: Event["kind"] = "stdout", data: unknown = "record", callback = (event: Event) => { published.push(event.seq); }) => {
     const token = writer.reserve(run, events, kind, data, callback); events.push(token.event); return token;
   };
   const path = join(root, `${run.runId}.jsonl`);
   const read = () => fs.readFileSync(path, "utf8").trimEnd().split("\n").map(line => JSON.parse(line) as Event);
-  return { root, run, events, writer, failures, reserve, path, read, published, loseOwnership: () => { owned = false; } };
+  return { root, run, events, writer, failures, reserve, path, read, published, storageChecks,
+    guard: (action: () => void) => { guard = action; }, loseOwnership: () => { owned = false; } };
 }
 
 describe("one bridge-owned run journal", () => {
+  test("private reservation, progress and authority queries guard once without reading journal bytes", () => {
+    const f = fixture(), token = f.reserve(), unclaimed = crypto.randomUUID();
+    const original = fixture(); original.writer.excludeOriginal(original.run.runId);
+    const reads = spyOn(fs, "readFileSync");
+    try {
+      f.storageChecks.count = 0;
+      expect(f.writer.reservation(token.event)).toBe(token);
+      expect(f.storageChecks.count).toBe(1);
+      expect(f.writer.progress(token)).toEqual({ reserved: 1, appended: 0, durable: 0 });
+      expect(f.storageChecks.count).toBe(2);
+      f.writer.assertUnclaimed(unclaimed);
+      expect(f.storageChecks.count).toBe(3);
+      original.storageChecks.count = 0;
+      original.writer.assertOriginal(original.run.runId);
+      expect(original.storageChecks.count).toBe(1);
+      expect(reads).not.toHaveBeenCalled();
+    } finally { reads.mockRestore(); }
+    expect(fs.existsSync(f.path)).toBe(false);
+    expect(f.failures).toEqual([]); expect(original.failures).toEqual([]);
+  });
+
+  test("mutations and physical baseline reads retain both guards", () => {
+    const f = fixture();
+    const twice = (action: () => void) => {
+      f.storageChecks.count = 0; action(); expect(f.storageChecks.count).toBe(2);
+    };
+    twice(() => f.writer.claimNew(f.run));
+    let token!: RunJournalReservation;
+    twice(() => { token = f.reserve(); });
+    twice(() => f.writer.commit(token));
+    twice(() => f.writer.flushThrough(token));
+    f.storageChecks.count = 0;
+    const baseline = f.writer.adoptExisting(f.run);
+    expect(f.storageChecks.count).toBe(2);
+    twice(() => f.writer.assertCurrentBaseline(baseline));
+    twice(() => f.writer.excludeOriginal(f.run.runId));
+    expect(f.failures).toEqual([]);
+  });
+
+  for (const query of ["reservation", "progress", "unclaimed", "original"] as const) {
+    for (const drift of ["ownership", "root", "reentry"] as const) test(`${query} single guard still refuses ${drift}`, () => {
+      const f = fixture(), token = f.reserve();
+      const unclaimed = crypto.randomUUID(), original = crypto.randomUUID();
+      if (query === "original") f.writer.excludeOriginal(original);
+      const read = () => {
+        if (query === "reservation") return f.writer.reservation(token.event);
+        if (query === "progress") return f.writer.progress(token);
+        if (query === "unclaimed") return f.writer.assertUnclaimed(unclaimed);
+        return f.writer.assertOriginal(original);
+      };
+      if (drift === "ownership") f.loseOwnership();
+      if (drift === "root") {
+        const moved = f.root + "-moved"; fs.renameSync(f.root, moved); roots.push(moved); fs.mkdirSync(f.root);
+      }
+      if (drift === "reentry") f.guard(() => { read(); });
+      expect(read).toThrow(drift === "ownership" ? "ownership lost" : drift === "root" ? "directory changed" : "Reentrant");
+      f.guard(() => {});
+      expect(read).toThrow("reconciliation");
+      expect(() => f.writer.commit(token)).toThrow("reconciliation");
+      expect(fs.existsSync(f.path)).toBe(false);
+      expect(f.failures.length).toBeGreaterThan(0);
+    });
+  }
+
+  for (const query of ["reservation", "progress"] as const) {
+    for (const source of ["copied", "foreign"] as const) test(`${query} refuses ${source} identity without poisoning a valid append`, () => {
+      const f = fixture(), token = f.reserve();
+      const invalid = source === "copied" ? { event: structuredClone(token.event) } : fixture().reserve();
+      f.storageChecks.count = 0;
+      expect(() => query === "reservation" ? f.writer.reservation(invalid.event) : f.writer.progress(invalid)).toThrow(query === "reservation" ? "original" : "Foreign");
+      expect(f.storageChecks.count).toBe(1);
+      expect(f.failures).toEqual([]);
+      expect(f.writer.reservation(token.event)).toBe(token);
+      f.writer.commit(token);
+      expect(f.read()).toEqual(f.events);
+      expect(f.failures).toEqual([]);
+    });
+  }
+
+  test("progress refuses a relinquished token without poisoning another namespace", () => {
+    const f = fixture(), token = f.reserve(); f.writer.commit(token); f.writer.excludeOriginal(f.run.runId);
+    f.storageChecks.count = 0;
+    expect(() => f.writer.progress(token)).toThrow("relinquished");
+    expect(f.storageChecks.count).toBe(1);
+    expect(f.failures).toEqual([]);
+    const run = { runId: crypto.randomUUID(), sessionId: crypto.randomUUID() };
+    const next = f.writer.reserveNew(run, "stdout", "record"); f.writer.commit(next);
+    expect(fs.readFileSync(join(f.root, `${run.runId}.jsonl`), "utf8")).toBe(JSON.stringify(next.event) + "\n");
+    expect(f.failures).toEqual([]);
+  });
+
+  for (const namespace of ["reserved", "original"] as const) test(`assertUnclaimed refuses ${namespace} namespace without poisoning a valid append`, () => {
+    const f = fixture(), token = f.reserve(), original = crypto.randomUUID();
+    if (namespace === "original") f.writer.excludeOriginal(original);
+    f.storageChecks.count = 0;
+    expect(() => f.writer.assertUnclaimed(namespace === "reserved" ? f.run.runId : original)).toThrow("cannot be repaired");
+    expect(f.storageChecks.count).toBe(1);
+    expect(f.failures).toEqual([]);
+    f.writer.commit(token);
+    expect(f.read()).toEqual(f.events);
+    expect(f.failures).toEqual([]);
+  });
+
+  for (const namespace of ["unclaimed", "reserved"] as const) test(`assertOriginal refuses ${namespace} namespace without poisoning a valid append`, () => {
+    const f = fixture(), token = f.reserve();
+    f.storageChecks.count = 0;
+    expect(() => f.writer.assertOriginal(namespace === "reserved" ? f.run.runId : crypto.randomUUID())).toThrow("exclusive recovery authority");
+    expect(f.storageChecks.count).toBe(1);
+    expect(f.failures).toEqual([]);
+    f.writer.commit(token);
+    expect(f.read()).toEqual(f.events);
+    expect(f.failures).toEqual([]);
+  });
+
   test("captures immutable bytes before queued work and appends once in reserved order", () => {
     const f = fixture(), data = { text: "\uFEFF 😀\r\nfirst", nested: { value: 1 } };
     const a = f.reserve("stdout", data), b = f.reserve("stderr", "second"), c = f.reserve("context", { type: "third" });
@@ -149,6 +265,8 @@ describe("one bridge-owned run journal", () => {
   test("copied reservations/events never become writer capabilities", () => {
     const f = fixture(), token = f.reserve();
     expect(() => f.writer.commit({ event: token.event })).toThrow("Foreign");
+    expect(() => f.writer.commit(token)).toThrow("reconciliation");
+    expect(f.failures.length).toBeGreaterThan(0);
     const other = fixture(); const original = other.reserve();
     expect(() => other.writer.reservation(structuredClone(original.event))).toThrow("original");
   });

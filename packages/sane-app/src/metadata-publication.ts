@@ -149,17 +149,30 @@ export class MetadataPublisher {
     }
     throw error;
   }
-  #operation<T>(action: () => T): T {
+  /** Entry guard and failure/reentry scope. Only callback-free private reads may
+   * use this directly; publication must also retain #operation's trailing guard. */
+  #guarded<T>(action: () => T): T {
     if (this.#failed) unsafe("failed; operator reconciliation required");
     if (this.#busy) return this.#fatal(new Error("Reentrant metadata publication operation"));
     this.#busy = true;
     try {
       this.#guard();
+      return action();
+    } catch (error) { return this.#fatal(error); }
+    finally { this.#busy = false; }
+  }
+  #operation<T>(action: () => T): T {
+    return this.#guarded(() => {
       const value = action();
       this.#guard();
       return value;
-    } catch (error) { return this.#fatal(error); }
-    finally { this.#busy = false; }
+    });
+  }
+  /** WeakMap identity lookup and private-field read only: no receipt properties,
+   * caller callbacks, serialization or I/O may run after the one physical guard.
+   * Keep semantic validation outside the failure latch, as before. */
+  #readProof(receipt: CommittedMetadataReceipt): readonly [Committed | undefined, Committed | undefined] {
+    return this.#guarded(() => [this.#receipts.get(receipt), this.#latest] as const);
   }
 
   commitSerialized(snapshot: string): CommittedMetadataReceipt {
@@ -207,7 +220,7 @@ export class MetadataPublisher {
    * or authorization to dispatch; native admission still requires assertCommitted.
    * Semantic refusal does not poison otherwise healthy storage. */
   assertOriginalAssociation(receipt: CommittedMetadataReceipt, identity: DispatchIdentity): void {
-    const committed = this.#operation(() => this.#receipts.get(receipt));
+    const [committed] = this.#readProof(receipt);
     if (!committed) throw new MetadataCommitProofError("No original committed metadata receipt (publication may still be queued)");
     const session = committed.metadata.sessions.find(s => s.sessionId === identity.source.sessionId);
     const run = committed.metadata.runs.find(r => r.runId === identity.runId);
@@ -226,7 +239,7 @@ export class MetadataPublisher {
    * receipts remain valid only while BOTH their snapshot and the latest actual
    * publication still contain the exact expected pins. No queued work is flushed. */
   assertCommitted(receipt: CommittedMetadataReceipt, expected: MetadataDispatchBinding): void {
-    const [committed, latest] = this.#operation(() => [this.#receipts.get(receipt), this.#latest] as const);
+    const [committed, latest] = this.#readProof(receipt);
     if (!committed || !latest) throw new MetadataCommitProofError("No original committed metadata receipt (publication may still be queued)");
     for (const value of [committed, latest]) {
       const session = value.metadata.sessions.find(s => s.sessionId === expected.source.sessionId);

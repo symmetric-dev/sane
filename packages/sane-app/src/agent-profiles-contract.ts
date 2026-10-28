@@ -108,7 +108,7 @@ export function builtinProfiles(now = new Date().toISOString()): AgentProfile[] 
     id: BASE_PROFILE_IDS[harness], kind: "base", role: null, harness, model: "", effort: "",
     label: ({ "claude-code": "Base · Claude Code", opencode: "Base · OpenCode", grok: "Base · Grok" } satisfies Record<Harness, string>)[harness],
     description: "Harness defaults. No SANE instructions.",
-    icon: "circle", color: "slate", builtin: true, locked: false, order, updatedAt: now,
+    icon: "circle", color: "slate", builtin: true, locked: false, ...(harness === "grok" ? { hidden: true } : {}), order, updatedAt: now,
   });
   return [
     base("claude-code", 0), base("opencode", 1), base("grok", 2),

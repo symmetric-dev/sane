@@ -20,17 +20,19 @@ function fixture(harness = "opencode", live = false) {
   const submission = recordContextMessageSubmission(message, { messageId, text: message.transport.text, ...(live ? { liveInput: true } : {}) }, identity);
   const events: Event[] = [], failures: unknown[] = [];
   let dead = false, metadataCommitted = true, ownerCurrent = true;
+  let afterReserveObservation: () => void = () => {}, onAssertCurrent: () => void = () => {};
+  const storageChecks = { count: 0 }, metadataChecks = { count: 0 };
   const failClosed = (error: unknown) => { dead = true; failures.push(error); };
-  const writer = new RunJournalWriter(root, { assertStorage: () => { if (dead) throw new Error("storage closed"); }, failClosed });
+  const writer = new RunJournalWriter(root, { assertStorage: () => { storageChecks.count++; if (dead) throw new Error("storage closed"); }, failClosed });
   const queued: (() => void)[] = [];
   const reserve = (kind: Event["kind"], data: unknown) => {
     const reservation = writer.reserve(run, events, kind, data); events.push(reservation.event);
     queued.push(() => writer.commit(reservation)); return reservation;
   };
   const persist = createContextMessageJournalPersistence({ writer, readIdentity: () => identity, readEvents: () => events,
-    assertCurrent: () => { if (!ownerCurrent) throw new Error("original owner changed"); if (dead) throw new Error("storage closed"); },
-    assertMetadataCommitted: () => { if (!metadataCommitted) throw new Error("metadata still queued"); },
-    reserveObservation: observation => reserve("context", observation), failClosed });
+    assertCurrent: () => { onAssertCurrent(); if (!ownerCurrent) throw new Error("original owner changed"); if (dead) throw new Error("storage closed"); },
+    assertMetadataCommitted: () => { metadataChecks.count++; if (!metadataCommitted) throw new Error("metadata still queued"); },
+    reserveObservation: observation => { const reservation = reserve("context", observation); afterReserveObservation(); return reservation; }, failClosed });
   const observation = (stage: "before-native" | "outcome" = "before-native", outcome: "submitted" | "unknown" | "not-submitted" = "submitted"): ContextMessageDispatchObservation => ({
     schema: 1, type: "context-message-dispatch", messageId, transportSha256: message.transport.sha256,
     boundary: live ? "message" : "run-initial", stage, evidence: { ...identity, submission: stage === "before-native" ? "attempted" : outcome,
@@ -38,7 +40,9 @@ function fixture(harness = "opencode", live = false) {
   });
   const path = join(root, `${run.runId}.jsonl`);
   const read = () => fs.readFileSync(path, "utf8").trimEnd().split("\n").map(line => JSON.parse(line) as Event);
-  return { root, run, writer, identity, events, submission, observation, persist, reserve, read, path, failures, queued,
+  return { root, run, writer, identity, events, submission, observation, persist, reserve, read, path, failures, queued, storageChecks, metadataChecks,
+    afterReserveObservation: (action: () => void) => { afterReserveObservation = action; },
+    onAssertCurrent: (action: () => void) => { onAssertCurrent = action; },
     blockMetadata: () => { metadataCommitted = false; }, changeOwner: () => { ownerCurrent = false; } };
 }
 
@@ -61,10 +65,39 @@ describe("inactive context evidence adapter on the same journal", () => {
 
   test("identical observations can be verified durably without appending again or authorizing a send", () => {
     const f = fixture(); f.reserve("submission", f.submission);
+    f.storageChecks.count = 0;
     f.persist(f.submission, f.observation());
+    // One private submission lookup, then two guards each for reserve and flush.
+    expect(f.storageChecks.count).toBe(5); expect(f.metadataChecks.count).toBe(2);
     const before = fs.readFileSync(f.path);
+    f.storageChecks.count = 0; f.metadataChecks.count = 0;
     f.persist(f.submission, f.observation());
+    // Submission, prior and duplicate lookups guard once each; flush still twice.
+    expect(f.storageChecks.count).toBe(5); expect(f.metadataChecks.count).toBe(2);
     expect(fs.readFileSync(f.path)).toEqual(before);
+    expect(f.failures).toEqual([]);
+  });
+
+  for (const callback of ["reservation", "current", "duplicate current"] as const) test(`metadata drift in ${callback} callback is refused before the durable fence`, () => {
+    const f = fixture(); f.reserve("submission", f.submission);
+    if (callback === "duplicate current") f.persist(f.submission, f.observation());
+    const before = fs.existsSync(f.path) ? fs.readFileSync(f.path) : null;
+    f.metadataChecks.count = 0;
+    if (callback === "reservation") f.afterReserveObservation(() => f.blockMetadata());
+    else {
+      let currentChecks = 0;
+      f.onAssertCurrent(() => { if (++currentChecks === 2) f.blockMetadata(); });
+    }
+    const sync = spyOn(fs, "fsyncSync");
+    try {
+      expect(() => f.persist(f.submission, f.observation())).toThrow("metadata still queued");
+      expect(sync).not.toHaveBeenCalled();
+    } finally { sync.mockRestore(); }
+    expect(f.metadataChecks.count).toBe(2);
+    expect(fs.existsSync(f.path) ? fs.readFileSync(f.path) : null).toEqual(before);
+    expect(f.failures).toHaveLength(1);
+    for (const commit of f.queued) expect(commit).toThrow();
+    expect(fs.existsSync(f.path) ? fs.readFileSync(f.path) : null).toEqual(before);
   });
 
   for (const which of ["bare", "missing", "duplicate", "copied"] as const) test(`refuses ${which} standard submission rather than manufacturing or retrofitting it`, () => {

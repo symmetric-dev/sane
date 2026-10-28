@@ -35,7 +35,7 @@ import { MAX_SESSION_TITLE_LENGTH, normalizeSessionTitle } from "../shared/conve
 import { runSessionNamingUtility } from "./utility-execution";
 import { ClaudeRunService, hookEvents } from "./claude-run-service";
 import { projectClaudeFollowups } from "./claude-followup-projection";
-import { resolveAppConfig } from "./app-config";
+import { explicitGrokExecutable, resolveAppConfig } from "./app-config";
 import { AssetBuildError, buildAssets, validateAssets } from "./asset-build";
 import { createAssetRoute } from "./asset-routes";
 import { createAgentProfileRoute } from "./agent-profile-routes";
@@ -66,7 +66,6 @@ import { SessionCatalog, SessionCatalogError } from "./session-catalog";
 import { createSessionCatalogRoute, matchesSessionCatalogRoute } from "./session-catalog-routes";
 import { workerObservationEvidence } from "./worker-observation-evidence";
 import { HarnessDispatchRegistry, HarnessDispatchError, DispatchProofUnavailableError, createClaudeDispatchAdapter, createOpenCodeDispatchAdapter, sameDispatchSource, type DispatchLifecycleHooks } from "./harness-dispatch";
-import { createGrokDispatchAdapter } from "./grok-adapter";
 import type { DispatchOrigin, DispatchSource, DispatchIdentity, DispatchEvidenceHooks } from "../shared/conversation/dispatch-contract";
 import type { PreparedAdmissionContext, PreparedAdmissionOptions, PreparedInputAdmission } from "./prepared-input-admission";
 import { synchronousDispatchHook } from "./dispatch-evidence";
@@ -155,7 +154,7 @@ import { HarnessOperationError, dispatchHarness, dispatchOwnedOperation, require
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export { hookEvents };
-export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; nativeRuntime?: NativeRuntimeSelection; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; initializeAppAdmissions?: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; contextDelivery?: "startup" | "canonical"; agentModelConfig?: string; /** Internal deterministic fixture dependency; never parsed from CLI/config/HTTP. */ pendingInputWakeClock?: PendingInputWakeClock; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
+export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; nativeRuntime?: NativeRuntimeSelection; /** Saved absolute Grok executable. Omitted unless explicit; never a PATH name. */ grokExecutable?: string; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; initializeAppAdmissions?: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; contextDelivery?: "startup" | "canonical"; agentModelConfig?: string; /** Internal deterministic fixture dependency; never parsed from CLI/config/HTTP. */ pendingInputWakeClock?: PendingInputWakeClock; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
 type BridgeMessageIntent = SubmissionMessageIntent;
 type SubmissionPublicationFactory = (owner: Owner) => OwnedSubmissionPublication;
 type OriginalSubmission = { original: OriginalAppAdmission; envelope: AppAdmissionEnvelope; binding: AppAdmissionConversationBinding };
@@ -164,10 +163,12 @@ export function parseOptions(args: string[]): Options {
 }
 export function runtimeOptions(resolved: ReturnType<typeof resolveAppConfig>): Options {
   const { config: c, operational } = resolved;
+  const grokExecutable = explicitGrokExecutable(c);
   return { host: c.server.host, port: c.server.port, cwd: c.defaultExecutionCwd, dataDir: c.dataDir,
     claudeBin: c.native.claude.executable, allowRemote: c.server.allowRemote, publicOrigin: c.server.publicOrigin ?? undefined,
     maxConcurrentRuns: c.maxConcurrentRuns, maxWorkersPerCheckout: c.maxWorkersPerCheckout, reconcileInterrupted: operational.reconcileInterrupted, initializeAppAdmissions: operational.initializeAppAdmissions, noBuild: operational.noBuild, contextDelivery: c.contextDelivery, agentModelConfig: c.agentModelConfig,
     ...(c.nativeRuntime ? { nativeRuntime: c.nativeRuntime } : {}),
+    ...(grokExecutable ? { grokExecutable } : {}),
     nativeSources: { cc: { version: 1, harness: "cc", kind: "local-profile", profileRoot: c.native.claude.profileRoot },
       oc: { version: 1, harness: "oc", kind: "local-registration", registrationFile: c.native.opencode.registrationFile } } };
 }
@@ -1827,11 +1828,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (branches.list().some(op => op.destinationId === session.sessionId)) throw new WorkstreamAdapterError(409, "context-branch-prefix-unproven", "Inherited shared context has no qualified branch lifecycle");
     for (const run of meta.runs) {
       if (run.sessionId !== session.sessionId) continue;
-      if (run.operation === "compact") throw new WorkstreamAdapterError(409, "context-retention-unproven", "Compaction retention requires explicit qualification before continuing");
+      let compactNotSubmitted = false;
       for (const event of events.get(run.runId) ?? []) {
-        const data = event.data as { contextReset?: boolean; compaction?: unknown } | null;
+        const data = event.data as { contextReset?: boolean; compaction?: unknown; operation?: string; compactNotSubmitted?: boolean } | null;
         if (data?.contextReset || event.kind === "message" && data?.compaction) throw new WorkstreamAdapterError(409, "context-retention-unproven", "Observed context reset or compaction requires explicit qualification before continuing");
+        if (event.kind === "status" && event.runId === run.runId && event.sessionId === session.sessionId
+          && data?.operation === "compact" && data.compactNotSubmitted === true) compactNotSubmitted = true;
       }
+      // A failed status alone proves nothing. Only the original explicit local
+      // non-submission fact exempts an attempt, never an accepted/native reset.
+      if (run.operation === "compact" && (!compactNotSubmitted || run.nativePhase === "accepted"
+        || run.nativeAcceptedAt !== undefined || run.compact?.nativeAdmittedId !== undefined)) throw new WorkstreamAdapterError(409, "context-retention-unproven", "Compaction retention requires explicit qualification before continuing");
     }
   };
   const prepareOwnedMessage = createPrepareOwnedMessage({ storeId: store.manifest.storeId,
@@ -1902,14 +1909,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
     nativeReadiness: pinnedNativeReadiness,
   }));
-  // No Grok executable field exists in this change. Never search PATH. Readiness
-  // refuses a missing executable; registration itself does not spawn.
-  function configuredGrokExecutable(): string | undefined {
-    return undefined;
-  }
-  dispatchRegistry.register(createGrokDispatchAdapter({
-    executable: configuredGrokExecutable(),
-  }));
+  // Grok stays unregistered until its owned App send path is wired. Capability
+  // checks already refuse it; do not construct an adapter without a pinned home.
   function executePrompt(lease: ConversationAdmissionLease, session: Session, run: Run, prompt: string, resume: boolean, origin: DispatchOrigin,
     options: { requestId?: string; coordinatorIntent?: ConversationOperationIntent["kind"]; validate?: () => void; link?: () => void; configure?: () => void; evidence?: DispatchEvidenceHooks; delivery?: PreparedAdmissionContext["delivery"]; nativeQueuedHandoff?: DispatchIdentity; publish?: PreparedAdmissionOptions["publish"]; submissionPublication?: SubmissionPublicationFactory; workerDeliveryId?: string; beforeSend?: () => void; messageIntent?: BridgeMessageIntent; activationPreparation?: { preparation: PendingActivationPreparation; assertCurrent: () => void }; reconciliation?: Omit<NonNullable<DispatchLifecycleHooks<Owner>["reconciliation"]>, "begin"> } = {}) {
     let snapshot = dispatchSnapshot(session);
@@ -2270,7 +2271,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (session.agentKind === "worker" || prepared.stagedUpgrade || input.model !== undefined && input.model !== session.model
           || input.effort !== undefined && input.effort !== session.effort || input.agent !== undefined && input.agent !== session.agent) throw new OpenCodeError("Wait for OpenCode to finish before changing conversation configuration or sending worker input", 409);
         nativeDelivery = "queue";
-      } else await oc.assertIdle(session.nativeSessionId!, cwd);
+      }
     }
     // Final source/profile/default guard AFTER every awaited preflight, including
     // native discovery. No await separates this comparison from installation.
@@ -4228,7 +4229,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
     }
     const liveOwner = owners.get(conversationId);
-    if (originalIntent?.operation === "live-input" && (prepared.binding.harness === "grok" || !liveOwner || liveOwner.run.runId !== originalIntent.expectedLiveRunId || !claudeRuns.canSendInput(liveOwner))) throw new AppAdmissionRequestError("target-conflict", "The selected live run changed during preparation; no replacement send is allowed");
+    if (originalIntent?.operation === "live-input" && (!liveOwner || liveOwner.run.runId !== originalIntent.expectedLiveRunId || !claudeRuns.canSendInput(liveOwner))) throw new AppAdmissionRequestError("target-conflict", "The selected live run changed during preparation; no replacement send is allowed");
     if (!scienceReceipt && (!originalIntent || originalIntent.operation === "live-input") && prepared.binding.harness === "claude-code" && liveOwner && claudeRuns.canSendInput(liveOwner)) {
       if (prepared.stagedUpgrade || prepared.configuration.model !== liveOwner.run.model || prepared.configuration.effort !== liveOwner.run.effort) return json({ error: "Wait for this run to finish before changing assistant settings", code: "claude-input-configuration" }, 409);
       const checkCurrent = () => {

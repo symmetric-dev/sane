@@ -61,18 +61,27 @@ export class RunJournalWriter {
     this.failed = true;
     try { synchronousDispatchHook(() => this.deps.failClosed(error)); } finally { throw error; }
   }
-  private operation<T>(action: () => T): T {
+  /** Entry guard and failure/reentry scope. Direct callers must be callback-free
+   * process-private reads: no caller properties, serialization or file I/O.
+   * Read-only semantic refusals belong outside this fatal storage scope.
+   * Mutations and physical reads use operation() for its trailing guard too. */
+  private guarded<T>(action: () => T): T {
     // Optional publication reentry is refused without poisoning core storage.
     // Reentry from a mandatory guard/I/O propagates to its outer operation.
     if (this.busy || this.publishing) throw new Error("Reentrant run journal operation");
     this.busy = true;
     try {
       this.guard();
+      return action();
+    } catch (error) { return this.fatal(error); }
+    finally { this.busy = false; }
+  }
+  private operation<T>(action: () => T): T {
+    return this.guarded(() => {
       const result = action();
       this.guard();
       return result;
-    } catch (error) { return this.fatal(error); }
-    finally { this.busy = false; }
+    });
   }
   private pin(fd: number, path: string): Pin {
     const opened = fstatSync(fd), current = lstatSync(path);
@@ -180,11 +189,9 @@ export class RunJournalWriter {
 
   /** Only actual live reservations, never copied/decoded historical events. */
   reservation(event: Event): RunJournalReservation {
-    return this.operation(() => {
-      const reservation = this.byEvent.get(event);
-      if (!reservation) throw new Error("Event has no original run journal reservation");
-      return reservation;
-    });
+    const reservation = this.guarded(() => this.byEvent.get(event));
+    if (!reservation) throw new Error("Event has no original run journal reservation");
+    return reservation;
   }
 
   private drain(reservation: RunJournalReservation, durable: boolean): void {
@@ -252,19 +259,22 @@ export class RunJournalWriter {
   /** Process-local watermarks only; not persisted completeness, metadata
    * durability, activation delivery, or native acceptance evidence. */
   progress(reservation: RunJournalReservation): Readonly<{ reserved: number; appended: number; durable: number }> {
-    return this.operation(() => {
+    const progress = this.guarded(() => {
       const entry = this.entries.get(reservation);
-      if (!entry || this.states.get(entry.state.runId) !== entry.state) throw new Error("Foreign or relinquished run journal reservation");
+      if (!entry || this.states.get(entry.state.runId) !== entry.state) return undefined;
       const { reserved, appended, durable } = entry.state;
-      return Object.freeze({ reserved, appended, durable });
+      return { reserved, appended, durable };
     });
+    if (!progress) throw new Error("Foreign or relinquished run journal reservation");
+    return Object.freeze(progress);
   }
   /** Non-fatal background-recorder eligibility only. This is not an ownership
    * or append capability; reserve/commit still perform all mandatory guards. */
   canAppend(runId: string): boolean { return !this.failed && !this.excluded.has(runId); }
 
   assertUnclaimed(runId: string): void {
-    this.operation(() => { if (this.states.has(runId) || this.excluded.has(runId)) throw new Error("Reserved/original run journal cannot be repaired or replaced"); });
+    const claimed = this.guarded(() => this.states.has(runId) || this.excluded.has(runId));
+    if (claimed) throw new Error("Reserved/original run journal cannot be repaired or replaced");
   }
   /** Startup-only transfer to the existing original-recovery authority. Callers
    * must independently prove no live owner/admission and capture original pins.
@@ -278,6 +288,7 @@ export class RunJournalWriter {
     });
   }
   assertOriginal(runId: string): void {
-    this.operation(() => { if (!this.excluded.has(runId) || this.states.has(runId)) throw new Error("Original journal lacks exclusive recovery authority"); });
+    const original = this.guarded(() => this.excluded.has(runId) && !this.states.has(runId));
+    if (!original) throw new Error("Original journal lacks exclusive recovery authority");
   }
 }

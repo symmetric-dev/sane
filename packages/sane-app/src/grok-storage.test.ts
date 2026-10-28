@@ -72,12 +72,12 @@ describe("grok storage does not widen v1", () => {
       version: 1,
       sessions: [{
         sessionId,
-        harness: "claude-code",
+        harness: "claude-code" as const,
         nativeSessionId,
         authorityId: `sane-native-v1:cc:${"a".repeat(64)}`,
         cwd: root,
         lastRunId: null,
-        lastStatus: "unknown",
+        lastStatus: "unknown" as const,
       }],
       runs: [],
       reconciliationRequired: false,
@@ -171,6 +171,28 @@ describe("grok storage does not widen v1", () => {
     const { "sources.json": _published, ...unchanged } = afterSnapshot.bytes;
     const { "sources.json": _original, ...originalRest } = beforeSnapshot.bytes;
     expect(unchanged).toEqual(originalRest);
+  });
+
+  test("a referenced Grok pin is stable and identical publication is a no-op", () => {
+    const { root, dataDir } = v1Store();
+    const home = join(root, "grok-home"), other = join(root, "other-home");
+    mkdirSync(home); mkdirSync(other);
+    const sources = publishGrokSourcePin(dataDir, home);
+    if (sources.version !== 2 || !sources.gk) throw new Error("Expected a Grok pin");
+    writeFileSync(join(dataDir, "admissions.json"), JSON.stringify({ version: 2, admissions: [{
+      version: 1, requestId: crypto.randomUUID(), sessionId: crypto.randomUUID(), operation: "create", state: "identity_known",
+      source: sources.gk, nativeId: crypto.randomUUID(), parent: null, error: null, createdAt: new Date().toISOString(),
+      binding: { workspaceId: crypto.randomUUID(), worktreeId: crypto.randomUUID(), bindingRevision: crypto.randomUUID(),
+        executionCheckout: root, checkoutPin: null, domain: { mode: "app-only" } },
+    }] }));
+    const before = snapshot(dataDir), sourcePath = join(dataDir, "sources.json"), inode = statSync(sourcePath).ino;
+    expect(publishGrokSourcePin(dataDir, home)).toEqual(sources);
+    expect(statSync(sourcePath).ino).toBe(inode);
+    for (const replacement of [other, join(root, "missing-home")]) {
+      expect(caught(() => publishGrokSourcePin(dataDir, replacement))).toMatchObject({ code: "APP_SOURCE_MISMATCH" });
+      expect(snapshot(dataDir)).toEqual(before);
+      expect(() => validateAppStore(dataDir)).not.toThrow();
+    }
   });
 
   test("receipt v1 rejects a Grok session UUID and msg_0 as message identity", () => {
@@ -270,7 +292,7 @@ describe("grok storage does not widen v1", () => {
     expect(gkFile.admissions[0]!.source.descriptor.harness).toBe("gk");
     const ccFile = {
       version: 1 as const,
-      admissions: [{ ...base, source: { descriptor: { version: 1, harness: "cc", kind: "local-profile", profileRoot: "/offline/claude-profile" }, authorityId: `sane-native-v1:cc:${"ab".repeat(32)}` } }],
+      admissions: [{ ...base, source: { descriptor: { version: 1 as const, harness: "cc" as const, kind: "local-profile" as const, profileRoot: "/offline/claude-profile" }, authorityId: `sane-native-v1:cc:${"ab".repeat(32)}` } }],
     };
     expect(validateAdmissions(ccFile)).toBe(ccFile);
     expect(ccFile.admissions[0]!.source.descriptor.harness).toBe("cc");

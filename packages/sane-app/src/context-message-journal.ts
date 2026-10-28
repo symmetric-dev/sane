@@ -79,6 +79,9 @@ export function createContextMessageJournalPersistence(deps: Readonly<{
         || reservation.event.sessionId !== expected.source.sessionId || reservation.event.seq <= standard.seq
         || !isDeepStrictEqual(reservation.event.data, observation)) throw new Error("Context journal reserved a different observation");
       synchronousDispatchHook(() => deps.assertCurrent());
+      // reserveObservation (when needed) and assertCurrent are caller callbacks.
+      // Re-prove metadata after them, even on the duplicate path: the earlier
+      // proof cannot cover their mutations before this durable native fence.
       if (!definiteWithholding) synchronousDispatchHook(() => deps.assertMetadataCommitted(submission, observation));
       deps.writer.flushThrough(reservation);
       synchronousDispatchHook(() => deps.assertCurrent());

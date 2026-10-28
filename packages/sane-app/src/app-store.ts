@@ -124,7 +124,8 @@ function validateProfileIdentity(p: Record<string, any>, allowLegacyKnowledge = 
 export function validateAgentProfiles(value: unknown): AgentProfiles {
   exact(value, ["version", "defaultId", "profiles"], ["workerDefaults"]);
   if (value.version !== 1 || !Array.isArray(value.profiles) || typeof value.defaultId !== "string") corrupt("Invalid agent profiles file");
-  const ids = new Set<string>(), bases = Object.values(BASE_PROFILE_IDS), templates = ASSISTANT_AGENT_IDS.map(templateProfileId), workers = WORKER_AGENT_IDS.map(workerTemplateProfileId);
+  // base:gk is optional. An existing agents.json that lacks it stays valid and is not rewritten to add Grok.
+  const ids = new Set<string>(), bases = Object.values(BASE_PROFILE_IDS).filter(id => id !== BASE_PROFILE_IDS.grok), templates = ASSISTANT_AGENT_IDS.map(templateProfileId), workers = WORKER_AGENT_IDS.map(workerTemplateProfileId);
   for (const p of value.profiles) {
     exact(p, PROFILE_KEYS, ["hidden", "workerProfiles"]);
     if (!validConfiguredProfileId(p.id) || p.id === LEGACY_KNOWLEDGE_PROFILE.id || ids.has(p.id)) corrupt("Invalid or duplicate agent profile id");
@@ -199,7 +200,8 @@ export function loadAgentProfiles(root: string): AgentProfiles {
   const raw = readRecord(root, "agents.json") as any;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) corrupt("Invalid agent profiles file");
   const migrated = migrateKnowledgeProfiles(raw);
-  const missing = Array.isArray(raw?.profiles) ? builtinProfiles().filter(b => !raw.profiles.some((p: any) => p?.id === b.id)) : [];
+  // Do not append base:gk, and do not rewrite solely because it is missing or still visible.
+  const missing = Array.isArray(raw?.profiles) ? builtinProfiles().filter(b => b.id !== BASE_PROFILE_IDS.grok && !raw.profiles.some((p: any) => p?.id === b.id)) : [];
   const legacy = Array.isArray(raw?.profiles) ? raw.profiles.filter((p: any) => p?.locked === true && Object.values(BASE_PROFILE_IDS).includes(p.id)) : [];
   for (const p of legacy) p.locked = false;
   const seedWorkers = raw?.workerDefaults === undefined;
@@ -264,13 +266,21 @@ function storedSessionHarness(native: string): string {
   if (native === "gk") return "grok";
   corrupt("Invalid admission source");
 }
-/** Explicit Grok source publication. Copies cc/oc pins. Does not upgrade a repository or rewrite on open. */
-export function publishGrokSourcePin(root: string, homeRoot: string): StoredSourceRecords {
+/** Explicit Grok source publication under installation/data ownership. Configure
+ * before constructing AdmissionService (or replace its snapshot under the same
+ * admission gate); never race a live create. Copies cc/oc pins, no startup rewrite. */
+export function publishGrokSourcePin(root: string, homeRoot: string): Extract<StoredSourceRecords, { version: 2 }> {
   const current = validateStoredSources(readRecord(root, "sources.json"));
-  const next = { version: 2 as const, cc: structuredClone(current.cc), oc: structuredClone(current.oc), gk: grokSourceRecord(homeRoot) };
-  const validated = validateStoredSources(next);
-  atomicAppRecord(root, "sources.json", validated);
-  return validated;
+  const gk = grokSourceRecord(homeRoot);
+  if (current.version === 2 && current.gk && current.gk.authorityId === gk.authorityId && current.gk.descriptor.homeRoot === gk.descriptor.homeRoot) return current;
+  const admissions = validateStoredAdmissions(readRecord(root, "admissions.json"));
+  if (admissions.admissions.some(a => storedSessionHarness(a.source.descriptor.harness) === "grok")) {
+    throw new AppStoreError("APP_SOURCE_MISMATCH", "Grok source is already referenced by an admission; its original pin cannot be replaced");
+  }
+  const next = { version: 2 as const, cc: structuredClone(current.cc), oc: structuredClone(current.oc), gk };
+  validateStoredSources(next);
+  atomicAppRecord(root, "sources.json", next);
+  return next;
 }
 /** Idempotent for a complete matching fresh store; never adopts partial bytes. */
 export function initializeAppStore(root: string, config: SourceConfiguration) {
