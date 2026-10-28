@@ -21,8 +21,23 @@ export function workerExchangePrompt(exchange: WorkerExchange) {
   })].join("\n\n");
 }
 
-export function exchangeDeliveryEvidence(delivery: { id: string; commandId?: string; native: ConversationRef; sessionId: string; runId?: string }, run: Run | undefined, events: Event[]): "accepted" | "not-submitted" | "unknown" {
+/** Distinct from native acceptance: exact App-owned Grok wrapper success. */
+export function grokWrapperCompletion(native: ConversationRef, run: Run, events: Event[], requestId?: string): boolean {
+  return native.harness === "gk" && run.status === "completed" && events.some(event => {
+    const data = event.data as Record<string, any> | null;
+    return event.runId === run.runId && event.sessionId === run.sessionId && event.kind === "context"
+      && data?.type === "grok-wrapper-completion" && data.runId === run.runId
+      && data.source?.harnessId === "grok" && data.source.sessionId === run.sessionId && data.source.cwd === run.cwd
+      && data.source.authorityId === native.authorityId && data.source.nativeSessionId === native.nativeId
+      && (requestId === undefined || data.requestId === requestId && data.nativeCommandId === null)
+      && data.submission === "submitted" && data.nativeAcceptance === "unknown" && data.wrapperCompletion === "closed"
+      && data.streamsDrained === true && data.exitCode === 0 && data.exitSignal === null;
+  });
+}
+
+export function exchangeDeliveryEvidence(delivery: { id: string; commandId?: string; native: ConversationRef; sessionId: string; runId?: string }, run: Run | undefined, events: Event[]): "accepted" | "wrapper-completed" | "not-submitted" | "unknown" {
   if (!run || !delivery.runId || run.runId !== delivery.runId || run.sessionId !== delivery.sessionId) return "unknown";
+  if (grokWrapperCompletion(delivery.native, run, events)) return "wrapper-completed";
   if (delivery.native.harness === "oc" && delivery.commandId && run.nativeCommandId === delivery.commandId && run.nativePhase === "accepted") return "accepted";
   if (delivery.native.harness === "cc" && events.some(event => {
     const data = event.data as { session_id?: string; type?: string };
@@ -34,8 +49,9 @@ export function exchangeDeliveryEvidence(delivery: { id: string; commandId?: str
 }
 
 /** Accepted continuation is the delivery milestone, not comprehension or successful completion. */
-export function workerDeliveryEvidence(d: WorkerDelivery, run: Run | undefined, events: Event[]): "accepted" | "not-submitted" | "unknown" {
+export function workerDeliveryEvidence(d: WorkerDelivery, run: Run | undefined, events: Event[]): "accepted" | "wrapper-completed" | "not-submitted" | "unknown" {
   if (!run || run.runId !== d.run.runId || run.sessionId !== d.parentSessionId) return "unknown";
+  if (grokWrapperCompletion(d.native, run, events)) return "wrapper-completed";
   if (d.native.harness === "oc" && run.nativeCommandId === d.commandId && run.nativePhase === "accepted") return "accepted";
   if (d.native.harness === "cc" && events.some(e => {
     const data = e.data as any;

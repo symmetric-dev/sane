@@ -17,9 +17,9 @@ export function nativeSourceFormat(harness: unknown):
   }
 }
 
-/** Conversation and receipt harnesses. A Grok source pin is not one of these. */
+/** Qualified conversation and receipt harnesses. */
 export function isNativeHarness(value: unknown): value is Harness {
-  return value === "cc" || value === "oc"
+  return value === "cc" || value === "oc" || value === "gk"
 }
 
 export function validNativeAuthorityId(harness: unknown, value: unknown): value is string {
@@ -27,8 +27,7 @@ export function validNativeAuthorityId(harness: unknown, value: unknown): value 
     && new RegExp(`^sane-native-v1:${harness}:[a-f0-9]{64}$`).test(value)
 }
 
-/** Source-pin identity, including gk. Does not make gk a conversation harness. */
+/** Compatibility name for source-pin identity validation. */
 export function validPinnedAuthorityId(harness: unknown, value: unknown): value is string {
-  return (harness === "cc" || harness === "oc" || harness === "gk") && typeof value === "string"
-    && new RegExp(`^sane-native-v1:${harness}:[a-f0-9]{64}$`).test(value)
+  return validNativeAuthorityId(harness, value)
 }

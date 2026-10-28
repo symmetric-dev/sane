@@ -4,9 +4,10 @@ import type { PreviewRun } from "./conversation-hooks";
 import { invalidateCoalescedRequests } from "./request-coalescing";
 import { store } from "./store";
 import { subscribeWorkspace, workspaceEpoch } from "./workspace-store";
+import { isHarness, type Harness } from "../shared/conversation/harness-capabilities";
 
 type Source = { harness?: string; authorityId?: string; nativeSessionId?: string; cwd: string };
-type Identity = Source & { storeId: string; sessionId: string; harness: "opencode" | "claude-code"; authorityId: string; nativeSessionId: string };
+type Identity = Source & { storeId: string; sessionId: string; harness: Harness; authorityId: string; nativeSessionId: string };
 type Page = { session: Identity; runs: PreviewRun[]; total: number; nextCursor: string | null; hasMore: boolean };
 type Snapshot = Page & { headIds: string[]; marker: string; fetchedAt: number; notice?: string };
 type Result = { runs: PreviewRun[]; loading: boolean; loadingMore: boolean; error: string; total: number | null; hasMore: boolean };
@@ -63,7 +64,7 @@ function sameSource(actual: Identity, expected: Source) {
 function validate(value: unknown, id: string, storeId: string, expected: Source, prior?: Snapshot): Page {
   if (!record(value) || !record(value.session) || !record(value.page) || !Array.isArray(value.runs)) invalid();
   const source = value.session;
-  if (!text(source.storeId) || !text(source.sessionId) || source.harness !== "opencode" && source.harness !== "claude-code"
+  if (!text(source.storeId) || !text(source.sessionId) || !isHarness(source.harness)
     || !text(source.authorityId) || !text(source.nativeSessionId) || typeof source.cwd !== "string") invalid();
   if (source.storeId !== storeId || source.sessionId !== id) throw new PreviewIdentityError();
   const session: Identity = { storeId, sessionId: id, harness: source.harness, authorityId: source.authorityId, nativeSessionId: source.nativeSessionId, cwd: source.cwd };
@@ -124,7 +125,7 @@ export function useHistoryRunPreview(previewId: string | null, provided?: Source
   const marker = JSON.stringify(markers);
   const key = JSON.stringify([auth, storeId, scopeGeneration, previewId, sourceKey, known]);
   const available = !!previewId && !!source && !!knownSource && !!knownSource.authorityId && !!knownSource.nativeSessionId
-    && (knownSource.harness === "opencode" || knownSource.harness === "claude-code")
+    && isHarness(knownSource.harness)
     && source.harness === knownSource.harness && source.authorityId === knownSource.authorityId
     && source.nativeSessionId === knownSource.nativeSessionId && source.cwd === knownSource.cwd
     && phase === "ready" && authenticated && !!storeId;

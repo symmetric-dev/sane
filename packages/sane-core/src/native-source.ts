@@ -34,12 +34,15 @@ function normalizeOpenCodeRegistration(path: string): Extract<NativeSourceDescri
 }
 
 /** Configured source identity, deliberately not a native-store attestation. */
+export function normalizeNativeSource(input: Extract<NativeSourceDescriptor, { harness: "cc" }>): { descriptor: Extract<NativeSourceDescriptor, { harness: "cc" }>; authorityId: string }
+export function normalizeNativeSource(input: Extract<NativeSourceDescriptor, { harness: "oc" }>): { descriptor: Extract<NativeSourceDescriptor, { harness: "oc" }>; authorityId: string }
+export function normalizeNativeSource(input: GrokSourceDescriptor): Extract<NativeAuthority, { descriptor: GrokSourceDescriptor }>
+export function normalizeNativeSource(input: Exclude<NativeSourceDescriptor, GrokSourceDescriptor>): Exclude<NativeAuthority, { descriptor: GrokSourceDescriptor }>
 export function normalizeNativeSource(input: NativeSourceDescriptor): NativeAuthority
-export function normalizeNativeSource(input: GrokSourceDescriptor): { descriptor: GrokSourceDescriptor; authorityId: string }
-export function normalizeNativeSource(input: NativeSourceDescriptor | GrokSourceDescriptor): NativeAuthority | { descriptor: GrokSourceDescriptor; authorityId: string } {
+export function normalizeNativeSource(input: NativeSourceDescriptor): NativeAuthority {
   if (!input || input.version !== 1) fail("INVALID_INPUT", "Expected native source descriptor version 1.")
   const format = nativeSourceFormat(input.harness)
-  if (!format || input.kind !== format.kind) fail("FEATURE_UNAVAILABLE", "Only local Claude profiles and managed-local OpenCode registration files are supported.")
+  if (!format || input.kind !== format.kind) fail("FEATURE_UNAVAILABLE", "Only local Claude profiles, managed-local OpenCode registration files and Grok homes are supported.")
   const field = format.locatorKey
   if (Object.keys(input).sort().join() !== ["version", "harness", "kind", field].sort().join()) fail("INVALID_INPUT", "Unknown native descriptor fields.")
   const path = input.harness === "cc" ? input.profileRoot : input.harness === "oc" ? input.registrationFile : input.homeRoot
@@ -50,7 +53,8 @@ export function normalizeNativeSource(input: NativeSourceDescriptor | GrokSource
       return { descriptor, authorityId: `sane-native-v1:gk:${createHash("sha256").update(JSON.stringify(descriptor), "utf8").digest("hex")}` }
     }
     const descriptor = input.harness === "cc" ? normalizeClaudeProfile(path) : normalizeOpenCodeRegistration(path)
-    return { descriptor, authorityId: `sane-native-v1:${descriptor.harness}:${createHash("sha256").update(JSON.stringify(descriptor), "utf8").digest("hex")}` }
+    const authorityId = `sane-native-v1:${descriptor.harness}:${createHash("sha256").update(JSON.stringify(descriptor), "utf8").digest("hex")}`
+    return { descriptor, authorityId }
   } catch (error) {
     if (error instanceof DomainError) throw error
     return fail("SOURCE_UNAVAILABLE", `Native source unavailable at ${path}: ${(error as Error).message}`)

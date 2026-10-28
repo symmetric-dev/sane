@@ -1,6 +1,6 @@
 import { normalizeNativeSource } from "sane-core/server";
 import type { ConversationRef, GrokSourceDescriptor, Harness, NativeSourceDescriptor } from "sane-core/contracts";
-import { isNativeHarness, nativeSourceFormat, validNativeAuthorityId, validPinnedAuthorityId } from "sane-core/native-source-contract";
+import { isNativeHarness, nativeSourceFormat, validNativeAuthorityId } from "sane-core/native-source-contract";
 import { AppStoreError, absolute, corrupt, exact } from "./app-store-format";
 
 // sources.json v1 is exactly these two source pins, not an extensible harness map.
@@ -35,18 +35,10 @@ export function validateSources(value: unknown): SourceRecords {
   return value as SourceRecords;
 }
 
-function assertGrokDescriptor(value: unknown): asserts value is GrokSourceDescriptor {
-  const format = nativeSourceFormat("gk");
-  if (!format) corrupt("Invalid native source descriptor");
-  exact(value, ["version", "harness", "kind", format.locatorKey]);
-  if (value.version !== 1 || value.harness !== "gk" || value.kind !== format.kind || !absolute(value[format.locatorKey])) corrupt("Invalid native source descriptor");
-}
-
 function assertPinnedRecord(record: unknown, harness: "cc" | "oc" | "gk"): void {
   exact(record, ["descriptor", "authorityId"]);
-  if (harness === "gk") assertGrokDescriptor(record.descriptor);
-  else assertSourceDescriptor(record.descriptor, harness);
-  if (record.authorityId !== null && !validPinnedAuthorityId(harness, record.authorityId)) corrupt("Invalid source authority");
+  assertSourceDescriptor(record.descriptor, harness);
+  if (record.authorityId !== null && !validNativeAuthorityId(harness, record.authorityId)) corrupt("Invalid source authority");
 }
 
 /** v1 stays the closed CC/OC reader. v2 may add a gk pin. Neither path rewrites. */
@@ -74,7 +66,7 @@ export function grokSourceRecord(homeRoot: string): GrokSourceRecord {
 }
 
 export function resolveSources(config: SourceConfiguration): SourceRecords {
-  const resolve = (harness: Harness): SourceRecord => {
+  const resolve = (harness: "cc" | "oc"): SourceRecord => {
     assertSourceDescriptor(config[harness], harness);
     try { return normalizeNativeSource(config[harness]); }
     catch (e) { if ((e as { code?: string }).code !== "SOURCE_UNAVAILABLE") throw e; return { descriptor: config[harness], authorityId: null }; }

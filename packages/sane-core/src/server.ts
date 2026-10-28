@@ -2,10 +2,11 @@ import { Database, type SQLQueryBindings } from "bun:sqlite"
 import { createHash, randomUUID } from "node:crypto"
 import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs"
 import { basename, isAbsolute, join } from "node:path"
-import type { AuditEvent, CheckoutPin, Conversation, ConversationRef, CreateWorkstreamInput, GrokSourceDescriptor, InvocationContext, MutationContext, NativeSourceDescriptor, Phase, PhaseAssignment, RegisterConversationInput, RepositoryContext, Workstream, WorkstreamStatus, WorkstreamDocumentCatalog } from "./contracts.ts"
+import type { AuditEvent, CheckoutPin, Conversation, ConversationRef, CreateWorkstreamInput, GrokSourceDescriptor, InvocationContext, MutationContext, NativeAuthority, NativeSourceDescriptor, Phase, PhaseAssignment, RegisterConversationInput, RepositoryContext, Workstream, WorkstreamStatus, WorkstreamDocumentCatalog } from "./contracts.ts"
 import { DomainError, fail, storageError, text } from "./errors.ts"
 import { checkDiscovery, inspectRepositoryStore, pinCheckout, repositoryEvidence, revalidateCheckout, safeStoreFiles, samePin } from "./repository.ts"
 import { normalizeNativeSource } from "./native-source.ts"
+import { isNativeHarness } from "./native-source-contract.ts"
 import { acquireArtifactLock } from "./artifact-lock.ts"
 import { DEFAULT_TEMPLATE_ROOT, INITIAL_DIRECTORIES, initialTemplateRegistry } from "./bootstrap-registry.ts"
 import { validateWorkstreamType } from "./workstream-type.ts"
@@ -37,7 +38,7 @@ function lifecyclePhase(value: string) { try { return policyPhase(value) } catch
 function id(value: string): void { if (typeof value !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(value)) fail("INVALID_INPUT", "Expected a lowercase safe ID of 1–96 characters.") }
 function phaseName(value: Phase): void { if (!isStoredSlot(value)) fail("INVALID_INPUT", "Invalid phase/support slot.") }
 function qualified(ref: ConversationRef): void {
-  if (!ref || (ref.harness !== "cc" && ref.harness !== "oc")) fail("INVALID_INPUT", "Expected qualified native reference.")
+  if (!ref || !isNativeHarness(ref.harness)) fail("INVALID_INPUT", "Expected qualified native reference.")
   text(ref.authorityId, "authorityId"); text(ref.nativeId, "nativeId")
 }
 function artifactRelative(path: string): void {
@@ -247,9 +248,14 @@ export class RepositoryDomain {
     if (!["pending", "in_progress", "delivered", "blocked"].includes(status)) fail("INVALID_INPUT", "Invalid phase status.")
     this.transaction(context, () => { this.revision(workstreamId, context); this.run("UPDATE phase_states SET status=?,revision=revision+1 WHERE workstream_id=? AND phase=?", status, workstreamId, phase); this.touch(workstreamId); this.event(context, "phase_status_changed", workstreamId, phase, { status }) })
   }
-  declareNativeAuthority(source: NativeSourceDescriptor, context: MutationContext) {
+  declareNativeAuthority(source: Extract<NativeSourceDescriptor, { harness: "cc" }>, context: MutationContext): { descriptor: Extract<NativeSourceDescriptor, { harness: "cc" }>; authorityId: string }
+  declareNativeAuthority(source: Extract<NativeSourceDescriptor, { harness: "oc" }>, context: MutationContext): { descriptor: Extract<NativeSourceDescriptor, { harness: "oc" }>; authorityId: string }
+  declareNativeAuthority(source: GrokSourceDescriptor, context: MutationContext): Extract<NativeAuthority, { descriptor: GrokSourceDescriptor }>
+  declareNativeAuthority(source: Exclude<NativeSourceDescriptor, GrokSourceDescriptor>, context: MutationContext): Exclude<NativeAuthority, { descriptor: GrokSourceDescriptor }>
+  declareNativeAuthority(source: NativeSourceDescriptor, context: MutationContext): NativeAuthority
+  declareNativeAuthority(source: NativeSourceDescriptor, context: MutationContext): NativeAuthority {
     const normalized = normalizeNativeSource(source), d = normalized.descriptor
-    const locator = d.harness === "cc" ? d.profileRoot : d.registrationFile
+    const locator = d.harness === "cc" ? d.profileRoot : d.harness === "oc" ? d.registrationFile : d.homeRoot
     this.transaction(context, () => {
       const old = this.row("SELECT * FROM native_authorities WHERE harness=? AND authority_id=?", d.harness, normalized.authorityId)
       if (old) { if (old.kind !== d.kind || old.locator !== locator) fail("CONFLICT", "Native authority is immutable."); return }
@@ -258,17 +264,9 @@ export class RepositoryDomain {
     })
     return normalized
   }
-  /** Inserts a gk authority on schema v6. Does not register a conversation. */
+  /** Compatibility entry point; normal native registration supports Grok. */
   declareGrokAuthority(source: GrokSourceDescriptor, context: MutationContext) {
-    if (this.context.schemaVersion !== 6) fail("UNSUPPORTED_SCHEMA", "Grok authority requires schema v6.")
-    const normalized = normalizeNativeSource(source), d = normalized.descriptor
-    this.transaction(context, () => {
-      const old = this.row("SELECT * FROM native_authorities WHERE harness=? AND authority_id=?", d.harness, normalized.authorityId)
-      if (old) { if (old.kind !== d.kind || old.locator !== d.homeRoot) fail("CONFLICT", "Native authority is immutable."); return }
-      this.run("INSERT INTO native_authorities VALUES(?,?,?,?)", d.harness, normalized.authorityId, d.kind, d.homeRoot)
-      this.event(context, "native_authority_declared", null, normalized.authorityId, { descriptor: d })
-    })
-    return normalized
+    return this.declareNativeAuthority(source, context)
   }
   private conversationRow(ref: ConversationRef): any { qualified(ref); return this.row("SELECT * FROM conversations WHERE harness=? AND authority_id=? AND native_id=?", ref.harness, ref.authorityId, ref.nativeId) ?? fail("NOT_FOUND", "Conversation is not registered.") }
   private reference(row: any): ConversationRef { return { harness: row.harness, authorityId: row.authority_id, nativeId: row.native_id } }
@@ -281,6 +279,12 @@ export class RepositoryDomain {
   listConversations(): Conversation[] { this.validateRead(); return this.conversations() }
   private handoffDTO(row: any): Handoff {
     const h: Handoff = { id: row.id, repositoryId: this.repositoryId, sender: this.reference(this.row("SELECT * FROM conversations WHERE id=?", row.sender_id)), workstreamId: row.workstream_id, input: JSON.parse(row.input), recipient: JSON.parse(row.recipient), status: row.status, revision: row.revision, attemptId: row.attempt_id, nativeCommandId: row.native_command_id, runId: row.run_id, evidence: row.evidence, createdAt: row.created_at, updatedAt: row.updated_at }
+    // The legacy SQL column also holds a Grok App attempt key. Never project it
+    // as a native command/message ID for a harness that exposes none.
+    if (h.recipient.harness === "gk") {
+      if (row.native_command_id !== null) h.dispatchId = row.native_command_id
+      h.nativeCommandId = null
+    }
     const input = JSON.parse(row.input)
     return input.kickoff ? { ...h, origin: { kind: "kickoff", sender: h.sender, requestId: input.requestId } } : h
   }
@@ -321,7 +325,7 @@ export class RepositoryDomain {
       AND EXISTS (SELECT 1 FROM audit_events a WHERE a.entity_id=h.id AND a.operation='handoff_state_changed'
         AND json_extract(a.details,'$.previousStatus')='awaiting_approval' AND json_extract(a.details,'$.status')='failed')
       AND COALESCE((SELECT json_extract(a.details,'$.state') FROM audit_events a
-        WHERE a.entity_id=h.id AND a.operation='handoff_denial_notification' ORDER BY a.id DESC LIMIT 1),'pending')!='accepted'
+        WHERE a.entity_id=h.id AND a.operation='handoff_denial_notification' ORDER BY a.id DESC LIMIT 1),'pending') NOT IN ('accepted','wrapper-completed')
       ORDER BY h.created_at,h.id`).map(row => this.handoffDTO(row))
   }
   getHandoffDenialNotification(id: string): HandoffDenialNotification | undefined {
@@ -329,7 +333,7 @@ export class RepositoryDomain {
     const row = this.rows("SELECT details,timestamp FROM audit_events WHERE entity_id=? AND operation='handoff_denial_notification' ORDER BY id DESC LIMIT 1", id)[0]
     if (!row) return
     const value = JSON.parse(row.details)
-    if (!value || !["claimed", "accepted", "not-submitted"].includes(value.state)
+    if (!value || !["claimed", "accepted", "wrapper-completed", "not-submitted"].includes(value.state)
       || [value.sessionId, value.runId, value.commandId].some(v => typeof v !== "string" || !v)) fail("CORRUPT_STORE", "Invalid handoff denial notification.")
     return { ...value, updatedAt: row.timestamp }
   }
@@ -344,8 +348,9 @@ export class RepositoryDomain {
       if (change.state === "claimed") {
         if (old && old.state !== "not-submitted") fail("CONFLICT", "Denial notification is already claimed or accepted.")
         if (old && (old.sessionId !== change.sessionId || old.runId === change.runId || old.commandId === change.commandId)) fail("CONFLICT", "Retry requires the original sender and fresh delivery identities.")
-      } else if (!["accepted", "not-submitted"].includes(change.state) || old?.state !== "claimed"
+      } else if (!["accepted", "wrapper-completed", "not-submitted"].includes(change.state) || old?.state !== "claimed"
         || old.sessionId !== change.sessionId || old.runId !== change.runId || old.commandId !== change.commandId) fail("CONFLICT", "Denial notification claim changed.")
+      if (change.state === "wrapper-completed" && h.sender.harness !== "gk") fail("INVALID_INPUT", "Grok wrapper evidence requires a Grok sender.")
       this.event(context, "handoff_denial_notification", h.workstreamId, id, { state: change.state, sessionId: change.sessionId, runId: change.runId, commandId: change.commandId })
       return this.getHandoffDenialNotification(id)!
     })
@@ -364,7 +369,7 @@ export class RepositoryDomain {
         workstreamId = args.kickoff.workstream
       } else workstreamId = invocation.workstream?.id ?? fail("INVALID_CONTEXT", "Sender has no workstream.")
       text(recipient.ownerId, "App store ID"); text(recipient.sessionId, "App session ID"); text(recipient.authorityId, "recipient authority")
-      if (!["cc", "oc"].includes(recipient.harness)) fail("INVALID_INPUT", "Invalid recipient harness.")
+      if (!isNativeHarness(recipient.harness)) fail("INVALID_INPUT", "Invalid recipient harness.")
       revalidateCheckout(this.context, recipient.checkout)
       if (recipient.ref) {
         const target = this.resolvePhaseTarget(workstreamId, args.to, recipient.ref)
@@ -406,7 +411,7 @@ export class RepositoryDomain {
    * Pre-dispatch approval (awaiting_approval -> queued/failed) accepts a human
    * operator or the system owner; every dispatch/outcome transition still
    * requires the system execution owner. */
-  advanceHandoff(id: string, expectedRevision: number, change: { status: HandoffStatus; attemptId?: string; nativeCommandId?: string; runId?: string; evidence?: string; retry?: boolean }, context: MutationContext, assertAppRecipientReady?: (handoff: Handoff) => void): Handoff {
+  advanceHandoff(id: string, expectedRevision: number, change: { status: HandoffStatus; attemptId?: string; nativeCommandId?: string; dispatchId?: string; runId?: string; evidence?: string; retry?: boolean; wrapperCompleted?: true }, context: MutationContext, assertAppRecipientReady?: (handoff: Handoff) => void): Handoff {
     return this.transaction(context, () => {
       const current = this.getHandoff(id)
       const isApprovalDecision = current.status === "awaiting_approval" && (change.status === "queued" || change.status === "failed");
@@ -416,23 +421,27 @@ export class RepositoryDomain {
       const h = current
       if (h.revision !== expectedRevision) fail("CONFLICT", "Handoff changed; reconcile current state.")
       const transitions: Record<HandoffStatus, HandoffStatus[]> = { awaiting_approval: ["queued", "failed"], queued: ["acceptance_unknown"], acceptance_unknown: ["accepted", "failed", "queued"], accepted: ["running", "completed", "failed"], running: ["completed", "failed"], completed: [], failed: [] }
-      if (!transitions[h.status].includes(change.status)) fail("CONFLICT", "Invalid handoff transition.")
+      const grokCompletion = h.recipient.harness === "gk" && h.status === "acceptance_unknown" && change.status === "completed" && change.wrapperCompleted === true
+      if (change.wrapperCompleted !== undefined && !grokCompletion) fail("INVALID_INPUT", "Wrapper completion requires the original uncertain Grok delivery.")
+      if (!grokCompletion && !transitions[h.status].includes(change.status)) fail("CONFLICT", "Invalid handoff transition.")
       const isApproval = h.status === "awaiting_approval" && change.status === "queued"
       if (isApproval && change.retry === true) fail("CONFLICT", "Approval does not use retry.")
       if (change.status === "queued" && !isApproval && (change.retry !== true || !change.evidence?.trim())) fail("CONFLICT", "Explicit retry requires reconciled nonacceptance evidence.")
       if (change.status === "acceptance_unknown") {
-        if (!h.recipient.ref || !change.attemptId || !change.nativeCommandId || !change.runId) fail("INVALID_INPUT", "Persist recipient, attempt, native command and run identities before dispatch.")
-        text(change.attemptId, "attempt ID"); text(change.nativeCommandId, "native command ID"); text(change.runId, "run ID")
+        const command = h.recipient.harness === "gk" ? change.dispatchId : change.nativeCommandId
+        if (h.recipient.harness === "gk" ? change.nativeCommandId !== undefined : change.dispatchId !== undefined) fail("INVALID_INPUT", "Dispatch correlation does not match the recipient harness.")
+        if (!h.recipient.ref || !change.attemptId || !command || !change.runId) fail("INVALID_INPUT", "Persist recipient, attempt, command correlation and run identities before dispatch.")
+        text(change.attemptId, "attempt ID"); text(command, "dispatch command correlation"); text(change.runId, "run ID")
         this.assertHandoffRecipientEligible(h)
         if (assertAppRecipientReady?.(h) !== undefined) fail("INVALID_INPUT", "Dispatch admission guard must be synchronous.")
         const active = this.rows("SELECT id,recipient FROM handoffs WHERE status IN ('acceptance_unknown','accepted','running')").some(row => { const ref = JSON.parse(row.recipient).ref; return ref && ref.harness === h.recipient.ref!.harness && ref.authorityId === h.recipient.ref!.authorityId && ref.nativeId === h.recipient.ref!.nativeId })
         if (active) fail("BUSY", "Recipient already has an active or uncertain delivery.")
-        this.run("INSERT INTO handoff_attempts VALUES(?,?,?,?,?)", change.attemptId, id, change.nativeCommandId, change.runId, now())
-      } else if (change.attemptId !== undefined || change.nativeCommandId !== undefined || change.runId !== undefined) fail("INVALID_INPUT", "Attempt identities cannot change after dispatch.")
+        this.run("INSERT INTO handoff_attempts VALUES(?,?,?,?,?)", change.attemptId, id, command, change.runId, now())
+      } else if (change.attemptId !== undefined || change.nativeCommandId !== undefined || change.dispatchId !== undefined || change.runId !== undefined) fail("INVALID_INPUT", "Attempt identities cannot change after dispatch.")
       if (isApproval) {
         if (change.evidence !== undefined && change.evidence !== null) text(change.evidence, "approval evidence")
       } else if (change.status !== "acceptance_unknown") text(change.evidence, "native acceptance or outcome evidence")
-      this.run("UPDATE handoffs SET status=?,revision=revision+1,attempt_id=?,native_command_id=?,run_id=?,evidence=?,updated_at=? WHERE id=?", change.status, change.attemptId ?? h.attemptId, change.nativeCommandId ?? h.nativeCommandId, change.runId ?? h.runId, change.evidence ?? null, now(), id)
+      this.run("UPDATE handoffs SET status=?,revision=revision+1,attempt_id=?,native_command_id=?,run_id=?,evidence=?,updated_at=? WHERE id=?", change.status, change.attemptId ?? h.attemptId, change.dispatchId ?? change.nativeCommandId ?? h.dispatchId ?? h.nativeCommandId, change.runId ?? h.runId, change.evidence ?? null, now(), id)
       this.event(context, "handoff_state_changed", h.workstreamId, id, { ...change, previousStatus: h.status, previousAttemptId: h.attemptId })
       return this.getHandoff(id)
     })

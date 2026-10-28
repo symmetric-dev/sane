@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { isAssistantAgentId, nativeAgentId, type AssistantAgentId } from "sane-core/agent-catalog";
-import { canAssign, historicalAgentProfile, legacyProfileId, resolveAgentLaunch, templateProfileId, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
+import { canAssign, historicalAgentProfile, legacyProfileId, resolveAgentLaunch, resolveProfileDefaults, templateProfileId, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { requireOperation, validateHarness } from "./harness-operations";
 import { validEffort, validModel, validVariant, type AgentSnapshot, type Session } from "./history";
 import type { Harness } from "./oc-contract";
@@ -11,6 +11,7 @@ import type { ContextPackageStore } from "./context-package-store";
 import { saneSessionContext } from "./agent-launch";
 import { frameworkContext } from "sane-core/sane-context";
 import { validateCanonicalActivation as validatePairedCanonicalActivation, type CanonicalActivation } from "./canonical-activation-validation";
+import { validGrokChoice } from "../shared/conversation/grok-contract";
 
 export type { CanonicalActivation } from "./canonical-activation-validation";
 /** Optional policy defaults use a qualified provider/model and its variant, not
@@ -142,6 +143,7 @@ const same = (a: unknown, b: unknown): boolean => {
   return left.length === right.length && left.every((key, i) => key === right[i] && same((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
 };
 function launchValid(harness: Harness, model: unknown, effort: unknown): boolean {
+  if (harness === "grok") return (model === undefined || validGrokChoice(model)) && (effort === undefined || validGrokChoice(effort));
   return (model === undefined || validModel(model)) && (effort === undefined || (requireOperation(harness, "prompt").policies.effortMode === "model-variant" ? validVariant(effort) : validEffort(effort)));
 }
 
@@ -169,7 +171,8 @@ export async function prepareUserInput(value: unknown, deps: UserInputPreparatio
   if (session && input.profileId === undefined && isAssistantAgentId(input.agent)) input.profileId = templateProfileId(input.agent);
   if (session?.agent === "knowledge" && input.profileId === undefined && input.agent === "knowledge") input.profileId = profileId(session);
   if (input.profileId !== undefined && typeof input.profileId !== "string") throw new UserInputPreparationError("Invalid request", 400);
-  const profile = input.profileId !== undefined ? profiles.profiles.find(p => p.id === input.profileId) : undefined;
+  const configuredProfile = input.profileId !== undefined ? profiles.profiles.find(p => p.id === input.profileId) : undefined;
+  const profile = configuredProfile && resolveProfileDefaults(profiles, configuredProfile);
   const historical = session && input.profileId === profileId(session) ? historicalAgentProfile(session) : undefined;
   if (input.profileId !== undefined && !profile && !historical) throw new UserInputPreparationError("Unknown agent profile", 400);
   let upgrade: AgentProfile | undefined;
@@ -192,8 +195,8 @@ export async function prepareUserInput(value: unknown, deps: UserInputPreparatio
   const authorityId = deps.sourceAuthorityId(harness);
   if (session && validateHarness(session.harness, { defaultHarness: "claude-code" }) !== harness) throw new UserInputPreparationError("Session harness cannot change", 400);
   if (session?.attachment && descriptor.policies.attachedSendRequiresNativeStopped && input.nativeStopped !== true) throw new UserInputPreparationError("External assistant activity is unknown. Explicitly acknowledge external execution is stopped before each SANE submission.", 409, "native-acknowledgement-required");
-  if (input.model !== undefined && !validModel(input.model)) throw new UserInputPreparationError("Invalid model ID", 400);
-  if (input.effort !== undefined && !(descriptor.policies.effortMode === "model-variant" ? validVariant(input.effort) : validEffort(input.effort))) throw new UserInputPreparationError(descriptor.policies.effortMode === "model-variant" ? "Invalid native variant ID" : "effort must be low, medium, high, xhigh, or max", 400);
+  if (input.model !== undefined && !(harness === "grok" ? validGrokChoice(input.model) : validModel(input.model))) throw new UserInputPreparationError("Invalid model ID", 400);
+  if (input.effort !== undefined && !(harness === "grok" ? validGrokChoice(input.effort) : descriptor.policies.effortMode === "model-variant" ? validVariant(input.effort) : validEffort(input.effort))) throw new UserInputPreparationError(harness === "grok" ? "Invalid Grok effort" : descriptor.policies.effortMode === "model-variant" ? "Invalid native variant ID" : "effort must be low, medium, high, xhigh, or max", 400);
   if (input.agent !== undefined && !isAssistantAgentId(input.agent)) throw new UserInputPreparationError("Unknown agent", 400);
   if (session?.agent !== undefined && input.agent !== undefined && session.agent !== input.agent) throw new UserInputPreparationError("Session agent cannot change", 400);
   if (harness === "opencode" && input.model !== undefined) deps.validateOpenCodeModel(input.model as string, input.effort as string | undefined);
@@ -219,7 +222,7 @@ export async function prepareUserInput(value: unknown, deps: UserInputPreparatio
   const binding = session ? sessionBinding(session, authorityId) : { conversationId: deps.conversationId(), harness, authorityId, cwd };
   const normalized = copy({ harness: input.harness, model: input.model, effort: input.effort, agent: input.agent, profileId: input.profileId }) as NormalizedSettings;
   const configuration: Configuration = copy({ ...(session ? snapshot(session) : {}), profileId: upgrade?.id ?? (session ? profileId(session) : profile?.id ?? legacyProfileId(harness, agent)), model, effort, agent,
-    ...((!session && agent !== undefined || canonical) ? { agentKind: "assistant", nativeAgentSelected: !canonical || harness !== "opencode" } : {}), ...(canonical ? { saneExecution: canonical.saneExecution, saneContext: canonical.saneContext } : {}) });
+    ...((!session && agent !== undefined || canonical) ? { agentKind: "assistant", nativeAgentSelected: harness !== "grok" && (!canonical || harness !== "opencode") } : {}), ...(canonical ? { saneExecution: canonical.saneExecution, saneContext: canonical.saneContext } : {}) });
   // An upgrade clearing model/effort must not retain inherited defaults.
   if (model === undefined) delete configuration.model;
   if (effort === undefined) delete configuration.effort;
@@ -237,7 +240,11 @@ export function assertPreparedUserInputCurrent(prepared: PreparedUserInput, deps
   const authorityId = deps.sourceAuthorityId(prepared.binding.harness);
   const expected = created ? { binding: sessionBinding(created, authorityId), configuration: snapshot(created) } : prepared.expectedPrior;
   if (authorityId !== prepared.binding.authorityId || (prepared.resume || created ? !session || !expected || !same(sessionBinding(session, authorityId), expected.binding) || !same(snapshot(session), expected.configuration) : !!session)) throw new UserInputPreparationError("Conversation configuration changed before queued admission", 409);
-  if (prepared.stagedUpgrade && !same(deps.profiles.profiles.find(p => p.id === prepared.stagedUpgrade!.id), prepared.stagedUpgrade)) throw new UserInputPreparationError("Selected profile changed before queued admission", 409);
+  const pinnedProfile = prepared.stagedUpgrade ?? (!prepared.resume && prepared.selectedProfile?.harness === "grok" ? prepared.selectedProfile : undefined);
+  if (pinnedProfile) {
+    const current = deps.profiles.profiles.find(p => p.id === pinnedProfile.id);
+    if (!current || !same(resolveProfileDefaults(deps.profiles, current), pinnedProfile)) throw new UserInputPreparationError("Selected profile changed before queued admission", 409);
+  }
   if (!launchValid(prepared.binding.harness, prepared.configuration.model, prepared.configuration.effort)) throw new UserInputPreparationError("Queued launch configuration is invalid", 409);
   if (session?.attachment && requireOperation(prepared.binding.harness, "prompt").policies.attachedSendRequiresNativeStopped && !prepared.nativeStopped) throw new UserInputPreparationError("External assistant activity is unknown. Explicitly acknowledge external execution is stopped before each SANE submission.", 409, "native-acknowledgement-required");
 }

@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import { DomainError, normalizeNativeSource } from "../../sane-core/src/server.ts"
-import type { NativeCaller } from "./native-caller.ts"
+import { nativeRuntimeHeaders, type NativeCaller } from "./native-caller.ts"
 import { parsePresentQuestionsInput, type NativeUserQuestionsRequest, type UserQuestionsReceipt } from "./native-user-questions-contract.ts"
 
 type Invocation = NativeUserQuestionsRequest["invocation"]
@@ -46,7 +46,7 @@ async function readReply(response: Response): Promise<unknown> {
 export async function presentQuestionsNativeCaller(caller: NativeCaller, input: unknown, connectionFile: string, invocation: Invocation, signal?: AbortSignal): Promise<UserQuestionsReceipt> {
   const args = parsePresentQuestionsInput(input), source = normalizeNativeSource(caller.source)
   if (source.authorityId !== caller.authorityId || !text(caller.nativeId) || !isAbsolute(caller.cwd) || !text(caller.cwd) || !text(invocation.toolCallId) || !text(invocation.invocationId) || invocation.messageId !== undefined && !text(invocation.messageId) || invocation.wrapper !== undefined && invocation.wrapper !== "execute") throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Incomplete or changed native question form caller.")
-  if (invocation.toolCallId !== caller.invocation?.toolCallId || invocation.messageId !== caller.invocation?.messageId || (source.descriptor.harness === "cc" ? invocation.invocationId !== invocation.toolCallId || invocation.wrapper !== undefined : !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(invocation.invocationId))) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Question form invocation differs from its trusted native callback.")
+  if (invocation.toolCallId !== caller.invocation?.toolCallId || invocation.messageId !== caller.invocation?.messageId || (source.descriptor.harness === "cc" || source.descriptor.harness === "gk" ? invocation.invocationId !== invocation.toolCallId || invocation.wrapper !== undefined : !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(invocation.invocationId))) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Question form invocation differs from its trusted native callback.")
   const request: NativeUserQuestionsRequest = {
     version: 1,
     caller: { source: source.descriptor, authorityId: source.authorityId, nativeId: caller.nativeId, cwd: caller.cwd },
@@ -68,7 +68,7 @@ export async function presentQuestionsNativeCaller(caller: NativeCaller, input: 
   const timeout = AbortSignal.timeout(20000), transportSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
   let response: Response, result: unknown
   try {
-    response = await fetch(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(request), signal: transportSignal })
+    response = await fetch(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json", authorization: `Bearer ${token}`, ...nativeRuntimeHeaders(caller) }, body: JSON.stringify(request), signal: transportSignal })
     result = await readReply(response)
   } catch { throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT) }
   if (!response.ok) {

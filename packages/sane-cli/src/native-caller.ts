@@ -13,6 +13,12 @@ export interface NativeCaller {
   agent?: string
   /** Trusted callback/hook fields; never recovered by splitting correlationId. */
   invocation?: import("./native-worker-contract.ts").NativeWorkerInvocation
+  /** Private Grok hook/runtime capability; never model-authored caller input. */
+  grokRuntimeProof?: string
+}
+
+export function nativeRuntimeHeaders(caller: NativeCaller): Record<string, string> {
+  return caller.source.harness === "gk" && caller.grokRuntimeProof ? { "x-sane-grok-runtime": caller.grokRuntimeProof } : {}
 }
 
 /** Stable, non-actionable rejection for conversations SANE does not manage.

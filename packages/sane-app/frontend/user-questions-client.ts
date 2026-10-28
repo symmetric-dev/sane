@@ -3,6 +3,7 @@ import { isUserQuestionsRecord, parseUserQuestionAnswers, type UserQuestionAnswe
 import { ApiError, request } from "./cc-client";
 import { pollWhileVisible } from "./visibility";
 import type { Harness } from "./types";
+import { getHarnessDescriptor } from "../shared/conversation/harness-capabilities";
 
 type Answers = UserQuestionAnswer[];
 type Operation = {
@@ -24,7 +25,7 @@ export type UserQuestionsDraft = {
 };
 const needsRecovery = (draft: UserQuestionsDraft) => draft.dirty || draft.conflict || !!draft.operation || !!draft.error;
 const healthySubmitted = (draft: UserQuestionsDraft) => draft.form.status === "submitted"
-  && (draft.form.delivery?.state === "pending" || draft.form.delivery?.state === "claimed" || draft.form.delivery?.state === "accepted");
+  && (draft.form.delivery?.state === "pending" || draft.form.delivery?.state === "claimed" || draft.form.delivery?.state === "accepted" || draft.form.delivery?.state === "wrapper-completed");
 const actionable = (draft: UserQuestionsDraft) => needsRecovery(draft) || draft.form.status === "presented"
   || draft.form.status === "submitted" && !healthySubmitted(draft);
 // Acknowledged submissions settle the composer without waiting for delivery.
@@ -37,7 +38,7 @@ type Projection = { forms: readonly UserQuestionsDraft[]; loading: boolean; erro
 export type UserQuestionsScope = { storeId: string; sessionId: string; harness: Harness; nativeSessionId: string; authorityId: string };
 export const userQuestionsScopeKey = (scope: UserQuestionsScope) => JSON.stringify([scope.storeId, scope.sessionId, scope.harness, scope.nativeSessionId, scope.authorityId]);
 const matchesScope = (form: UserQuestionsRecord, scope: UserQuestionsScope) => form.sessionId === scope.sessionId
-  && form.native.harness === (scope.harness === "opencode" ? "oc" : "cc")
+  && form.native.harness === getHarnessDescriptor(scope.harness)?.nativeHarness
   && form.native.nativeId === scope.nativeSessionId && form.native.authorityId === scope.authorityId;
 const sameAnswers = (a: Answers, b: Answers) => JSON.stringify(a) === JSON.stringify(b);
 const message = (error: unknown) => error instanceof Error ? error.message : "Questions are unavailable.";

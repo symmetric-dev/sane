@@ -200,7 +200,7 @@ function ChatMessageBody() {
         return null;
       })}
       {source?.queuedFollowup && <span className="muted">{source.queuedFollowup.state === "queued" ? "Queued" : source.queuedFollowup.state === "not-submitted" ? "Not sent" : source.queuedFollowup.state === "dispatched" ? "Run created" : "Unconfirmed"}</span>}
-      {harness !== "grok" && isUser && source && !pending && <ScienceSentSnapshots conversationId={context.sessionId} runId={source.runId} />}
+      {isUser && source && !pending && <ScienceSentSnapshots conversationId={context.sessionId} runId={source.runId} />}
       {source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}
       {!isUser && source?.runId !== "native-import" && message.status?.type === "incomplete" && <p className="run-warning" role="status">{message.status.reason === "error" ? "This run failed. The response may be incomplete." : "This run was interrupted or its completion is unknown."} {context.readOnly ? "Only recorded evidence is shown." : "See details for the recorded evidence."}</p>}
     </div>
@@ -247,7 +247,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   useWorkerPolling(parentForStatus && parentForStatus !== state.selected ? parentForStatus : null);
   const parentProjection = useWorkers(parentForStatus ?? "");
   const nativeSubagents = useNativeSubagents();
-  const handoffs = useHandoffs(state.selected, !grok && isActive && state.connected);
+  const handoffs = useHandoffs(state.selected, isActive && state.connected);
   const workers = projection.workers;
   const exchanges = useMemo(() => workerExchanges([...workers, ...parentProjection.workers.filter(worker => worker.sessionId === state.selected && !workers.some(item => item.id === worker.id))]), [workers, parentProjection.workers, state.selected]);
   const parentId = workerReference(state.selected)?.parent.sessionId;
@@ -273,7 +273,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     && !state.messages.some(message => message.id === latestRun.nativeCommandId && message.normalized);
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
   const messages = useMemo(() => grok ? state.messages : claudeReplyPresentation(withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), harness), [grok, state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands, harness]);
-  const codeShares = useCodeShares(state.selected, { enabled: !grok && isActive && state.connected, refreshKey: messages, running });
+  const codeShares = useCodeShares(state.selected, { enabled: isActive && state.connected, refreshKey: messages, running });
   const loadedWorkers = useMemo(() => loadedTranscriptWorkers({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, exchanges, handoffs: handoffs.handoffs, nativeRuns: state.runs, nativeHarness: harness, codeShares: codeShares.shares }), [state.selected, messages, workers, projection.deliveries, exchanges, handoffs.handoffs, state.runs, harness, codeShares.shares]);
   const workerRefreshScope = JSON.stringify([state.config?.storeId, state.selected, harness, conversation?.nativeSessionId, conversation?.authorityId, conversation?.cwd]);
   const questionsReadOnlyReason = !isActive ? "Open this conversation in Chat to answer questions."
@@ -282,10 +282,10 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     : parentId || conversation?.worker || store.conversationKind() === "worker" ? "Questions in worker conversations are read-only."
     : conversation?.attachment ? "Questions in attached conversations are read-only."
     : !conversation ? "Waiting for the conversation to load." : undefined;
-  const questionsScope = useMemo(() => !grok && state.config?.storeId && conversation?.authorityId && conversation.nativeSessionId ? {
+  const questionsScope = useMemo(() => state.config?.storeId && conversation?.authorityId && conversation.nativeSessionId ? {
     storeId: state.config.storeId, sessionId: state.selected, harness: conversation.harness,
     nativeSessionId: conversation.nativeSessionId, authorityId: conversation.authorityId,
-  } : null, [grok, state.config?.storeId, state.selected, conversation?.harness, conversation?.nativeSessionId, conversation?.authorityId]);
+  } : null, [state.config?.storeId, state.selected, conversation?.harness, conversation?.nativeSessionId, conversation?.authorityId]);
   const userQuestions = useUserQuestions(questionsScope, { enabled: isActive && state.connected, editable: !questionsReadOnlyReason, refreshKey: messages, running });
   const transcriptIndex = useTranscriptIndex(messages);
   const runtimeMessages = useMemo(() => projectTranscriptMessages(messages), [messages]);
@@ -317,8 +317,8 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   useEffect(() => { setFlowOverride(null); }, [flowPresentationScope]);
   const reviewPresented = !paired && (!flowPresentation || flowPresentation === "documents");
   const sendReview = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped, { preserveDraft: true }); };
-  const review = useDocumentReview(state, !grok && isActive && !paired && !hasRequests, sendDisabled, sendReview);
-  const science = useScienceChat(state, !grok && isActive && !paired, sendDisabled || (reviewPresented && !!review.flow), scienceIntegration);
+  const review = useDocumentReview(state, isActive && !paired && !hasRequests, sendDisabled, sendReview);
+  const science = useScienceChat(state, isActive && !paired, sendDisabled || (reviewPresented && !!review.flow), scienceIntegration);
   const documentFlow = reviewPresented ? review.flow : null;
   const readingDocument = !hasRequests && !!documentFlow?.path;
   useEffect(() => {

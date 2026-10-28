@@ -81,7 +81,7 @@ function freeze<T>(value: T): T {
 }
 function binding(value: unknown): asserts value is ContextMessageBinding {
   validateContextMessageBinding(value);
-  if (value.harnessId !== "claude-code" && value.harnessId !== "opencode") fail("Unsupported activation harness");
+  if (value.harnessId !== "claude-code" && value.harnessId !== "opencode" && value.harnessId !== "grok") fail("Unsupported activation harness");
 }
 function expected(value: unknown): asserts value is ContextMessageActivationExpected {
   const item = record(value);
@@ -123,6 +123,7 @@ export function decodeContextMessageActivationPairing(value: unknown): ContextMe
     text(item.messageId); text(item.source); hash(item.transportSha256);
     if (!isDeepStrictEqual(dispatch.source, item.binding)) fail("Activation dispatch has a different native binding");
     if ((item.binding as ContextMessageBinding).harnessId === "opencode" && dispatch.nativeCommandId !== item.messageId) fail("Activation differs from actual OC native message identity");
+    if ((item.binding as ContextMessageBinding).harnessId === "grok" && (dispatch.nativeCommandId !== null || item.messageId !== `${dispatch.runId}:user`)) fail("Activation differs from the Grok prompt-file message identity");
     if ((item.binding as ContextMessageBinding).harnessId === "claude-code") {
       const initial = `${dispatch.runId}:user`;
       if (item.messageId !== initial && (!item.messageId.startsWith(`${initial}:`)

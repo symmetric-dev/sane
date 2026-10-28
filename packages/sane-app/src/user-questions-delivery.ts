@@ -9,6 +9,7 @@ import type { ConversationAdmissionLease, ConversationCoordinator } from "./conv
 import { DispatchPreNativeRefusal, synchronousDispatchHook } from "./dispatch-evidence";
 import { sameDispatchSource } from "./harness-dispatch";
 import type { UserQuestionsStore } from "./user-questions-store";
+import { toSessionHarness } from "./harness-names";
 
 type Delivery = NonNullable<UserQuestionsRecord["delivery"]>;
 export type UserQuestionsDeliveryDenial = Readonly<{ ready: false; reason: string; disposition: "wait" | "pause" }>;
@@ -45,6 +46,9 @@ export type UserQuestionsDeliveryReconciliation = Readonly<{
   /** Requires the original lifecycle's explicit withholding/durable proof of
    * non-submission. A default snapshot, missing command, or idle is NOT proof. */
   definiteNonSubmission?: true;
+  /** Exact original Grok process completed after submitted prompt and capture
+   * drain. This is deliberately separate from provider-native acceptance. */
+  wrapperCompleted?: true;
 }>;
 
 export type UserQuestionsDeliveryOptions = {
@@ -84,7 +88,7 @@ export function buildUserQuestionsResponse(form: UserQuestionsRecord): string {
 }
 
 const sourceFor = (form: UserQuestionsRecord): DispatchSource => Object.freeze({
-  harnessId: form.native.harness === "cc" ? "claude-code" : "opencode", sessionId: form.sessionId,
+  harnessId: toSessionHarness(form.native.harness), sessionId: form.sessionId,
   authorityId: form.native.authorityId, nativeSessionId: form.native.nativeId, cwd: form.cwd,
 });
 const reasonText = (reason: string) => reason.replace(/\0/g, "").slice(0, 4096);
@@ -210,8 +214,11 @@ export class UserQuestionsDelivery {
       throw error;
     }
     this.identity(current, result.evidence, true);
-    if (current.delivery!.state === "accepted" || current.delivery!.state === "paused") return;
-    if (accepted(result.evidence)) this.change(current, { state: "accepted", reason: "Exact native acceptance observed; understanding and task completion are not implied" });
+    if (["accepted", "wrapper-completed", "paused"].includes(current.delivery!.state)) return;
+    if (result.wrapperCompleted) {
+      if (current.native.harness !== "gk" || result.evidence.submission !== "submitted" || result.evidence.nativeAcceptance !== "unknown") throw new Error("Invalid Grok questionnaire wrapper completion");
+      this.change(current, { state: "wrapper-completed", reason: "The original Grok process completed after receiving the answers; provider acceptance remains unknown" });
+    } else if (accepted(result.evidence)) this.change(current, { state: "accepted", reason: "Exact native acceptance observed; understanding and task completion are not implied" });
     else if (withheld(result.evidence) && result.definiteNonSubmission) {
       this.change(current, { state: "paused", reason: "Exact non-submission confirmed; explicit resume required" });
     } else if (!withheld(result.evidence)) this.change(current, { state: "unknown", reason: "Native acceptance is unknown; do not resend" });
@@ -244,7 +251,7 @@ export class UserQuestionsDelivery {
       this.identity(form, evidence, true);
       const current = this.current(form), state = current.delivery!.state;
       if (evidence.nativeAcceptance === "accepted" && evidence.submission !== "submitted") throw new Error("Native acceptance requires submitted questionnaire evidence");
-      if (state === "accepted") {
+      if (state === "accepted" || state === "wrapper-completed") {
         if (explicitOutcome && evidence.nativeAcceptance === "not-accepted") throw new Error("Native evidence contradicts accepted questionnaire delivery");
         return; // Weaker late observations cannot regress proof.
       }

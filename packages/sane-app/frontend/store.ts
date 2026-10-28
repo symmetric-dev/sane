@@ -46,7 +46,7 @@ import { AppAdmissionLedger } from "./app-admission-ledger";
 import { advanceComposerStamp, sameComposerStamp } from "./composer-lineage";
 import type { ComposerStamp } from "./composer-lineage";
 import type { GrokSessionView, GrokTurnInput } from "./types";
-import { grokAvailability, grokRuns, grokSessionView, GROK_UNKNOWN_NOTICE } from "./grok-presentation";
+import { grokAvailability, grokMessages, grokProfileChoices, grokRuns, grokSessionView, GROK_UNKNOWN_NOTICE } from "./grok-presentation";
 
 export type SessionNameIntent = { conversationId: string; mode: "rename" | "regenerate"; title: string; expectedRevision: number; scope: string; restoreFocus?: () => HTMLElement | null };
 
@@ -57,7 +57,7 @@ export type SciencePendingSend = { version: 1; requestId: string; conversationId
 export type ScienceRejectedRecovery = SciencePendingSend & { status: "rejected" };
 export type Draft = { text: string; cwd: string; profileId: string; upgradeId: string; scienceSnapshots?: ScienceStagedSnapshot[] };
 export type UnconfirmedSubmission = { conversationId: string; sourceKey: string; localId: string; requestId?: string; text: string; draft: Draft };
-export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "queued"; conversationId: string; requestId: string } | { status: "recorded"; requestId: string } | { status: "blocked" | "rejected" | "unknown" };
+export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "queued"; conversationId: string; requestId: string } | { status: "recorded"; requestId: string; conversationId?: string } | { status: "blocked" | "rejected" | "unknown" };
 export type PendingCompact = { payload: CompactRequest; phase: "sending" | "unconfirmed" | "accepted" | "rejected"; runId?: string };
 export type State = {
   /** Exact original-origin/store recovery, never a replay queue. Snapshot refs
@@ -174,31 +174,46 @@ export class ChatStore {
   captureSendSupported = (): boolean => this.harness() === "grok" ? this.grokCaptureSupported() : this.appAdmissionSupported();
   private grokViews = new Map<string, GrokSessionView>();
   /** Only unresolved in-memory capture identities, never a replay queue. */
-  private grokUnconfirmed = new Map<string, { turnIndex: number; draftKey: string; stamp: ComposerStamp }>();
-  private publishGrok(view: GrokSessionView) {
+  private grokUnconfirmed = new Map<string, { turnIndex: number; draftKey: string; stamp: ComposerStamp; preserveDraft?: boolean }>();
+  private publishGrok(view: GrokSessionView, readiness?: Availability, history = this.state.nativeHistory) {
     const original = this.grokUnconfirmed.get(view.sessionId);
     if (original && (view.nextTurnIndex > original.turnIndex || view.active || view.blocked || view.phase === "not-submitted")) {
       this.grokUnconfirmed.delete(view.sessionId);
       const draft = this.state.drafts[original.draftKey];
-      if (draft && view.phase !== "not-submitted" && sameComposerStamp(this.composerStamp(original.draftKey), original.stamp)) {
-        this.update({ drafts: { ...this.state.drafts, [original.draftKey]: { ...draft, text: "" } } });
+      if (draft && !original.preserveDraft && view.phase !== "not-submitted" && sameComposerStamp(this.composerStamp(original.draftKey), original.stamp)) {
+        this.update({ drafts: { ...this.state.drafts, [original.draftKey]: { ...draft, text: "",
+          ...(draft.upgradeId && view.profileId === draft.upgradeId ? { upgradeId: "" } : {}) } } });
       }
     }
     this.grokViews.delete(view.sessionId); this.grokViews.set(view.sessionId, view);
     if (this.grokViews.size > 20) this.grokViews.delete(this.grokViews.keys().next().value!);
     const previous = this.state.conversations.find(item => item.id === view.sessionId);
-    const availability = grokAvailability(view, this.grokUnconfirmed.has(view.sessionId));
+    const captureAvailability = grokAvailability(view, this.grokUnconfirmed.has(view.sessionId));
+    const availability = captureAvailability.canSend && readiness?.canSend === false ? readiness : captureAvailability;
     const last = view.runs.at(-1);
-    const conversation: Conversation = { ...previous, id: view.sessionId, harness: "grok", authorityId: view.authorityId,
-      nativeSessionId: view.nativeSessionId ?? undefined, cwd: view.cwd, model: view.model, effort: view.effort,
-      lastRunId: last?.id ?? null, lastRunStatus: last?.status,
+    const nativeHistory = history?.sessionId === view.sessionId && history.nativeSessionId === view.nativeSessionId ? history : null;
+    const runs = grokRuns(view);
+    let conversation: Conversation = { ...previous, id: view.sessionId, harness: "grok", authorityId: view.authorityId,
+      nativeSessionId: view.nativeSessionId ?? undefined, cwd: view.cwd || previous?.cwd || "",
+      model: view.model || previous?.model, effort: view.effort || previous?.effort,
+      profileId: view.profileId ?? previous?.profileId ?? last?.profileId,
+      agent: view.agent ?? previous?.agent ?? last?.agent,
+      agentKind: view.agentKind ?? previous?.agentKind ?? last?.agentKind,
+      nativeAgentSelected: view.nativeAgentSelected ?? previous?.nativeAgentSelected ?? last?.nativeAgentSelected,
+      ...(view.title !== undefined ? { title: view.title } : {}),
+      lastRunId: last?.id ?? previous?.lastRunId ?? null, lastRunStatus: last?.status ?? previous?.lastRunStatus,
       status: view.active ? "running" : last?.status ?? "unknown", availability };
+    // Keep an existing unresolved association intact unless the service supplies
+    // both resolved IDs. Override the entire discriminated association together.
+    if (view.workspaceId && view.worktreeId) conversation = { ...conversation,
+      workspaceId: view.workspaceId, worktreeId: view.worktreeId, association: "resolved" };
+    const compactions = compactionsFor(conversation, runs, nativeHistory, this.state.selected === view.sessionId ? this.state.compactState?.operations : []);
     const conversations = previous ? this.state.conversations.map(item => item.id === view.sessionId ? conversation : item) : [conversation, ...this.state.conversations];
     this.update({ conversations, ...(this.state.selected === view.sessionId ? {
-      grokView: view, runs: grokRuns(view), messages: view.messages, availability,
-      pendingTurn: null, nativeHistory: null, contextUsage: null, transcript: null, transcriptPaged: false,
+      grokView: view, runs, messages: grokMessages(view, nativeHistory), availability,
+      pendingTurn: null, nativeHistory, compactions, contextUsage: contextUsageFor("grok", runs, this.state.models, nativeHistory, compactions), transcript: null, transcriptPaged: false,
       transcriptInitialLoading: false, transcriptRefreshing: false, transcriptError: "", metadataError: "", workerLoading: false,
-      compactState: null, compactions: [], interactions: [], handoffApprovals: [],
+      interactions: [],
       connected: true, interactive: true, loading: false, connectionError: "",
       ...(!this.grokUnconfirmed.has(view.sessionId) && this.state.submissionError === GROK_UNKNOWN_NOTICE ? { submissionError: "" } : {}),
     } : {}) });
@@ -1546,7 +1561,6 @@ export class ChatStore {
   };
   /** Preview is advisory only: submit strips everything except immutable IDs. */
   stageScienceSnapshot = (snapshot: ScienceShareSnapshot, conversationId = this.state.selected) => {
-    if (this.harness() === "grok") return;
     if (!conversationId || conversationId !== this.state.selected || this.state.sending || this.state.actionBusy || this.pendingInputChainLocked()) return;
     const snapshots = this.draft(conversationId).scienceSnapshots ?? [];
     if (snapshots.some(s => s.snapshotId === snapshot.id)) return;
@@ -1590,16 +1604,21 @@ export class ChatStore {
       this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: remaining }, scienceSubmissionError: "" });
     } catch (error) { this.update({ scienceSubmissionError: error instanceof Error ? error.message : "Science draft recovery unavailable" }); }
   };
-  private async refreshScienceSubmissions(id: string, current: () => boolean, signal: AbortSignal) {
-    if (!this.client.scienceSubmissions || !this.state.config?.storeId) return;
+  private async refreshScienceSubmissions(id: string, current: () => boolean, signal: AbortSignal, supplied?: ScienceSubmissionView[]) {
+    if (!this.state.config?.storeId || !supplied && !this.client.scienceSubmissions) return;
     try {
-      const pending = this.readSciencePending(id), submissions = await this.client.scienceSubmissions(id, signal);
+      const pending = this.readSciencePending(id), submissions = supplied ?? await this.client.scienceSubmissions!(id, signal);
       if (!current()) return;
       // Another tab can replace the durable marker while discovery is in flight.
       // Leave that newer intent and its composer untouched until the next read.
       if (this.readSciencePending(id)?.requestId !== pending?.requestId) return;
       if (!Array.isArray(submissions) || submissions.some(s => s.conversationId !== id || !["prepared", "unknown", "submitted", "not-submitted"].includes(s.state) || !Array.isArray(s.snapshots))) throw new Error("Science send evidence is unavailable");
       const resolved = pending && submissions.find(s => s.requestId === pending.requestId && ["submitted", "not-submitted"].includes(s.state));
+      if (pending) {
+        const evidence = submissions.find(item => item.requestId === pending.requestId);
+        if (evidence && (!equalValue(evidence.snapshots, pending.snapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })))
+          || evidence.state === "submitted" && !evidence.runId)) throw new Error("Science receipt does not match the original request and snapshots. Nothing was resent.");
+      }
       let consumed = resolved?.state === "submitted";
       const recoveries = this.readScienceRecoveries(id);
       if (resolved?.state === "not-submitted" && pending) {
@@ -1612,6 +1631,10 @@ export class ChatStore {
         consumed = true;
       }
       if (consumed && pending && this.readSciencePending(id)?.requestId === pending.requestId) localStorage.removeItem(this.scienceStorageKey(id));
+      if (resolved?.state === "submitted" && id === this.state.selected && this.harness() === "grok") {
+        const draft = this.draft(id);
+        if (draft.upgradeId && draft.upgradeId === this.state.grokView?.profileId) this.setDraft({ upgradeId: "" }, id);
+      }
       for (const record of this.appAdmissionRecords.values()) {
         if (record.scope.storeId !== this.state.config?.storeId || record.envelope.intent.operation !== "science-message" || record.envelope.intent.conversationId !== id) continue;
         const evidence = this.appAdmissionScienceEvidence(record, submissions);
@@ -1621,7 +1644,8 @@ export class ChatStore {
           if (draft?.upgradeId) this.update({ drafts: { ...this.state.drafts, [record.draftKey]: { ...draft, upgradeId: "" } } });
         }
       }
-      this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: recoveries }, scienceSubmissions: { ...this.state.scienceSubmissions, [id]: submissions }, sciencePending: { ...this.state.sciencePending, [id]: consumed ? null : pending }, scienceSubmissionError: "" });
+      this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: recoveries }, scienceSubmissions: { ...this.state.scienceSubmissions, [id]: submissions }, sciencePending: { ...this.state.sciencePending, [id]: consumed ? null : pending }, scienceSubmissionError: "",
+        ...(consumed && id === this.state.selected && (this.state.submissionError.startsWith("Science send outcome is unresolved.") || this.state.submissionError.startsWith("A previous science send is unresolved.")) ? { submissionError: "" } : {}) });
       return true;
     } catch (error) { if (current() && !this.expired(error)) this.update({ scienceSubmissionError: error instanceof Error ? error.message : "Science submission evidence unavailable" }); }
   }
@@ -1640,6 +1664,9 @@ export class ChatStore {
   profileSet = (): AgentProfiles => this.state.profiles ?? this.state.config?.agentProfiles ?? fallbackProfiles;
   profileList = (): AgentProfile[] => [...this.profileSet().profiles].sort((a, b) => a.order - b.order);
   profile = (id: string | undefined): AgentProfile | undefined => id ? this.profileSet().profiles.find(p => p.id === id) : undefined;
+  profileChoices = (profile: Pick<AgentProfile, "harness" | "model" | "effort">): { model: string; effort: string } => profile.harness === "grok"
+    ? grokProfileChoices(profile, this.profile(BASE_PROFILE_IDS.grok)) : { model: profile.model, effort: profile.effort };
+  grokProfileUpgradesSupported = (): boolean => this.state.config?.grokCapability?.profileUpgrades === true;
   defaultProfile = (): AgentProfile => { const set = this.profileSet(); return this.profile(set.defaultId) ?? this.profile(BASE_PROFILE_IDS["claude-code"]) ?? fallbackProfiles.profiles[0]!; };
   /** New-conversation profile: the draft pick when still visible, else the default. */
   draftProfile = (): AgentProfile => { const picked = this.profile(this.draft("").profileId); return picked && !picked.hidden && (picked.kind === "base" || picked.kind === "assistant") ? picked : this.defaultProfile(); };
@@ -1654,7 +1681,9 @@ export class ChatStore {
   conversationSnapshot = (id: string): ProfileSnapshot => {
     const conversation = this.state.conversations.find(c => c.id === id);
     const grok = this.grokViews.get(id);
-    return savedProfileSnapshot(conversation ?? (grok || this.grokUnconfirmed.has(id) ? { harness: "grok", model: grok?.model, effort: grok?.effort } : { harness: "claude-code" }), id === this.state.selected ? this.latestStoredRun(id) : undefined);
+    return savedProfileSnapshot(conversation ?? (grok || this.grokUnconfirmed.has(id) ? { harness: "grok", model: grok?.model, effort: grok?.effort,
+      profileId: grok?.profileId, agent: grok?.agent, agentKind: grok?.agentKind, nativeAgentSelected: grok?.nativeAgentSelected } : { harness: "claude-code" }),
+      grok?.runs.at(-1) ?? (id === this.state.selected ? this.latestStoredRun(id) : undefined));
   };
   conversationProfile = (id: string): DisplayProfile | undefined => displayProfile(this.profileSet(), this.conversationSnapshot(id));
   conversationProfileLabel = (id: string): string => profileDisplayLabel(this.conversationProfile(id), this.conversationSnapshot(id));
@@ -1670,10 +1699,9 @@ export class ChatStore {
   pendingUpgrade = (): AgentProfile | undefined => this.state.selected ? this.profile(this.draft().upgradeId) : undefined;
   /** Profile the next send runs with: pending upgrade, else the conversation's, else the draft's. */
   effectiveProfile = (): DisplayProfile | undefined => this.state.selected ? this.pendingUpgrade() ?? this.conversationProfile(this.state.selected) : this.draftProfile();
-  assignable = (profile: AgentProfile) => this.harness() === "grok" && !!this.state.selected
-    ? { ok: false as const, reason: "Grok sessions keep their explicit model and effort. Start a new chat to change them." }
-    : profile.harness === "grok" && (profile.kind !== "base" || !!profile.role)
-      ? { ok: false as const, reason: "Grok supports Base conversations only." } : canAssign(this.currentShape(), profile);
+  assignable = (profile: AgentProfile) => this.harness() === "grok" && !!this.state.selected && !this.grokProfileUpgradesSupported()
+    ? { ok: false as const, reason: "Existing Grok sessions keep their saved profile. Choose a profile for a new chat instead." }
+    : canAssign(this.currentShape(), profile);
   pickProfile = (id: string) => {
     if (this.pendingInputChainLocked()) return;
     const next = this.profile(id);
@@ -1721,7 +1749,7 @@ export class ChatStore {
     if (this.pendingInputChainLocked()) { this.update({ compactError: "Resolve the existing input chain before compacting." }); return; }
     if (!this.state.selected) { this.update({ submissionError: "Choose an existing conversation before using /compact." }); return; }
     if (!this.supportedCapabilities().compaction) { this.update({ submissionError: "Context compaction is unavailable for this harness. Your draft is unchanged." }); return; }
-    if (instructions && !this.supportedCapabilities().compactionInstructions) { this.update({ submissionError: "OpenCode /compact does not support instructions. Your draft is unchanged." }); return; }
+    if (instructions && !this.supportedCapabilities().compactionInstructions) { this.update({ submissionError: `${getHarnessDescriptor(this.harness())?.label ?? "This harness"} /compact does not support instructions. Your draft is unchanged.` }); return; }
     this.update({ compactDialog: this.state.selected, compactError: "", ...(instructions !== undefined ? { compactInstructions: { ...this.state.compactInstructions, [this.state.selected]: instructions } } : {}) });
     void this.refreshCompact();
   };
@@ -1748,7 +1776,7 @@ export class ChatStore {
     }
   };
   private applyCompactState(compactState: CompactState) {
-    if (this.paged) {
+    if (this.paged && this.harness() !== "grok") {
       const pending = this.state.pendingCompacts?.[compactState.sessionId];
       const recovered = pending && compactState.operations.find(record => record.requestId === pending.payload.requestId);
       const records = new Map<string, CompactionRecord>((this.state.transcript?.compactions ?? []).map(record => [record.id, record]));
@@ -1842,6 +1870,7 @@ export class ChatStore {
   /** Model/variant the next OC send resolves (profile first, then saved session values). */
   effectiveModel = (): { model: string; effort: string } => {
     const profile = this.state.selected ? this.pendingUpgrade() : this.draftProfile();
+    if (profile?.harness === "grok") return this.profileChoices(profile);
     if (profile?.model) return { model: profile.model, effort: profile.effort };
     const saved = this.state.selected ? this.storedDefaults(this.state.selected) : { model: "", effort: "" };
     return { model: saved.model, effort: saved.effort };
@@ -1971,8 +2000,8 @@ export class ChatStore {
         // Invalidate older reads even if reconnect is deferred while hidden.
         this.stop(); this.nativeHistoryLoaded = true;
         this.invalidateConversationCache(id);
-        if (this.paged) { this.resetPages(); this.update({ messages: [], nativeHistory: null, contextUsage: null, compactState: null, compactions: [], loading: true, connected: false, availability: { canSend: false }, actionNotice: "Conversation history refreshed." }); }
-        else this.update({ nativeHistory: history, messages: transcriptMessages(history, this.state.runs), contextUsage: null, compactState: null, compactions: [], actionNotice: "Conversation history refreshed." });
+        if (this.paged && this.harness() !== "grok") { this.resetPages(); this.update({ messages: [], nativeHistory: null, contextUsage: null, compactState: null, compactions: [], loading: true, connected: false, availability: { canSend: false }, actionNotice: "Conversation history refreshed." }); }
+        else this.update({ nativeHistory: history, messages: this.harness() === "grok" ? grokMessages(this.grokViews.get(id), history) : transcriptMessages(history, this.state.runs), contextUsage: null, compactState: null, compactions: [], actionNotice: "Conversation history refreshed." });
         this.reconnect();
       }
     } catch (error) {
@@ -2301,17 +2330,18 @@ export class ChatStore {
       ? { selected, runs, messages: cached?.messages ?? [], compactions, pendingTurn, availability: { canSend: false }, nativeHistory: cached?.nativeHistory ?? null, contextUsage: null, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
         : { selected, runs: [], messages: [], pendingTurn, availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
     this.update({ grokView: null, transcriptPaged: conversation?.harness !== "grok" && this.paged });
+    this.pendingInputFresh = ""; this.loadPendingInputLedger();
+    this.update({ pendingInputs: this.pendingInputViews.get(selected) ?? null, pendingInputLoading: false, pendingInputError: "" }); this.publishPendingInputOperations();
+    if (this.pendingInputVisible && !document.hidden) void this.refreshPendingInputs();
     if (conversation?.harness === "grok") {
       const view = this.grokViews.get(selected);
       if (view) this.publishGrok(view);
       this.update({ availability: { canSend: false }, loading: true, interactive: false, transcript: null,
-        transcriptPaged: false, transcriptInitialLoading: false, workerLoading: false, pendingInputs: null });
+        transcriptPaged: false, transcriptInitialLoading: false, workerLoading: false });
+      this.sciencePolling(true);
       void this.poll();
       return;
     }
-    this.pendingInputFresh = ""; this.loadPendingInputLedger();
-    this.update({ pendingInputs: this.pendingInputViews.get(selected) ?? null, pendingInputLoading: false, pendingInputError: "" }); this.publishPendingInputOperations();
-    if (this.pendingInputVisible && !document.hidden) void this.refreshPendingInputs();
     if (this.paged) this.update({ transcript: cached?.transcript ?? null, transcriptInitialLoading: !!selected && !cached?.messages.length, transcriptError: "", metadataError: "", pageBusy: "", pageErrors: {}, workerLoading: !!selected && !!this.client.workers, compactions: cached?.transcript?.compactions ?? [] });
     this.sciencePolling(true);
     void this.poll();
@@ -2543,7 +2573,6 @@ export class ChatStore {
   }
   /** Independent single-flight discovery also covers sends made by other clients. */
   private sciencePolling(discover = false) {
-    if (this.harness() === "grok") return;
     // Keep invalidations that arrive during a read or while polling is paused.
     if (discover) this.scienceDiscoveryPending = true;
     if (this.state.phase !== "ready" || this.scienceTimer || this.scienceController || !this.client.scienceSubmissions || !this.state.selected || !this.state.config?.authenticated || !this.state.config.storeId || typeof document !== "undefined" && document.hidden) return;
@@ -2597,21 +2626,15 @@ export class ChatStore {
         this.nativeHistoryLoaded = false; this.refreshedRevision = "";
         this.runGateId = ""; this.runGateMarkers = ""; this.workerPollAfter = 0;
       }
-      const selectedGrok = !!selected && (this.harness() === "grok" || this.grokViews.has(selected) || this.grokUnconfirmed.has(selected));
+      const selectedGrok = !!selected && this.harness() === "grok";
+      this.pendingInputPolling();
+      this.sciencePolling();
       if (!selectedGrok && this.harness() !== "grok") {
-        this.pendingInputPolling();
         this.appAdmissionPolling();
-        this.sciencePolling();
       }
       // Sidebar head acquisition has its own scope/auth fences. With targeted
       // support it runs alongside the selected read, not in front of it.
       const head = this.groupListing.enabled ? Promise.resolve() : this.refreshConversationHead();
-      if (selectedGrok) {
-        if (!this.client.grokSession) throw new Error("Grok capture status is unavailable on this bridge.");
-        const view = grokSessionView(await this.client.grokSession(selected, controller.signal), selected);
-        if (current()) this.publishGrok(view);
-        return;
-      }
       if (selected && this.client.conversationSummaries) await this.ensureConversations([selected], controller.signal);
       else if (selected && this.groupListing.enabled) await this.ensureConversations([selected], controller.signal);
       else await head;
@@ -2631,9 +2654,51 @@ export class ChatStore {
       registerWorkerSessions(listing.conversations, !!this.state.conversationPage);
       const currentConversation = listing.conversations.find(c => c.id === selected);
       if (currentConversation?.harness === "grok") {
+        let history = this.state.nativeHistory?.sessionId === selected && this.state.nativeHistory.nativeSessionId === currentConversation.nativeSessionId ? this.state.nativeHistory : null;
+        let historyError = "";
+        if (this.supportedCapabilities("grok").nativeHistoryRefresh && this.client.nativeHistory) {
+          try {
+            const result = await this.client.nativeHistory(selected, controller.signal);
+            if (!current()) return;
+            if (result.history && (result.history.sessionId !== selected || result.history.nativeSessionId !== currentConversation.nativeSessionId)) throw new Error("Native history identity does not match this Grok conversation.");
+            history = result.history;
+            this.nativeHistoryLoaded = true;
+            // Imported conversations can display their genuine native history
+            // even if the capture-status endpoint is temporarily unavailable.
+            const cached = this.grokViews.get(selected);
+            this.update({ nativeHistory: history, messages: grokMessages(cached?.nativeSessionId === currentConversation.nativeSessionId ? cached : undefined, history) });
+          } catch (error) {
+            if (!current() || this.expired(error)) return;
+            historyError = `Native history unavailable: ${error instanceof Error ? error.message : "connection error"}`;
+          }
+        }
         if (!this.client.grokSession) throw new Error("Grok capture status is unavailable on this bridge.");
         const view = grokSessionView(await this.client.grokSession(selected, controller.signal), selected);
-        if (current()) this.publishGrok(view);
+        if (current()) {
+          this.publishGrok(view, currentConversation.availability, history);
+          if (historyError) this.update({ metadataError: historyError });
+          if (!equalValue(this.scienceListing, currentConversation)) { this.scienceListing = currentConversation; this.sciencePolling(true); }
+        }
+        if (!current()) return;
+        if (this.supportedCapabilities("grok").compaction && this.client.compactState) {
+          try { const compact = await this.client.compactState(selected, controller.signal); if (current()) this.applyCompactState(compact); }
+          catch (error) { if (current() && !this.expired(error)) this.update({ compactError: this.compactReadFeedback(error) }); }
+        }
+        // These are ordinary App endpoints. Grok's capture transport does not
+        // expose a native interaction inbox or pretend to be a CC transcript.
+        if (this.client.workers && this.workerPollDue(currentConversation)) {
+          try { const projection = await this.client.workers(selected, controller.signal); if (current()) publishWorkers(selected, projection); }
+          catch (error) { if (current() && !this.expired(error)) publishWorkers(selected, { ...workersFor(selected), error: error instanceof Error ? error.message : "Worker status unavailable" }); }
+          if (current()) this.recordWorkerPoll(currentConversation);
+        }
+        if (current() && this.supportedCapabilities("grok").listHandoffApprovals && this.client.handoffApprovals) {
+          try {
+            const approvals = await this.client.handoffApprovals(selected, controller.signal);
+            if (current()) this.update({ handoffApprovals: approvals.filter(item => !this.replied.has(item.id)), ...(this.state.interactionError.startsWith("Handoff approvals unavailable:") ? { interactionError: "" } : {}) });
+          } catch (error) {
+            if (current() && !this.expired(error)) this.update({ interactionError: `Handoff approvals unavailable: ${error instanceof Error ? error.message : "connection error"}` });
+          }
+        }
         return;
       }
       if (selected && (!currentConversation || this.transcriptKey && this.transcriptKey !== conversationKey(currentConversation))) {
@@ -2851,33 +2916,54 @@ export class ChatStore {
       }
     }
   }
-  private async sendGrok(text: string, options: { preserveDraft?: boolean }): Promise<SendOutcome> {
+  private async sendGrok(text: string, options: { preserveDraft?: boolean }, nativeStopped = false): Promise<SendOutcome> {
     const selected = this.state.selected, conversation = this.state.conversations.find(item => item.id === selected);
-    const profile = this.effectiveProfile();
+    const profile = options.preserveDraft && selected ? this.conversationProfile(selected) : this.effectiveProfile();
+    const upgrade = options.preserveDraft ? undefined : this.pendingUpgrade();
+    const scienceSnapshots = options.preserveDraft ? [] : structuredClone(this.draft().scienceSnapshots ?? []);
     if (!this.grokCaptureSupported()) {
       this.update({ submissionError: this.state.config?.grokCapability?.reason || "Grok capture is not configured on this bridge. Your draft is unchanged." });
       return { status: "blocked" };
     }
-    if (options.preserveDraft || compactCommand(text) || this.draft().scienceSnapshots?.length || this.draft().upgradeId
-      || (selected ? conversation?.harness !== "grok" || !!conversation.agent || !!conversation.worker : profile?.kind !== "base" || !!profile.role)) {
-      this.update({ submissionError: "Grok supports plain Base chat only, without SANE roles, science shares, queued input, compaction, or branching. Your draft is unchanged." });
+    const command = compactCommand(text);
+    if (command && scienceSnapshots.length) { this.update({ submissionError: "Remove staged science snapshots before compacting." }); return { status: "blocked" }; }
+    if (command) { this.openCompact(command.instructions); return { status: "blocked" }; }
+    const unsupported = !selected && (scienceSnapshots.length || options.preserveDraft) ? "Start a conversation before sharing snapshots or a document review."
+      : scienceSnapshots.length && this.draft().text !== text ? "Send snapshots from their original conversation draft."
+      : !options.preserveDraft && this.draft().upgradeId && (!upgrade || !this.assignable(upgrade).ok) ? "This bridge does not support the selected Grok profile upgrade."
+      : this.pendingInputChainLocked() ? "Resolve the existing input chain before sending ordinary input."
+      : this.state.availability.queueAfterRunId || this.state.availability.nativeQueue ? "Wait for the current run to finish before sending."
+      : selected ? conversation?.harness !== "grok" ? "The selected conversation is not a Grok session." : ""
+      : !profile || profile.harness !== "grok" ? "Choose a Grok conversation profile." : "";
+    if (unsupported) {
+      this.update({ submissionError: `${unsupported} Your draft is unchanged.` });
       return { status: "blocked" };
     }
-    if (!text.trim() || this.state.sending || this.state.actionBusy || this.executionUnavailable()
+    if (conversation?.attachment && this.supportedCapabilities("grok").attachedSendRequiresNativeStopped && !nativeStopped) {
+      this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" };
+    }
+    if (selected && this.state.config?.storeId && this.sciencePendingFor(selected)) {
+      this.update({ submissionError: "A previous science send is unresolved. Check its original receipt before sending; nothing was resent." });
+      this.sciencePolling(true); return { status: "blocked" };
+    }
+    if (!text.trim() && !scienceSnapshots.length || this.state.sending || this.state.actionBusy || this.executionUnavailable()
       || !(this.state.interactive ?? this.state.connected) || selected && (!this.state.availability.canSend || this.grokUnconfirmed.has(selected))) return { status: "blocked" };
     // Use the same synchronous guard and composer lineage as ordinary sends.
     this.appAdmissionSendGuard = true;
     const draft = structuredClone(this.draft()), draftKey = this.draftKey(), stamp = this.composerStamp(draftKey);
     const navigation = { ...catalog.state.navigation }, auth = this.authEpoch, selection = this.selectionEpoch;
     const sessionId = selected || crypto.randomUUID();
-    const model = selected ? conversation?.model ?? "" : profile?.model ?? "";
-    const effort = selected ? conversation?.effort ?? "" : profile?.effort ?? "";
+    const scienceRequestId = scienceSnapshots.length ? crypto.randomUUID() : undefined;
+    const choices = profile ? this.profileChoices(profile) : { model: "", effort: "" };
+    const saved = selected ? this.storedDefaults(selected) : undefined;
+    const model = selected && !upgrade ? saved?.model || choices.model : choices.model;
+    const effort = selected && !upgrade ? saved?.effort || choices.effort : choices.effort;
     const cwd = selected ? conversation?.cwd : this.workspace();
     this.stop();
     const generation = this.generation;
     const current = () => auth === this.authEpoch && selection === this.selectionEpoch && generation === this.generation
       && selected === this.state.selected && draftKey === this.draftKey();
-    this.update({ sending: true, submissionError: "" });
+    this.update({ sending: true, submissionError: "", scienceSubmissionError: "" });
     let posted = false, input: GrokTurnInput | undefined;
     try {
       const before = selected ? grokSessionView(await this.client.grokSession!(sessionId, AbortSignal.timeout(25000)), sessionId) : undefined;
@@ -2887,59 +2973,109 @@ export class ChatStore {
         if (!this.state.availability.canSend) return { status: "blocked" };
       }
       input = { sessionId, turnIndex: before?.nextTurnIndex ?? 0, prompt: text,
-        model: model || before?.model || "", effort: effort || before?.effort || "", cwd,
-        workspaceId: selected ? conversation?.workspaceId : navigation.workspaceId,
-        worktreeId: selected ? conversation?.worktreeId : navigation.worktreeId };
-      if (!input.model.trim() || !input.effort.trim()) throw new Error("Grok requires explicit nonempty model and effort strings in its Base profile.");
+        model: upgrade ? model : before?.model || model, effort: upgrade ? effort : before?.effort || effort, cwd: before?.cwd || cwd,
+        profileId: upgrade?.id ?? (selected ? before?.profileId ?? conversation?.profileId : profile?.id),
+        workspaceId: selected ? before?.workspaceId ?? conversation?.workspaceId : navigation.workspaceId,
+        worktreeId: selected ? before?.worktreeId ?? conversation?.worktreeId : navigation.worktreeId,
+        ...(scienceRequestId ? { requestId: scienceRequestId, scienceSnapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) } : {}),
+        ...(nativeStopped ? { nativeStopped: true } : {}) };
+      if (!input.model.trim() || !input.effort.trim()) throw new Error("Grok requires explicit nonempty model and effort strings in its profile.");
+      if (scienceRequestId) {
+        if (this.readSciencePending(sessionId)) throw new Error("A previous science request is unresolved. No replacement request was posted.");
+        const pending: SciencePendingSend = { version: 1, requestId: scienceRequestId, conversationId: sessionId, text, snapshots: scienceSnapshots };
+        const key = this.scienceStorageKey(sessionId), encoded = JSON.stringify(pending);
+        localStorage.setItem(key, encoded);
+        if (localStorage.getItem(key) !== encoded) throw new Error("The original science request could not be saved. Nothing was posted.");
+        this.update({ sciencePending: { ...this.state.sciencePending, [sessionId]: pending } });
+        if (sameComposerStamp(this.composerStamp(draftKey), stamp)) this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "", scienceSnapshots: [] } } });
+      }
       posted = true;
       let view: GrokSessionView;
       try {
         view = grokSessionView(await this.client.grokTurn!(input, AbortSignal.timeout(25000)), sessionId);
       } catch (error) {
         if (!current() || this.expired(error)) return { status: "unknown" };
-        this.grokUnconfirmed.set(sessionId, { turnIndex: input.turnIndex, draftKey, stamp });
+        if (!scienceRequestId) this.grokUnconfirmed.set(sessionId, { turnIndex: input.turnIndex, draftKey, stamp, preserveDraft: options.preserveDraft });
+        if (scienceRequestId) await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000));
         // Never repeat the POST, including when this exact GET is absent/stale.
         view = grokSessionView(await this.client.grokSession!(sessionId, AbortSignal.timeout(25000)), sessionId);
       }
       if (!current()) return { status: "unknown" };
       this.publishGrok(view);
+      if (scienceRequestId) {
+        if (view.scienceSubmission) {
+          if (view.scienceSubmission.requestId !== scienceRequestId || !equalValue(view.scienceSubmission.snapshots, input.scienceSnapshots)) throw new Error("Science response does not match the original request.");
+          const supplied = [...(this.state.scienceSubmissions?.[sessionId] ?? []).filter(item => item.requestId !== scienceRequestId), view.scienceSubmission];
+          await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000), supplied);
+        } else await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000));
+        if (!current()) return { status: "unknown" };
+        const receipt = this.state.scienceSubmissions?.[sessionId]?.find(item => item.requestId === scienceRequestId);
+        if (receipt?.state === "submitted" && receipt.runId && !this.state.sciencePending?.[sessionId]) return { status: "accepted", conversationId: sessionId, runId: receipt.runId };
+        if (receipt?.state === "not-submitted" && !this.state.sciencePending?.[sessionId]) return { status: "rejected" };
+        this.update({ submissionError: "Science send outcome is unresolved. The original request is retained; check its receipt. Nothing will be resent automatically." });
+        return { status: "unknown" };
+      }
       const unresolved = this.grokUnconfirmed.has(sessionId);
-      if (!unresolved && view.phase !== "not-submitted" && sameComposerStamp(this.composerStamp(draftKey), stamp)) {
-        this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "" } } });
+      if (!options.preserveDraft && !unresolved && view.phase !== "not-submitted" && sameComposerStamp(this.composerStamp(draftKey), stamp)) {
+        this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "",
+          ...(upgrade && view.profileId === upgrade.id ? { upgradeId: "" } : {}) } } });
       }
       if (!selected) {
+        // A definitely withheld first turn retains its editable draft under the
+        // original capture ID, so an explicit retry does not require a new chat.
+        if (!unresolved && view.phase === "not-submitted" && !this.state.drafts[sessionId] && !this.composerStamps.has(sessionId)
+          && sameComposerStamp(this.composerStamp(draftKey), stamp)) {
+          this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "" },
+            [sessionId]: { ...draft, profileId: "", upgradeId: "" } } });
+        }
         this.update({ conversations: this.state.conversations.map(item => item.id === sessionId ? { ...item,
-          workspaceId: input!.workspaceId ?? undefined, worktreeId: input!.worktreeId ?? undefined, association: "resolved",
-          profileId: profile?.id, title: text.slice(0, 160) } : item), sending: false });
+          cwd: item.cwd || input!.cwd || "", model: item.model || input!.model, effort: item.effort || input!.effort,
+          workspaceId: item.workspaceId ?? input!.workspaceId ?? undefined, worktreeId: item.worktreeId ?? input!.worktreeId ?? undefined, association: "resolved",
+          profileId: item.profileId ?? input!.profileId, title: item.title ?? text.slice(0, 160) } : item), sending: false });
         this.choose(sessionId); this.publishGrok(view); catalog.navigate({ conversationId: sessionId });
       }
       if (unresolved) this.update({ submissionError: GROK_UNKNOWN_NOTICE });
-      return unresolved ? { status: "unknown" } : { status: "recorded", requestId: `${sessionId}:${input.turnIndex}` };
+      return unresolved ? { status: "unknown" } : view.phase === "not-submitted" ? { status: "rejected" }
+        : { status: "recorded", requestId: `${sessionId}:${input.turnIndex}`, conversationId: sessionId };
     } catch (error) {
       if (current() && !this.expired(error)) {
         if (posted && input) {
-          this.grokUnconfirmed.set(sessionId, { turnIndex: input.turnIndex, draftKey, stamp });
+          if (scienceRequestId) {
+            this.update({ submissionError: `Science send outcome is unresolved. ${error instanceof Error ? error.message : "Science response unavailable."} The original science request is retained; check its receipt. Nothing was resent.` });
+            await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000));
+            const receipt = this.state.scienceSubmissions?.[sessionId]?.find(item => item.requestId === scienceRequestId);
+            if (current() && receipt?.state === "submitted" && receipt.runId && !this.state.sciencePending?.[sessionId]) return { status: "accepted", conversationId: sessionId, runId: receipt.runId };
+            if (current() && receipt?.state === "not-submitted" && !this.state.sciencePending?.[sessionId]) return { status: "rejected" };
+            return { status: "unknown" };
+          }
+          this.grokUnconfirmed.set(sessionId, { turnIndex: input.turnIndex, draftKey, stamp, preserveDraft: options.preserveDraft });
           if (!selected) {
             // Keep the original App UUID reachable even if both responses were
             // lost. This is local uncertain metadata, not a native acknowledgement.
             const row: Conversation = { id: sessionId, harness: "grok", cwd: input.cwd ?? "", model: input.model, effort: input.effort,
-              workspaceId: input.workspaceId ?? undefined, worktreeId: input.worktreeId ?? undefined, association: "resolved", profileId: profile?.id,
+              workspaceId: input.workspaceId ?? undefined, worktreeId: input.worktreeId ?? undefined, association: "resolved", profileId: input.profileId,
               title: text.slice(0, 160), lastRunId: null, status: "unknown", availability: { canSend: false, reason: GROK_UNKNOWN_NOTICE } };
             this.update({ conversations: [row, ...this.state.conversations], sending: false });
             this.choose(sessionId); catalog.navigate({ conversationId: sessionId });
           }
           this.update({ availability: { canSend: false, reason: GROK_UNKNOWN_NOTICE }, submissionError: GROK_UNKNOWN_NOTICE });
-        } else this.update({ submissionError: `${error instanceof Error ? error.message : "Grok capture unavailable."} Your draft is unchanged; nothing was posted.` });
+        } else {
+          if (scienceRequestId) {
+            try { if (this.readSciencePending(sessionId)?.requestId === scienceRequestId) localStorage.removeItem(this.scienceStorageKey(sessionId)); }
+            catch { /* Keep any unremovable identity fenced; never repost it. */ }
+          }
+          this.update({ submissionError: `${error instanceof Error ? error.message : "Grok capture unavailable."} Your draft is unchanged; nothing was posted.` });
+        }
       }
       return { status: posted ? "unknown" : "blocked" };
     } finally {
       this.appAdmissionSendGuard = false;
-      if (auth === this.authEpoch) { this.update({ sending: false }); void this.poll(); }
+      if (auth === this.authEpoch) { this.update({ sending: false }); this.sciencePolling(true); void this.poll(); }
     }
   }
   send = async (text: string, nativeStopped = false, options: { preserveDraft?: boolean } = {}): Promise<SendOutcome> => {
     if (this.appAdmissionSendGuard) return { status: "blocked" };
-    if (this.harness() === "grok" || this.effectiveProfile()?.harness === "grok") return this.sendGrok(text, options);
+    if (this.harness() === "grok" || this.effectiveProfile()?.harness === "grok") return this.sendGrok(text, options, nativeStopped);
     if (!this.appAdmissionSupported() && !compactCommand(text)) {
       this.update({ submissionError: "App admission requires initialization on this bridge. Update and initialize the App admission store before sending; your draft is unchanged. Legacy submission is not used." });
       return { status: "blocked" };

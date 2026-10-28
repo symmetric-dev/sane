@@ -8,6 +8,7 @@ import { CodeSettings } from "./code-settings-view";
 import { ThemeSettings } from "./theme-settings-view";
 import { InstallApp } from "./pwa-install-view";
 import { DeviceNotifications } from "./chrome-push-view";
+import { isHarness } from "../shared/conversation/harness-capabilities";
 
 const CAPABILITIES = [["cancelRun", "Cancel run"], ["permissionReplies", "Permission replies"], ["modelSelection", "Model selection"]] as const;
 type HarnessDisplay = Pick<HarnessInfo, "id" | "available" | "connected" | "state" | "reason">;
@@ -34,7 +35,7 @@ export function ApplicationSettings({ state, signOut }: { state: State; signOut:
         if (!publishable()) return;
         if (!next || next.authenticated !== config.authenticated || next.authRequired !== config.authRequired
           || next.storeId !== config.storeId || next.cwd !== config.cwd) throw new Error("Bridge identity or sign-in changed. Reconnect to refresh harness status.");
-        if (!Array.isArray(next.harnesses) || next.harnesses.some(h => !h || (h.id !== "opencode" && h.id !== "claude-code")
+        if (!Array.isArray(next.harnesses) || next.harnesses.some(h => !h || !isHarness(h.id)
           || typeof h.available !== "boolean" || typeof h.connected !== "boolean" || typeof h.state !== "string"
           || (h.reason !== undefined && typeof h.reason !== "string"))) throw new Error("Invalid harness status response.");
         // Display only: never hydrate config or adopt refreshed permission/capability data.

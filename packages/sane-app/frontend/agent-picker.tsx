@@ -12,7 +12,6 @@ export function AgentPicker({ close, restoreFocus }: { close: () => void; restor
   // Re-render on profile/draft/selection changes.
   useStore(s => s.profiles); useStore(s => s.drafts); useStore(s => s.selected);
   useStore(s => s.pendingInputs);
-  const grokConfigured = useStore(s => s.config?.grokCapability?.configured === true);
   const [query, setQuery] = useState("");
   const grid = useRef<HTMLDivElement>(null);
   const assign = !!store.state.selected;
@@ -20,12 +19,11 @@ export function AgentPicker({ close, restoreFocus }: { close: () => void; restor
   useEffect(() => { if (chainLocked) close(); }, [chainLocked, close]);
   const currentId = assign ? store.pendingUpgrade()?.id ?? store.conversationProfileId(store.state.selected) : store.draftProfile().id;
   const q = query.trim().toLowerCase();
-  const visible = store.profileList().filter(p => (p.kind === "base" || p.kind === "assistant") && !p.hidden && matches(p, q)
-    && (p.harness !== "grok" || grokConfigured && p.kind === "base" && !p.role));
+  const visible = store.profileList().filter(p => (p.kind === "base" || p.kind === "assistant") && !p.hidden && matches(p, q));
   const choose = (profile: AgentProfile) => { if (store.state.selected && store.pendingInputChainLocked()) return; store.pickProfile(profile.id); close(); };
   const section = (title: string, list: AgentProfile[]) => !!list.length && <section className="agent-section" aria-label={title}>
     <h3>{title}</h3>
-    <div className="agent-grid">{list.map(profile => { const check = store.assignable(profile); return <AgentCard key={profile.id} profile={profile} selected={profile.id === currentId} disabled={chainLocked || !check.ok} reason={chainLocked ? "Agent settings are fixed while the pending-input chain is active." : check.ok ? undefined : check.reason} onSelect={() => choose(profile)} />; })}</div>
+    <div className="agent-grid">{list.map(profile => { const check = store.assignable(profile); return <AgentCard key={profile.id} profile={profile} choices={store.profileChoices(profile)} selected={profile.id === currentId} disabled={chainLocked || !check.ok} reason={chainLocked ? "Agent settings are fixed while the pending-input chain is active." : check.ok ? undefined : check.reason} onSelect={() => choose(profile)} />; })}</div>
   </section>;
   return <ShellDialog title={assign ? "Assign an assistant" : "Choose an agent"} close={close} restoreFocus={restoreFocus}>
     <div className="agent-picker">

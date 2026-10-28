@@ -63,7 +63,7 @@ export const conversationClient: ConversationClient = {
   },
   async grokStop(id) {
     const result = await request(`/api/grok/sessions/${encodeURIComponent(id)}/stop`, { method: "POST", body: "{}" });
-    if (result.interrupted !== false || !["not-attempted", "unproven"].includes(result.nativeCancellation)
+    if (typeof result.interrupted !== "boolean" || !["not-attempted", "unproven"].includes(result.nativeCancellation)
       || typeof result.wrapperClosed !== "boolean" || typeof result.reason !== "string") throw new Error("Grok Stop status is unconfirmed; native cancellation is not proven.");
     return result;
   },

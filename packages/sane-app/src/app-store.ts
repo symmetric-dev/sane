@@ -1,7 +1,7 @@
 import { lstatSync, mkdirSync, openSync, closeSync, fsyncSync, writeFileSync, readFileSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import type { NativeAuthority, ConversationRef, CheckoutPin } from "sane-core/contracts";
-import { isNativeHarness, nativeSourceFormat, validNativeAuthorityId, validPinnedAuthorityId } from "sane-core/native-source-contract";
+import { isNativeHarness, validNativeAuthorityId } from "sane-core/native-source-contract";
 import { AppStoreError, exact, absolute, time, corrupt } from "./app-store-format";
 import { assertSourceDescriptor, assertQualifiedReference, validateSources, validateStoredSources, grokSourceRecord, resolveSources, assertSourceConfiguration, type SourceConfiguration, type StoredSourceRecords } from "./app-sources";
 import { uuid, validateStoredMetadata, validModel, validEffort, validVariant, validProfileId } from "./history";
@@ -27,7 +27,7 @@ export type AdmissionRecords = { version: 1; admissions: Admission[] };
 export type StoredAdmissions = AdmissionRecords | { version: 2; admissions: Admission[] };
 function validAdmissionNativeId(harness: unknown, nativeId: string): boolean {
   switch (harness) {
-    case "cc": return uuid(nativeId);
+    case "cc": case "gk": return uuid(nativeId);
     case "oc": return /^ses[a-zA-Z0-9_-]{1,200}$/.test(nativeId);
     default: return false;
   }
@@ -67,34 +67,11 @@ function assertAdmissionBinding(a: { binding: any }): void {
     if (![b.checkoutPin.path, b.checkoutPin.commonDir, b.checkoutPin.gitDir].every(absolute) || b.checkoutPin.path !== b.executionCheckout || ["device", "inode", "commonDevice", "commonInode", "gitDevice", "gitInode"].some(k => !Number.isSafeInteger(b.checkoutPin[k]) || b.checkoutPin[k] < 0)) corrupt("Invalid execution pin");
   }
 }
-/** v1 remains validateAdmissions. v2 may contain create-only gk rows and is not rewritten on read. */
+/** Both versions share qualified admission validation; reads never rewrite old rows. */
 export function validateStoredAdmissions(value: unknown): StoredAdmissions {
   if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 2) return validateAdmissions(value);
   exact(value, ["version", "admissions"]);
-  if (!Array.isArray(value.admissions)) corrupt("Invalid admissions file");
-  const gk = value.admissions.filter((a: { source?: { descriptor?: { harness?: unknown } } }) => a?.source?.descriptor?.harness === "gk");
-  const rest = value.admissions.filter((a: { source?: { descriptor?: { harness?: unknown } } }) => a?.source?.descriptor?.harness !== "gk");
-  validateAdmissions({ version: 1, admissions: rest });
-  const ids = new Set(rest.map((a: Admission) => a.requestId)), sessions = new Set(rest.map((a: Admission) => a.sessionId));
-  const qualified = new Set(rest.filter((a: Admission) => a.nativeId !== null).map((a: Admission) => JSON.stringify([a.source.descriptor.harness, a.source.authorityId, a.nativeId])));
-  for (const a of gk) {
-    exact(a, ["version", "requestId", "sessionId", "operation", "state", "source", "binding", "parent", "nativeId", "createdAt", "error"]);
-    if (a.version !== 1 || a.operation !== "create" || !uuid(a.requestId) || !uuid(a.sessionId) || ids.has(a.requestId) || sessions.has(a.sessionId) || !["intent", "native_creation_unknown", "identity_known", "ready", "rejected"].includes(a.state) || !time(a.createdAt) || a.error !== null && typeof a.error !== "string") corrupt("Invalid admission record");
-    ids.add(a.requestId); sessions.add(a.sessionId);
-    exact(a.source, ["descriptor", "authorityId"]);
-    const format = nativeSourceFormat("gk");
-    exact(a.source.descriptor, ["version", "harness", "kind", format?.locatorKey ?? "homeRoot"]);
-    if (a.source.descriptor.version !== 1 || a.source.descriptor.harness !== "gk" || a.source.descriptor.kind !== "local-home" || !absolute(a.source.descriptor.homeRoot) || !validPinnedAuthorityId("gk", a.source.authorityId)) corrupt("Invalid admission source");
-    if (a.nativeId !== null) {
-      if (!uuid(a.nativeId)) corrupt("Invalid native identity");
-      const key = JSON.stringify(["gk", a.source.authorityId, a.nativeId]);
-      if (qualified.has(key)) corrupt("Duplicate qualified native identity");
-      qualified.add(key);
-    }
-    if (["ready", "identity_known"].includes(a.state) && a.nativeId === null || a.state === "native_creation_unknown" && a.nativeId !== null) corrupt("Invalid admission state/identity");
-    if (a.parent !== null) assertQualifiedReference(a.parent);
-    assertAdmissionBinding(a as { binding: any });
-  }
+  validateAdmissions({ version: 1, admissions: value.admissions });
   return value as StoredAdmissions;
 }
 const PROFILE_KEYS = ["id", "kind", "role", "harness", "model", "effort", "label", "description", "icon", "color", "builtin", "locked", "order", "updatedAt"] as const;

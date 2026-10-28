@@ -96,6 +96,8 @@ export function isUtilityAgentId(value: unknown): value is UtilityAgentId {
 export type SaneAgentIdentity = { kind: "assistant"; role: AssistantAgentId } | { kind: "worker"; role: WorkerAgentId } | { kind: "utility"; role: UtilityAgentId }
 export type StoredSaneAgentIdentity = { kind: "assistant"; role: StoredAssistantAgentId } | { kind: "worker"; role: WorkerAgentId } | { kind: "utility"; role: UtilityAgentId }
 /** Do not canonicalize archival selections: native instructions are identity-specific. */
-export function nativeAgentId(identity: StoredSaneAgentIdentity, harness: "claude-code" | "opencode"): string {
+export function nativeAgentId(identity: StoredSaneAgentIdentity, harness: "claude-code" | "opencode" | "grok"): string {
+  // Grok receives the logical role in the App profile; no native context files are installed.
+  if (harness === "grok") return identity.role
   return harness === "opencode" ? `sane/${identity.kind}/${identity.role}` : `sane-${identity.kind}-${identity.role}`
 }

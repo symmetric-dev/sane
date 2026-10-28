@@ -1,6 +1,10 @@
 import { issueClaudeInvocation, qualifyClaudeHook, claudeNativeTools } from "./native-claude.ts"
 import { nativeShellCaller } from "./native-caller.ts"
 
+// Grok imports compatible Claude settings, but must never run Claude's SANE
+// identity rewrite. Leave unrelated compatible hooks enabled and untouched.
+if (process.env.GROK_SESSION_ID) process.exit(0)
+
 try {
   const [profileRoot, bindingRoot] = process.argv.slice(2)
   if (!profileRoot || !bindingRoot) throw new Error()

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { FiCommand, FiGitBranch, FiPlus, FiSliders, FiUsers } from "react-icons/fi";
 import { ASSISTANT_AGENT_LABELS, WORKER_AGENT_CATALOG, isAssistantAgentId, isWorkerAgentId } from "sane-core/agent-catalog";
 import { UTILITY_AGENT_CATALOG, isUtilityAgentId } from "sane-core/agent-catalog";
-import { AGENT_COLOR_IDS, AGENT_ICON_IDS, type AgentColor, type AgentIconId } from "../src/agent-profiles-contract";
+import { AGENT_COLOR_IDS, AGENT_ICON_IDS, BASE_PROFILE_IDS, type AgentColor, type AgentIconId } from "../src/agent-profiles-contract";
 import { store, type State } from "./store";
 import { catalog } from "./catalog";
 import { ShellDialog } from "./shell-dialog";
@@ -14,6 +14,8 @@ import { HotkeysSettings } from "./hotkeys-settings";
 import { WorkstreamsView, type ArtifactSelection } from "./workstreams";
 import type { DocumentReviewLaunch } from "./document-review-launch";
 import { FIXED_EFFORT_VALUES, getHarnessDescriptor } from "../shared/conversation/harness-capabilities";
+import { validGrokChoice } from "../shared/conversation/grok-contract";
+import { grokProfileChoices } from "./grok-presentation";
 
 // Client-side mirrors of src/history.ts validModel/validEffort/validVariant and
 // src/bridge.ts submit validation (model always, effort per harness, variant
@@ -35,8 +37,9 @@ const ocError = (pair: Pair, kind: AgentProfile["kind"]) => {
   if (pair.effort && !validVariant(pair.effort)) return "Invalid native variant ID.";
   return "";
 };
-const errorFor = (harness: Harness, pair: Pair, kind: AgentProfile["kind"]) => {
-  if (harness === "grok") return kind !== "base" ? "Grok supports Base chat only." : !pair.model.trim() || !pair.effort.trim() ? "Grok requires explicit nonempty model and effort strings." : "";
+const errorFor = (harness: Harness, pair: Pair, kind: AgentProfile["kind"], grokDefaults?: Pair) => {
+  const grok = grokProfileChoices(pair, grokDefaults);
+  if (harness === "grok") return !validGrokChoice(grok.model) || !validGrokChoice(grok.effort) ? "Set a Grok model and effort here or in Base · Grok (single-line text, up to 200 characters)." : "";
   switch (getHarnessDescriptor(harness)?.policies.effortMode) {
     case "model-variant": return ocError(pair, kind);
     case "fixed": return ccError(pair);
@@ -46,7 +49,7 @@ const errorFor = (harness: Harness, pair: Pair, kind: AgentProfile["kind"]) => {
 
 type Form = { label: string; description: string; harness: Harness; model: string; effort: string; icon: AgentIconId; color: AgentColor; hidden: boolean };
 const toForm = (p: AgentProfile): Form => ({ label: p.label, description: p.description, harness: p.harness, model: p.model, effort: p.effort, icon: p.icon, color: p.color, hidden: !!p.hidden });
-const formError = (form: Form, kind: AgentProfile["kind"]) => !form.label.trim() ? "Name is required." : form.label.trim().length > 80 ? "Name must be 80 characters or fewer." : form.description.length > 400 ? "Description must be 400 characters or fewer." : errorFor(form.harness, form, kind);
+const formError = (form: Form, kind: AgentProfile["kind"], grokDefaults?: Pair) => !form.label.trim() ? "Name is required." : form.label.trim().length > 80 ? "Name must be 80 characters or fewer." : form.description.length > 400 ? "Description must be 400 characters or fewer." : errorFor(form.harness, form, kind, grokDefaults);
 const copyLabel = (p: AgentProfile) => `${p.label} copy`.slice(0, 80);
 
 export type ConfigSection = "agents" | "application" | "hotkeys";
@@ -100,11 +103,11 @@ function AgentSettings({ state }: { state: State }) {
   const rememberFocus = () => { opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; };
   const open = (profile: AgentProfile) => { rememberFocus(); store.clearProfileError(); setEditing(profile); };
   const create = async (from: AgentProfile) => {
-    if (from.harness === "grok" || from.kind === "worker" || from.kind === "utility") return;
+    if (from.kind === "worker" || from.kind === "utility") return;
     const created = await store.createProfile(from.id, { label: copyLabel(from), hidden: false });
     if (created) { setChooser(false); setEditing(created); }
   };
-  const cards = (items: AgentProfile[]) => items.map(p => <AgentCard key={p.id} profile={p} edit tag={p.hidden ? "Hidden" : p.id === set.defaultId ? "Default" : undefined} onSelect={() => open(p)} />);
+  const cards = (items: AgentProfile[]) => items.map(p => <AgentCard key={p.id} profile={p} choices={store.profileChoices(p)} edit tag={p.hidden ? "Hidden" : p.id === set.defaultId ? "Default" : undefined} onSelect={() => open(p)} />);
   return <section className="history-view agent-config-view" aria-label="Agent configuration">
     <header className="history-view-header"><h2>Agents</h2></header>
     <p className="muted agent-config-intro">Configure new conversations, worker launches, and App-invoked utilities. Existing sessions keep their saved configuration.</p>
@@ -136,7 +139,7 @@ function AgentSettings({ state }: { state: State }) {
         <div className="agent-grid">{cards(list.filter(p => p.kind === "utility"))}</div>
       </div>
     </div>
-    {editing ? <AgentEditor key={editing.id} profile={editing} state={state} close={() => setEditing(null)} created={setEditing} restoreFocus={restoreFocus} /> : chooser && <ShellDialog title="New assistant" restoreFocus={restoreFocus} close={() => { if (!state.profileBusy) setChooser(false); }}><p className="muted">Choose a profile to duplicate, then edit its name and settings.</p>{state.profileError && <p className="notice error" role="alert">{state.profileError}</p>}<div className="agent-picker"><div className="agent-grid">{list.filter(p => p.harness !== "grok" && (p.kind === "base" || p.kind === "assistant")).map(p => <AgentCard key={p.id} profile={p} disabled={state.profileBusy} onSelect={() => void create(p)} />)}</div></div></ShellDialog>}
+    {editing ? <AgentEditor key={editing.id} profile={editing} state={state} close={() => setEditing(null)} created={setEditing} restoreFocus={restoreFocus} /> : chooser && <ShellDialog title="New assistant" restoreFocus={restoreFocus} close={() => { if (!state.profileBusy) setChooser(false); }}><p className="muted">Choose a profile to duplicate, then edit its name and settings.</p>{state.profileError && <p className="notice error" role="alert">{state.profileError}</p>}<div className="agent-picker"><div className="agent-grid">{list.filter(p => p.kind === "base" || p.kind === "assistant").map(p => <AgentCard key={p.id} profile={p} choices={store.profileChoices(p)} disabled={state.profileBusy} onSelect={() => void create(p)} />)}</div></div></ShellDialog>}
   </section>;
 }
 
@@ -166,7 +169,8 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
 
   const fixedHarness = profile.builtin && profile.kind === "base", busy = state.profileBusy;
   const patch = (next: Partial<Form>) => setForm(previous => ({ ...previous, ...next }));
-  const problem = formError(form, profile.kind);
+  const grokDefaults = profile.id === BASE_PROFILE_IDS.grok ? undefined : store.profile(BASE_PROFILE_IDS.grok);
+  const problem = formError(form, profile.kind, grokDefaults);
   const dirty = (Object.keys(form) as (keyof Form)[]).some(key => form[key] !== toForm(profile)[key]);
   const isDefault = set.defaultId === profile.id;
   const ccOptions = (capabilities.effortValues ?? []).map(id => ({ id, name: `${id[0]?.toUpperCase()}${id.slice(1)} effort` }));
@@ -201,10 +205,10 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
           <div className="interaction-field"><label htmlFor="agent-label">Name</label><input id="agent-label" value={form.label} maxLength={80} onChange={event => patch({ label: event.target.value })} /></div>
           <div className="interaction-field"><label htmlFor="agent-description">Description</label><textarea id="agent-description" rows={2} value={form.description} maxLength={400} onChange={event => patch({ description: event.target.value })} /></div>
           <div className="interaction-field"><span className="agent-field-label">Fixed role</span><span className="agent-readonly">{profile.kind === "base" ? "None (harness defaults, no instructions)" : isWorkerAgentId(profile.role) ? `Worker · ${WORKER_AGENT_CATALOG[profile.role].label}` : isUtilityAgentId(profile.role) ? `Utility · ${UTILITY_AGENT_CATALOG[profile.role].label}` : isAssistantAgentId(profile.role) ? `Assistant · ${ASSISTANT_AGENT_LABELS[profile.role]}` : profile.role}</span></div>
-          <div className="interaction-field"><span className="agent-field-label" id="agent-harness">Harness</span><div className="agent-segmented" role="group" aria-labelledby="agent-harness">{(["claude-code", "opencode", ...(profile.kind === "base" && (form.harness === "grok" || state.config?.grokCapability?.configured) ? ["grok" as const] : [])] as const).map(h => <button type="button" key={h} aria-pressed={form.harness === h} disabled={fixedHarness} onClick={() => { if (form.harness !== h) patch({ harness: h, model: "", effort: "" }); }}>{harnessName(h)}</button>)}</div><small>{fixedHarness ? "Fixed for built-in Base." : "Changing harness clears the model and effort selection."}</small></div>
+          <div className="interaction-field"><span className="agent-field-label" id="agent-harness">Harness</span><div className="agent-segmented" role="group" aria-labelledby="agent-harness">{(["claude-code", "opencode", "grok"] as const).map(h => <button type="button" key={h} aria-pressed={form.harness === h} disabled={fixedHarness} onClick={() => { if (form.harness !== h) patch({ harness: h, model: "", effort: "" }); }}>{harnessName(h)}</button>)}</div><small>{fixedHarness ? "Fixed for built-in Base." : "Changing harness clears the model and effort selection."}</small></div>
           {form.harness === "grok" ? <>
-            <div className="interaction-field"><label htmlFor="agent-grok-model">Grok model</label><input id="agent-grok-model" value={form.model} onChange={event => patch({ model: event.target.value })} required /><small>Explicit model string passed to Grok. No Claude or OpenCode defaults.</small></div>
-            <div className="interaction-field"><label htmlFor="agent-grok-effort">Grok effort</label><input id="agent-grok-effort" value={form.effort} onChange={event => patch({ effort: event.target.value })} required /><small>Explicit effort string passed to Grok; not a Claude effort or catalog variant.</small></div>
+            <div className="interaction-field"><label htmlFor="agent-grok-model">Grok model</label><input id="agent-grok-model" value={form.model} placeholder={grokDefaults?.model || "Grok model"} maxLength={200} onChange={event => patch({ model: event.target.value })} required={!grokDefaults} /><small>{grokDefaults ? "Empty uses the configured Base · Grok model. No Claude or OpenCode defaults." : "Explicit model string passed to Grok. No Claude or OpenCode defaults."}</small></div>
+            <div className="interaction-field"><label htmlFor="agent-grok-effort">Grok effort</label><input id="agent-grok-effort" value={form.effort} placeholder={grokDefaults?.effort || "Grok effort"} maxLength={200} onChange={event => patch({ effort: event.target.value })} required={!grokDefaults} /><small>{grokDefaults ? "Empty uses the configured Base · Grok effort, not a Claude effort or catalog variant." : "Explicit effort string passed to Grok; not a Claude effort or catalog variant."}</small></div>
           </> : capabilities.modelSelection && descriptor?.policies.modelInput === "live-catalog" && descriptor.policies.effortMode === "model-variant" ? <>
              <div className="interaction-field"><label htmlFor="agent-oc-model">Model</label><ModelPicker id="agent-oc-model" models={ocModels} value={form.model} defaultLabel={profile.kind === "base" ? "Native default" : "Agent default model"} disabled={busy || (state.modelsLoading && !ocModels.length)} loading={state.modelsLoading} onChange={model => patch({ model, effort: "" })} /><small>{state.modelsLoading ? "Loading the live catalog…" : profile.kind === "base" ? "Live catalog for the current directory. Empty means the native default." : "Empty uses the agent's configured model, then the native default."}</small></div>
             <div className="interaction-field"><label htmlFor="agent-oc-variant">Model variant</label>{!form.model && profile.kind !== "base" ? <><input id="agent-oc-variant" value={form.effort} maxLength={200} placeholder="Agent default variant" onChange={event => patch({ effort: event.target.value })} /><small>Variant ID for the agent's configured model. Its variants are not listed here. Launch requires a resolvable agent model; empty preserves its default variant.</small></> : <select id="agent-oc-variant" value={form.effort} disabled={!form.model || (!ocEfforts.length && !form.effort)} onChange={event => patch({ effort: event.target.value })} title={!form.model ? "Select a model before selecting a variant" : undefined}><option value="">Default variant</option>{form.effort && !ocEfforts.some(e => e.id === form.effort) && <option value={form.effort}>{form.effort}</option>}{ocEfforts.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</select>}</div>
@@ -227,7 +231,7 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
         <div className="dialog-actions agent-actions agent-secondary-actions">
           {!profile.builtin && profile.kind !== "worker" && <button type="button" className="agent-danger" disabled={busy || isDefault} title={isDefault ? "Choose another default before deleting" : undefined} onClick={() => ask("delete")}>Delete</button>}
           {profile.builtin && <button type="button" disabled={busy} onClick={() => ask("reset")}>{fixedHarness ? "Reset to defaults" : "Reset to template"}</button>}
-          {profile.harness !== "grok" && profile.kind !== "worker" && <button type="button" disabled={busy} onClick={() => ask("duplicate")}>Duplicate</button>}
+          {profile.kind !== "worker" && <button type="button" disabled={busy} onClick={() => ask("duplicate")}>Duplicate</button>}
         </div>
       </div>
       <footer className="dialog-actions agent-actions"><button type="button" disabled={busy} onClick={dismiss}>Cancel</button><button type="button" className="agent-save" disabled={busy || !dirty || !!problem} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button></footer>

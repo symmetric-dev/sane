@@ -4,6 +4,7 @@ import { uuid, type Session } from "./history";
 import type { WorkstreamOverview } from "./workstreams-contract";
 import type { CatalogService } from "./catalog";
 import type { Admission, SourceRecords } from "./app-store";
+import type { GrokSourceRecord } from "./app-sources";
 import { toNativeHarness } from "./harness-names";
 
 export type AppConversation = Pick<Session, "sessionId" | "harness" | "nativeSessionId" | "authorityId" | "cwd">;
@@ -65,7 +66,7 @@ function synchronousMutationHook(action: () => unknown, failed?: (error: unknown
 }
 /** Repository-scoped synchronous adapter. No ambient or singleton domain selection. */
 export class WorkstreamAdapter {
-  constructor(readonly domain: RepositoryDomain, private readonly sources: { cc: SourceRecords["cc"]; oc: SourceRecords["oc"] }, private readonly hooks: WorkstreamMutationHooks = {}) {}
+  constructor(readonly domain: RepositoryDomain, private readonly sources: { cc: SourceRecords["cc"]; oc: SourceRecords["oc"]; gk?: GrokSourceRecord }, private readonly hooks: WorkstreamMutationHooks = {}) {}
   private mutate<T>(input: WorkstreamMutation, action: () => T): T {
     // Read-only target proof failures are scoped refusals, not failed writes.
     synchronousMutationHook(() => this.hooks.beforeMutation?.(this.domain, input), this.hooks.mutationFailed);
@@ -88,7 +89,7 @@ export class WorkstreamAdapter {
   get repositoryId() { return this.domain.repositoryId; }
   reference(session: AppConversation): ConversationRef {
     const harness = session.harness;
-    if ((harness !== "opencode" && harness !== "claude-code") || !session.nativeSessionId || !session.authorityId) throw new WorkstreamAdapterError(409, "invalid-app-reference", "Qualified native identity is required");
+    if ((harness !== "opencode" && harness !== "claude-code" && harness !== "grok") || !session.nativeSessionId || !session.authorityId) throw new WorkstreamAdapterError(409, "invalid-app-reference", "Qualified native identity is required");
     return { harness: toNativeHarness(harness), authorityId: session.authorityId, nativeId: session.nativeSessionId };
   }
   appSessionId(ref: ConversationRef, sessions: readonly AppConversation[]) {
@@ -124,6 +125,7 @@ export class WorkstreamAdapter {
   preflight(executionCheckout: string) { return this.domain.validateExecutionCheckout(executionCheckout); }
   register(session: AppConversation, parent?: ConversationRef | null) {
     const ref = this.reference(session), source = this.sources[ref.harness];
+    if (!source) throw new WorkstreamAdapterError(409, "grok-unconfigured", "Grok source is unconfigured");
     if (normalizeNativeSource(source.descriptor).authorityId !== ref.authorityId) throw new WorkstreamAdapterError(409, "source-mismatch", "Native source differs from persisted identity");
     return this.mutate({ kind: "register", ref }, () => {
       this.domain.declareNativeAuthority(source.descriptor, mutation());
@@ -156,7 +158,7 @@ export class RepositoryRouter {
   private cache = new Map<string, WorkstreamAdapter>();
   /** Read-only reuse of a fully opened adapter; filesystem evidence is checked on every access. */
   private polls = new Map<string, { root: string; commonDir: string; worktreeId: string; bindingRevision: string; adapter: WorkstreamAdapter }>();
-  constructor(private catalog: CatalogService, private sources: { cc: SourceRecords["cc"]; oc: SourceRecords["oc"] }, private readonly hooks: WorkstreamMutationHooks = {}) {}
+  constructor(private catalog: CatalogService, private sources: { cc: SourceRecords["cc"]; oc: SourceRecords["oc"]; gk?: GrokSourceRecord }, private readonly hooks: WorkstreamMutationHooks = {}) {}
   private async checkout(workspaceId: string, timing?: ResolutionTiming) {
     if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
     const get = () => this.catalog.get(workspaceId);
@@ -313,7 +315,7 @@ export function validateWorkstreamInput(operation: string, input: unknown): asse
     }
     case "create": string("id"); string("title"); if (!["feature", "foundation", "issue", "maintenance"].includes(input.type as string)) invalid("type"); break;
     case "default-checkout": string("id"); if (input.checkout !== null) string("checkout"); break;
-    case "target": string("id"); string("phase"); if ("target" in input && (!object(input.target) || !["cc", "oc"].includes(input.target.harness as string) || typeof input.target.authorityId !== "string" || typeof input.target.nativeId !== "string")) invalid("qualified target"); break;
+    case "target": string("id"); string("phase"); if ("target" in input && (!object(input.target) || !["cc", "oc", "gk"].includes(input.target.harness as string) || typeof input.target.authorityId !== "string" || typeof input.target.nativeId !== "string")) invalid("qualified target"); break;
     case "artifacts/catalog": case "artifacts/list": case "artifacts/read":
       string("id");
       if (operation === "artifacts/read") string("path");

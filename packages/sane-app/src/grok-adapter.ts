@@ -1,7 +1,8 @@
 import { spawn as nodeSpawn } from "node:child_process";
-import { constants, createWriteStream, openSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants, createWriteStream, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { access, stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { Readable, Writable } from "node:stream";
 import type {
@@ -9,12 +10,14 @@ import type {
 } from "../shared/conversation/dispatch-contract";
 import type { HarnessDispatchAdapter } from "./harness-dispatch";
 import type { RunOwner } from "./run-owner";
+import type { RunSubmissionBoundary } from "./run-submission-preparation";
+import type { GrokNativeRuntime } from "./grok-native-runtime";
+import { grokNativeSessionExists } from "./grok-native-session";
+import { grokSessionExists } from "./grok-native-history";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GROK_AUTHORITY = /^sane-native-v1:gk:[a-f0-9]{64}$/;
 const AUTOMATIC_ORIGINS = ["queued-user", "questionnaire-response", "worker-report", "worker-exchange", "handoff"] as const satisfies readonly AutomationDispatchOrigin[];
-const IMPORTED_SURFACES = ["AGENTS", "RULES", "HOOKS", "MCPS", "SKILLS"] as const;
-const DEFAULT_TIMEOUT_MS = 180_000;
 const TERM_GRACE_MS = 1_000;
 const KILL_GRACE_MS = 1_000;
 const automation = Object.freeze(Object.fromEntries(AUTOMATIC_ORIGINS.map(origin => [origin, {
@@ -35,6 +38,8 @@ export type GrokTurnObservation = {
   /** Final close signal when available; exit alone never finishes processing. */
   readonly exitSignal: NodeJS.Signals | null;
   readonly wrapperCompletion: "not-started" | "running" | "closed" | "incomplete";
+  /** Exact session flag selected from native disk evidence, not App turn index. */
+  readonly sessionMode: "create" | "resume" | null;
   readonly nativeCancellation: "not-attempted" | "unproven";
   readonly code: string | null;
   readonly reason: string | null;
@@ -85,7 +90,13 @@ export type GrokDispatchAdapterOptions = {
   stderrPath?: string;
   /** Explicit offline fixture seam, not implicitly enabled by injecting spawn. */
   executableReady?: () => void | Promise<void>;
+  /** Trusted synchronous admission getter, evaluated only immediately before spawn. */
+  callerContext?: (owner: RunOwner) => string | undefined;
+  /** Creates only this owner's per-run MCP and genuine Grok identity hooks. */
+  nativeRuntime?: (owner: RunOwner) => GrokNativeRuntime;
+  /** Zero (the default) disables the execution timeout. Stop/drain remains bounded. */
   timeoutMs?: number;
+  toolPath?: string;
 };
 
 type MutableObservation = Omit<{ -readonly [K in keyof GrokTurnObservation]: GrokTurnObservation[K] }, "acceptedMessageId" | "observedStreamMessageIds"> & {
@@ -96,11 +107,12 @@ type Turn = {
   phase: "preparing" | "prepared" | "launching" | "finished";
   closed: ReturnType<typeof Promise.withResolvers<void>>;
   observation: MutableObservation;
-  prepared?: { argv: readonly string[]; cwd: string; promptPath: string; capture: Capture };
+  prepared?: { argv: readonly string[]; cwd: string; promptPath: string; prompt: string; capture: Capture };
   child?: GrokSpawnedChild;
   terminate?: (code: string, reason: string) => void;
   failure?: unknown;
   cleanup?: Promise<void>;
+  runtime?: GrokNativeRuntime;
   captureListeners?: Array<{ target: Writable; listener: (error: Error) => void }>;
 };
 type AdapterState = { blocked: boolean; turns: WeakMap<RunOwner, Turn> };
@@ -110,7 +122,8 @@ const states = new WeakMap<object, AdapterState>();
  * synchronous up to spawn, including the final owner.stopRequested fence. */
 export type GrokDispatchAdapter<O extends RunOwner = RunOwner> = HarnessDispatchAdapter<O> & {
   prepare(owner: O, prompt: string, resume: boolean): Promise<boolean>;
-  executePrepared(owner: O, homeRoot: string, ready: (admitted: boolean) => void): Promise<void>;
+  /** A shared submission boundary replaces, never duplicates, the direct owner hooks. */
+  executePrepared(owner: O, homeRoot: string, ready: (admitted: boolean) => void, boundary?: RunSubmissionBoundary<() => string>): Promise<void>;
   finish(owner: O): Promise<void>;
   /** Actual original wrapper/sink close, including a close after bounded drain. */
   closed(owner: O): Promise<void>;
@@ -120,6 +133,7 @@ function freshObservation(): MutableObservation {
   return {
     submission: "not-submitted", nativeAcceptance: "not-accepted", observedStreamMessageIds: [],
     toolBoundary: "clean", exitCode: null, exitSignal: null, wrapperCompletion: "not-started",
+    sessionMode: null,
     nativeCancellation: "not-attempted", code: null, reason: null,
   };
 }
@@ -139,17 +153,39 @@ function notSubmitted(turn: Turn, reason: string, cancelled = false): void {
   });
 }
 
-/** Isolation flags and an explicit env, not a SANE authority sandbox. Without
- * PATH a shell/libc can still use default search directories. No caller envelope
- * or HOME is forwarded; tool denial/detection remain separate boundaries. */
-function childEnv(homeRoot: string, nativeSessionId: string): Record<string, string> {
+/** Native tools need a normal shell environment, but must not inherit the App's
+ * SANE caller envelope or another harness's session authority. Select process
+ * settings explicitly rather than spreading process.env. Grok's own config,
+ * memory, compatibility imports, and MCP settings retain their native defaults. */
+function childEnv(homeRoot: string, nativeSessionId: string, callerContext?: string, toolPath?: string): Record<string, string> {
   const env: Record<string, string> = {
-    GROK_HOME: homeRoot, GROK_MEMORY: "0", GROK_MANAGED_MCPS_ENABLED: "false", GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED: "false",
-    // Locally minted refusal marker, never inherited caller authority. Not a sandbox.
-    SANE_UNQUALIFIED_NATIVE: "1", GROK_SESSION_ID: nativeSessionId,
+    HOME: process.env.HOME || homedir(),
+    PATH: process.env.PATH || "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    SHELL: process.env.SHELL || "/bin/sh",
+    TMPDIR: process.env.TMPDIR || tmpdir(),
+    LANG: process.env.LANG || "en_US.UTF-8",
+    TERM: process.env.TERM || "dumb",
+    GROK_HOME: homeRoot,
+    GROK_SESSION_ID: nativeSessionId,
   };
-  for (const vendor of ["CLAUDE", "CURSOR"] as const) {
-    for (const surface of IMPORTED_SURFACES) env[`GROK_${vendor}_${surface}_ENABLED`] = "false";
+  if (toolPath) env.PATH = toolPath + delimiter + env.PATH;
+  if (callerContext !== undefined) {
+    env.SANE_CALLER_CONTEXT = callerContext;
+    env.SANE_SESSION_ID = nativeSessionId;
+  } else {
+    // Locally minted refusal marker, never inherited caller authority. Not a sandbox.
+    env.SANE_UNQUALIFIED_NATIVE = "1";
+  }
+  for (const key of [
+    "USER", "LOGNAME", "LANGUAGE", "TZ", "COLORTERM",
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+    "XAI_API_KEY",
+  ]) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  for (const [key, value] of Object.entries(process.env)) {
+    if (/^LC_[A-Z_]+$/.test(key) && value !== undefined) env[key] = value;
   }
   return env;
 }
@@ -165,34 +201,30 @@ async function assertExecutableFile(path: string): Promise<void> {
 function defaultSpawn(argv: readonly string[], options: GrokSpawnOptions): GrokSpawnedChild {
   return nodeSpawn(argv[0]!, argv.slice(1), { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true });
 }
-function argvFor(executable: string, model: string, effort: string, nativeSessionId: string, resume: boolean, promptPath: string): readonly string[] {
+function argvFor(executable: string, model: string, effort: string, nativeSessionId: string, resume: boolean, promptPath: string, agentFile?: string): readonly string[] {
   return Object.freeze([
     executable, "--model", model, "--reasoning-effort", effort, "--output-format", "streaming-messages-json",
-    "--verbatim", "--no-plan", "--no-subagents", "--disable-web-search", "--permission-mode", "dontAsk", "--deny", "*", "--max-turns", "1",
+    "--verbatim", "--permission-mode", "bypassPermissions",
     resume ? "--resume" : "--session-id", nativeSessionId, "--prompt-file", promptPath,
+    ...(agentFile ? ["--agent", agentFile] : []),
   ]);
 }
 
-/** Deliberately retains the conservative recursive tool grammar until a narrower
- * protocol grammar is qualified. One traversal also collects raw stream ids. */
-function inspectEvent(value: unknown, ids: string[]): boolean {
-  if (!value || typeof value !== "object") return false;
+/** Raw stream ids are observations, not proof of native acceptance. Tool calls
+ * and tool results are normal headless output and must not terminate the loop. */
+function collectStreamMessageIds(value: unknown, ids: string[]): void {
+  if (!value || typeof value !== "object") return;
   const record = value as Record<string, unknown>;
-  let tool = record.type === "tool" || record.type === "tool_use" || record.type === "tool_result"
-    || record.subtype === "tool_use" || record.subtype === "tool_result";
   if (typeof record.id === "string" && record.id.startsWith("msg_")) ids.push(record.id);
-  for (const nested of Object.values(record)) if (inspectEvent(nested, ids)) tool = true;
-  return tool;
+  for (const nested of Object.values(record)) collectStreamMessageIds(nested, ids);
 }
 function noteStreamLine(turn: Turn, line: string): void {
   let event: unknown;
   try { event = JSON.parse(line); } catch { return; }
   if (event && typeof event === "object" && (event as any).type === "result" && (event as any).is_error === true) {
-    turn.failure ??= new Error("Grok reported an error result; start a new conversation instead of retrying");
+    turn.failure ??= new Error("Grok reported an error result");
   }
-  if (!inspectEvent(event, turn.observation.observedStreamMessageIds) || turn.observation.toolBoundary === "refused") return;
-  turn.observation.toolBoundary = "refused";
-  turn.terminate?.("grok-tool-boundary", "Grok tool-use event is a boundary refusal");
+  collectStreamMessageIds(event, turn.observation.observedStreamMessageIds);
 }
 function watch(stream: Readable | null, targets: readonly Writable[], turn: Turn, fail: (error: unknown) => void): () => void {
   if (!stream) return () => {};
@@ -201,8 +233,7 @@ function watch(stream: Readable | null, targets: readonly Writable[], turn: Turn
   const scan = (text: string) => {
     const lastNewline = text.lastIndexOf("\n");
     if (lastNewline === -1) { pending += text; return; }
-    // Detach complete lines before callbacks: a fake or already-exiting child
-    // can close synchronously when a tool-boundary callback sends SIGTERM.
+    // Detach complete lines before processing to keep the decoder state stable.
     const complete = pending + text.slice(0, lastNewline + 1);
     pending = text.slice(lastNewline + 1);
     let start = 0;
@@ -243,7 +274,7 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
   const state: AdapterState = { blocked: false, turns: new WeakMap() };
   const spawn = options.spawn ?? defaultSpawn;
   let promptSerial = 0;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? 0;
 
   const readiness = async (source: DispatchSource, origin: DispatchOrigin): Promise<PinnedDispatchReadiness> => {
     let reason: string | undefined;
@@ -259,20 +290,22 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
   const finish = (owner: O): Promise<void> => {
     const turn = state.turns.get(owner);
     if (!turn) return Promise.resolve();
-    if (!turn.prepared) { turn.phase = "finished"; turn.closed.resolve(); return Promise.resolve(); }
+    if (!turn.prepared) { turn.runtime?.close(); turn.phase = "finished"; turn.closed.resolve(); return Promise.resolve(); }
     // An incomplete child remains owned and keeps its sinks until actual close.
-    if (turn.child && turn.observation.wrapperCompletion !== "closed") return Promise.resolve();
+    if ((turn.child || turn.observation.submission === "unknown") && turn.observation.wrapperCompletion !== "closed") return Promise.resolve();
     turn.phase = "finished";
     return turn.cleanup ??= (async () => {
       const prepared = turn.prepared!;
       try { await Promise.all(prepared.capture.owned.map(endOwned)); }
       finally {
         for (const { target, listener } of turn.captureListeners ?? []) target.off("error", listener);
-        // Retain possible-execution prompt evidence; it must never be replayed.
-        if (turn.observation.submission === "not-submitted") {
-          try { unlinkSync(prepared.promptPath); } catch { /* Best-effort local-only cleanup. */ }
-        }
-        turn.closed.resolve();
+        try {
+          turn.runtime?.close();
+          // Retain possible-execution prompt evidence; it must never be replayed.
+          if (turn.observation.submission === "not-submitted") {
+            try { unlinkSync(prepared.promptPath); } catch { /* Best-effort local-only cleanup. */ }
+          }
+        } finally { turn.closed.resolve(); }
       }
     })();
   };
@@ -300,7 +333,16 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
       writeFileSync(promptPath, Buffer.from(prompt, "utf8"), { flag: "wx", mode: 0o600 });
       let capture: Capture;
       try { capture = captureTargets(options); } catch (error) { try { unlinkSync(promptPath); } catch {} throw error; }
-      turn.prepared = { argv: argvFor(options.executable, model, effort, source.nativeSessionId, resume, promptPath), cwd: source.cwd, promptPath, capture };
+      // App turn index, previous exit status and --session-id reservation do not
+      // prove native existence. Failed/stopped turns may persist a valid session.
+      turn.prepared = { argv: [], cwd: source.cwd, promptPath, prompt, capture };
+      const nativeResume = await grokSessionExists(options.homeRoot, source.cwd, source.nativeSessionId)
+        // An interrupted native setup can leave its directory before summary /
+        // updates exist. Such a reservation still must never be recreated over.
+        || grokNativeSessionExists(options.homeRoot, source.nativeSessionId, source.cwd);
+      turn.observation.sessionMode = nativeResume ? "resume" : "create";
+      turn.runtime = options.nativeRuntime?.(owner);
+      turn.prepared.argv = argvFor(options.executable, model, effort, source.nativeSessionId, nativeResume, promptPath, turn.runtime?.agentFile);
       turn.captureListeners = [];
       for (const target of new Set([...capture.stdout, ...capture.stderr])) {
         const listener = (error: Error) => { turn.failure ??= error; turn.terminate?.("grok-spawn-uncertain", "Grok output capture failed"); };
@@ -315,7 +357,7 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
     }
   };
 
-  const executePrepared = async (owner: O, homeRoot: string, ready: (admitted: boolean) => void): Promise<void> => {
+  const executePrepared = async (owner: O, homeRoot: string, ready: (admitted: boolean) => void, boundary?: RunSubmissionBoundary<() => string>): Promise<void> => {
     const turn = state.turns.get(owner);
     if (!turn?.prepared) { ready(false); return; }
     const observation = turn.observation;
@@ -324,7 +366,20 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
     if (!absolute(homeRoot)) { notSubmitted(turn, "Grok launch homeRoot is not absolute"); ready(false); return; }
     if (turn.failure) throw turn.failure;
     if (owner.stopRequested) { notSubmitted(turn, "Grok stop was requested before spawn", true); ready(false); return; }
-    owner.dispatchEvidence?.beforeNative();
+    const prepared = turn.prepared;
+    const readPrompt = () => {
+      const bytes = readFileSync(prepared.promptPath);
+      if (!bytes.equals(Buffer.from(prepared.prompt, "utf8"))) throw new GrokDispatchRefusal("grok-eligibility-refused", "Grok prepared prompt file changed before spawn");
+      return bytes.toString("utf8");
+    };
+    // Enter the shared gate before reading/validating the physical wire. Its
+    // assertWire invokes this reader synchronously before original durable intent.
+    if (boundary) boundary.beforeNative(readPrompt);
+    // Never evaluate the admission getter inside the spawn catch, where a thrown
+    // error could mean native side effects. Direct sends retain local withholding;
+    // shared sends retain their coordinator's already-recorded intent on failure.
+    const env = childEnv(homeRoot, owner.contextIdentity!.source.nativeSessionId!, options.callerContext?.(owner), options.toolPath);
+    if (!boundary) { readPrompt(); owner.dispatchEvidence?.beforeNative(); }
     // This is the final synchronous fence for BOTH default and injected spawn.
     if (owner.stopRequested) { notSubmitted(turn, "Grok stop was requested before spawn", true); ready(false); return; }
     if (state.blocked) { notSubmitted(turn, "Refusing to spawn after an interrupted or uncertain Grok turn"); ready(false); return; }
@@ -333,18 +388,18 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
     observation.submission = "unknown";
     observation.nativeAcceptance = "unknown";
     let child: GrokSpawnedChild;
-    try { child = spawn(turn.prepared.argv, { cwd: turn.prepared.cwd, env: childEnv(homeRoot, owner.contextIdentity!.source.nativeSessionId!), stdio: ["ignore", "pipe", "pipe"] }); }
+    try { child = spawn(turn.prepared.argv, { cwd: turn.prepared.cwd, env, stdio: ["ignore", "pipe", "pipe"] }); }
     catch (error) {
       // Only nodeSpawn's local availability error proves withholding. An
       // injected callback can throw after side effects, whatever its error code.
       if (!options.spawn && availabilityError(error)) { notSubmitted(turn, "Grok executable is missing or not executable"); ready(false); return; }
       state.blocked = true;
-      Object.assign(observation, { submission: "unknown", nativeAcceptance: "unknown", code: "grok-spawn-uncertain", reason: "Grok spawn may have executed; no retry is permitted" });
+      Object.assign(observation, { submission: "unknown", nativeAcceptance: "unknown", wrapperCompletion: "incomplete", code: "grok-spawn-uncertain", reason: "Grok spawn may have executed; no retry is permitted" });
       throw new GrokDispatchRefusal("grok-spawn-uncertain", observation.reason!, { cause: error });
     }
     if (!child || typeof child.on !== "function") {
       state.blocked = true;
-      Object.assign(observation, { submission: "unknown", nativeAcceptance: "unknown", code: "grok-spawn-uncertain", reason: "Grok spawn returned no observable child; execution is unknown" });
+      Object.assign(observation, { submission: "unknown", nativeAcceptance: "unknown", wrapperCompletion: "incomplete", code: "grok-spawn-uncertain", reason: "Grok spawn returned no observable child; execution is unknown" });
       throw new GrokDispatchRefusal("grok-spawn-uncertain", observation.reason!);
     }
     turn.child = child;
@@ -405,8 +460,9 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
     try {
       flushStdout = watch(child.stdout, turn.prepared.capture.stdout, turn, fail);
       flushStderr = watch(child.stderr, turn.prepared.capture.stderr, turn, fail);
-      if (!closed && escalation === undefined) timeout = setTimeout(() => turn.terminate!("grok-cancellation-unproven", "Grok child exceeded the bounded timeout; native cancellation is unproven"), timeoutMs);
-      owner.dispatchEvidence?.outcome(observation.submission, "unknown");
+      if (timeoutMs > 0 && !closed && escalation === undefined) timeout = setTimeout(() => turn.terminate!("grok-cancellation-unproven", "Grok child exceeded the bounded timeout; native cancellation is unproven"), timeoutMs);
+      if (boundary) boundary.outcome(observation.submission, "unknown");
+      else owner.dispatchEvidence?.outcome(observation.submission, "unknown");
       ready(observation.submission === "submitted");
       if (owner.stopRequested) turn.terminate("grok-cancellation-unproven", "Grok stop requested; only the owned wrapper is terminated and native cancellation is unproven");
     } catch (error) { fail(error); }
@@ -420,7 +476,6 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
       observation.reason = "Grok execution could not be proven submitted or withheld";
       throw new GrokDispatchRefusal("grok-spawn-uncertain", observation.reason);
     }
-    if (observation.toolBoundary === "refused") throw new GrokDispatchRefusal("grok-tool-boundary", observation.reason ?? "Grok tool-use boundary refused");
   };
 
   const adapter: GrokDispatchAdapter<O> = Object.freeze({
@@ -445,7 +500,7 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
 }
 
 /** Stop never claims native cancellation. The owner fence also covers preparation. */
-export function stopGrokDispatch(adapter: HarnessDispatchAdapter, owner: RunOwner): GrokStopResult {
+export function stopGrokDispatch<O extends RunOwner>(adapter: HarnessDispatchAdapter<O>, owner: O): GrokStopResult {
   const turn = states.get(adapter)?.turns.get(owner);
   if (!turn) return { stopped: false, code: "grok-stop-refused", reason: "This adapter has no Grok turn for the original owner", killedPid: null, nativeCancellation: "not-attempted" };
   owner.stopRequested = true;
@@ -467,7 +522,7 @@ export function stopGrokDispatch(adapter: HarnessDispatchAdapter, owner: RunOwne
   return { stopped: false, code: "grok-cancellation-unproven", reason: "Terminating only the owned Grok wrapper; native cancellation is unproven", killedPid: validPid(pid) ? pid : null, nativeCancellation: "unproven" };
 }
 
-export function grokDispatchObservation(adapter: HarnessDispatchAdapter, owner: RunOwner): GrokTurnObservation | undefined {
+export function grokDispatchObservation<O extends RunOwner>(adapter: HarnessDispatchAdapter<O>, owner: O): GrokTurnObservation | undefined {
   const observation = states.get(adapter)?.turns.get(owner)?.observation;
   return observation ? Object.freeze({ ...observation, acceptedMessageId: null, observedStreamMessageIds: Object.freeze([...observation.observedStreamMessageIds]) }) : undefined;
 }

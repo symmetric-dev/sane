@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import { DomainError, normalizeNativeSource } from "../../sane-core/src/server.ts"
-import type { NativeCaller } from "./native-caller.ts"
+import { nativeRuntimeHeaders, type NativeCaller } from "./native-caller.ts"
 
 export const nativeBrowserToolNames = ["browser_status", "browser_snapshot", "browser_screenshot", "browser_console_logs", "browser_network_requests", "browser_navigate", "browser_click", "browser_type", "browser_scroll"] as const
 export type NativeBrowserToolName = (typeof nativeBrowserToolNames)[number]
@@ -68,7 +68,7 @@ export async function browserNativeCaller(caller: NativeCaller, tool: NativeBrow
   const timeout = AbortSignal.timeout(20000), transportSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
   let response: Response, result: unknown
   try {
-    response = await fetch(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(request), signal: transportSignal })
+    response = await fetch(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json", authorization: `Bearer ${token}`, ...nativeRuntimeHeaders(caller) }, body: JSON.stringify(request), signal: transportSignal })
     result = await response.json()
   } catch { throw new DomainError("UNAVAILABLE", "Host browser transport was interrupted or returned an invalid reply. No automatic retry was attempted; inspect browser status before retrying a mutation.") }
   const reply = result && typeof result === "object" && !Array.isArray(result) ? result as { ok?: boolean; result?: unknown; error?: string; code?: string } : {}

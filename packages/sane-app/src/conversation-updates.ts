@@ -219,7 +219,8 @@ export class ConversationUpdates<State = UpdateJson> {
   private runCoverage(source: ConversationUpdateSource): ConversationUpdateCoverage {
     return { sourceKey: updateSourceKey(source),
       state: source.harness === "claude-code" && this.options.projector ? "ready" : "unqualified",
-      ...(source.harness === "opencode" ? { reason: "Native OpenCode reply updates are not qualified" } : {}) };
+      ...(source.harness === "opencode" ? { reason: "Native OpenCode reply updates are not qualified" }
+        : source.harness === "grok" ? { reason: "Native Grok reply updates are not qualified" } : {}) };
   }
   private reduceEvent(session: Session, run: Run, event: Event, source: ConversationUpdateSource, state: RunState) {
     let candidates: ConversationUpdateCandidate[] = [];
@@ -232,7 +233,7 @@ export class ConversationUpdates<State = UpdateJson> {
     const status = terminalStatus(event);
     if (status && !state.terminalIndexed) {
       // A qualified CC success never creates a separate App-completed update.
-      // OC remains unqualified for replies, but App failure/interruption is still authoritative.
+      // OC/Grok remain unqualified for replies, but App failure/interruption is still authoritative.
       const exactTerminal = candidates.some(candidate => candidate.kind === status && candidate.runId === run.runId
         && candidate.legacyRunId === run.runId && candidate.conversationId === session.sessionId
         && updateSourceKey(candidate.source) === updateSourceKey(source));

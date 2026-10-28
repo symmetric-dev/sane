@@ -1,4 +1,4 @@
-import type { DispatchIdentity, DispatchSource, DispatchSubmissionEvidence, PinnedDispatchReadiness } from "../shared/conversation/dispatch-contract";
+import type { DispatchIdentity, DispatchReadiness, DispatchSource, DispatchSubmissionEvidence, PinnedDispatchReadiness } from "../shared/conversation/dispatch-contract";
 import { legacyProfileId } from "./agent-profiles-contract";
 import type { ConversationAdmissionLease, ConversationCoordinator, ConversationReadinessOptions } from "./conversation-coordinator";
 import { DispatchPreNativeRefusal, synchronousDispatchHook } from "./dispatch-evidence";
@@ -32,6 +32,8 @@ export type PendingInputBridgeDependencies = Readonly<{
   terminalSnapshot: (source: DispatchSource, nativeCommandId: string) => Promise<Pick<Awaited<ReturnType<OpenCodeAdapter["snapshot"]>>, "outcome">>;
   groupAlive: (owner: RunOwner) => boolean;
   readLocalSettlement: (owner: RunOwner) => ClaudeLocalSettlement;
+  /** Exact original Grok wrapper completion, never Claude result/native acceptance. */
+  readGrokSettlement?: (owner: RunOwner, source: DispatchSource) => Promise<DispatchReadiness>;
   readPendingCancellation: (owner: RunOwner) => OpenCodePendingCancellation;
   /** Queue-only App idleness, never generic Claude/native exclusivity. */
   currentAppIdle: (source: DispatchSource, own?: Readonly<{ lease: ConversationAdmissionLease; identity: DispatchIdentity; owner?: RunOwner }>) => ClaudeLocalIdle;
@@ -316,7 +318,7 @@ export function createPendingInputBridge(deps: PendingInputBridgeDependencies): 
             throw new PendingInputDomainError("scheduler-owner", "Queue submission requires the exact published coordinator owner");
           queueOwnerConfiguration(owner.run, selection.item.snapshot.prepared);
         }
-        if (source.harnessId === "claude-code") {
+        if (source.harnessId === "claude-code" || source.harnessId === "grok") {
           if (input.stage === "claim") {
             const capability = claimingQueueLease && queueLeases.get(claimingQueueLease);
             if (!capability || capability.conversationId !== cid || capability.requestId !== input.identity.requestId
@@ -384,7 +386,7 @@ export function createPendingInputBridge(deps: PendingInputBridgeDependencies): 
           return { kind: "wait" };
         }
       }
-       if (source.harnessId === "opencode") {
+        if (source.harnessId === "opencode" || source.harnessId === "grok") {
          let native: PinnedDispatchReadiness;
          try { native = await queueReadOnlyProof(() => deps.nativeReadiness(source)); }
          catch (error) {
@@ -476,6 +478,17 @@ export function createPendingInputBridge(deps: PendingInputBridgeDependencies): 
           const snapshot = await queueReadOnlyProof(() => deps.terminalSnapshot(source, evidence.nativeCommandId!));
           terminal();
           if (snapshot.outcome !== (status === "completed" ? "succeeded" : status)) return { kind: "wait" };
+        }
+      } else if (source.harnessId === "grok") {
+        // Failed/interrupted Grok runs settle as that terminal status (the
+        // scheduler already paused the chain) and are never replayed. Waiting
+        // forever would leave the item run-linked and the chain blocking sends.
+        // Advancing after completion needs this live service's wrapper success.
+        if (status === "completed") {
+          if (!deps.readGrokSettlement) return { kind: "wait" };
+          const proof = await deps.readGrokSettlement(owner, source);
+          terminal();
+          if (!proof.ready) return { kind: "wait" };
         }
       } else {
         if (!localTerminal()) return { kind: "wait" };

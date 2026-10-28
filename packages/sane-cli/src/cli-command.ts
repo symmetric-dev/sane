@@ -30,12 +30,12 @@ export const USAGE = `Usage: sane <command> [--repo PATH] [--workstream ID] [--j
   research unregister --topic SLUG
   default-checkout --workstream ID --checkout PATH|--clear
   authority declare --repo PATH --source JSON
-  conversation register --repo PATH --harness cc|oc --authority ID --native-id ID --checkout PATH
-    [--parent-harness cc|oc --parent-authority ID --parent-native-id ID]
-  conversation get|context|associate|unassign --repo PATH --harness cc|oc --authority ID --native-id ID
+  conversation register --repo PATH --harness cc|oc|gk --authority ID --native-id ID --checkout PATH
+    [--parent-harness cc|oc|gk --parent-authority ID --parent-native-id ID]
+  conversation get|context|associate|unassign --repo PATH --harness cc|oc|gk --authority ID --native-id ID
     (associate requires --workstream ID)
-  phase assign SLOT --repo PATH --harness cc|oc --authority ID --native-id ID
-  phase target SLOT --repo PATH --workstream ID [--harness cc|oc --authority ID --native-id ID]
+  phase assign SLOT --repo PATH --harness cc|oc|gk --authority ID --native-id ID
+  phase target SLOT --repo PATH --workstream ID [--harness cc|oc|gk --authority ID --native-id ID]
   phase end --repo PATH --assignment-id ID
 Slots: design, engineering, planning, execution (lifecycle);
   research, research:<safe-topic>, curation, experimentation (support tracks).
@@ -69,7 +69,7 @@ function ready(path: string): RepositoryContext {
   return state.context
 }
 function reference(options: CliIntent["options"], prefix = ""): ConversationRef {
-  return { harness: options[`${prefix}harness`] as "cc" | "oc", authorityId: options[`${prefix}authority`] as string, nativeId: options[`${prefix}native-id`] as string }
+  return { harness: options[`${prefix}harness`] as ConversationRef["harness"], authorityId: options[`${prefix}authority`] as string, nativeId: options[`${prefix}native-id`] as string }
 }
 
 /** Full domain result. Programmatic callers that need complete evidence use

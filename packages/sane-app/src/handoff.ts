@@ -5,7 +5,8 @@ import { canonicalSlot, equivalentSlots, isStoredSlot, type CheckoutPin, type Co
 import { classifyCaller } from "../../sane-cli/src/cli-arguments";
 import type { AdmissionService } from "./admission";
 import type { CatalogService } from "./catalog";
-import type { SourceRecords } from "./app-store";
+import type { SourceRecord } from "./app-store";
+import type { GrokSourceRecord } from "./app-sources";
 import type { Session } from "./history";
 import type { HandoffPresentation, HandoffParty } from "./handoff-contract";
 import { toSessionHarness } from "./harness-names";
@@ -76,7 +77,7 @@ export function slotSessionIndex(assignments: readonly SlotAssignment[], phase: 
 }
 
 export class HandoffService {
-  constructor(private admissions: AdmissionService, private catalog: CatalogService, private router: RepositoryRouter, private sources: { cc: SourceRecords["cc"]; oc: SourceRecords["oc"] }, private sessions: () => Session[], private assertAvailable: () => void, private ownerId: string, private resolveRecipient: (to: string, checkout: string) => Promise<{ harness: HandoffRecipient["harness"]; executionConfig: HandoffExecutionConfig }>, private catalogActive: (sessionId: string) => boolean = () => true) {}
+  constructor(private admissions: AdmissionService, private catalog: CatalogService, private router: RepositoryRouter, private sources: { cc: SourceRecord; oc: SourceRecord; gk?: GrokSourceRecord }, private sessions: () => Session[], private assertAvailable: () => void, private ownerId: string, private resolveRecipient: (to: string, checkout: string) => Promise<{ harness: HandoffRecipient["harness"]; executionConfig: HandoffExecutionConfig }>, private catalogActive: (sessionId: string) => boolean = () => true) {}
   /**
    * Qualify the native sender. A kickoff from an unenrolled sender carries an
    * `enroll` request (trusted hook checkout + nearest enrolled ancestor); it is
@@ -172,8 +173,11 @@ export class HandoffService {
     if (!checkout) throw new DomainError("INVALID_CHECKOUT", "New recipient requires an explicit checkout or workstream default.");
     revalidateCheckout(domain.context, checkout);
     const resolved = await this.resolveRecipient(args.to, checkout.path);
-    const source = normalizeNativeSource(this.sources[resolved.harness].descriptor);
-    if (source.authorityId !== this.sources[resolved.harness].authorityId) throw new DomainError("SOURCE_UNAVAILABLE", "Recipient source requires configuration refresh.");
+    const configured = this.sources[resolved.harness];
+    if (!configured) throw new DomainError("SOURCE_UNAVAILABLE", `Recipient ${resolved.harness} source is not configured.`);
+    if (configured.descriptor.harness !== resolved.harness) throw new DomainError("SOURCE_UNAVAILABLE", "Recipient source does not match its harness.");
+    const source = normalizeNativeSource(configured.descriptor);
+    if (source.authorityId !== configured.authorityId) throw new DomainError("SOURCE_UNAVAILABLE", "Recipient source requires configuration refresh.");
     return { ownerId: this.ownerId, sessionId: crypto.randomUUID(), ref: null, ...resolved, authorityId: source.authorityId, checkout };
   }
   async status(envelope: unknown, requestId: string) {

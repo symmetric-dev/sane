@@ -6,12 +6,15 @@ import type { CanonicalActivation } from "./canonical-activation-validation";
 import { synchronousDispatchHook } from "./dispatch-evidence";
 import { nativeMessageId, uuid, type Event } from "./history";
 import { RunJournalWriter, type RunJournalBaseline } from "./run-journal";
+import type { Harness } from "./oc-contract";
+import { toNativeHarness } from "./harness-names";
+import { validNativeAuthorityId } from "sane-core/native-source-contract";
 
 export type PendingActivationInput = {
   sessionId: string;
   identity: StoredSaneAgentIdentity;
   activation: CanonicalActivation;
-  source: { harnessId: "claude-code" | "opencode"; authorityId: string; cwd: string };
+  source: { harnessId: Harness; authorityId: string; cwd: string };
 };
 type Immutable<T> = T extends object ? { readonly [K in keyof T]: Immutable<T[K]> } : T;
 declare const preparationBrand: unique symbol;
@@ -55,8 +58,8 @@ function assertInput(input: PendingActivationInput): void {
     || pair.saneContext.package.schema !== 1 || !revision(pair.saneContext.package.revision) || pair.saneContext.package.delivery !== "standing-native-role") throw new Error("Invalid pending canonical pair");
   exact(input.source, ["harnessId", "authorityId", "cwd"]);
   const source = input.source;
-  if (!["claude-code", "opencode"].includes(source.harnessId) || typeof source.authorityId !== "string"
-    || !new RegExp(`^sane-native-v1:${source.harnessId === "opencode" ? "oc" : "cc"}:[a-f0-9]{64}$`).test(source.authorityId)
+  if (!["claude-code", "opencode", "grok"].includes(source.harnessId)
+    || !validNativeAuthorityId(toNativeHarness(source.harnessId), source.authorityId)
     || typeof source.cwd !== "string" || !isAbsolute(source.cwd) || source.cwd.includes("\0")) throw new Error("Invalid pending activation source");
 }
 const inputOf = (record: RecordV3): PendingActivationInput => ({ sessionId: record.sessionId, identity: record.identity, activation: record.activation, source: record.source });

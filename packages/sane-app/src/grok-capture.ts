@@ -50,6 +50,8 @@ export type GrokCaptureTurn = {
   /** App UI identity only; neither field is native acceptance evidence. */
   readonly runId?: string;
   readonly createdAt?: string;
+  readonly profileId?: string;
+  readonly contextRevision?: string;
   readonly prompt: string;
   readonly submission: GrokCaptureSubmission;
   readonly nativeAcceptance: "unknown";
@@ -71,6 +73,8 @@ export type GrokCaptureTurnInput = {
   turnIndex: number;
   runId?: string;
   createdAt?: string;
+  profileId?: string;
+  contextRevision?: string;
   prompt: string;
   submission: GrokCaptureSubmission;
   stdout: string;
@@ -175,7 +179,7 @@ function sealNonAcceptance(): { nativeAcceptance: "unknown"; acceptedMessageId: 
 
 function readTurn(value: unknown, stored: boolean): GrokCaptureTurn {
   const item = record(value, "turn");
-  const optional = ["exitSignal", "runId", "createdAt"].filter(key => Object.hasOwn(item, key));
+  const optional = ["exitSignal", "runId", "createdAt", "profileId", "contextRevision"].filter(key => Object.hasOwn(item, key));
   const keys = [...TURN_KEYS, ...optional];
   if (stored) exactKeys(item, keys, "turn");
   else {
@@ -183,6 +187,8 @@ function readTurn(value: unknown, stored: boolean): GrokCaptureTurn {
   }
   if (Object.hasOwn(item, "runId") && (typeof item.runId !== "string" || !UUID.test(item.runId))) refuse("Grok capture App run id is invalid");
   if (Object.hasOwn(item, "createdAt") && (typeof item.createdAt !== "string" || !Number.isFinite(Date.parse(item.createdAt)))) refuse("Grok capture creation time is invalid");
+  if (Object.hasOwn(item, "profileId")) explicit(item.profileId, "profile id");
+  if (Object.hasOwn(item, "contextRevision") && (typeof item.contextRevision !== "string" || !/^[a-f0-9]{64}$/.test(item.contextRevision))) refuse("Grok capture context revision is invalid");
   if (Object.hasOwn(item, "exitSignal") && item.exitSignal !== null && (typeof item.exitSignal !== "string" || !/^SIG[A-Z0-9]+$/.test(item.exitSignal))) refuse("Grok capture exit signal is invalid");
   const claimedAcceptance = stored || Object.hasOwn(item, "nativeAcceptance");
   if (claimedAcceptance && item.nativeAcceptance !== "unknown") refuse("Grok capture native acceptance is not unknown");
@@ -199,6 +205,8 @@ function readTurn(value: unknown, stored: boolean): GrokCaptureTurn {
     turnIndex: turnIndex(item.turnIndex),
     ...(Object.hasOwn(item, "runId") ? { runId: item.runId as string } : {}),
     ...(Object.hasOwn(item, "createdAt") ? { createdAt: item.createdAt as string } : {}),
+    ...(Object.hasOwn(item, "profileId") ? { profileId: item.profileId as string } : {}),
+    ...(Object.hasOwn(item, "contextRevision") ? { contextRevision: item.contextRevision as string } : {}),
     prompt: text(item.prompt, "prompt"),
     submission: submission(item.submission),
     nativeAcceptance: sealed.nativeAcceptance,

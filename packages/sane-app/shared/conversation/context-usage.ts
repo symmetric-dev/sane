@@ -116,12 +116,38 @@ function openCodeUsage(runs: Run[], models: ModelChoice[], history?: ReconciledH
   return snapshot(input, models.find(entry => entry.id === input?.model)?.contextWindow);
 }
 
+/** Grok's Messages output has per-response usage and a separately reported
+ * model window. Result usage is cumulative and must not be used as context. */
+function grokUsage(runs: Run[], history?: ReconciledHistory | null): ContextUsageSnapshot | null {
+  const windows = new Map<string, number>();
+  let input: InputUsage | undefined, model: string | undefined;
+  for (const run of runs) for (const { record: r, time } of claudeRecords(run)) {
+    if (r.session_id !== run.nativeSessionId || r.parent_tool_use_id !== undefined && r.parent_tool_use_id !== null) continue;
+    if (r.type === "system" && r.subtype === "compact_boundary") { input = undefined; continue; }
+    const reportedModel = r.type === "assistant" ? r.message?.model : r.type === "system" && r.subtype === "init" ? r.model : undefined;
+    if (typeof reportedModel === "string" && reportedModel && reportedModel !== "unknown") {
+      if (model && model !== reportedModel) input = undefined;
+      model = reportedModel;
+    }
+    if (r.type === "assistant" && run.operation !== "compact") {
+      const usage = r.message?.usage;
+      const tokens = inputTokens(usage?.input_tokens, usage?.cache_read_input_tokens, usage?.cache_creation_input_tokens);
+      // Some Grok backends zero-fill missing usage. Zero isn't evidence that
+      // the model processed an empty context.
+      if (tokens !== undefined && tokens > 0 && model) input = { tokens, model, time };
+    }
+    if (r.type === "result" && object(r.modelUsage)) for (const [id, usage] of Object.entries(r.modelUsage)) {
+      if (object(usage) && count(usage.contextWindow) && usage.contextWindow > 0) windows.set(id, usage.contextWindow);
+    }
+  }
+  const latestImported = history?.messages.findLast(message => message.role === "assistant" || message.compaction?.lifecycle === "completed");
+  if (input && latestImported?.createdAt && latestImported.createdAt > input.time) return null;
+  return snapshot(input, input ? windows.get(input.model) : undefined);
+}
+
 /** Last-reported model-window usage, not a live token counter or compaction threshold. */
 export function contextUsageFor(harness: Harness, runs: Run[], models: ModelChoice[], history?: ReconciledHistory | null, compactions: CompactionRecord[] = []): ContextUsageSnapshot | null {
-  // Grok has no Claude or OpenCode usage snapshot. Do not interpret Claude
-  // stdout as this conversation's context window.
-  if (harness === "grok") return null;
-  let usage = harness === "opencode" ? openCodeUsage(runs, models, history) : claudeUsage(runs, history);
+  let usage = harness === "grok" ? grokUsage(runs, history) : harness === "opencode" ? openCodeUsage(runs, models, history) : claudeUsage(runs, history);
   // Snapshot boundaries were already applied in native order. Their most recent
   // observation (including a repeated import/UPSERT) is not a new reset clock.
   const snapshotIds = new Set([...(history?.messages ?? []), ...runs.flatMap(run => run.events.filter(event => event.kind === "message" && object(event.data)).map(event => event.data as MessageSnapshot))].filter(message => message.compaction).map(message => message.compaction?.nativeId ?? message.messageId));

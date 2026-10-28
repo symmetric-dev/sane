@@ -1,4 +1,5 @@
 import { isPendingInputRequest, isPendingInputRemovalRequest, isPendingInputResumeRequest, type PendingInputRequest, type PendingInputResumeRequest } from "../shared/conversation/pending-input-contract";
+import { isHarness } from "../shared/conversation/harness-capabilities";
 import { PendingInputStore } from "./pending-input-store";
 import { PendingInputCodecError, PendingInputDomainError, PendingInputStorageError, type PendingInputLiveValidation, type PendingInputPins, type PendingInputResumeResult, type PendingInputStoredItem } from "./pending-input-contract";
 import { synchronousDispatchHook } from "./dispatch-evidence";
@@ -90,7 +91,7 @@ export class PendingInputService {
   }
   async enqueue(id: string, value: unknown) {
     return this.protect(async () => {
-      if (!isPendingInputRequest(value) || !uuid(value.requestId) || !uuid(value.conversationId)) refused("invalid-pending-input", "Invalid version 1 queue request", 400);
+      if (!isPendingInputRequest(value, { validateHarnessId: isHarness }) || !uuid(value.requestId) || !uuid(value.conversationId)) refused("invalid-pending-input", "Invalid version 1 queue request", 400);
       const request = copy(value as PendingInputRequest);
       if (request.conversationId !== id) refused("pending-input-route-conflict", "Route and body conversation identities differ");
       if (!request.source.authorityId || !request.source.nativeSessionId) refused("pending-input-source-unknown", "Established executable native identity is required");

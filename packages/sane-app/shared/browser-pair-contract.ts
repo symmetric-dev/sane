@@ -1,6 +1,6 @@
 /** Passive metadata only. A link grants no browser or execution capabilities. */
 export type BrowserPairTarget = { workspaceId: string; tabId: string };
-export type BrowserPairSession = { sessionId: string; harness: "claude-code" | "opencode"; authorityId: string; nativeSessionId: string };
+export type BrowserPairSession = { sessionId: string; harness: "claude-code" | "opencode" | "grok"; authorityId: string; nativeSessionId: string };
 export type BrowserPairLink = BrowserPairSession & { linkedAt: string; lastPairedAt?: string };
 export type BrowserPairSnapshot = BrowserPairTarget & { version: 1; storeId: string; revision: number; sessions: BrowserPairLink[] };
 export type BrowserPairMode = "replace" | "add";
@@ -12,9 +12,10 @@ const object = (value: unknown): value is Record<string, any> => !!value && type
 const keys = (value: Record<string, unknown>, names: readonly string[], optional: readonly string[] = []) => names.every(name => Object.hasOwn(value, name)) && Object.keys(value).every(name => names.includes(name) || optional.includes(name));
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const target = (value: Record<string, any>) => uuid(value.workspaceId) && typeof value.tabId === "string" && /^[a-zA-Z0-9_-]{1,80}$/.test(value.tabId);
-const session = (value: Record<string, any>) => uuid(value.sessionId) && ["claude-code", "opencode"].includes(value.harness)
-  && typeof value.authorityId === "string" && new RegExp(`^sane-native-v1:${value.harness === "opencode" ? "oc" : "cc"}:[a-f0-9]{64}$`).test(value.authorityId)
-  && (value.harness === "claude-code" ? uuid(value.nativeSessionId) : typeof value.nativeSessionId === "string" && /^ses[a-zA-Z0-9_-]{1,200}$/.test(value.nativeSessionId));
+const nativeHarness = { "claude-code": "cc", opencode: "oc", grok: "gk" } as const;
+const session = (value: Record<string, any>) => uuid(value.sessionId) && typeof value.harness === "string" && Object.hasOwn(nativeHarness, value.harness)
+  && typeof value.authorityId === "string" && new RegExp(`^sane-native-v1:${nativeHarness[value.harness as BrowserPairSession["harness"]]}:[a-f0-9]{64}$`).test(value.authorityId)
+  && (value.harness === "opencode" ? typeof value.nativeSessionId === "string" && /^ses[a-zA-Z0-9_-]{1,200}$/.test(value.nativeSessionId) : uuid(value.nativeSessionId));
 const SESSION_KEYS = ["sessionId", "harness", "authorityId", "nativeSessionId"];
 export const sameBrowserPairSession = (a: BrowserPairSession, b: BrowserPairSession) => SESSION_KEYS.every(key => a[key as keyof BrowserPairSession] === b[key as keyof BrowserPairSession]);
 export function isBrowserPairSession(value: unknown): value is BrowserPairSession {

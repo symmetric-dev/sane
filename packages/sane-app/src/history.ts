@@ -76,9 +76,9 @@ export function validateMetadata(value: unknown): Metadata {
     if (!object(s) || !uuid(s.sessionId) || !cwd(s.cwd) || sessions.has(s.sessionId)) return fail();
     if (s.attachment !== undefined && (!object(s.attachment) || !["pending", "ready"].includes(s.attachment.state) || typeof s.attachment.source !== "string" || !s.attachment.source || (s.attachment.error !== undefined && typeof s.attachment.error !== "string"))) return fail();
     if (s.lastRunId === null ? s.lastStatus !== "unknown" : !uuid(s.lastRunId) || !status(s.lastStatus)) return fail();
-    if (s.harness !== "claude-code" && s.harness !== "opencode") return fail();
+    if (s.harness !== "claude-code" && s.harness !== "opencode" && s.harness !== "grok") return fail();
     if (s.harness === "opencode" ? typeof s.nativeSessionId !== "string" || !/^ses[a-zA-Z0-9_-]+$/.test(s.nativeSessionId) : !uuid(s.nativeSessionId)) return fail();
-    if (typeof s.authorityId !== "string" || !new RegExp(`^sane-native-v1:${s.harness === "opencode" ? "oc" : "cc"}:[a-f0-9]{64}$`).test(s.authorityId)) return fail();
+    if (typeof s.authorityId !== "string" || !new RegExp(`^sane-native-v1:${s.harness === "opencode" ? "oc" : s.harness === "grok" ? "gk" : "cc"}:[a-f0-9]{64}$`).test(s.authorityId)) return fail();
     if (s.title !== undefined && (typeof s.title !== "string" || !s.title.trim() || s.title.includes("\n") || s.title.length > 200)) return fail();
     if (s.titleSource !== undefined && !(SESSION_TITLE_SOURCES as readonly unknown[]).includes(s.titleSource)) return fail();
     if (s.titleRevision !== undefined && (!Number.isSafeInteger(s.titleRevision) || s.titleRevision < 0)) return fail();
@@ -94,8 +94,8 @@ export function validateMetadata(value: unknown): Metadata {
     // Conversation-level model defaults. Absent on pre-migration records;
     // never persisted as empty (empty means native default at submit time).
     // Effort shape follows the session harness, mirroring run validation below.
-    if (s.model !== undefined && !validModel(s.model)) return fail();
-    if (s.effort !== undefined && !(s.harness === "opencode" ? validVariant(s.effort) : validEffort(s.effort))) return fail();
+    if (s.model !== undefined && !(s.harness === "grok" ? validGrokChoice(s.model) : validModel(s.model))) return fail();
+    if (s.effort !== undefined && !(s.harness === "grok" ? validGrokChoice(s.effort) : s.harness === "opencode" ? validVariant(s.effort) : validEffort(s.effort))) return fail();
     // Picker-selected assistant. Absent means native default; never persisted
     // as empty. Immutable per conversation once set (like harness/cwd).
     if (!validAgentSnapshot(s)) return fail();
@@ -115,7 +115,8 @@ export function validateMetadata(value: unknown): Metadata {
     if (!object(r) || !uuid(r.runId) || !uuid(r.sessionId) || !cwd(r.cwd) || !status(r.status) || !timestamp(r.createdAt) || runs.has(r.runId)) return fail();
     if (r.status === "running" ? r.endedAt !== undefined : !timestamp(r.endedAt)) return fail();
     if (r.endedAt !== undefined && Date.parse(r.endedAt) < Date.parse(r.createdAt)) return fail();
-    if ((r.model !== undefined && !validModel(r.model)) || (r.effort !== undefined && !(sessions.get(r.sessionId)?.harness === "opencode" ? validVariant(r.effort) : validEffort(r.effort)))) return fail();
+    const harness = sessions.get(r.sessionId)?.harness;
+    if ((r.model !== undefined && !(harness === "grok" ? validGrokChoice(r.model) : validModel(r.model))) || (r.effort !== undefined && !(harness === "grok" ? validGrokChoice(r.effort) : harness === "opencode" ? validVariant(r.effort) : validEffort(r.effort)))) return fail();
     if (!validAgentSnapshot(r)) return fail();
     if (r.profileId !== undefined && !validProfileId(r.profileId)) return fail();
     if (r.saneContextVersion !== undefined && r.saneContextVersion !== sessions.get(r.sessionId)?.saneContext?.version) return fail();
@@ -152,28 +153,10 @@ export function validateMetadata(value: unknown): Metadata {
   return value as Metadata;
 }
 
-/** v1 delegates to validateMetadata. v2 may contain grok sessions and is returned unchanged. */
+/** Both stored versions retain their bytes; all harnesses use the same relationships. */
 export function validateStoredMetadata(value: unknown): Metadata {
   if (!object(value) || (value.version !== 1 && value.version !== 2)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
-  if (value.version !== 2) return validateMetadata(value);
-  if (!Array.isArray(value.sessions) || !Array.isArray(value.runs) || typeof value.reconciliationRequired !== "boolean") throw new Error("Corrupt metadata: invalid schema or session/run relationship");
-  const grok = value.sessions.filter((s: { harness?: unknown }) => s?.harness === "grok");
-  const grokIds = new Set(grok.map((s: { sessionId?: string }) => s.sessionId));
-  const rest = { ...value, version: 1, sessions: value.sessions.filter((s: { harness?: unknown }) => s?.harness !== "grok"), runs: value.runs.filter((r: { sessionId?: string }) => !grokIds.has(r.sessionId)) };
-  validateMetadata(rest);
-  const seen = new Set(rest.sessions.map((s: { sessionId: string }) => s.sessionId));
-  const nativeIds = new Set(rest.sessions.map((s: { harness: string; authorityId: string; nativeSessionId: string }) => JSON.stringify([s.harness, s.authorityId, s.nativeSessionId])));
-  for (const s of grok) {
-    if (!object(s) || !uuid(s.sessionId) || seen.has(s.sessionId) || !cwd(s.cwd) || s.lastRunId !== null || s.lastStatus !== "unknown") throw new Error("Corrupt metadata: invalid schema or session/run relationship");
-    if (!uuid(s.nativeSessionId) || typeof s.authorityId !== "string" || !/^sane-native-v1:gk:[a-f0-9]{64}$/.test(s.authorityId)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
-    if (s.effort !== undefined && !validGrokChoice(s.effort)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
-    if (s.model !== undefined && !validGrokChoice(s.model)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
-    const key = JSON.stringify([s.harness, s.authorityId, s.nativeSessionId]);
-    if (nativeIds.has(key)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
-    seen.add(s.sessionId); nativeIds.add(key);
-  }
-  if (value.runs.some((r: { sessionId?: string }) => grokIds.has(r.sessionId))) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
-  return value as Metadata;
+  return validateMetadata(value);
 }
 
 /** Last complete record's seq. Undefined when the tail is torn, missing, or larger than the read window. */

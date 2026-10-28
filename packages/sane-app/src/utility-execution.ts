@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, realpath, rmdir } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, realpath, rmdir, unlink } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { ASSISTANT_AGENT_IDS, WORKER_AGENT_IDS, UTILITY_AGENT_IDS } from "sane-core/agent-catalog";
@@ -68,6 +68,8 @@ type Input = {
   dataDir: string;
   claudeBin: string;
   claudeRoot: string;
+  grokExecutable?: string;
+  grokHomeRoot?: string;
   oc: OpenCodeAdapter;
   profile: AgentProfile;
   transcript: string;
@@ -99,7 +101,7 @@ export async function runSessionNamingUtility(input: Input): Promise<string> {
     const { profile } = input;
     // String checks avoid depending on another role's lifecycle/launch resolver.
     if (profile.id !== "utility:session-namer" || String(profile.kind) !== "utility" || String(profile.role) !== "session-namer"
-      || !["claude-code", "opencode"].includes(profile.harness)
+      || !["claude-code", "opencode", "grok"].includes(profile.harness)
       || typeof profile.model !== "string" || typeof profile.effort !== "string"
       || /[\x00-\x1f\x7f]/.test(profile.model + profile.effort)) throw failure("invalid utility profile");
     if (typeof input.transcript !== "string" || !input.transcript.trim()
@@ -141,7 +143,9 @@ export async function runSessionNamingUtility(input: Input): Promise<string> {
     const prompt = JSON.stringify({ transcript: input.transcript });
     const result = profile.harness === "claude-code"
       ? await runClaude(input, selection, directory, system, prompt, controller.signal)
-      : await runOpenCode(input, selection, system, prompt, controller.signal);
+      : profile.harness === "grok"
+        ? await runGrok(input, selection, directory, system, prompt, controller.signal)
+        : await runOpenCode(input, selection, system, prompt, controller.signal);
     check(controller.signal);
     if (typeof result !== "string" || Buffer.byteLength(result, "utf8") > 4096) throw failure("invalid or oversized title response");
     const title = result.trim();
@@ -168,6 +172,7 @@ export async function runSessionNamingUtility(input: Input): Promise<string> {
  * No provider remapping or source-conversation selection is permitted. */
 function selectModel(profile: AgentProfile, canonical?: OperationModel): ModelSelection {
   if (profile.model) return { model: profile.model, ...(profile.effort ? { effort: profile.effort } : {}) };
+  if (profile.harness === "grok") throw failure("configure a Grok utility model or Base Grok default");
   if (!canonical) return profile.effort ? { effort: profile.effort } : {};
   let model = `${canonical.providerID}/${canonical.id}`;
   if (profile.harness === "claude-code") {
@@ -176,6 +181,63 @@ function selectModel(profile: AgentProfile, canonical?: OperationModel): ModelSe
   }
   const effort = profile.effort || canonical.variant;
   return { model, ...(effort ? { effort } : {}) };
+}
+
+async function runGrok(input: Input, selection: ModelSelection, cwd: string, system: string, prompt: string, signal: AbortSignal): Promise<string> {
+  if (!input.grokExecutable || !isAbsolute(input.grokExecutable) || !input.grokHomeRoot || !isAbsolute(input.grokHomeRoot)) throw failure("Grok is not configured");
+  const path = join(cwd, "prompt.txt");
+  const file = await open(path, "wx", 0o600);
+  try { await file.writeFile(`${system}\n\nTranscript data (JSON):\n${prompt}\n\nReturn only the conversation title, following the instructions above.`, "utf8"); }
+  finally { await file.close(); }
+  try {
+    check(signal);
+    // The utility has no source-session identity or SANE tool authority. Native
+    // persistence, if enabled in Grok, belongs to this separate utility session.
+    const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined
+      && !instrumentationBinding.test(name) && !/^(SANE_|OPENCODE_|GROK_SESSION_ID$|CLAUDECODE$|CLAUDE_CODE_|CLAUDE_CONFIG_DIR$|BUN_INSPECT|NODE_OPTIONS$)/i.test(name)));
+    Object.assign(env, { GROK_HOME: input.grokHomeRoot, SANE_UNQUALIFIED_NATIVE: "1", GROK_MEMORY: "0",
+      GROK_CLAUDE_HOOKS_ENABLED: "false", GROK_CLAUDE_MCPS_ENABLED: "false", GROK_DISABLE_AUTOUPDATER: "1" });
+    const args = ["--prompt-file", path, "--verbatim", "--output-format", "json", "--max-turns", "1",
+      "--deny", "*", "--no-subagents", "--disable-web-search", "--no-plan"];
+    if (selection.model) args.push("--model", selection.model);
+    if (selection.effort) args.push("--effort", selection.effort);
+    return await new Promise<string>((resolve, reject) => {
+      const child = spawn(input.grokExecutable!, args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+      const decoder = new StringDecoder("utf8");
+      let stdout = "", bytes = 0, stderrBytes = 0, stopped: UtilityError | undefined, escalation: ReturnType<typeof setTimeout> | undefined;
+      const kill = (name: NodeJS.Signals) => { try { if (child.pid) process.kill(-child.pid, name); } catch { /* Already exited. */ } };
+      const stop = (error: UtilityError) => {
+        if (stopped) return;
+        stopped = error; kill("SIGTERM"); escalation = setTimeout(() => kill("SIGKILL"), 2000);
+      };
+      const abort = () => stop(failure("cancelled or timed out"));
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      child.stdout.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > outputBytes) stop(failure("Grok response exceeded 64 KiB"));
+        else stdout += decoder.write(chunk);
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderrBytes += chunk.length;
+        if (stderrBytes > outputBytes) stop(failure("Grok diagnostic output exceeded 64 KiB"));
+      });
+      child.on("error", () => { stopped ??= failure("configured Grok executable could not start"); });
+      child.on("close", (code, exitSignal) => {
+        signal.removeEventListener("abort", abort);
+        if (escalation) clearTimeout(escalation);
+        if (stopped) kill("SIGKILL");
+        stdout += decoder.end();
+        if (stopped) { reject(stopped); return; }
+        if (code !== 0 || exitSignal) { reject(failure("Grok invocation failed")); return; }
+        try {
+          const result = JSON.parse(stdout);
+          if (result.stopReason !== "end_turn" || typeof result.text !== "string") throw failure("Grok did not return a complete title");
+          resolve(result.text);
+        } catch { reject(failure("Grok returned an invalid or unsuccessful result")); }
+      });
+    });
+  } finally { await unlink(path).catch(() => {}); }
 }
 
 async function runOpenCode(input: Input, selection: ModelSelection, system: string, prompt: string, signal: AbortSignal): Promise<string> {

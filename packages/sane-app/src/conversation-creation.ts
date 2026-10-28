@@ -14,10 +14,15 @@ export type NativeConversationCreation =
  * There is deliberately no model-prompt port.
  */
 export function beginConversationCreation(
-  admissions: Pick<AdmissionService, "begin">,
+  admissions: Pick<AdmissionService, "begin"> & Partial<Pick<AdmissionService, "beginGrokCreate">>,
   input: Omit<Parameters<AdmissionService["begin"]>[0], "operation" | "harness" | "nativeId">,
   native: NativeConversationCreation,
 ): Promise<Admission> {
+  if (native.harness === "gk") {
+    if (native.kind !== "allocated") throw new WorkstreamAdapterError(409, "invalid-native-creation", "Grok creation requires a caller-allocated UUID; no other native adapter may create it");
+    if (!admissions.beginGrokCreate) throw new WorkstreamAdapterError(409, "grok-admission-unavailable", "Grok creation requires its qualified admission service");
+    return admissions.beginGrokCreate({ ...input, nativeId: native.allocate(), deferReady: true });
+  }
   return admissions.begin({
     ...input,
     operation: "create",

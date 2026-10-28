@@ -7,7 +7,7 @@ function isFilter(value: unknown): value is ConversationFilterState {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const filter = value as Partial<ConversationFilterState>;
   return typeof filter.query === "string" && filter.query.length <= 200 && scope(filter.workspaceId) && scope(filter.worktreeId)
-    && ["all", "claude-code", "opencode"].includes(filter.harness ?? "")
+    && ["all", "claude-code", "opencode", "grok"].includes(filter.harness ?? "")
     && ["all", "starting", "running", "completed", "failed", "interrupted", "unknown"].includes(filter.status ?? "")
     && typeof filter.workstreamId === "string" && !!filter.workstreamId.trim()
     && typeof filter.phase === "string" && (filter.showDeleted === undefined || typeof filter.showDeleted === "boolean");
