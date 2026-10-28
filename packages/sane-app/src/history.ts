@@ -1,6 +1,7 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { FIXED_EFFORT_VALUES } from "../shared/conversation/harness-capabilities";
+import { validGrokChoice } from "../shared/conversation/grok-contract";
 import type { CompactRequest, CompactionMetadata, Harness } from "./oc-contract";
 import { isStoredAssistantAgentId, isWorkerAgentId, type AssistantAgentId, type StoredAssistantAgentId, type WorkerAgentId } from "sane-core/agent-catalog";
 import type { ContextPackageRef } from "./context-package";
@@ -165,8 +166,8 @@ export function validateStoredMetadata(value: unknown): Metadata {
   for (const s of grok) {
     if (!object(s) || !uuid(s.sessionId) || seen.has(s.sessionId) || !cwd(s.cwd) || s.lastRunId !== null || s.lastStatus !== "unknown") throw new Error("Corrupt metadata: invalid schema or session/run relationship");
     if (!uuid(s.nativeSessionId) || typeof s.authorityId !== "string" || !/^sane-native-v1:gk:[a-f0-9]{64}$/.test(s.authorityId)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
-    if (s.effort !== undefined && (typeof s.effort !== "string" || !s.effort.trim() || s.effort.includes("\n") || s.effort.length > 64)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
-    if (s.model !== undefined && !validModel(s.model)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
+    if (s.effort !== undefined && !validGrokChoice(s.effort)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
+    if (s.model !== undefined && !validGrokChoice(s.model)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
     const key = JSON.stringify([s.harness, s.authorityId, s.nativeSessionId]);
     if (nativeIds.has(key)) throw new Error("Corrupt metadata: invalid schema or session/run relationship");
     seen.add(s.sessionId); nativeIds.add(key);

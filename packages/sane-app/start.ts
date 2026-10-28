@@ -19,6 +19,9 @@ Run bun run setup:app first to save config and initialize fresh App state.
   --initialize-app-admissions Explicit one-time receipt setup in the selected App data directory; then start
 CLI overrides saved settings; CLI paths are invocation-relative, saved paths
 are config-relative. No native services are installed or started.
+Grok is configured only via setup:app --grok-home PATH --grok-bin ABSOLUTE
+  --grok-model STRING --grok-effort STRING (stop the App first; see setup:app --help).
+Startup never publishes Grok source pins or exposes its Base profile.
 SANE_APP_PROFILE=1 captures 60 seconds of App CPU/event-loop diagnostics.
 See packages/sane-app/PROFILING.md and HUMAN-OPERATOR-GUIDE.md.`;
 

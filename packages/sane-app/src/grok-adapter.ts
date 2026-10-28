@@ -94,6 +94,7 @@ type MutableObservation = Omit<{ -readonly [K in keyof GrokTurnObservation]: Gro
 type Capture = { stdout: Writable[]; stderr: Writable[]; owned: Writable[] };
 type Turn = {
   phase: "preparing" | "prepared" | "launching" | "finished";
+  closed: ReturnType<typeof Promise.withResolvers<void>>;
   observation: MutableObservation;
   prepared?: { argv: readonly string[]; cwd: string; promptPath: string; capture: Capture };
   child?: GrokSpawnedChild;
@@ -111,6 +112,8 @@ export type GrokDispatchAdapter<O extends RunOwner = RunOwner> = HarnessDispatch
   prepare(owner: O, prompt: string, resume: boolean): Promise<boolean>;
   executePrepared(owner: O, homeRoot: string, ready: (admitted: boolean) => void): Promise<void>;
   finish(owner: O): Promise<void>;
+  /** Actual original wrapper/sink close, including a close after bounded drain. */
+  closed(owner: O): Promise<void>;
 };
 
 function freshObservation(): MutableObservation {
@@ -139,9 +142,11 @@ function notSubmitted(turn: Turn, reason: string, cancelled = false): void {
 /** Isolation flags and an explicit env, not a SANE authority sandbox. Without
  * PATH a shell/libc can still use default search directories. No caller envelope
  * or HOME is forwarded; tool denial/detection remain separate boundaries. */
-function childEnv(homeRoot: string): Record<string, string> {
+function childEnv(homeRoot: string, nativeSessionId: string): Record<string, string> {
   const env: Record<string, string> = {
     GROK_HOME: homeRoot, GROK_MEMORY: "0", GROK_MANAGED_MCPS_ENABLED: "false", GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED: "false",
+    // Locally minted refusal marker, never inherited caller authority. Not a sandbox.
+    SANE_UNQUALIFIED_NATIVE: "1", GROK_SESSION_ID: nativeSessionId,
   };
   for (const vendor of ["CLAUDE", "CURSOR"] as const) {
     for (const surface of IMPORTED_SURFACES) env[`GROK_${vendor}_${surface}_ENABLED`] = "false";
@@ -182,6 +187,9 @@ function inspectEvent(value: unknown, ids: string[]): boolean {
 function noteStreamLine(turn: Turn, line: string): void {
   let event: unknown;
   try { event = JSON.parse(line); } catch { return; }
+  if (event && typeof event === "object" && (event as any).type === "result" && (event as any).is_error === true) {
+    turn.failure ??= new Error("Grok reported an error result; start a new conversation instead of retrying");
+  }
   if (!inspectEvent(event, turn.observation.observedStreamMessageIds) || turn.observation.toolBoundary === "refused") return;
   turn.observation.toolBoundary = "refused";
   turn.terminate?.("grok-tool-boundary", "Grok tool-use event is a boundary refusal");
@@ -251,7 +259,7 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
   const finish = (owner: O): Promise<void> => {
     const turn = state.turns.get(owner);
     if (!turn) return Promise.resolve();
-    if (!turn.prepared) { turn.phase = "finished"; return Promise.resolve(); }
+    if (!turn.prepared) { turn.phase = "finished"; turn.closed.resolve(); return Promise.resolve(); }
     // An incomplete child remains owned and keeps its sinks until actual close.
     if (turn.child && turn.observation.wrapperCompletion !== "closed") return Promise.resolve();
     turn.phase = "finished";
@@ -264,13 +272,14 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
         if (turn.observation.submission === "not-submitted") {
           try { unlinkSync(prepared.promptPath); } catch { /* Best-effort local-only cleanup. */ }
         }
+        turn.closed.resolve();
       }
     })();
   };
 
   const prepare = async (owner: O, prompt: string, resume: boolean): Promise<boolean> => {
     if (state.turns.has(owner)) throw new GrokDispatchRefusal("grok-eligibility-refused", "A Grok turn may only be prepared once");
-    const turn: Turn = { phase: "preparing", observation: freshObservation() };
+    const turn: Turn = { phase: "preparing", observation: freshObservation(), closed: Promise.withResolvers<void>() };
     state.turns.set(owner, turn);
     const source = owner.contextIdentity?.source;
     const model = options.model ?? owner.run.model, effort = options.effort ?? owner.run.effort;
@@ -324,7 +333,7 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
     observation.submission = "unknown";
     observation.nativeAcceptance = "unknown";
     let child: GrokSpawnedChild;
-    try { child = spawn(turn.prepared.argv, { cwd: turn.prepared.cwd, env: childEnv(homeRoot), stdio: ["ignore", "pipe", "pipe"] }); }
+    try { child = spawn(turn.prepared.argv, { cwd: turn.prepared.cwd, env: childEnv(homeRoot, owner.contextIdentity!.source.nativeSessionId!), stdio: ["ignore", "pipe", "pipe"] }); }
     catch (error) {
       // Only nodeSpawn's local availability error proves withholding. An
       // injected callback can throw after side effects, whatever its error code.
@@ -416,6 +425,7 @@ export function createGrokDispatchAdapter<O extends RunOwner = RunOwner>(options
 
   const adapter: GrokDispatchAdapter<O> = Object.freeze({
     id: "grok", automation, readiness, prepare, executePrepared, finish,
+    closed(owner: O) { return state.turns.get(owner)?.closed.promise ?? Promise.resolve(); },
     async execute(owner: O, prompt: string, resume: boolean, ready: (admitted: boolean) => void) {
       let failure: { error: unknown } | undefined;
       try {

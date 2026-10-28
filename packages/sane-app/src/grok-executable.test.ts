@@ -42,6 +42,19 @@ function withExecutable(config: AppConfig, executable?: string): AppConfig {
 }
 
 describe("explicit grok executable", () => {
+  test("optional saved model/effort survive resolution and explicit home/bin publication", () => {
+    const root = tempRoot();
+    const choices = { model: "chosen-model", effort: "chosen-effort" };
+    const { configPath } = save(root, "choices.json", { format: "sane-app-config", version: 2, native: { ...claudeAndOpenCode(), grok: { homeRoot: "/chosen/home", executable: "/chosen/bin/grok", ...choices } } });
+    expect(resolveAppConfig(["--config", configPath], context(root)).config.native.grok).toEqual({ homeRoot: "/chosen/home", executable: "/chosen/bin/grok", ...choices });
+    publishGrokConfig(configPath, "/other/home");
+    publishGrokExecutable(configPath, "/other/bin/grok");
+    expect(JSON.parse(readFileSync(configPath, "utf8")).native.grok).toEqual({ homeRoot: "/other/home", executable: "/other/bin/grok", ...choices });
+    for (const bad of [{ model: "" }, { effort: " " }, { model: 42 }, { effort: "bad\0value" }]) {
+      const invalid = save(root, "invalid.json", { format: "sane-app-config", version: 2, native: { grok: { homeRoot: "/chosen/home", ...bad } } });
+      refused(invalid.configPath, invalid.text, () => resolveAppConfig(["--config", invalid.configPath], context(root)));
+    }
+  });
   test("resolving a v1 config does not rewrite it and leaves grok undefined", () => {
     const root = tempRoot();
     const { configPath, text } = save(root, "config.json", { format: "sane-app-config", version: 1 });

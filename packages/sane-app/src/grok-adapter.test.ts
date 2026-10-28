@@ -117,6 +117,8 @@ function isolationEnv(homeRoot: string): Record<string, string> {
     GROK_MEMORY: "0",
     GROK_MANAGED_MCPS_ENABLED: "false",
     GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED: "false",
+    SANE_UNQUALIFIED_NATIVE: "1",
+    GROK_SESSION_ID: NATIVE_ID,
     GROK_CLAUDE_AGENTS_ENABLED: "false",
     GROK_CLAUDE_RULES_ENABLED: "false",
     GROK_CLAUDE_HOOKS_ENABLED: "false",
@@ -226,7 +228,7 @@ test("child env is the isolation set and the pinned home, with no PATH, HOME, or
     expect(env).not.toHaveProperty("PATH");
     expect(env).not.toHaveProperty("HOME");
     expect(env).not.toHaveProperty("SANE_CALLER_CONTEXT");
-    expect(Object.keys(env).some(key => key.startsWith("SANE_") || key.startsWith("OPENCODE_"))).toBe(false);
+    expect(Object.keys(env).filter(key => key.startsWith("SANE_") || key.startsWith("OPENCODE_"))).toEqual(["SANE_UNQUALIFIED_NATIVE"]);
     expect(Object.keys(env)).toEqual(Object.keys(isolationEnv(homeRoot)));
   } finally {
     for (const [key, value] of Object.entries(previous)) {

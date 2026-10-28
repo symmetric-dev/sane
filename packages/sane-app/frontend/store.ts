@@ -45,6 +45,8 @@ import type { AppAdmissionRecoveryRecord } from "./app-admission-recovery";
 import { AppAdmissionLedger } from "./app-admission-ledger";
 import { advanceComposerStamp, sameComposerStamp } from "./composer-lineage";
 import type { ComposerStamp } from "./composer-lineage";
+import type { GrokSessionView, GrokTurnInput } from "./types";
+import { grokAvailability, grokRuns, grokSessionView, GROK_UNKNOWN_NOTICE } from "./grok-presentation";
 
 export type SessionNameIntent = { conversationId: string; mode: "rename" | "regenerate"; title: string; expectedRevision: number; scope: string; restoreFocus?: () => HTMLElement | null };
 
@@ -61,6 +63,7 @@ export type State = {
   /** Exact original-origin/store recovery, never a replay queue. Snapshot refs
    * remain refs after reload; they are not fabricated science previews. */
   appAdmissionRecoveries?: Record<string, AppAdmissionRecoveryRecord>;
+  grokView?: GrokSessionView | null;
   appAdmissionLoading?: boolean; appAdmissionError?: string; appAdmissionChecking?: string[];
   sessionNameDialog?: SessionNameIntent;
   sessionTitleRequests?: Record<string, boolean>;
@@ -162,6 +165,44 @@ export class ChatStore {
       && capability?.protocol === "app-admission" && capability.version === 1 && capability.state === "enabled"
       && !!this.client.submitAdmission && !!this.client.lookupAdmission;
   };
+  grokCaptureSupported = (): boolean => {
+    const capability = this.state.config?.grokCapability;
+    return this.state.phase === "ready" && this.state.config?.authenticated === true
+      && capability?.protocol === "grok-capture" && capability.version === 1 && capability.configured
+      && !!this.client.grokTurn && !!this.client.grokSession;
+  };
+  captureSendSupported = (): boolean => this.harness() === "grok" ? this.grokCaptureSupported() : this.appAdmissionSupported();
+  private grokViews = new Map<string, GrokSessionView>();
+  /** Only unresolved in-memory capture identities, never a replay queue. */
+  private grokUnconfirmed = new Map<string, { turnIndex: number; draftKey: string; stamp: ComposerStamp }>();
+  private publishGrok(view: GrokSessionView) {
+    const original = this.grokUnconfirmed.get(view.sessionId);
+    if (original && (view.nextTurnIndex > original.turnIndex || view.active || view.blocked || view.phase === "not-submitted")) {
+      this.grokUnconfirmed.delete(view.sessionId);
+      const draft = this.state.drafts[original.draftKey];
+      if (draft && view.phase !== "not-submitted" && sameComposerStamp(this.composerStamp(original.draftKey), original.stamp)) {
+        this.update({ drafts: { ...this.state.drafts, [original.draftKey]: { ...draft, text: "" } } });
+      }
+    }
+    this.grokViews.delete(view.sessionId); this.grokViews.set(view.sessionId, view);
+    if (this.grokViews.size > 20) this.grokViews.delete(this.grokViews.keys().next().value!);
+    const previous = this.state.conversations.find(item => item.id === view.sessionId);
+    const availability = grokAvailability(view, this.grokUnconfirmed.has(view.sessionId));
+    const last = view.runs.at(-1);
+    const conversation: Conversation = { ...previous, id: view.sessionId, harness: "grok", authorityId: view.authorityId,
+      nativeSessionId: view.nativeSessionId ?? undefined, cwd: view.cwd, model: view.model, effort: view.effort,
+      lastRunId: last?.id ?? null, lastRunStatus: last?.status,
+      status: view.active ? "running" : last?.status ?? "unknown", availability };
+    const conversations = previous ? this.state.conversations.map(item => item.id === view.sessionId ? conversation : item) : [conversation, ...this.state.conversations];
+    this.update({ conversations, ...(this.state.selected === view.sessionId ? {
+      grokView: view, runs: grokRuns(view), messages: view.messages, availability,
+      pendingTurn: null, nativeHistory: null, contextUsage: null, transcript: null, transcriptPaged: false,
+      transcriptInitialLoading: false, transcriptRefreshing: false, transcriptError: "", metadataError: "", workerLoading: false,
+      compactState: null, compactions: [], interactions: [], handoffApprovals: [],
+      connected: true, interactive: true, loading: false, connectionError: "",
+      ...(!this.grokUnconfirmed.has(view.sessionId) && this.state.submissionError === GROK_UNKNOWN_NOTICE ? { submissionError: "" } : {}),
+    } : {}) });
+  }
   private appAdmissionSource(conversation?: Conversation) {
     // Missing identity is not an alias for the currently selected native source.
     if (!conversation?.authorityId || !conversation.nativeSessionId || (conversation.harness !== "claude-code" && conversation.harness !== "opencode")) return null;
@@ -1268,6 +1309,7 @@ export class ChatStore {
   private get paged() { return !!(this.client.transcriptPage && this.client.transcriptMeta && this.client.transcriptRefresh); }
   private cacheConversation() {
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
+    if (conversation?.harness === "grok") return;
     if (this.state.phase !== "ready" || !this.cacheable || !conversation || this.compactInFlight.has(conversation.id) || conversationKey(conversation) !== this.transcriptKey) return;
     // pendingTurn is presentation only, never recorded transcript evidence.
     this.conversationCache.put(conversation, { runs: this.runMap, messages: this.state.messages, nativeHistory: this.state.nativeHistory, nativeHistoryLoaded: this.nativeHistoryLoaded, transcript: this.state.transcript });
@@ -1286,6 +1328,7 @@ export class ChatStore {
     this.update({ connected: false, loading: true, availability: { canSend: false }, compactState: null, contextUsage: null, interactions: [], handoffApprovals: [] });
   }
   private clearCachedHistory() {
+    this.grokViews.clear(); this.grokUnconfirmed.clear(); this.update({ grokView: null });
     this.sessionTitleMutations.clear();
     // Authentication starts a new browsing scope, even if the previous owner
     // signed out from flat search. Capable clients boot directory-only again.
@@ -1503,6 +1546,7 @@ export class ChatStore {
   };
   /** Preview is advisory only: submit strips everything except immutable IDs. */
   stageScienceSnapshot = (snapshot: ScienceShareSnapshot, conversationId = this.state.selected) => {
+    if (this.harness() === "grok") return;
     if (!conversationId || conversationId !== this.state.selected || this.state.sending || this.state.actionBusy || this.pendingInputChainLocked()) return;
     const snapshots = this.draft(conversationId).scienceSnapshots ?? [];
     if (snapshots.some(s => s.snapshotId === snapshot.id)) return;
@@ -1591,7 +1635,8 @@ export class ChatStore {
     const worktree = catalog.state.workspaces.find(w => w.workspaceId === nav.workspaceId)?.worktrees.find(w => w.worktreeId === nav.worktreeId);
     return !catalog.state.ready || !worktree || worktree.state !== "available" ? "Choose an available workspace and worktree to start a conversation." : "";
   };
-  harness = (): Harness => this.state.selected ? this.state.conversations.find(c => c.id === this.state.selected)?.harness ?? "claude-code" : this.draftProfile().harness;
+  harness = (): Harness => this.state.selected ? this.state.conversations.find(c => c.id === this.state.selected)?.harness
+    ?? (this.grokViews.has(this.state.selected) || this.grokUnconfirmed.has(this.state.selected) ? "grok" : "claude-code") : this.draftProfile().harness;
   profileSet = (): AgentProfiles => this.state.profiles ?? this.state.config?.agentProfiles ?? fallbackProfiles;
   profileList = (): AgentProfile[] => [...this.profileSet().profiles].sort((a, b) => a.order - b.order);
   profile = (id: string | undefined): AgentProfile | undefined => id ? this.profileSet().profiles.find(p => p.id === id) : undefined;
@@ -1608,7 +1653,8 @@ export class ChatStore {
   private latestStoredRun = (id: string): Run | undefined => [...this.runMap.values()].filter(r => r.conversationId === id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
   conversationSnapshot = (id: string): ProfileSnapshot => {
     const conversation = this.state.conversations.find(c => c.id === id);
-    return savedProfileSnapshot(conversation ?? { harness: "claude-code" }, id === this.state.selected ? this.latestStoredRun(id) : undefined);
+    const grok = this.grokViews.get(id);
+    return savedProfileSnapshot(conversation ?? (grok || this.grokUnconfirmed.has(id) ? { harness: "grok", model: grok?.model, effort: grok?.effort } : { harness: "claude-code" }), id === this.state.selected ? this.latestStoredRun(id) : undefined);
   };
   conversationProfile = (id: string): DisplayProfile | undefined => displayProfile(this.profileSet(), this.conversationSnapshot(id));
   conversationProfileLabel = (id: string): string => profileDisplayLabel(this.conversationProfile(id), this.conversationSnapshot(id));
@@ -1624,12 +1670,16 @@ export class ChatStore {
   pendingUpgrade = (): AgentProfile | undefined => this.state.selected ? this.profile(this.draft().upgradeId) : undefined;
   /** Profile the next send runs with: pending upgrade, else the conversation's, else the draft's. */
   effectiveProfile = (): DisplayProfile | undefined => this.state.selected ? this.pendingUpgrade() ?? this.conversationProfile(this.state.selected) : this.draftProfile();
-  assignable = (profile: AgentProfile) => canAssign(this.currentShape(), profile);
+  assignable = (profile: AgentProfile) => this.harness() === "grok" && !!this.state.selected
+    ? { ok: false as const, reason: "Grok sessions keep their explicit model and effort. Start a new chat to change them." }
+    : profile.harness === "grok" && (profile.kind !== "base" || !!profile.role)
+      ? { ok: false as const, reason: "Grok supports Base conversations only." } : canAssign(this.currentShape(), profile);
   pickProfile = (id: string) => {
     if (this.pendingInputChainLocked()) return;
     const next = this.profile(id);
     if (this.state.sending || !next || !this.assignable(next).ok) return;
     if (this.state.selected) this.setDraft({ upgradeId: id }); else this.setDraft({ profileId: id }, "");
+    if (next.harness === "grok" && this.state.submissionError.startsWith("App admission requires initialization")) this.update({ submissionError: "" });
   };
   clearUpgrade = () => { if (this.state.selected && !this.state.sending && !this.pendingInputChainLocked()) this.setDraft({ upgradeId: "" }); };
   workspace = () => {
@@ -1875,6 +1925,20 @@ export class ChatStore {
     } finally { if (current()) this.update({ actionBusy: false }); }
   };
   cancel = async () => {
+    if (this.harness() === "grok") {
+      if (this.state.actionBusy || !this.state.selected || !this.client.grokStop || !this.supportedCapabilities().cancelRun) return;
+      const id = this.state.selected, current = this.beginAction();
+      try {
+        const result = await this.client.grokStop(id);
+        if (current()) {
+          this.update({ actionNotice: `${result.wrapperClosed ? "Grok wrapper closed." : "Grok wrapper closure is unconfirmed."} Native cancellation is ${result.nativeCancellation === "unproven" ? "unproven" : "not attempted"}. ${result.reason}` });
+          this.requestSelectedRefresh();
+        }
+      } catch (error) {
+        if (current() && !this.expired(error)) this.update({ interactionError: `${error instanceof Error ? error.message : "Grok Stop unavailable."} Native cancellation is unproven; no automatic retry was made.` });
+      } finally { if (current()) this.update({ actionBusy: false }); }
+      return;
+    }
     if (this.state.actionBusy || !this.state.selected || !this.client.cancel) return;
     this.loadPendingInputLedger();
     const id = this.state.selected, source = this.pendingInputSource(), namespace = this.pendingInputKey(), fence = this.pendingInputFence();
@@ -2137,7 +2201,7 @@ export class ChatStore {
       this.pendingInputSuspended = false;
       this.appAdmissionSuspended = false;
       this.update({ config, phase: "ready", authError: "", connectionError: "", ...(config.agentProfiles ? { profiles: config.agentProfiles } : {}) });
-      if (!this.appAdmissionSupported()) this.update({ submissionError: "App admission requires initialization on this bridge. Update and initialize the App admission store before sending; your draft is unchanged. Legacy submission is not used." });
+      if (this.harness() !== "grok" && !this.appAdmissionSupported()) this.update({ submissionError: "App admission requires initialization on this bridge. Update and initialize the App admission store before sending; your draft is unchanged. Legacy submission is not used." });
       void this.loadAppAdmissions(true).then(() => this.appAdmissionPolling(true));
       this.groupListing.refresh();
       this.loadPendingInputLedger(); if (this.pendingInputVisible && !document.hidden) void this.refreshPendingInputs();
@@ -2235,7 +2299,16 @@ export class ChatStore {
     // Same-id sends do not reach here; their transcript remains mounted.
     this.update(selected
       ? { selected, runs, messages: cached?.messages ?? [], compactions, pendingTurn, availability: { canSend: false }, nativeHistory: cached?.nativeHistory ?? null, contextUsage: null, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
-       : { selected, runs: [], messages: [], pendingTurn, availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
+        : { selected, runs: [], messages: [], pendingTurn, availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], handoffApprovals: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
+    this.update({ grokView: null, transcriptPaged: conversation?.harness !== "grok" && this.paged });
+    if (conversation?.harness === "grok") {
+      const view = this.grokViews.get(selected);
+      if (view) this.publishGrok(view);
+      this.update({ availability: { canSend: false }, loading: true, interactive: false, transcript: null,
+        transcriptPaged: false, transcriptInitialLoading: false, workerLoading: false, pendingInputs: null });
+      void this.poll();
+      return;
+    }
     this.pendingInputFresh = ""; this.loadPendingInputLedger();
     this.update({ pendingInputs: this.pendingInputViews.get(selected) ?? null, pendingInputLoading: false, pendingInputError: "" }); this.publishPendingInputOperations();
     if (this.pendingInputVisible && !document.hidden) void this.refreshPendingInputs();
@@ -2470,6 +2543,7 @@ export class ChatStore {
   }
   /** Independent single-flight discovery also covers sends made by other clients. */
   private sciencePolling(discover = false) {
+    if (this.harness() === "grok") return;
     // Keep invalidations that arrive during a read or while polling is paused.
     if (discover) this.scienceDiscoveryPending = true;
     if (this.state.phase !== "ready" || this.scienceTimer || this.scienceController || !this.client.scienceSubmissions || !this.state.selected || !this.state.config?.authenticated || !this.state.config.storeId || typeof document !== "undefined" && document.hidden) return;
@@ -2523,12 +2597,21 @@ export class ChatStore {
         this.nativeHistoryLoaded = false; this.refreshedRevision = "";
         this.runGateId = ""; this.runGateMarkers = ""; this.workerPollAfter = 0;
       }
-      this.pendingInputPolling();
-      this.appAdmissionPolling();
-      this.sciencePolling();
+      const selectedGrok = !!selected && (this.harness() === "grok" || this.grokViews.has(selected) || this.grokUnconfirmed.has(selected));
+      if (!selectedGrok && this.harness() !== "grok") {
+        this.pendingInputPolling();
+        this.appAdmissionPolling();
+        this.sciencePolling();
+      }
       // Sidebar head acquisition has its own scope/auth fences. With targeted
       // support it runs alongside the selected read, not in front of it.
       const head = this.groupListing.enabled ? Promise.resolve() : this.refreshConversationHead();
+      if (selectedGrok) {
+        if (!this.client.grokSession) throw new Error("Grok capture status is unavailable on this bridge.");
+        const view = grokSessionView(await this.client.grokSession(selected, controller.signal), selected);
+        if (current()) this.publishGrok(view);
+        return;
+      }
       if (selected && this.client.conversationSummaries) await this.ensureConversations([selected], controller.signal);
       else if (selected && this.groupListing.enabled) await this.ensureConversations([selected], controller.signal);
       else await head;
@@ -2547,6 +2630,12 @@ export class ChatStore {
       if (!current()) return;
       registerWorkerSessions(listing.conversations, !!this.state.conversationPage);
       const currentConversation = listing.conversations.find(c => c.id === selected);
+      if (currentConversation?.harness === "grok") {
+        if (!this.client.grokSession) throw new Error("Grok capture status is unavailable on this bridge.");
+        const view = grokSessionView(await this.client.grokSession(selected, controller.signal), selected);
+        if (current()) this.publishGrok(view);
+        return;
+      }
       if (selected && (!currentConversation || this.transcriptKey && this.transcriptKey !== conversationKey(currentConversation))) {
         // A listing can remove or rebind an App id even while its history GET
         // fails. Never keep the old native transcript/actions under that id.
@@ -2762,8 +2851,95 @@ export class ChatStore {
       }
     }
   }
+  private async sendGrok(text: string, options: { preserveDraft?: boolean }): Promise<SendOutcome> {
+    const selected = this.state.selected, conversation = this.state.conversations.find(item => item.id === selected);
+    const profile = this.effectiveProfile();
+    if (!this.grokCaptureSupported()) {
+      this.update({ submissionError: this.state.config?.grokCapability?.reason || "Grok capture is not configured on this bridge. Your draft is unchanged." });
+      return { status: "blocked" };
+    }
+    if (options.preserveDraft || compactCommand(text) || this.draft().scienceSnapshots?.length || this.draft().upgradeId
+      || (selected ? conversation?.harness !== "grok" || !!conversation.agent || !!conversation.worker : profile?.kind !== "base" || !!profile.role)) {
+      this.update({ submissionError: "Grok supports plain Base chat only, without SANE roles, science shares, queued input, compaction, or branching. Your draft is unchanged." });
+      return { status: "blocked" };
+    }
+    if (!text.trim() || this.state.sending || this.state.actionBusy || this.executionUnavailable()
+      || !(this.state.interactive ?? this.state.connected) || selected && (!this.state.availability.canSend || this.grokUnconfirmed.has(selected))) return { status: "blocked" };
+    // Use the same synchronous guard and composer lineage as ordinary sends.
+    this.appAdmissionSendGuard = true;
+    const draft = structuredClone(this.draft()), draftKey = this.draftKey(), stamp = this.composerStamp(draftKey);
+    const navigation = { ...catalog.state.navigation }, auth = this.authEpoch, selection = this.selectionEpoch;
+    const sessionId = selected || crypto.randomUUID();
+    const model = selected ? conversation?.model ?? "" : profile?.model ?? "";
+    const effort = selected ? conversation?.effort ?? "" : profile?.effort ?? "";
+    const cwd = selected ? conversation?.cwd : this.workspace();
+    this.stop();
+    const generation = this.generation;
+    const current = () => auth === this.authEpoch && selection === this.selectionEpoch && generation === this.generation
+      && selected === this.state.selected && draftKey === this.draftKey();
+    this.update({ sending: true, submissionError: "" });
+    let posted = false, input: GrokTurnInput | undefined;
+    try {
+      const before = selected ? grokSessionView(await this.client.grokSession!(sessionId, AbortSignal.timeout(25000)), sessionId) : undefined;
+      if (!current()) return { status: "blocked" };
+      if (before) {
+        this.publishGrok(before);
+        if (!this.state.availability.canSend) return { status: "blocked" };
+      }
+      input = { sessionId, turnIndex: before?.nextTurnIndex ?? 0, prompt: text,
+        model: model || before?.model || "", effort: effort || before?.effort || "", cwd,
+        workspaceId: selected ? conversation?.workspaceId : navigation.workspaceId,
+        worktreeId: selected ? conversation?.worktreeId : navigation.worktreeId };
+      if (!input.model.trim() || !input.effort.trim()) throw new Error("Grok requires explicit nonempty model and effort strings in its Base profile.");
+      posted = true;
+      let view: GrokSessionView;
+      try {
+        view = grokSessionView(await this.client.grokTurn!(input, AbortSignal.timeout(25000)), sessionId);
+      } catch (error) {
+        if (!current() || this.expired(error)) return { status: "unknown" };
+        this.grokUnconfirmed.set(sessionId, { turnIndex: input.turnIndex, draftKey, stamp });
+        // Never repeat the POST, including when this exact GET is absent/stale.
+        view = grokSessionView(await this.client.grokSession!(sessionId, AbortSignal.timeout(25000)), sessionId);
+      }
+      if (!current()) return { status: "unknown" };
+      this.publishGrok(view);
+      const unresolved = this.grokUnconfirmed.has(sessionId);
+      if (!unresolved && view.phase !== "not-submitted" && sameComposerStamp(this.composerStamp(draftKey), stamp)) {
+        this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "" } } });
+      }
+      if (!selected) {
+        this.update({ conversations: this.state.conversations.map(item => item.id === sessionId ? { ...item,
+          workspaceId: input!.workspaceId ?? undefined, worktreeId: input!.worktreeId ?? undefined, association: "resolved",
+          profileId: profile?.id, title: text.slice(0, 160) } : item), sending: false });
+        this.choose(sessionId); this.publishGrok(view); catalog.navigate({ conversationId: sessionId });
+      }
+      if (unresolved) this.update({ submissionError: GROK_UNKNOWN_NOTICE });
+      return unresolved ? { status: "unknown" } : { status: "recorded", requestId: `${sessionId}:${input.turnIndex}` };
+    } catch (error) {
+      if (current() && !this.expired(error)) {
+        if (posted && input) {
+          this.grokUnconfirmed.set(sessionId, { turnIndex: input.turnIndex, draftKey, stamp });
+          if (!selected) {
+            // Keep the original App UUID reachable even if both responses were
+            // lost. This is local uncertain metadata, not a native acknowledgement.
+            const row: Conversation = { id: sessionId, harness: "grok", cwd: input.cwd ?? "", model: input.model, effort: input.effort,
+              workspaceId: input.workspaceId ?? undefined, worktreeId: input.worktreeId ?? undefined, association: "resolved", profileId: profile?.id,
+              title: text.slice(0, 160), lastRunId: null, status: "unknown", availability: { canSend: false, reason: GROK_UNKNOWN_NOTICE } };
+            this.update({ conversations: [row, ...this.state.conversations], sending: false });
+            this.choose(sessionId); catalog.navigate({ conversationId: sessionId });
+          }
+          this.update({ availability: { canSend: false, reason: GROK_UNKNOWN_NOTICE }, submissionError: GROK_UNKNOWN_NOTICE });
+        } else this.update({ submissionError: `${error instanceof Error ? error.message : "Grok capture unavailable."} Your draft is unchanged; nothing was posted.` });
+      }
+      return { status: posted ? "unknown" : "blocked" };
+    } finally {
+      this.appAdmissionSendGuard = false;
+      if (auth === this.authEpoch) { this.update({ sending: false }); void this.poll(); }
+    }
+  }
   send = async (text: string, nativeStopped = false, options: { preserveDraft?: boolean } = {}): Promise<SendOutcome> => {
     if (this.appAdmissionSendGuard) return { status: "blocked" };
+    if (this.harness() === "grok" || this.effectiveProfile()?.harness === "grok") return this.sendGrok(text, options);
     if (!this.appAdmissionSupported() && !compactCommand(text)) {
       this.update({ submissionError: "App admission requires initialization on this bridge. Update and initialize the App admission store before sending; your draft is unchanged. Legacy submission is not used." });
       return { status: "blocked" };

@@ -144,6 +144,8 @@ import { BranchStore, type BranchOperation } from "./branches";
 import { CanonicalExecutionStore, type CanonicalExecutionRef } from "./canonical-execution-store";
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
 import { NativeSubagentService } from "./native-subagent-service";
+import { GrokAppService } from "./grok-app-service";
+import type { GrokTurnInput } from "../shared/conversation/grok-contract";
 import { SessionRunPreviewService } from "./session-run-preview";
 import { createNativeSubagentEvidenceRoute, createTranscriptEvidenceRoute, createRunEvidenceRoute, createConversationSearchRoute,
   matchesNativeSubagentEvidenceRoute, matchesTranscriptEvidenceRoute, matchesRunEvidenceRoute, matchesConversationSearchRoute } from "./conversation-evidence-routes";
@@ -154,7 +156,7 @@ import { HarnessOperationError, dispatchHarness, dispatchOwnedOperation, require
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export { hookEvents };
-export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; nativeRuntime?: NativeRuntimeSelection; /** Saved absolute Grok executable. Omitted unless explicit; never a PATH name. */ grokExecutable?: string; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; initializeAppAdmissions?: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; contextDelivery?: "startup" | "canonical"; agentModelConfig?: string; /** Internal deterministic fixture dependency; never parsed from CLI/config/HTTP. */ pendingInputWakeClock?: PendingInputWakeClock; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
+export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; nativeRuntime?: NativeRuntimeSelection; /** Saved absolute Grok executable. Omitted unless explicit; never a PATH name. */ grokExecutable?: string; grokHomeRoot?: string; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; initializeAppAdmissions?: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; contextDelivery?: "startup" | "canonical"; agentModelConfig?: string; /** Internal deterministic fixture dependency; never parsed from CLI/config/HTTP. */ pendingInputWakeClock?: PendingInputWakeClock; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
 type BridgeMessageIntent = SubmissionMessageIntent;
 type SubmissionPublicationFactory = (owner: Owner) => OwnedSubmissionPublication;
 type OriginalSubmission = { original: OriginalAppAdmission; envelope: AppAdmissionEnvelope; binding: AppAdmissionConversationBinding };
@@ -169,6 +171,7 @@ export function runtimeOptions(resolved: ReturnType<typeof resolveAppConfig>): O
     maxConcurrentRuns: c.maxConcurrentRuns, maxWorkersPerCheckout: c.maxWorkersPerCheckout, reconcileInterrupted: operational.reconcileInterrupted, initializeAppAdmissions: operational.initializeAppAdmissions, noBuild: operational.noBuild, contextDelivery: c.contextDelivery, agentModelConfig: c.agentModelConfig,
     ...(c.nativeRuntime ? { nativeRuntime: c.nativeRuntime } : {}),
     ...(grokExecutable ? { grokExecutable } : {}),
+    ...(c.native.grok ? { grokHomeRoot: c.native.grok.homeRoot } : {}),
     nativeSources: { cc: { version: 1, harness: "cc", kind: "local-profile", profileRoot: c.native.claude.profileRoot },
       oc: { version: 1, harness: "oc", kind: "local-registration", registrationFile: c.native.opencode.registrationFile } } };
 }
@@ -418,6 +421,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   let router: RepositoryRouter | undefined;
   let science: ScienceService | undefined;
+  let grokApp: GrokAppService | undefined;
   let updateService: ConversationUpdates<ClaudeConversationUpdateState> | undefined;
   let replyIntegration: OpenCodeReplyIntegration | undefined;
   let chromePush: ChromePushService | undefined;
@@ -441,6 +445,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await boundedStartupCleanup(() => queueDrain);
     await Promise.all([
       () => chromePush?.close(), () => workspaceCreations?.close(), () => gitOperations?.close(), () => science?.close(),
+      async () => { if (grokApp && !(await grokApp.close()).drained) retainOwner = true; },
       () => replyIntegration?.close(), () => updateService?.close(), () => searches.close(), () => sessionNaming?.close(),
     ].map(cleanup => boundedStartupCleanup(cleanup)));
     await boundedStartupCleanup(() => router?.close());
@@ -1116,7 +1121,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (sessionId && !(intent.kind === "worker-exchange" && phase === "dispatch" && lease) && workerStore.hasActiveExchange(sessionId)) return { ready: false as const, reason: "Worker exchange delivery is reserved or acceptance is unconfirmed; it will not be resent", code: "worker-exchange-pending" };
     if (sessionId && !delivery && (handoffReservations.has(sessionId) || handoffDispatches.has(sessionId))) return { ready: false as const, reason: "Recipient has an active or uncertain handoff", code: "handoff-pending" };
     const admission = sessionId ? admissions.get(sessionId) : undefined;
-    if (admission && admission.state !== "ready" && !(preparation && (["retry-admission", "enroll", "attach"].includes(intent.kind) || admission.state === "identity_known" && admission.nativeId))) return { ready: false as const, reason: "Admission pending; explicit known-identity retry is required", code: "admission-pending" };
+    const sourceHarness: string | undefined = admission?.source.descriptor.harness;
+    const grokCreate = sourceHarness === "gk" && admission?.state === "identity_known" && intent.kind === "user-prompt";
+    if (admission && admission.state !== "ready" && !grokCreate && !(preparation && (["retry-admission", "enroll", "attach"].includes(intent.kind) || admission.state === "identity_known" && admission.nativeId))) return { ready: false as const, reason: "Admission pending; explicit known-identity retry is required", code: "admission-pending" };
     if (sessionId && intent.kind !== "attach" && meta.sessions.find(s => s.sessionId === sessionId)?.attachment?.state === "pending") return { ready: false as const, reason: "Attachment incomplete. Retry Attach with the same harness, native ID and execution directory; no run is permitted.", code: "attachment-pending" };
     // Request IDs/origins are not capabilities. Keep every other policy above,
     // and ordinary callers, unchanged even when they copy the head request ID.
@@ -1190,6 +1197,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       } catch { /* Diagnostics must never prevent ownership retention. */ }
     }
     storageFailed = true; retainOwner = true; meta.reconciliationRequired = true;
+    void grokApp?.close().catch(() => {});
     pendingInputWake?.close();
     // Ownership records are the durable sentinel even if every later disk
     // write fails. Reopening requires process exit and explicit reconciliation.
@@ -1243,6 +1251,29 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     serial = next.catch(error => { failClosed(error, "serialized-storage-write"); });
     return next;
   }
+  grokApp = new GrokAppService({
+    dataDir: options.dataDir, admissions, catalog,
+    executable: options.grokExecutable, homeRoot: options.grokHomeRoot,
+    readSession: id => meta.sessions.find(session => session.sessionId === id),
+    assertOpen: () => {
+      assertStartupReady();
+      if (!startupStorageHealthy()) throw new WorkstreamAdapterError(503, "bridge-unavailable", "App storage or execution is unavailable");
+      assertStorageOwned();
+    },
+    admit: async <T>(sessionId: string, work: () => Promise<T>): Promise<T> => {
+      const lease = reserve({ kind: "user-prompt" }, sessionId);
+      try { return await work(); } finally { coordinator.releaseAdmission(lease); }
+    },
+    persistSession: async session => {
+      assertStorageOwned();
+      if (!meta.sessions.some(row => row.sessionId === session.sessionId)) {
+        Object.assign(meta, { version: 2 });
+        meta.sessions.push(session);
+        await persist();
+      }
+    },
+    changed: () => { replyIndexedSessionCount = -1; },
+  });
   function claudeGroupAlive(owner: Owner): boolean {
     const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
     if (session?.harness === "grok") throw new HarnessOperationError("Grok is not observed through Claude process groups", 501, "unsupported-harness-operation");
@@ -4056,7 +4087,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const sessionCatalogRoute = createSessionCatalogRoute({ selection: sessionCatalog,
     registeredWorkspaces: async () => (await catalog.registeredWorkspaces()).workspaces,
     registeredWorkspace: id => catalog.registered(id), association: id => catalog.association(id),
-    current: () => ({ sessions: meta.sessions, active: activeSessions(), runs: meta.runs, events }),
+    current: () => ({ sessions: meta.sessions.map(session => grokApp!.overlay(session)), active: activeSessions().map(session => grokApp!.overlay(session)),
+      runs: [...meta.runs, ...grokApp!.presentationRuns()], events }),
     openMembership: async workspaceId => {
       try {
         const adapter = await router!.forPolling(workspaceId);
@@ -4082,6 +4114,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       return { native, indexes };
     },
     projectRow: (session, summary, read): SessionListRow => {
+      if (session.harness === "grok") {
+        const projected = grokApp!.overlay(session);
+        const configured = grokApp!.capability();
+        return { session: projected, association: catalog.association(session.sessionId),
+          availability: !configured.configured ? { canSend: false, reason: configured.reason }
+            : projected.lastStatus === "running" ? { canSend: false, code: "conversation-busy", reason: "Grok is processing this turn" }
+              : projected.lastStatus === "failed" ? { canSend: false, reason: "Grok execution is blocked; start a new conversation" }
+                : availability(session.sessionId, true, false, false, "user", read) };
+      }
       const observedAt = historyRefreshes.get(session.sessionId);
       const owner = owners.get(session.sessionId);
       const activity = observedAt ? { phase: "refreshing" as const, observedAt }
@@ -4346,9 +4387,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         const connection = signedIn ? nativeConnectionSnapshot.read() : undefined;
         const nativeConnection = connection?.value ?? { available: false, connected: false, state: "unavailable", reason: connection?.error };
+        const grokCapability = grokApp!.capability();
         return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { storeId: store.manifest.storeId, appAdmissionCapability: { protocol: "app-admission", version: 1, state: appAdmissionFeature.state === "enabled" ? "enabled" : "requires-initialization" }, conversationUpdates: true, ...(pendingInputAutomationHealthy() ? { pendingInputCapability: { protocol: "pending-input", version: 1, supported: true, maxWaiting: 3, removal: true, resume: true } } : {}), capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability, browser: browsers.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [          { id: "claude-code", name: getHarnessDescriptor("claude-code")!.label, available: true, connected: true, state: "available", capabilities: capabilitiesFor("claude-code") },
           { id: "opencode", name: getHarnessDescriptor("opencode")!.label, ...nativeConnection, capabilities: capabilitiesFor("opencode") },
-        ] } : {}) });
+          { id: "grok", name: "Grok", available: grokCapability.configured, connected: grokCapability.configured,
+            state: grokCapability.configured ? "configured" : "unconfigured", reason: grokCapability.reason,
+            capabilities: capabilitiesFor("grok") },
+        ], grokCapability } : {}) });
       }
       if (path === "/api/login" && req.method === "POST") return await auth.login(req, expected);
       if (path === "/api/logout" && req.method === "POST") {
@@ -4357,6 +4402,24 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return auth.logout(req);
       }
       if (path.startsWith("/api/") && !auth.authenticated(req)) return json({ error: "Authentication required" }, 401);
+      // Capture-only Grok intake is deliberately separate from v1 receipts.
+      // Browser auth/origin checks above apply to these routes as to normal chat.
+      if (path === "/api/grok/turns") {
+        if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+        const input = await body(req);
+        if (!auth.authenticated(req)) return json({ error: "Authentication required" }, 401);
+        const task = Promise.withResolvers<void>();
+        attachmentTasks.add(task.promise);
+        try { return json(await grokApp!.submit(input as GrokTurnInput), 202); }
+        finally { task.resolve(); attachmentTasks.delete(task.promise); }
+      }
+      const grokSession = /^\/api\/grok\/sessions\/([^/]+)(\/stop)?$/.exec(path);
+      if (grokSession) {
+        const id = decodeURIComponent(grokSession[1]!);
+        if (grokSession[2] && req.method === "POST") return json(await grokApp!.stop(id));
+        if (!grokSession[2] && req.method === "GET") return json(await grokApp!.view(id));
+        return json({ error: "Method not allowed" }, 405);
+      }
       // Capture before any body/queue await. The capability is process-private,
       // request-bound, and is consumed only by this original intake call.
       const appAdmissionAuthorization = path === "/api/submissions" && req.method === "POST"
@@ -4902,6 +4965,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (req.method !== (regenerate ? "POST" : "PUT")) return json({ error: "Method not allowed" }, 405, { allow: regenerate ? "POST" : "PUT" });
         const session = meta.sessions.find(s => s.sessionId === titleRoute[1]);
         if (!session) return json({ error: "Unknown conversation" }, 404);
+        if (regenerate && session.harness === "grok") return json({ error: "Grok title generation is not supported; edit the title manually", code: "unsupported-harness-operation" }, 501);
         const input = await body(req);
         if (!input || typeof input !== "object" || Array.isArray(input)
           || Object.keys(input).some(key => !(regenerate ? ["expectedRevision"] : ["title", "expectedRevision"]).includes(key))
@@ -5106,12 +5170,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const session = meta.sessions.find(s => s.sessionId === (interactionMatch ?? cancelMatch)![1]);
         if (!session) return json({ error: "Unknown session" }, 404);
         if (cancelMatch && req.method === "POST") {
+          if (session.harness === "grok") return json(await grokApp!.stop(session.sessionId));
           requireOperation(sessionHarness(session), "cancelOwnedRun");
           const currentOwner = owners.get(session.sessionId);
           if (currentOwner) requireOwnedOperation({ sessionId: session.sessionId, harness: sessionHarness(session) }, currentOwner, "cancelOwnedRun");
           if (closing || storageFailed) return json({ error: "Bridge unavailable; cancellation state must be checked in the native harness" }, 503);
           const owner = pendingInputControls.stop(session.sessionId);
-          if (session.harness !== "grok") claudeRuns.cancelFollowup(session.sessionId);
+          claudeRuns.cancelFollowup(session.sessionId);
           pendingInputControls.cancellationWrite(() => workerStore.suppress(session.sessionId, true)); // Idle too; never cascade.
           userQuestions.pause(session.sessionId, "Stopped by the user. Resume explicitly to send the saved answers.");
           const worker = workerStore.getBySession(session.sessionId);
@@ -5580,6 +5645,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const creationDrain = workspaceCreations?.close();
     const gitOperationsDrain = gitOperations?.close();
     const scienceDrain = science?.close();
+    const grokDrain = grokApp!.close();
     // Observe immediately; later shutdown stages still supervise retained ownership.
     void scienceDrain?.catch(() => { retainOwner = true; });
     const nativeSubagentDrain = nativeSubagentRecorder.drain();
@@ -5598,6 +5664,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await creationDrain;
     await gitOperationsDrain;
     await boundedStartupCleanup(() => scienceDrain);
+    if (!(await grokDrain).drained) retainOwner = true;
     await nativeSubagentDrain;
     try { await workers.drainLaunches(); } catch (error) { failClosed(error, "shutdown-worker-drain"); }
     await workerOutboxTask;

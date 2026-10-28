@@ -10,7 +10,7 @@ import { body, json } from "./bridge-http";
 import { synchronousDispatchHook } from "./dispatch-evidence";
 import { requireOperation } from "./harness-operations";
 import { toNativeHarness, toSessionHarness } from "./harness-names";
-import { uuid, type Run } from "./history";
+import { uuid, validateStoredMetadata, type Run } from "./history";
 import { OpenCodeError } from "./opencode";
 import { preparedAdmissionNativeCommandId } from "./prepared-admission-command";
 import { canonicalJSON } from "./prepared-input-codec";
@@ -54,6 +54,63 @@ function session(harness?: string) {
 }
 
 describe("bridge harness authorization refuses unknown identities", () => {
+  test("Grok session publication uses metadata v2 without fabricating persisted runs", async () => {
+    const node = selectNode(node => ts.isNewExpression(node) && node.expression.getText(bridge) === "GrokAppService") as ts.NewExpression;
+    const ports = node.arguments![0] as ts.ObjectLiteralExpression;
+    const property = ports.properties.find(property => ts.isPropertyAssignment(property) && property.name.getText(bridge) === "persistSession") as ts.PropertyAssignment;
+    const original = { sessionId: crypto.randomUUID(), harness: "claude-code", nativeSessionId: crypto.randomUUID(),
+      authorityId: `sane-native-v1:cc:${"a".repeat(64)}`, cwd: "/original", lastRunId: null, lastStatus: "unknown" };
+    const meta = { version: 1, sessions: [original], runs: [], reconciliationRequired: false };
+    let publications = 0;
+    const publish = compileClosure(property.initializer.getText(bridge), {
+      meta, assertStorageOwned: () => {}, persist: async () => { validateStoredMetadata(JSON.parse(JSON.stringify(meta))); publications++; },
+    });
+    const grok = { sessionId: crypto.randomUUID(), harness: "grok", nativeSessionId: crypto.randomUUID(),
+      authorityId: `sane-native-v1:gk:${"b".repeat(64)}`, cwd: "/app-only", lastRunId: null, lastStatus: "unknown",
+      model: "explicit-model", effort: "low", profileId: "base:gk" };
+    await publish(grok);
+    await publish(grok);
+    expect(meta.version).toBe(2);
+    expect(meta.sessions).toEqual([original, grok]);
+    expect(meta.runs).toEqual([]);
+    expect(publications).toBe(1);
+  });
+
+  test("Grok capture routes use browser auth and stay separate from v1 admission", async () => {
+    const id = crypto.randomUUID();
+    let signedIn = true;
+    const calls: unknown[] = [];
+    const view = { protocol: "grok-capture", version: 1, sessionId: id, nativeAcceptance: "unknown", acceptedMessageId: null };
+    const stop = { interrupted: false, nativeCancellation: "unproven", wrapperClosed: true, reason: "Owned wrapper closed; native cancellation is unproven" };
+    const tasks = new Set<Promise<void>>();
+    const handle = bridgeFunction("handle", {
+      json, body, attachmentTasks: tasks,
+      auth: { browserBoundary: () => new URL("http://127.0.0.1"), authenticated: () => signedIn },
+      grokApp: { submit: async (input: unknown) => { calls.push(input); return view; },
+        view: async (sessionId: string) => { calls.push(["view", sessionId]); return view; },
+        stop: async (sessionId: string) => { calls.push(["stop", sessionId]); return stop; } },
+      appAdmissions: undefined,
+    });
+    const server = { requestIP: () => ({ address: "127.0.0.1" }), port: 1 };
+    const input = { sessionId: id, turnIndex: 0, prompt: "exact café\n", model: "explicit-model", effort: "explicit-effort", cwd: "/app-only" };
+    const send = () => handle(new Request("http://127.0.0.1/api/grok/turns", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) }), server);
+    signedIn = false;
+    expect((await send()).status).toBe(401);
+    expect(calls).toEqual([]);
+    signedIn = true;
+    const submitted = await send();
+    expect(submitted.status).toBe(202);
+    expect(await submitted.json()).toEqual(view);
+    expect(calls).toEqual([input]);
+    expect(tasks.size).toBe(0);
+    const status = await handle(new Request(`http://127.0.0.1/api/grok/sessions/${id}`), server);
+    expect(await status.json()).toEqual(view);
+    const stopped = await handle(new Request(`http://127.0.0.1/api/grok/sessions/${id}/stop`, { method: "POST" }), server);
+    expect(await stopped.json()).toEqual(stop);
+    expect(calls).toEqual([input, ["view", id], ["stop", id]]);
+    expect((await handle(new Request(`http://127.0.0.1/api/grok/sessions/${id}/stop`), server)).status).toBe(405);
+  });
+
   test("branchDomain: omitted and unknown refuse; claude-code/cc and opencode/oc match", async () => {
     let row = admission("cc");
     const passed: string[] = [];

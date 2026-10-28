@@ -36,6 +36,7 @@ const ocError = (pair: Pair, kind: AgentProfile["kind"]) => {
   return "";
 };
 const errorFor = (harness: Harness, pair: Pair, kind: AgentProfile["kind"]) => {
+  if (harness === "grok") return kind !== "base" ? "Grok supports Base chat only." : !pair.model.trim() || !pair.effort.trim() ? "Grok requires explicit nonempty model and effort strings." : "";
   switch (getHarnessDescriptor(harness)?.policies.effortMode) {
     case "model-variant": return ocError(pair, kind);
     case "fixed": return ccError(pair);
@@ -99,7 +100,7 @@ function AgentSettings({ state }: { state: State }) {
   const rememberFocus = () => { opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; };
   const open = (profile: AgentProfile) => { rememberFocus(); store.clearProfileError(); setEditing(profile); };
   const create = async (from: AgentProfile) => {
-    if (from.kind === "worker" || from.kind === "utility") return;
+    if (from.harness === "grok" || from.kind === "worker" || from.kind === "utility") return;
     const created = await store.createProfile(from.id, { label: copyLabel(from), hidden: false });
     if (created) { setChooser(false); setEditing(created); }
   };
@@ -135,7 +136,7 @@ function AgentSettings({ state }: { state: State }) {
         <div className="agent-grid">{cards(list.filter(p => p.kind === "utility"))}</div>
       </div>
     </div>
-    {editing ? <AgentEditor key={editing.id} profile={editing} state={state} close={() => setEditing(null)} created={setEditing} restoreFocus={restoreFocus} /> : chooser && <ShellDialog title="New assistant" restoreFocus={restoreFocus} close={() => { if (!state.profileBusy) setChooser(false); }}><p className="muted">Choose a profile to duplicate, then edit its name and settings.</p>{state.profileError && <p className="notice error" role="alert">{state.profileError}</p>}<div className="agent-picker"><div className="agent-grid">{list.filter(p => p.kind === "base" || p.kind === "assistant").map(p => <AgentCard key={p.id} profile={p} disabled={state.profileBusy} onSelect={() => void create(p)} />)}</div></div></ShellDialog>}
+    {editing ? <AgentEditor key={editing.id} profile={editing} state={state} close={() => setEditing(null)} created={setEditing} restoreFocus={restoreFocus} /> : chooser && <ShellDialog title="New assistant" restoreFocus={restoreFocus} close={() => { if (!state.profileBusy) setChooser(false); }}><p className="muted">Choose a profile to duplicate, then edit its name and settings.</p>{state.profileError && <p className="notice error" role="alert">{state.profileError}</p>}<div className="agent-picker"><div className="agent-grid">{list.filter(p => p.harness !== "grok" && (p.kind === "base" || p.kind === "assistant")).map(p => <AgentCard key={p.id} profile={p} disabled={state.profileBusy} onSelect={() => void create(p)} />)}</div></div></ShellDialog>}
   </section>;
 }
 
@@ -200,8 +201,11 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
           <div className="interaction-field"><label htmlFor="agent-label">Name</label><input id="agent-label" value={form.label} maxLength={80} onChange={event => patch({ label: event.target.value })} /></div>
           <div className="interaction-field"><label htmlFor="agent-description">Description</label><textarea id="agent-description" rows={2} value={form.description} maxLength={400} onChange={event => patch({ description: event.target.value })} /></div>
           <div className="interaction-field"><span className="agent-field-label">Fixed role</span><span className="agent-readonly">{profile.kind === "base" ? "None (harness defaults, no instructions)" : isWorkerAgentId(profile.role) ? `Worker · ${WORKER_AGENT_CATALOG[profile.role].label}` : isUtilityAgentId(profile.role) ? `Utility · ${UTILITY_AGENT_CATALOG[profile.role].label}` : isAssistantAgentId(profile.role) ? `Assistant · ${ASSISTANT_AGENT_LABELS[profile.role]}` : profile.role}</span></div>
-          <div className="interaction-field"><span className="agent-field-label" id="agent-harness">Harness</span><div className="agent-segmented" role="group" aria-labelledby="agent-harness">{(["claude-code", "opencode"] as const).map(h => <button type="button" key={h} aria-pressed={form.harness === h} disabled={fixedHarness} onClick={() => { if (form.harness !== h) patch({ harness: h, model: "", effort: "" }); }}>{harnessName(h)}</button>)}</div><small>{fixedHarness ? "Fixed for built-in Base." : "Changing harness clears the model and effort selection."}</small></div>
-          {capabilities.modelSelection && descriptor?.policies.modelInput === "live-catalog" && descriptor.policies.effortMode === "model-variant" ? <>
+          <div className="interaction-field"><span className="agent-field-label" id="agent-harness">Harness</span><div className="agent-segmented" role="group" aria-labelledby="agent-harness">{(["claude-code", "opencode", ...(profile.kind === "base" && (form.harness === "grok" || state.config?.grokCapability?.configured) ? ["grok" as const] : [])] as const).map(h => <button type="button" key={h} aria-pressed={form.harness === h} disabled={fixedHarness} onClick={() => { if (form.harness !== h) patch({ harness: h, model: "", effort: "" }); }}>{harnessName(h)}</button>)}</div><small>{fixedHarness ? "Fixed for built-in Base." : "Changing harness clears the model and effort selection."}</small></div>
+          {form.harness === "grok" ? <>
+            <div className="interaction-field"><label htmlFor="agent-grok-model">Grok model</label><input id="agent-grok-model" value={form.model} onChange={event => patch({ model: event.target.value })} required /><small>Explicit model string passed to Grok. No Claude or OpenCode defaults.</small></div>
+            <div className="interaction-field"><label htmlFor="agent-grok-effort">Grok effort</label><input id="agent-grok-effort" value={form.effort} onChange={event => patch({ effort: event.target.value })} required /><small>Explicit effort string passed to Grok; not a Claude effort or catalog variant.</small></div>
+          </> : capabilities.modelSelection && descriptor?.policies.modelInput === "live-catalog" && descriptor.policies.effortMode === "model-variant" ? <>
              <div className="interaction-field"><label htmlFor="agent-oc-model">Model</label><ModelPicker id="agent-oc-model" models={ocModels} value={form.model} defaultLabel={profile.kind === "base" ? "Native default" : "Agent default model"} disabled={busy || (state.modelsLoading && !ocModels.length)} loading={state.modelsLoading} onChange={model => patch({ model, effort: "" })} /><small>{state.modelsLoading ? "Loading the live catalog…" : profile.kind === "base" ? "Live catalog for the current directory. Empty means the native default." : "Empty uses the agent's configured model, then the native default."}</small></div>
             <div className="interaction-field"><label htmlFor="agent-oc-variant">Model variant</label>{!form.model && profile.kind !== "base" ? <><input id="agent-oc-variant" value={form.effort} maxLength={200} placeholder="Agent default variant" onChange={event => patch({ effort: event.target.value })} /><small>Variant ID for the agent's configured model. Its variants are not listed here. Launch requires a resolvable agent model; empty preserves its default variant.</small></> : <select id="agent-oc-variant" value={form.effort} disabled={!form.model || (!ocEfforts.length && !form.effort)} onChange={event => patch({ effort: event.target.value })} title={!form.model ? "Select a model before selecting a variant" : undefined}><option value="">Default variant</option>{form.effort && !ocEfforts.some(e => e.id === form.effort) && <option value={form.effort}>{form.effort}</option>}{ocEfforts.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</select>}</div>
           </> : capabilities.modelSelection && descriptor?.policies.modelInput === "free-text" && descriptor.policies.effortMode === "fixed" ? <>
@@ -223,7 +227,7 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
         <div className="dialog-actions agent-actions agent-secondary-actions">
           {!profile.builtin && profile.kind !== "worker" && <button type="button" className="agent-danger" disabled={busy || isDefault} title={isDefault ? "Choose another default before deleting" : undefined} onClick={() => ask("delete")}>Delete</button>}
           {profile.builtin && <button type="button" disabled={busy} onClick={() => ask("reset")}>{fixedHarness ? "Reset to defaults" : "Reset to template"}</button>}
-          {profile.kind !== "worker" && <button type="button" disabled={busy} onClick={() => ask("duplicate")}>Duplicate</button>}
+          {profile.harness !== "grok" && profile.kind !== "worker" && <button type="button" disabled={busy} onClick={() => ask("duplicate")}>Duplicate</button>}
         </div>
       </div>
       <footer className="dialog-actions agent-actions"><button type="button" disabled={busy} onClick={dismiss}>Cancel</button><button type="button" className="agent-save" disabled={busy || !dirty || !!problem} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button></footer>

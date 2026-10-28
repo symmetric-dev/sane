@@ -26,13 +26,13 @@ export function AgentAvatar({ profile, size = 32 }: { profile: Visual; size?: nu
 
 /** Shared profile tile for the picker and the Config grid. */
 export function AgentCard({ profile, selected, disabled, reason, tag, edit, onSelect, onKeyDown }: { profile: AgentProfile; selected?: boolean; disabled?: boolean; reason?: string; tag?: string; edit?: boolean; onSelect?: () => void; onKeyDown?: (event: KeyboardEvent<HTMLButtonElement>) => void }) {
-  const defaultModel = profile.harness === "opencode" && profile.kind !== "base" ? "Agent default model" : "Native default model";
+  const defaultModel = profile.harness === "grok" ? "Explicit Grok model required" : profile.harness === "opencode" && profile.kind !== "base" ? "Agent default model" : "Native default model";
   return <button type="button" className="agent-card" aria-pressed={selected} aria-disabled={disabled || undefined} title={disabled ? reason : profile.description || undefined} data-agent-id={profile.id} onKeyDown={onKeyDown} onClick={() => { if (!disabled) onSelect?.(); }}>
     <span className="agent-card-head"><AgentAvatar profile={profile} />{edit && <span className="agent-card-edit">Edit<span className="sr-only"> {profile.label}</span></span>}{selected && <span className="agent-card-check" aria-hidden="true"><FiCheck size={12} /></span>}</span>
     <span className="agent-card-label">{profile.label}{tag && <span className="harness-badge">{tag}</span>}</span>
     {edit && <span className="agent-card-role">{profile.kind === "base" ? "Base · No role" : isWorkerAgentId(profile.role) ? `Worker · ${WORKER_AGENT_CATALOG[profile.role].label}` : isUtilityAgentId(profile.role) ? `Utility · ${UTILITY_AGENT_CATALOG[profile.role].label}` : isAssistantAgentId(profile.role) ? `Assistant · ${ASSISTANT_AGENT_LABELS[profile.role]}` : profile.role}</span>}
     <span className="agent-card-description">{profile.description || (profile.kind === "base" ? "Harness defaults." : profile.kind === "worker" ? "SANE worker." : profile.kind === "utility" ? "App-invoked utility." : "SANE assistant.")}</span>
-    <span className="agent-card-footer"><span className="harness-badge" title={harnessName(profile.harness)}>{edit ? harnessName(profile.harness) : harnessShort(profile.harness)}</span><span className="agent-card-model">{edit ? [profile.model || defaultModel, profile.effort].filter(Boolean).join(" · ") : profileSummary(profile)}</span></span>
+    <span className="agent-card-footer"><span className="harness-badge" title={harnessName(profile.harness)}>{edit ? harnessName(profile.harness) : harnessShort(profile.harness)}</span><span className="agent-card-model">{profile.harness === "grok" && (!profile.model.trim() || !profile.effort.trim()) ? "Explicit model and effort required" : edit ? [profile.model || defaultModel, profile.effort].filter(Boolean).join(" · ") : profileSummary(profile)}</span></span>
     {disabled && reason && <span className="sr-only">Unavailable: {reason}</span>}
   </button>;
 }

@@ -200,7 +200,7 @@ function ChatMessageBody() {
         return null;
       })}
       {source?.queuedFollowup && <span className="muted">{source.queuedFollowup.state === "queued" ? "Queued" : source.queuedFollowup.state === "not-submitted" ? "Not sent" : source.queuedFollowup.state === "dispatched" ? "Run created" : "Unconfirmed"}</span>}
-      {isUser && source && !pending && <ScienceSentSnapshots conversationId={context.sessionId} runId={source.runId} />}
+      {harness !== "grok" && isUser && source && !pending && <ScienceSentSnapshots conversationId={context.sessionId} runId={source.runId} />}
       {source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}
       {!isUser && source?.runId !== "native-import" && message.status?.type === "incomplete" && <p className="run-warning" role="status">{message.status.reason === "error" ? "This run failed. The response may be incomplete." : "This run was interrupted or its completion is unknown."} {context.readOnly ? "Only recorded evidence is shown." : "See details for the recorded evidence."}</p>}
     </div>
@@ -241,12 +241,13 @@ export type ThreadProps = {
 
 export function Thread({ state, active: isActive = true, navigation, reviewRequest, reviewRequestHandled, scienceIntegration, transcriptTarget, transcriptVisible = true, paired = false, onOpenChatFlow }: ThreadProps) {
   const searchRoot = useRef<HTMLDivElement>(null);
+  const grok = store.harness() === "grok";
   const projection = useWorkers(state.selected);
   const parentForStatus = workerReference(state.selected)?.parent.sessionId;
   useWorkerPolling(parentForStatus && parentForStatus !== state.selected ? parentForStatus : null);
   const parentProjection = useWorkers(parentForStatus ?? "");
   const nativeSubagents = useNativeSubagents();
-  const handoffs = useHandoffs(state.selected, isActive && state.connected);
+  const handoffs = useHandoffs(state.selected, !grok && isActive && state.connected);
   const workers = projection.workers;
   const exchanges = useMemo(() => workerExchanges([...workers, ...parentProjection.workers.filter(worker => worker.sessionId === state.selected && !workers.some(item => item.id === worker.id))]), [workers, parentProjection.workers, state.selected]);
   const parentId = workerReference(state.selected)?.parent.sessionId;
@@ -271,8 +272,8 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const nativeQueueWaiting = active(latestRun?.status ?? "completed") && latestRun?.nativeDelivery === "queue"
     && !state.messages.some(message => message.id === latestRun.nativeCommandId && message.normalized);
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
-  const messages = useMemo(() => claudeReplyPresentation(withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), harness), [state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands, harness]);
-  const codeShares = useCodeShares(state.selected, { enabled: isActive && state.connected, refreshKey: messages, running });
+  const messages = useMemo(() => grok ? state.messages : claudeReplyPresentation(withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), harness), [grok, state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands, harness]);
+  const codeShares = useCodeShares(state.selected, { enabled: !grok && isActive && state.connected, refreshKey: messages, running });
   const loadedWorkers = useMemo(() => loadedTranscriptWorkers({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, exchanges, handoffs: handoffs.handoffs, nativeRuns: state.runs, nativeHarness: harness, codeShares: codeShares.shares }), [state.selected, messages, workers, projection.deliveries, exchanges, handoffs.handoffs, state.runs, harness, codeShares.shares]);
   const workerRefreshScope = JSON.stringify([state.config?.storeId, state.selected, harness, conversation?.nativeSessionId, conversation?.authorityId, conversation?.cwd]);
   const questionsReadOnlyReason = !isActive ? "Open this conversation in Chat to answer questions."
@@ -281,10 +282,10 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     : parentId || conversation?.worker || store.conversationKind() === "worker" ? "Questions in worker conversations are read-only."
     : conversation?.attachment ? "Questions in attached conversations are read-only."
     : !conversation ? "Waiting for the conversation to load." : undefined;
-  const questionsScope = useMemo(() => state.config?.storeId && conversation?.authorityId && conversation.nativeSessionId ? {
+  const questionsScope = useMemo(() => !grok && state.config?.storeId && conversation?.authorityId && conversation.nativeSessionId ? {
     storeId: state.config.storeId, sessionId: state.selected, harness: conversation.harness,
     nativeSessionId: conversation.nativeSessionId, authorityId: conversation.authorityId,
-  } : null, [state.config?.storeId, state.selected, conversation?.harness, conversation?.nativeSessionId, conversation?.authorityId]);
+  } : null, [grok, state.config?.storeId, state.selected, conversation?.harness, conversation?.nativeSessionId, conversation?.authorityId]);
   const userQuestions = useUserQuestions(questionsScope, { enabled: isActive && state.connected, editable: !questionsReadOnlyReason, refreshKey: messages, running });
   const transcriptIndex = useTranscriptIndex(messages);
   const runtimeMessages = useMemo(() => projectTranscriptMessages(messages), [messages]);
@@ -316,8 +317,8 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   useEffect(() => { setFlowOverride(null); }, [flowPresentationScope]);
   const reviewPresented = !paired && (!flowPresentation || flowPresentation === "documents");
   const sendReview = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped, { preserveDraft: true }); };
-  const review = useDocumentReview(state, isActive && !paired && !hasRequests, sendDisabled, sendReview);
-  const science = useScienceChat(state, isActive && !paired, sendDisabled || (reviewPresented && !!review.flow), scienceIntegration);
+  const review = useDocumentReview(state, !grok && isActive && !paired && !hasRequests, sendDisabled, sendReview);
+  const science = useScienceChat(state, !grok && isActive && !paired, sendDisabled || (reviewPresented && !!review.flow), scienceIntegration);
   const documentFlow = reviewPresented ? review.flow : null;
   const readingDocument = !hasRequests && !!documentFlow?.path;
   useEffect(() => {
@@ -356,7 +357,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     <CompactionMarkers records={readingDocument ? state.transcript ? state.compactions?.filter(record => state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind === "tail")) : state.transcriptPaged ? undefined : state.compactions : undefined} />
     {latestRun?.operation !== "compact" && latestRun?.status === "failed" && <p className="notice error" role="alert">Run failed{latestRun.nativeReason ? `: ${latestRun.nativeReason}` : ". See the conversation for details."}</p>}
   </>;
-  const statusActions = pendingInputStopAction({ chainLocked, appRunning, cancelRun: capabilities.cancelRun === true, nativeQueueWaiting,
+  const statusActions = pendingInputStopAction({ chainLocked, appRunning: grok ? state.grokView?.active === true : appRunning, cancelRun: capabilities.cancelRun === true, nativeQueueWaiting,
     disabled: !isActive || state.actionBusy || state.sending || (chainLocked ? state.phase !== "ready" || state.config?.authenticated !== true : !state.connected),
     cancel: () => void store.cancel() });
   const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} paired={paired} onOpenChatFlow={onOpenChatFlow} flowPresentation={flowPresentation} onFlowPresentationChange={changeFlowPresentation} questions={userQuestions} questionsReadOnlyReason={questionsReadOnlyReason} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={paired ? undefined : review} science={paired ? undefined : science} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;

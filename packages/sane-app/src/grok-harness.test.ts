@@ -32,13 +32,12 @@ describe("grok harness registry", () => {
     expect(isHarness("gemini")).toBe(false);
   });
 
-  test("prompt and owned cancel are unsupported until the bridge can perform them; every other Grok operation stays unsupported", () => {
+  test("capture-only prompt and owned cancel are supported; other Grok operations stay unsupported", () => {
     const operations = getHarnessDescriptor("grok")!.operations;
-    expect(operations.prompt).toEqual({ supported: false, reason: "The bridge cannot perform Grok prompts yet" });
-    expect(operations.cancelOwnedRun).toEqual({ supported: false, reason: "The bridge cannot perform Grok Stop yet" });
-    expect(operations.prompt.reason).not.toMatch(/Claude/);
-    expect(operations.cancelOwnedRun.reason).not.toMatch(/Claude/);
+    expect(operations.prompt).toEqual({ supported: true });
+    expect(operations.cancelOwnedRun).toEqual({ supported: true });
     for (const operation of Object.keys(operations) as (keyof typeof operations)[]) {
+      if (operation === "prompt" || operation === "cancelOwnedRun") continue;
       expect(operations[operation].supported).toBe(false);
       expect(operations[operation].reason).toEqual(expect.any(String));
       expect(operations[operation].reason).not.toMatch(/Claude/);

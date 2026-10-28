@@ -5,6 +5,7 @@ import { isConversationUpdateFeedRequest, isConversationUpdatePage } from "../sh
 import { nativeNotificationSource } from "./notification-source";
 import { SESSION_REFRESH_ERROR } from "./notification-presentation";
 import { pendingInputClient } from "./pending-input-client";
+import { grokSessionView } from "./grok-presentation";
 import { normalizeSessionTitle, SESSION_TITLE_SOURCES } from "../shared/conversation/session-title";
 import { decodeAppAdmissionEnvelope, decodeAppAdmissionKey, decodeAppAdmissionReceipt, decodeAppAdmissionReceiptForIntent, type AppAdmissionEnvelope, type AppAdmissionKey, type AppAdmissionLookup } from "../shared/conversation/app-admission-contract";
 
@@ -53,6 +54,19 @@ async function updateSessionTitle(id: string, input: { title?: string; expectedR
   return { title: result.title, titleSource: result.titleSource, titleRevision: result.titleRevision };
 }
 export const conversationClient: ConversationClient = {
+  async grokTurn(input, signal) {
+    // Exactly one POST. A lost response permits only an exact session GET.
+    return grokSessionView(await request("/api/grok/turns", { method: "POST", body: JSON.stringify(input), signal }), input.sessionId);
+  },
+  async grokSession(id, signal) {
+    return grokSessionView(await request(`/api/grok/sessions/${encodeURIComponent(id)}`, { signal }), id);
+  },
+  async grokStop(id) {
+    const result = await request(`/api/grok/sessions/${encodeURIComponent(id)}/stop`, { method: "POST", body: "{}" });
+    if (result.interrupted !== false || !["not-attempted", "unproven"].includes(result.nativeCancellation)
+      || typeof result.wrapperClosed !== "boolean" || typeof result.reason !== "string") throw new Error("Grok Stop status is unconfirmed; native cancellation is not proven.");
+    return result;
+  },
   async submitAdmission(envelope: AppAdmissionEnvelope, signal?: AbortSignal) {
     const frozen = decodeAppAdmissionEnvelope(envelope);
     // Exactly one POST. Neither transport failure nor an absent GET permits a retry.

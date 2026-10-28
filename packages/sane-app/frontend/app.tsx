@@ -140,7 +140,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   const requestedRevealIntent = useRef<number | null>(null);
   const nativeParent = state.conversations.find(conversation => conversation.id === state.selected);
   const nativeParentSessionId = nativeParent?.id ?? "";
-  const nativeSubagents = useNativeSubagentFeature(nativeParentSessionId, !!nativeParentSessionId && !!nativeParent, view === "chat" || paired, JSON.stringify([nativeParentSessionId, nativeParent?.nativeSessionId, nativeParent?.harness]));
+  const nativeSubagents = useNativeSubagentFeature(nativeParentSessionId, !!nativeParentSessionId && !!nativeParent && nativeParent.harness !== "grok", view === "chat" || paired, JSON.stringify([nativeParentSessionId, nativeParent?.nativeSessionId, nativeParent?.harness]));
   const [drawer, setDrawer] = useState<"sidebar" | "details" | "context" | "application" | null>(null);
   const toggleSidebar = useCallback(() => {
     presentationIntent.current++;

@@ -166,7 +166,9 @@ test("new turn uses --session-id and the exact prompt, then continuation uses --
   expect(createdCall!.env.GROK_HOME).toBe(f.authority.descriptor.homeRoot);
   expect(createdCall!.env.PATH).toBeUndefined();
   expect(createdCall!.env.HOME).toBeUndefined();
-  expect(Object.keys(createdCall!.env).some(key => key.startsWith("SANE_") || key.startsWith("OPENCODE_"))).toBe(false);
+  expect(createdCall!.env.SANE_UNQUALIFIED_NATIVE).toBe("1");
+  expect(createdCall!.env.GROK_SESSION_ID).toBe(nativeSessionId);
+  expect(Object.keys(createdCall!.env).filter(key => key.startsWith("SANE_") || key.startsWith("OPENCODE_"))).toEqual(["SANE_UNQUALIFIED_NATIVE"]);
   expect(first.owner.run.runId).not.toBe("run-1");
   expect(first.owner.run.runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
   expect(first.owner.run.createdAt).not.toBe("2026-10-27T00:00:00.000Z");

@@ -23,7 +23,7 @@ export type CallerReference = { version: 1; harness: Harness; nativeId: string }
 /** Hook-qualified identity before enrollment; permits repository bootstrap only. */
 export type CallerBootstrap = CallerEnvelope & { bootstrap: true; executionCheckout: string }
 export type CallerClassification = { actorKind: "local" } | { actorKind: "native"; envelope: CallerEnvelope } | { actorKind: "native-ref"; ref: CallerReference } | { actorKind: "native-bootstrap"; envelope: CallerBootstrap }
-export type CallerSignals = Readonly<Partial<Record<"SANE_CALLER_CONTEXT" | "SANE_SESSION_ID" | "OPENCODE_SESSION_ID", string>>>
+export type CallerSignals = Readonly<Partial<Record<"SANE_CALLER_CONTEXT" | "SANE_SESSION_ID" | "OPENCODE_SESSION_ID" | "SANE_UNQUALIFIED_NATIVE" | "GROK_SESSION_ID", string>>>
 export type CliIntent = {
   operation: string
   repository?: string
@@ -79,6 +79,9 @@ function reference(value: unknown): CallerReference {
 }
 const callerFlags = ["caller-repo", "caller-source", "caller-authority", "caller-native-id"]
 export function classifyCaller(signals: CallerSignals, flags: Readonly<Record<string, string | boolean>> = {}): CallerClassification {
+  // Inherited native refusal, not an OS sandbox: a hostile process can clear its environment.
+  // Grok has no qualified native SANE caller support; CC/OC envelopes cannot override it.
+  if (signals.SANE_UNQUALIFIED_NATIVE !== undefined || signals.GROK_SESSION_ID !== undefined) nativeFail()
   let caller: CallerEnvelope | undefined
   let ref: CallerReference | undefined
   let bootstrap: CallerBootstrap | undefined

@@ -100,12 +100,12 @@ export const HARNESS_DESCRIPTORS: Readonly<Record<Harness, HarnessDescriptor>> =
   grok: descriptor({
     id: "grok", nativeHarness: "gk", label: "Grok", shortLabel: "GK",
     operations: {
-      prompt: unsupported("The bridge cannot perform Grok prompts yet"),
+      prompt: supported,
       readHistory: unsupported("Grok does not expose native history refresh"),
       attachHistory: unsupported("Grok does not support attaching external history"),
       compact: unsupported("Grok does not support compaction"),
       branch: unsupported("Grok does not support branching"),
-      cancelOwnedRun: unsupported("The bridge cannot perform Grok Stop yet"),
+      cancelOwnedRun: supported,
       listInteractions: unsupported("Grok does not expose an interaction inbox"),
       permissionReply: unsupported("Grok does not support permission replies"),
       questionReply: unsupported("Grok does not support question replies"),

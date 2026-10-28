@@ -60,7 +60,8 @@ export interface CliRuntime {
 
 /** Snapshot signals without treating present-but-empty evidence as absent. */
 export function callerSignals(env: NodeJS.ProcessEnv = process.env): CallerSignals {
-  return { SANE_CALLER_CONTEXT: env.SANE_CALLER_CONTEXT, SANE_SESSION_ID: env.SANE_SESSION_ID, OPENCODE_SESSION_ID: env.OPENCODE_SESSION_ID }
+  return { SANE_CALLER_CONTEXT: env.SANE_CALLER_CONTEXT, SANE_SESSION_ID: env.SANE_SESSION_ID, OPENCODE_SESSION_ID: env.OPENCODE_SESSION_ID,
+    SANE_UNQUALIFIED_NATIVE: env.SANE_UNQUALIFIED_NATIVE, GROK_SESSION_ID: env.GROK_SESSION_ID }
 }
 function ready(path: string): RepositoryContext {
   const state = inspectRepositoryStore(discoverRepository(path))

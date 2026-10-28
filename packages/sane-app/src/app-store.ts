@@ -8,6 +8,7 @@ import { uuid, validateStoredMetadata, validModel, validEffort, validVariant, va
 import { isAssistantAgentId, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, ASSISTANT_AGENT_DESCRIPTIONS, isWorkerAgentId, WORKER_AGENT_IDS } from "sane-core/agent-catalog";
 import { isUtilityAgentId, UTILITY_AGENT_IDS } from "sane-core/agent-catalog";
 import { isHarness } from "../shared/conversation/harness-capabilities";
+import { validGrokChoice } from "../shared/conversation/grok-contract";
 import { AGENT_COLOR_IDS, AGENT_ICON_IDS, BASE_PROFILE_IDS, LEGACY_KNOWLEDGE_PROFILE, builtinProfiles, builtinWorkerDefaults, seedAgentProfiles, templateProfileId, workerTemplateProfileId, utilityTemplateProfileId, type AgentProfiles } from "./agent-profiles-contract";
 
 export { AppStoreError, exact } from "./app-store-format";
@@ -133,9 +134,9 @@ export function validateAgentProfiles(value: unknown): AgentProfiles {
     validateProfileIdentity(p);
     if (p.locked !== false) corrupt("Invalid agent profile locked flag");
     if (!isHarness(p.harness)) corrupt("Unknown harness");
-    if (p.model !== "" && !validModel(p.model)) corrupt("Invalid model ID");
+    if (p.model !== "" && !(p.harness === "grok" ? validGrokChoice(p.model) : validModel(p.model))) corrupt("Invalid model ID");
     if (p.effort !== "") {
-      if (p.harness === "grok") { if (!validVariant(p.effort)) corrupt("Invalid Grok effort"); }
+      if (p.harness === "grok") { if (!validGrokChoice(p.effort)) corrupt("Invalid Grok effort"); }
       else if (p.harness === "opencode") { if (!validVariant(p.effort)) corrupt("Invalid native variant ID"); }
       else if (!validEffort(p.effort)) corrupt("effort must be low, medium, high, xhigh, or max");
     }

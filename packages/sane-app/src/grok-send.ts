@@ -13,7 +13,7 @@ import {
 } from "./grok-capture";
 import type { RunOwner } from "./run-owner";
 
-/** Offline coordinator only: no registry advertisement, receipt, automatic send,
+/** Capture coordinator: no registry advertisement, receipt, automatic send,
  * native acceptance claim, or PATH discovery. The capture envelope owns durable
  * identity and pending/blocked execution. This map owns only live App turns,
  * including a child whose close remains unavailable after bounded termination. */
@@ -56,6 +56,10 @@ export type GrokTurnRequest = {
   admissions: Pick<AdmissionService, "beginGrokCreate" | "get" | "getGrokCreate" | "getGrokSourcePin">;
   spawn?: GrokSpawn;
   timeoutMs?: number;
+  /** Final synchronous catalog fence after preparation/admission persistence. */
+  assertBinding?: () => void;
+  /** Normal composer errors are terminal for this App conversation, even when withheld. */
+  blockOnFailure?: boolean;
 };
 export type GrokTurnResult = {
   readonly nativeSessionId: string;
@@ -69,6 +73,8 @@ export type GrokTurnHandle = {
   readonly nativeSessionId: string;
   stop(): GrokStopResult;
   readonly done: Promise<GrokTurnResult>;
+  readonly closed: Promise<void>;
+  observation(): GrokTurnObservation | undefined;
 };
 
 function refuse(message: string): never { throw new GrokSendRefusal("grok-eligibility-refused", message); }
@@ -204,7 +210,10 @@ export function runGrokTurn(session: GrokSendSession, request: GrokTurnRequest):
             workspaceId: input.workspaceId, worktreeId: input.worktreeId, authorityId: authority.authorityId, parent: null,
           });
           let homeRoot: string | undefined;
-          if (!owner.stopRequested) homeRoot = launchHome(session, input, nativeSessionId, authority);
+          if (!owner.stopRequested) {
+            input.assertBinding?.();
+            homeRoot = launchHome(session, input, nativeSessionId, authority);
+          }
           else if (!admission || admission.nativeId !== nativeSessionId || admission.source.authorityId !== authority.authorityId
             || admission.state !== "identity_known") refuse("Grok cancellation does not match its reserved create admission");
           try {
@@ -243,13 +252,14 @@ export function runGrokTurn(session: GrokSendSession, request: GrokTurnRequest):
     }
     const unsafe = unknown || incomplete || observation?.nativeCancellation === "unproven" || observation?.toolBoundary === "refused"
       || (submitted && (failure !== undefined || observation.wrapperCompletion !== "closed" || observation.exitCode !== 0 || observation.exitSignal !== null));
-    session.blocked ||= unsafe;
+    session.blocked ||= unsafe || (input.blockOnFailure === true && (failure !== undefined || !submitted));
     if (submitted) {
       session.nativeSessionId = nativeSessionId;
       try {
         turn = appendGrokCaptureTurn(session.journal, {
           appSessionId: session.appSessionId, nativeSessionId, authorityId: authority.authorityId, cwd: input.cwd,
           model: input.model, effort: input.effort, turnIndex: session.turnIndex, prompt: input.prompt, submission: "submitted",
+          runId, createdAt: owner.run.createdAt,
           stdout: textFrom(session.stdoutChunks, stdoutMark), stderr: textFrom(session.stderrChunks, stderrMark),
           exitCode: observation.exitCode, exitSignal: observation.exitSignal,
           nativeCancellation: observation.nativeCancellation === "unproven" ? "unproven" : "not-requested",
@@ -276,17 +286,20 @@ export function runGrokTurn(session: GrokSendSession, request: GrokTurnRequest):
     owner.settled = true;
     // Incomplete drain is not ownership release. Keep the owner reachable in
     // this session and the live registry; durable pending/blocked also survives restart.
-    if (!incomplete) {
+    const release = () => {
       if (inFlightOwners.get(ownerKey)?.owner === owner) inFlightOwners.delete(ownerKey);
       if (session.owner === owner) session.owner = undefined;
-    }
+    };
+    if (!incomplete) release();
+    else void adapter.closed(owner).then(release);
     finished.resolve();
     if (failure) throw failure.error;
     return { nativeSessionId, turn, admission, observation, owner };
   })();
 
   return {
-    session, nativeSessionId, done,
+    session, nativeSessionId, done, closed: adapter.closed(owner),
+    observation: () => grokDispatchObservation(adapter, owner),
     stop() {
       if (owner.settled && grokDispatchObservation(adapter, owner)?.wrapperCompletion !== "incomplete") return { stopped: false, code: "grok-stop-refused", reason: "Grok wrapper processing already settled; native cancellation is not attempted", killedPid: null, nativeCancellation: "not-attempted" };
       owner.stopRequested = true;
