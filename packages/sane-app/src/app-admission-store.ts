@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { join, resolve } from "node:path";
 import {
-  APP_ADMISSION_MAX_PAYLOAD_BYTES, APP_ADMISSION_MAX_RECEIPT_BYTES, AppAdmissionCodecError, appAdmissionExpectedSourceMatches, canonicalAppAdmissionJSON, canonicalAppAdmissionPayload,
+  APP_ADMISSION_MAX_PAYLOAD_BYTES, AppAdmissionCodecError, appAdmissionExpectedSourceMatches, canonicalAppAdmissionJSON, canonicalAppAdmissionPayload,
   decodeAppAdmissionEnvelope, decodeAppAdmissionKey, decodeAppAdmissionReceipt,
   decodeAppAdmissionRejection, decodeAppAdmissionTarget,
   type AppAdmissionEnvelope, type AppAdmissionKey, type AppAdmissionLookup,
@@ -65,8 +65,6 @@ export type AppAdmissionStoreDependencies = Readonly<{
 }>;
 
 const DIRECTORY = "app-admissions";
-const MAX_ITEMS = 2000;
-const MAX_BYTES = 32_000_000;
 const MAX_FILE_BYTES = 270_000;
 const PRIVATE_VERSION = 2;
 /** Fixed wrapper keys plus a UUID and bounded binding enum fit in 512 bytes,
@@ -219,6 +217,9 @@ function privatePendingBytes(record: PrivatePending): Buffer {
 /** Immutable App intake receipts only; NOT RunOwner storage, a dispatch journal,
  * native intent, or an admission scheduler. All writes are synchronous, invoked
  * INSIDE the existing bridge serialized queue. Public reads never create/repair.
+ * The existing storage owner lock protects the loaded receipt indexes; routine
+ * reads do not re-inventory durable history. Each new record is durably published
+ * before its receipt becomes visible in memory.
  * Restart loads history but manufactures NO permit/invocation and never resumes
  * pending work. Unknown pending history remains an arbitration barrier.
  *
@@ -229,18 +230,15 @@ export class AppAdmissionStore {
   readonly #root: Root;
   readonly #path: string;
   readonly #pin: Pin;
-  readonly #files = new Map<string, Snapshot>();
   readonly #records = new Map<string, Stored>();
+  readonly #pendingRecords = new Map<string, Stored>();
+  readonly #targets = new Set<string>();
   /** Receipt-data index only, not a conversation/execution owner registry. */
   readonly #conversationIds = new Set<string>();
   #permits = new WeakMap<AppAdmissionPermit, AppAdmissionKey>();
   #invocations = new WeakMap<AppAdmissionInvocation, Invocation>();
   #failure?: AppAdmissionStorageError;
   #busy = false;
-  #bytes = 0;
-  /** Derived from durable pending-only records, including after restart. Never
-   * lends one unresolved request's terminal budget to another intake. */
-  #reservedBytes = 0;
 
   /** Explicit bootstrap only, never call in GET or as recovery after open fails.
    * Refuses an existing directory, including partial initialization. */
@@ -284,16 +282,16 @@ export class AppAdmissionStore {
       try { this.#pin = directory(this.#path); }
       catch (cause) { if ((cause as NodeJS.ErrnoException).code === "ENOENT") throw new AppAdmissionStorageError("uninitialized", "App admission directory is missing; explicit initialization required", cause); throw cause; }
       const names = readdirSync(this.#path).sort();
-      if (names.length > MAX_ITEMS * 2 + 1 || !names.includes("store.json")) unsafe("Missing or oversized App admission directory");
+      if (!names.includes("store.json")) unsafe("Missing App admission store marker");
+      const files = new Map<string, Snapshot>();
       for (const name of names) {
         if (name !== "store.json" && !recordName.test(name)) unsafe("Unknown App admission file; no automatic repair");
-        const snapshot = read(join(this.#path, name)); this.#files.set(name, snapshot); this.#bytes += snapshot.bytes.length;
+        files.set(name, read(join(this.#path, name)));
       }
-      if (this.#bytes > MAX_BYTES) unsafe("App admission storage byte limit exceeded");
-      const marker = parsed(this.#files.get("store.json")!);
+      const marker = parsed(files.get("store.json")!);
       if (canonicalAppAdmissionJSON(marker) !== canonicalAppAdmissionJSON({ version: PRIVATE_VERSION, storeId })) unsafe("Unsupported App admission private version or store identity; no automatic adoption");
       const provisionalIds = new Set<string>();
-      for (const [name, snapshot] of this.#files) {
+      for (const [name, snapshot] of files) {
         const match = recordName.exec(name);
         if (match?.[2] !== "pending") continue;
         const record = decodePrivatePending(parsed(snapshot)), { envelope, binding } = record;
@@ -308,9 +306,7 @@ export class AppAdmissionStore {
         this.#conversationIds.add(binding.conversationId);
         this.#records.set(envelope.clientRequestId, { envelope, binding, receipt: pending(envelope) });
       }
-      if (this.#records.size > MAX_ITEMS) unsafe("App admission receipt count exceeded");
-      const targets = new Set<string>();
-      for (const [name, snapshot] of this.#files) {
+      for (const [name, snapshot] of files) {
         const match = recordName.exec(name);
         if (!match || match[2] === "pending") continue;
         const item = this.#records.get(match[1]), receipt = decodeAppAdmissionReceipt(parsed(snapshot));
@@ -319,8 +315,8 @@ export class AppAdmissionStore {
         if (receipt.state === "admitted") {
           try { validateTargetIntent(item.envelope, item.binding, receipt.target); } catch { unsafe("App admission target/intent/binding mismatch"); }
           const target = targetKey(receipt.target);
-          if (targets.has(target)) unsafe("Native message belongs to multiple App admission receipts");
-          targets.add(target);
+          if (this.#targets.has(target)) unsafe("Native message belongs to multiple App admission receipts");
+          this.#targets.add(target);
         }
         item.receipt = receipt;
       }
@@ -328,10 +324,10 @@ export class AppAdmissionStore {
       for (const item of this.#records.values()) if (item.receipt.state === "pending") {
         if (pendingConversations.has(item.binding.conversationId) || pendingChains.has(item.envelope.intent.chainId)) unsafe("Multiple unresolved App admission records reserve the same conversation or chain");
         pendingConversations.add(item.binding.conversationId); pendingChains.add(item.envelope.intent.chainId);
+        this.#pendingRecords.set(item.envelope.clientRequestId, item);
       }
-      this.#reservedBytes = [...this.#records.values()].filter(item => item.receipt.state === "pending").length * APP_ADMISSION_MAX_RECEIPT_BYTES;
       this.#guard();
-      this.#verifyRaw(new Set(this.#files.keys()));
+      this.#rawRoot();
     } catch (error) { this.#fatal(error); }
   }
 
@@ -343,7 +339,7 @@ export class AppAdmissionStore {
     }
     throw this.#failure;
   }
-  /** Callback-bearing authority guard. Never use it AFTER final raw proof. */
+  /** Existing storage ownership/health and serialized mutation guard. */
   #guard(mutation = false): void {
     if (this.#failure) throw this.#failure;
     try {
@@ -352,57 +348,29 @@ export class AppAdmissionStore {
       if (this.#failure) throw this.#failure;
     } catch (error) { this.#fatal(error); }
   }
-  /** All raw verifiers below are private, synchronous and CALLBACK-FREE. */
   #rawRoot(): void {
     if (this.#failure) throw this.#failure;
     checkRoot(this.#root); directory(this.#path, this.#pin);
-  }
-  #rawInventory(): void {
-    const names = readdirSync(this.#path);
-    if (names.length !== this.#files.size || names.some(name => !this.#files.has(name))) unsafe("App admission files appeared or disappeared");
-    for (const [name, snapshot] of this.#files) {
-      const stat = lstatSync(join(this.#path, name)); secure(stat, false);
-      if (!equalPin(stat, snapshot.pin)) unsafe("App admission record pin changed");
-    }
-  }
-  #verifyRaw(selected: ReadonlySet<string>): void {
-    this.#rawRoot(); this.#rawInventory();
-    verify(join(this.#path, "store.json"), this.#files.get("store.json")!);
-    for (const name of selected) {
-      const snapshot = this.#files.get(name);
-      if (!snapshot) unsafe("Selected App admission snapshot is unavailable");
-      verify(join(this.#path, name), snapshot);
-    }
-    const pendingCount = [...this.#records.values()].filter(item => item.receipt.state === "pending").length;
-    if (this.#reservedBytes !== pendingCount * APP_ADMISSION_MAX_RECEIPT_BYTES || this.#bytes + this.#reservedBytes > MAX_BYTES) unsafe("App admission terminal-capacity reservation invariant failed");
-    // Final root and complete namespace/pin pass, still with NO callbacks.
-    this.#rawRoot(); this.#rawInventory();
   }
   #input<T>(action: () => T): T {
     try { return action(); }
     catch (error) { if (error instanceof AppAdmissionRequestError) throw error; deny("invalid-request", "Invalid App admission input", 400); }
   }
-  #read<T>(action: (selected: Set<string>) => T): T {
+  #read<T>(action: () => T): T {
     if (this.#busy) this.#fatal(new Error("App admission store reentered during mutation"));
-    const selected = new Set<string>();
     try {
-      this.#guard(); this.#verifyRaw(selected);
-      const result = action(selected);
       this.#guard();
-      this.#verifyRaw(selected); // LAST callback precedes all selected-byte proof.
-      return result;
+      return action();
     }
     catch (error) { if (this.#failure) throw this.#failure; if (error instanceof AppAdmissionRequestError) throw error; return this.#fatal(error); }
   }
-  #mutate<T>(action: (selected: Set<string>) => T): T {
+  #mutate<T>(action: () => T): T {
     if (this.#busy) this.#fatal(new Error("App admission mutation reentered"));
     this.#busy = true;
-    const selected = new Set<string>();
     try {
-      this.#guard(true); this.#verifyRaw(selected);
-      const result = action(selected);
       this.#guard(true);
-      this.#verifyRaw(selected); // No dependency callback can stale this proof.
+      const result = action();
+      this.#guard(true);
       return result;
     } catch (error) { if (this.#failure) throw this.#failure; if (error instanceof AppAdmissionRequestError) throw error; return this.#fatal(error); }
     finally { this.#busy = false; }
@@ -412,68 +380,43 @@ export class AppAdmissionStore {
     if (key.storeId !== this.storeId) deny("store-mismatch", "App admission lookup belongs to another store");
     return key;
   }
-  #find(key: AppAdmissionKey, selected: Set<string>): Stored | undefined {
+  #find(key: AppAdmissionKey): Stored | undefined {
     const item = this.#records.get(key.clientRequestId);
     if (item && item.envelope.payloadSha256 !== key.payloadSha256) deny("payload-conflict", "Client request ID already names a different immutable payload");
-    if (item) {
-      const intentName = `${key.clientRequestId}.pending.json`;
-      selected.add(intentName);
-      verify(join(this.#path, intentName), this.#files.get(intentName)!);
-      if (item.receipt.state !== "pending") {
-        const receiptName = `${key.clientRequestId}.${item.receipt.state}.json`;
-        selected.add(receiptName);
-        verify(join(this.#path, receiptName), this.#files.get(receiptName)!);
-      }
-    }
     return item;
   }
-  #pending(selected: Set<string>): readonly AppAdmissionPending[] {
-    return Object.freeze([...this.#records.values()].filter(item => item.receipt.state === "pending").map(item => {
-      selected.add(`${item.envelope.clientRequestId}.pending.json`);
+  #pending(): readonly AppAdmissionPending[] {
+    return Object.freeze([...this.#pendingRecords.values()].map(item => {
       return Object.freeze({ receipt: item.receipt, operation: item.envelope.intent.operation, conversationId: item.binding.conversationId, binding: item.binding, chainId: item.envelope.intent.chainId });
     }));
   }
-  #publish(name: string, contents: Buffer, kind: "pending" | "terminal", selected: Set<string>): void {
-    const bytes = contents.length;
-    if (kind === "pending") {
-      if (this.#bytes + this.#reservedBytes + bytes + APP_ADMISSION_MAX_RECEIPT_BYTES > MAX_BYTES) deny("capacity", "App admission ledger capacity including terminal reservation reached", 429);
-    } else if (bytes > APP_ADMISSION_MAX_RECEIPT_BYTES || this.#reservedBytes < APP_ADMISSION_MAX_RECEIPT_BYTES
-      || this.#bytes + this.#reservedBytes + bytes - APP_ADMISSION_MAX_RECEIPT_BYTES > MAX_BYTES) {
-      // A valid terminal is guaranteed space by its pending reservation. This is
-      // an invariant/storage failure, NEVER a late expected capacity refusal.
-      unsafe("App admission terminal publication exceeded its reserved capacity");
-    }
-    const snapshot = publishExclusive(this.#path, this.#pin, name, contents, () => { this.#guard(true); this.#rawRoot(); });
-    this.#files.set(name, snapshot); this.#bytes += snapshot.bytes.length;
-    selected.add(name);
-    // Release only AFTER terminal file+directory durability and owned-inode proof
-    // have completed. Pending insertion reserves before a permit can escape.
-    this.#reservedBytes += kind === "pending" ? APP_ADMISSION_MAX_RECEIPT_BYTES : -APP_ADMISSION_MAX_RECEIPT_BYTES;
+  #publish(name: string, contents: Buffer): void {
+    publishExclusive(this.#path, this.#pin, name, contents, () => { this.#guard(true); this.#rawRoot(); });
   }
-  #invocation(handle: AppAdmissionInvocation, selected: Set<string>): Stored {
+  #invocation(handle: AppAdmissionInvocation): Stored {
     const invocation = this.#invocations.get(handle);
     if (!invocation || invocation.used) deny("no-permit", "No original one-shot App admission invocation");
     // Consume BEFORE callbacks or IO; caught reentry/failure cannot reuse it.
     invocation.used = true;
-    const item = this.#find(invocation.key, selected);
+    const item = this.#find(invocation.key);
     if (!item || item.receipt.state !== "pending") deny("no-permit", "Original App admission request is no longer pending");
     return item;
   }
 
   lookup(input: AppAdmissionKey): AppAdmissionLookup {
     const key = this.#key(input);
-    return this.#read(selected => { const item = this.#find(key, selected); return item ? Object.freeze({ kind: "found", receipt: item.receipt }) : Object.freeze({ kind: "absent", key }); });
+    return this.#read(() => { const item = this.#find(key); return item ? Object.freeze({ kind: "found", receipt: item.receipt }) : Object.freeze({ kind: "absent", key }); });
   }
   /** History-only arbitration input. No prompts/private payloads or permits. */
-  readPending(): readonly AppAdmissionPending[] { return this.#read(selected => this.#pending(selected)); }
+  readPending(): readonly AppAdmissionPending[] { return this.#read(() => this.#pending()); }
 
   /** Call before ANY async preparation or native creation. Only this successful
    * durable insert returns a private permit. Duplicate/conflicting IDs never do. */
   begin(input: AppAdmissionEnvelope): AppAdmissionBegin {
     const envelope = this.#input(() => decodeAppAdmissionEnvelope(input)), key = this.#key(keyOf(envelope));
     if (envelope.payloadSha256 !== fingerprint(envelope)) deny("invalid-request", "App admission payload hash does not match frozen wire intent", 400);
-    return this.#mutate(selected => {
-      const existing = this.#find(key, selected);
+    return this.#mutate(() => {
+      const existing = this.#find(key);
       if (existing) return Object.freeze({ kind: "existing", receipt: existing.receipt });
       const record = this.#input(() => decodePrivatePending({ version: PRIVATE_VERSION, envelope, binding: {
         version: 1, kind: envelope.intent.conversationId === null ? "server-provisional" : "existing",
@@ -482,16 +425,15 @@ export class AppAdmissionStore {
       const { binding } = record;
       if (binding.kind === "server-provisional" && this.#conversationIds.has(binding.conversationId)) deny("target-conflict", "Server-provisional conversation ID collides with existing receipt history");
       const contents = this.#input(() => privatePendingBytes(record));
-      const unresolved = this.#pending(selected);
+      const unresolved = this.#pending();
       if (unresolved.some(item => item.chainId === envelope.intent.chainId || item.conversationId === binding.conversationId)) deny("pending-admission", "An unresolved App admission already blocks this conversation or draft chain");
-      if (this.#records.size >= MAX_ITEMS) deny("capacity", "App admission receipt capacity reached", 429);
-      const pendingBytes = contents.length;
-      if (this.#bytes + this.#reservedBytes + pendingBytes + APP_ADMISSION_MAX_RECEIPT_BYTES > MAX_BYTES) deny("capacity", "App admission ledger capacity including terminal reservation reached", 429);
       synchronousDispatchHook(() => this.#deps.assertCanBegin(envelope, unresolved, binding));
       this.#guard(true); this.#rawRoot();
       const receipt = pending(envelope);
-      this.#publish(`${key.clientRequestId}.pending.json`, contents, "pending", selected);
-      this.#records.set(key.clientRequestId, { envelope, binding, receipt });
+      this.#publish(`${key.clientRequestId}.pending.json`, contents);
+      const item = { envelope, binding, receipt };
+      this.#records.set(key.clientRequestId, item);
+      this.#pendingRecords.set(key.clientRequestId, item);
       this.#conversationIds.add(binding.conversationId);
       const permit = Object.freeze({}) as AppAdmissionPermit;
       this.#permits.set(permit, key);
@@ -505,11 +447,11 @@ export class AppAdmissionStore {
    * or choosing another ID. Live dispatch MUST recheck expectedLiveRunId and
    * canSendInput and reject a changed/finished run, never fall through to initial. */
   consume(permit: AppAdmissionPermit): Readonly<{ invocation: AppAdmissionInvocation; intent: AppAdmissionEnvelope; binding: AppAdmissionConversationBinding }> {
-    return this.#mutate(selected => {
+    return this.#mutate(() => {
       const key = this.#permits.get(permit);
       if (!key) deny("no-permit", "No fresh App admission intake permit");
       this.#permits.delete(permit);
-      const item = this.#find(key, selected);
+      const item = this.#find(key);
       if (!item || item.receipt.state !== "pending") deny("no-permit", "Original App admission request is no longer pending");
       const invocation = Object.freeze({}) as AppAdmissionInvocation;
       this.#invocations.set(invocation, { key, used: false });
@@ -518,39 +460,39 @@ export class AppAdmissionStore {
   }
   admit(invocation: AppAdmissionInvocation, input: AppAdmissionTarget): AppAdmissionReceipt {
     const target = this.#input(() => decodeAppAdmissionTarget(input));
-    return this.#mutate(selected => {
-      const item = this.#invocation(invocation, selected);
+    return this.#mutate(() => {
+      const item = this.#invocation(invocation);
       validateTargetIntent(item.envelope, item.binding, target);
-      for (const other of this.#records.values()) if (other.receipt.state === "admitted") {
-        // Only terminal bytes are consulted for cross-receipt target uniqueness;
-        // unrelated private pending intent payloads need not be reread here.
-        selected.add(`${other.envelope.clientRequestId}.admitted.json`);
-        if (targetKey(other.receipt.target) === targetKey(target)) deny("target-conflict", "Native message already belongs to another App admission");
-      }
+      const ownershipKey = targetKey(target);
+      if (this.#targets.has(ownershipKey)) deny("target-conflict", "Native message already belongs to another App admission");
       synchronousDispatchHook(() => this.#deps.validateAdmission(item.envelope, target, item.binding));
       this.#guard(true); this.#rawRoot();
       const receipt = decodeAppAdmissionReceipt({ version: 1, ...keyOf(item.envelope), state: "admitted", target, rejection: null });
-      this.#publish(`${receipt.clientRequestId}.admitted.json`, Buffer.from(canonicalAppAdmissionJSON(receipt)), "terminal", selected);
+      this.#publish(`${receipt.clientRequestId}.admitted.json`, Buffer.from(canonicalAppAdmissionJSON(receipt)));
       item.receipt = receipt;
+      this.#pendingRecords.delete(receipt.clientRequestId);
+      this.#targets.add(ownershipKey);
       return receipt;
     });
   }
   reject(invocation: AppAdmissionInvocation, input: AppAdmissionRejection): AppAdmissionReceipt {
     const rejection = this.#input(() => decodeAppAdmissionRejection(input));
-    return this.#mutate(selected => {
-      const item = this.#invocation(invocation, selected);
+    return this.#mutate(() => {
+      const item = this.#invocation(invocation);
       const receipt = decodeAppAdmissionReceipt({ version: 1, ...keyOf(item.envelope), state: "rejected", target: null, rejection });
-      this.#publish(`${receipt.clientRequestId}.rejected.json`, Buffer.from(canonicalAppAdmissionJSON(receipt)), "terminal", selected); item.receipt = receipt;
+      this.#publish(`${receipt.clientRequestId}.rejected.json`, Buffer.from(canonicalAppAdmissionJSON(receipt))); item.receipt = receipt;
+      this.#pendingRecords.delete(receipt.clientRequestId);
       return receipt;
     });
   }
-  /** Natural final native-boundary fence: verify durable exact publication only.
+  /** Natural final native-boundary fence: check the exact published receipt.
+   * Publication already completed file and directory fsync before indexing it.
    * Caller MUST ALSO retain normal owner/source/context/native-intent guards.
    * Historical admitted receipts alone never authorize execution or replay. */
   assertAdmitted(input: AppAdmissionKey, expected: AppAdmissionTarget): void {
     const key = this.#key(input), target = this.#input(() => decodeAppAdmissionTarget(expected));
-    this.#read(selected => {
-      const item = this.#find(key, selected);
+    this.#read(() => {
+      const item = this.#find(key);
       if (!item || item.receipt.state !== "admitted" || canonicalAppAdmissionJSON(item.receipt.target) !== canonicalAppAdmissionJSON(target)) deny("target-conflict", "Exact durable App admission publication is unavailable");
     });
   }

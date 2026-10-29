@@ -124,8 +124,8 @@ export class AppAdmissionService {
     this.#store = new AppAdmissionStore(dataDir, storeId, {
       assertStorage: ports.assertStorage, assertSerializedMutation: this.#serialized.assertCurrent, failClosed: ports.failClosed,
       assertCanBegin: (envelope, pending, binding) => {
-        // Readiness may inspect this exact already-verified pending snapshot.
-        // It must not recursively reenter the physical store while begin holds
+        // Readiness may inspect this exact in-memory pending snapshot.
+        // It must not recursively reenter the store while begin holds
         // its mutation guard. The view exists only for this synchronous call.
         this.#beginPending = pending;
         try { synchronousDispatchHook(() => ports.assertCanBegin(envelope, pending, binding)); }
@@ -172,7 +172,7 @@ export class AppAdmissionService {
   lookup(key: AppAdmissionKey) { return this.#store.lookup(key); }
 
   /** Read-only policy view, not permission to execute. During assertCanBegin the
-   * strict store already supplied the same immutable inventory-checked snapshot. */
+   * store already supplied the same immutable pending snapshot. */
   readPending(): readonly AppAdmissionPending[] { return this.#beginPending ?? this.#store.readPending(); }
 
   key(handle: OriginalAppAdmission): AppAdmissionKey {

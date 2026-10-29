@@ -1,4 +1,4 @@
-import type { DispatchIdentity, DispatchNativeAcceptance, DispatchSubmission } from "../shared/conversation/dispatch-contract";
+import type { DispatchIdentity, DispatchNativeAcceptance, DispatchOrigin, DispatchSubmission } from "../shared/conversation/dispatch-contract";
 import type { ContextMessage } from "./context-message";
 import type { ContextMessageBoundary, ContextMessageSubmission } from "./context-message-evidence";
 
@@ -10,6 +10,8 @@ export type OwnedContextMessageRequest = Readonly<{
   body: string;
   boundary: ContextMessageBoundary;
   liveInput?: boolean;
+  /** Live automation retains its own origin instead of inheriting the run's user origin. */
+  origin?: DispatchOrigin;
   queuedFollowupId?: string;
 }>;
 export type PreparedOwnedContextMessage = Readonly<{

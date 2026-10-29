@@ -119,7 +119,7 @@ type Supervision = {
 };
 type QueuedFollowup = { owner: RunOwner; input: ClaudeQueuedFollowup; cancelled?: boolean; persisted: Promise<void>; draining?: Promise<void> };
 type Result = ClaudeResultSequenceState & { stderr: string };
-type LiveInput = { closed: boolean; sending: boolean; turnComplete: boolean; pendingUuid?: string; result: Result;
+type LiveInput = { closed: boolean; sending: boolean; turnComplete: boolean; pendingUuids: Set<string>; result: Result;
   contextMessages: OwnedContextMessages; contextIdentity: DispatchIdentity };
 const resultTextLimit = CLAUDE_RESULT_TEXT_LIMIT;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -287,12 +287,12 @@ export class ClaudeRunService {
 
   hasQueuedFollowup(sessionId: string): boolean { return this.followups.has(sessionId); }
   /** Continue the original CLI, never resume the same session in a second process. */
-  private inputCurrent(owner: RunOwner, input: LiveInput): boolean {
+  private inputCurrent(owner: RunOwner, input: LiveInput, workerReport = false): boolean {
     const supervised = this.supervision.get(owner);
     return !!supervised && this.validSupervision(supervised) && this.deps.owns(owner)
       && !input.closed && !input.result.error
       && !!owner.child && owner.child.exitCode === null && owner.run.status === "running" && owner.run.operation !== "compact"
-      && !owner.settled && !owner.stopRequested && !owner.cancelling && !owner.stopping && !owner.workerDeliveryId
+      && !owner.settled && !owner.stopRequested && !owner.cancelling && !owner.stopping && (workerReport || !owner.workerDeliveryId)
       && !this.deps.closing() && !this.deps.storageFailed() && !this.deps.retained()
       && !this.hasQueuedFollowup(owner.run.sessionId) && !this.deps.session(owner.run.sessionId)?.attachment;
   }
@@ -301,25 +301,37 @@ export class ClaudeRunService {
     return !!input && !input.sending && input.turnComplete && this.inputCurrent(owner, input)
       && this.activities.get(owner.run.runId)?.get().phase === "background";
   }
-  async sendInput(owner: RunOwner, prompt: string, assertCurrent: () => void, publication?: OwnedSubmissionPublication): Promise<{ runId: string; messageId: string }> {
+  /** Worker reports may queue behind an active turn in the SAME supervised CLI.
+   * This never grants permission to spawn/resume a competing native process. */
+  canSendWorkerReport(owner: RunOwner): boolean {
     const input = this.inputs.get(owner);
-    if (!prompt.trim() || compactCommand(prompt) || !input || !this.canSendInput(owner)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Claude is not ready for a background follow-up");
+    return !!input && !input.sending && this.inputCurrent(owner, input, true);
+  }
+  async sendInput(owner: RunOwner, prompt: string, assertCurrent: () => void, publication?: OwnedSubmissionPublication): Promise<{ runId: string; messageId: string }> {
+    return this.sendLiveInput(owner, prompt, assertCurrent, { publication });
+  }
+  async sendWorkerReport(owner: RunOwner, prompt: string, uuid: string, assertCurrent: () => void): Promise<{ runId: string; messageId: string }> {
+    return this.sendLiveInput(owner, prompt, assertCurrent, { workerReportUuid: uuid });
+  }
+  private async sendLiveInput(owner: RunOwner, prompt: string, assertCurrent: () => void, options: { publication?: OwnedSubmissionPublication; workerReportUuid?: string }): Promise<{ runId: string; messageId: string }> {
+    const input = this.inputs.get(owner);
+    if (!prompt.trim() || compactCommand(prompt) || !input || !(options.workerReportUuid ? this.canSendWorkerReport(owner) : this.canSendInput(owner))) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Claude is not ready for live input");
     input.sending = true;
-    const uuid = this.runtime.randomUUID(), messageId = `${owner.run.runId}:user:${uuid}`;
+    const uuid = options.workerReportUuid ?? this.runtime.randomUUID(), messageId = `${owner.run.runId}:user:${uuid}`;
     const contextMessages = owner.contextMessages, contextIdentity = owner.contextIdentity;
     // Per-send publication is independent of the owner's initial publication.
     // Capture before awaits; the shared coordinator captures its callbacks.
-    const submissionPublication = publication;
+    const submissionPublication = options.publication;
     const child = owner.child!, supervised = this.supervision.get(owner)!;
     const current = () => {
       assertCurrent();
       if (!contextMessages || !contextIdentity || owner.contextMessages !== contextMessages || owner.contextIdentity !== contextIdentity
         || input.contextMessages !== contextMessages || input.contextIdentity !== contextIdentity || owner.child !== child
-        || !this.inputCurrent(owner, input)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Claude stopped or its context owner changed before the follow-up could be sent");
+        || !this.inputCurrent(owner, input, options.workerReportUuid !== undefined)) throw new WorkstreamAdapterError(409, "claude-input-unavailable", "Claude stopped or its context owner changed before the follow-up could be sent");
     };
     const timing = createRunSubmissionTiming({ harness: "claude-code", mode: "live-input" });
     let attempted = false, turnStarted = false;
-    const previousTurn = { pendingUuid: input.pendingUuid, stopped: this.stoppedTurns.has(owner.run.runId), hook: this.turnHooks.get(owner.run.runId) };
+    let previousTurn: { turnComplete: boolean; stopped: boolean; hook: symbol | undefined } | undefined;
     try {
       const observe = () => {
         // Observation must survive cancellation, exit and terminal DTO changes.
@@ -329,7 +341,7 @@ export class ClaudeRunService {
           || owner.run.cwd !== supervised.identity.cwd || child.pid !== supervised.pid || !this.sameOriginalSource(supervised)) throw new Error("Claude context owner changed");
       };
       await coordinateRunSubmission({
-        mode: "live-input", request: { messageId, body: prompt, liveInput: true, boundary: "message" },
+        mode: "live-input", request: { messageId, body: prompt, liveInput: true, boundary: "message", ...(options.workerReportUuid ? { origin: "worker-report" as const } : {}) },
         contextMessages: contextMessages!, evidence: owner.dispatchEvidence!, assertCurrent: current,
         assertObservationCurrent: observe, failClosed: () => this.deps.failClosed(), publication: submissionPublication, timing,
         journal: { status: async () => {}, submission: submission => this.deps.emit(owner.run, "submission", submission), launch: async () => {} },
@@ -347,8 +359,9 @@ export class ClaudeRunService {
           preflight: async () => {},
           beforeNative: () => {
             // The same CLI serializes a task continuation and this admitted send.
+            previousTurn = { turnComplete: input.turnComplete, stopped: this.stoppedTurns.has(owner.run.runId), hook: this.turnHooks.get(owner.run.runId) };
             turnStarted = true;
-            input.turnComplete = false; input.pendingUuid = uuid;
+            input.turnComplete = false; input.pendingUuids.add(uuid);
             this.stoppedTurns.delete(owner.run.runId);
             this.turnHooks.set(owner.run.runId, undefined);
             this.activities.get(owner.run.runId)?.running();
@@ -367,13 +380,14 @@ export class ClaudeRunService {
     } catch (error) {
       // A partial pipe write is not safe to retry or accept more input behind.
       if (attempted) void this.terminate(owner);
-      else if (turnStarted) {
+      else if (turnStarted && previousTurn) {
         // A synchronous refusal must not leave a UUID that never reached stdin
         // awaiting acknowledgement or strand the original background process.
-        input.turnComplete = true; input.pendingUuid = previousTurn.pendingUuid;
+        input.turnComplete = previousTurn.turnComplete; input.pendingUuids.delete(uuid);
         if (previousTurn.stopped) this.stoppedTurns.add(owner.run.runId);
         this.turnHooks.set(owner.run.runId, previousTurn.hook);
-        this.activities.get(owner.run.runId)?.turnFinished();
+        if (input.turnComplete) this.activities.get(owner.run.runId)?.turnFinished();
+        else this.activities.get(owner.run.runId)?.running();
       }
       throw error;
     } finally {
@@ -543,10 +557,13 @@ export class ClaudeRunService {
           // even the initial one; every streamed prompt carries our UUID. A
           // synthetic turn may consume queued user input, so match its echoed
           // UUIDs rather than rejecting all task-origin results.
-          const answersInput = !input?.pendingUuid || data.user_message_uuid === input.pendingUuid
-            || Array.isArray(data.user_message_uuids) && data.user_message_uuids.includes(input.pendingUuid);
+          const acknowledged = new Set([data.user_message_uuid, ...(Array.isArray(data.user_message_uuids) ? data.user_message_uuids : [])]);
+          const answersInput = !input?.pendingUuids.size || [...input.pendingUuids].some(uuid => acknowledged.has(uuid));
           if (answersInput) {
-            if (input) { input.pendingUuid = undefined; input.turnComplete = !(data.queued_turn_count > 0); }
+            if (input) {
+              for (const uuid of acknowledged) input.pendingUuids.delete(uuid);
+              input.turnComplete = input.pendingUuids.size === 0 && !(data.queued_turn_count > 0);
+            }
             if (!input || input.turnComplete) activity?.turnFinished();
           }
           this.finishInput(owner);
@@ -720,7 +737,7 @@ export class ClaudeRunService {
         streams = [this.consume(owner, run, nativeSessionId!, child.stdout, "stdout", result), this.consume(owner, run, nativeSessionId!, child.stderr, "stderr", result)];
         const output = Promise.all([child.exited, ...streams]);
         void output.catch(() => {});
-        if (operation !== "compact") this.inputs.set(owner, { closed: false, sending: false, turnComplete: false, pendingUuid: runId, result, contextMessages: contextMessages!, contextIdentity: contextIdentity! });
+        if (operation !== "compact") this.inputs.set(owner, { closed: false, sending: false, turnComplete: false, pendingUuids: new Set([runId]), result, contextMessages: contextMessages!, contextIdentity: contextIdentity! });
         child.stdin.write(encoded);
         // Retain these promises for lifecycle supervision outside preparation.
         const submitted = Promise.resolve(operation === "compact" ? child.stdin.end() : child.stdin.flush()).then(outcome);

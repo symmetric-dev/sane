@@ -51,6 +51,21 @@ export function exchangeDeliveryEvidence(delivery: { id: string; commandId?: str
 /** Accepted continuation is the delivery milestone, not comprehension or successful completion. */
 export function workerDeliveryEvidence(d: WorkerDelivery, run: Run | undefined, events: Event[]): "accepted" | "wrapper-completed" | "not-submitted" | "unknown" {
   if (!run || run.runId !== d.run.runId || run.sessionId !== d.parentSessionId) return "unknown";
+  if (d.mode === "live-input") {
+    const uuid = d.commandId.slice(`${run.runId}:user:`.length);
+    const records = events.filter(event => event.runId === run.runId && event.sessionId === d.parentSessionId);
+    // Earlier assistant/results on the shared run cannot acknowledge this report.
+    if (d.native.harness === "cc" && records.some(event => {
+      const data = event.data as any;
+      return event.kind === "stdout" && isClaudeRootRecord(data) && data?.session_id === d.native.nativeId
+        && (data.type === "command_lifecycle" && data.command_uuid === uuid && ["queued", "started", "completed"].includes(data.state)
+          || data.type === "result" && (data.user_message_uuid === uuid || Array.isArray(data.user_message_uuids) && data.user_message_uuids.includes(uuid)));
+    })) return "accepted";
+    if (records.some(event => event.kind === "status" && (event.data as any)?.workerDeliveryNotSubmitted === d.id)) return "not-submitted";
+    // Run completion and pipe flush alone say nothing about this message's
+    // acceptance. Without exact evidence retain uncertainty across restart.
+    return "unknown";
+  }
   if (grokWrapperCompletion(d.native, run, events)) return "wrapper-completed";
   if (d.native.harness === "oc" && run.nativeCommandId === d.commandId && run.nativePhase === "accepted") return "accepted";
   if (d.native.harness === "cc" && events.some(e => {

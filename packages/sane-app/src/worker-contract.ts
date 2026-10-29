@@ -127,7 +127,7 @@ export type WorkerStateBatch = {
 export const workerResults = (w: WorkerRecord): WorkerResult[] => w.results ?? (w.outcome && w.notification ? [{ revision: 1, runId: w.outcome.log?.runId ?? w.runId, outcome: w.outcome, notification: w.notification }] : []);
 /** run is the immutable dispatch snapshot; current execution stays in ordinary run metadata/logs.
  * delivered means native acceptance evidence, not completed execution or model comprehension. */
-export type WorkerDelivery = { id: string; parentSessionId: string; native: ConversationRef; run: Run; commandId: string; workerIds: string[]; resultRefs?: { workerId: string; revision: number; notificationId: string }[]; state: "claimed" | "acceptance-unknown" | "delivered" | "not-submitted"; createdAt: string; updatedAt: string; error?: string };
+export type WorkerDelivery = { id: string; parentSessionId: string; native: ConversationRef; run: Run; commandId: string; mode?: "live-input"; workerIds: string[]; resultRefs?: { workerId: string; revision: number; notificationId: string }[]; state: "claimed" | "acceptance-unknown" | "delivered" | "not-submitted"; createdAt: string; updatedAt: string; error?: string };
 export type WorkerRecords = { version: 1; workers: WorkerRecord[]; suppressedParents: string[]; deliveries?: WorkerDelivery[] };
 export const workerTerminal = (w: Pick<WorkerRecord, "state">) => ["completed", "failed", "interrupted"].includes(w.state);
 export const explicitWorker = (w: { protocol?: Pick<WorkerProtocolPin, "id"> }) => w.protocol?.id === "explicit-v1";

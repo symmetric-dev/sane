@@ -199,6 +199,7 @@ export class WorkerStore {
     for (const d of r.deliveries ?? []) {
       if (!uuid(d.id) || deliveryIds.has(d.id) || !uuid(d.parentSessionId) || !uuid(d.run?.runId) || d.run.sessionId !== d.parentSessionId || !d.commandId || !d.native?.nativeId || !Array.isArray(d.workerIds) || !d.workerIds.length || d.workerIds.length > 8 || new Set(d.workerIds).size !== d.workerIds.length || !["claimed", "acceptance-unknown", "delivered", "not-submitted"].includes(d.state)) fail();
       if (d.native?.harness === "gk" && !nativeRef(d.native)) fail();
+      if (d.mode !== undefined && (d.mode !== "live-input" || d.native.harness !== "cc" || !d.commandId.startsWith(`${d.run.runId}:user:`) || !uuid(d.commandId.slice(`${d.run.runId}:user:`.length)))) fail();
       if (["claimed", "acceptance-unknown"].includes(d.state)) { if (activeParents.has(d.parentSessionId)) fail(); activeParents.add(d.parentSessionId); }
       if (!d.resultRefs?.length || d.resultRefs.length > 8 || new Set(d.resultRefs.map(ref => ref.notificationId)).size !== d.resultRefs.length) fail();
       for (const ref of d.resultRefs ?? []) { const w = r.workers.find(w => w.id === ref.workerId), result = w?.results?.find(r => r.revision === ref.revision && r.notification.id === ref.notificationId); if (!result || !d.workerIds.includes(ref.workerId) || w?.parent.sessionId !== d.parentSessionId || d.state !== "not-submitted" && (result.notification.deliveryId !== d.id || result.notification.state !== d.state)) fail(); }

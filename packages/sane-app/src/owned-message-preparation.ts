@@ -46,6 +46,7 @@ export function createPrepareOwnedMessage({ storeId, contextPackages, activation
   return async function prepareOwnedMessage(session: Session, activeRun: Run, originalBody: string, origin: DispatchOrigin,
     intent: SubmissionMessageIntent | undefined, request: OwnedContextMessageRequest, assertCurrent: () => void, publishSourceCheck: (check: () => void) => void) {
     const body = request.liveInput ? request.body : originalBody;
+    const messageOrigin = request.liveInput ? request.origin ?? origin : origin;
     if (request.body !== body) throw new WorkstreamAdapterError(409, "context-source-changed", "Adapter authored input differs from the original admitted body");
     const guards: ContextMessageGuards = { assertOwnership: assertCurrent, assertSource: assertCurrent, assertNotCancelled: assertCurrent };
     const identity = snapshotIdentity(session), sane = identity !== undefined;
@@ -72,7 +73,7 @@ export function createPrepareOwnedMessage({ storeId, contextPackages, activation
     let input: ContextMessageInput;
     if (ordinary) {
       publishSourceCheck(sourceCheck);
-      const read = () => { sourceCheck(); return { body, binding, origin, placement: { kind: "body-only" as const } }; };
+      const read = () => { sourceCheck(); return { body, binding, origin: messageOrigin, placement: { kind: "body-only" as const } }; };
       preparation = { kind: "ordinary", guards, readCurrentOrdinary: read };
       input = read();
     } else if (intent.kind === "selected") {

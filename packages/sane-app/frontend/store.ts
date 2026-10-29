@@ -281,17 +281,17 @@ export class ChatStore {
           const id = record.envelope.clientRequestId, previous = this.appAdmissionRecords.get(id);
           next.set(id, previous ? settleAppAdmissionRecovery(previous, record.receipt ?? { kind: "absent", key: record.envelope }) : record);
         }
-        // A removed durable identity is a failure, never permission to mint a
-        // replacement UUID for the same conversation or composer lineage.
+        // Another tab may settle and expire a recovery before this tab sees it.
+        // Keep local unknowns available for exact status checks, not a global error.
         for (const [id, previous] of this.appAdmissionRecords) if (!next.has(id)) {
-          if (!previous.receipt || previous.receipt.state === "pending") throw new Error("An unresolved App admission recovery record disappeared. Sending is blocked; no request was retried.");
-          // A terminal may have been explicitly discarded by another tab.
+          if (!previous.receipt || previous.receipt.state === "pending") { next.set(id, previous); continue; }
+          // A terminal may have expired or been explicitly discarded by another tab.
           this.appAdmissionContexts.delete(id); this.appAdmissionApplied.delete(id);
         }
         this.appAdmissionRecords = next; this.appAdmissionStorageError = ""; this.appAdmissionLoaded = true;
         this.publishAppAdmissions();
         for (const record of next.values()) if (record.receipt && record.receipt.state !== "pending"
-          && this.appAdmissionContexts.has(record.envelope.clientRequestId)) this.applyAppAdmission(record);
+          && (record.receipt.state === "admitted" || this.appAdmissionContexts.has(record.envelope.clientRequestId))) this.applyAppAdmission(record);
         return true;
       } catch (error) {
         if (this.appAdmissionCurrent(ledger, auth)) {
@@ -324,9 +324,22 @@ export class ChatStore {
       // banner. Durable recovery and exact-status polling remain unchanged.
       return;
     }
+    const context = this.appAdmissionContexts.get(requestId);
+    if (receipt.state === "admitted" && context?.auth === this.authEpoch
+      && this.state.pendingTurn?.id === context.pendingTurn.id
+      && this.state.pendingTurn.conversationId === this.state.selected
+      && receipt.target.dispatch.source.sessionId === this.state.selected
+      && this.appAdmissionSourceMatches(record, this.state.conversations.find(c => c.id === this.state.selected))) {
+      // A read-only reconnect can replace the generation while this exact send
+      // is awaiting its receipt. Reconcile its existing bubble by request/source
+      // identity even then, and even if terminal side effects already ran. Never
+      // recreate a cleared bubble or adopt a different selection's pending send.
+      const turn: PendingTurn = { ...context.pendingTurn, conversationId: this.state.selected,
+        runId: receipt.target.dispatch.runId, messageId: receipt.target.messageId, nativeMessageId: receipt.target.nativeMessageId };
+      this.update({ pendingTurn: pendingTurnRecorded(this.state.messages, turn) ? null : turn });
+    }
     if (this.appAdmissionApplied.has(requestId)) return;
     this.appAdmissionApplied.add(requestId);
-    const context = this.appAdmissionContexts.get(requestId);
     if (receipt.state === "rejected") {
       this.restoreOwnedAppAdmission(record);
       this.update({ ...(context && this.state.pendingTurn?.id === context.pendingTurn.id ? { pendingTurn: null } : {}),
@@ -334,6 +347,9 @@ export class ChatStore {
       return;
     }
     const target = receipt.target, conversationId = target.dispatch.source.sessionId;
+    // Exact App-run acceptance is notification evidence, not native delivery,
+    // and survives reloads or a changed selection without the original context.
+    if (record.envelope.intent.operation !== "science-message") notificationStore.acceptRun(conversationId, target.dispatch.runId);
     // Settled records are already durable, even if their original selection or
     // generation no longer exists. Those fences govern presentation only.
     if (!context || context.auth !== this.authEpoch) return;
@@ -357,7 +373,7 @@ export class ChatStore {
     const clearSubmissionError = submissionError?.requestId === requestId && this.state.submissionError === submissionError.message;
     if (submissionError?.requestId === requestId) this.appAdmissionSubmissionError = undefined;
     this.update({ sending: false, ...(clearSubmissionError ? { submissionError: "" } : {}),
-      ...(conversationId === this.state.selected ? { pendingTurn: turn } : {}) });
+      ...(conversationId === this.state.selected ? { pendingTurn: pendingTurnRecorded(this.state.messages, turn) ? null : turn } : {}) });
     if (!context.selected && owns) { this.choose(conversationId, turn); catalog.navigate({ conversationId }); }
     else this.requestSelectedRefresh();
     this.sciencePolling(true);
@@ -3173,6 +3189,11 @@ export class ChatStore {
         || draftKey !== this.draftKey(selected)
         || context.generation !== this.generation || !sameComposerStamp(this.composerStamp(draftKey), capturedStamp)
         || context.sourceKey !== this.pendingInputSource(selected) || !this.appAdmissionSupported()) return { status: "blocked" };
+      if ([...this.appAdmissionRecords.values()].some(previous => (!previous.receipt || previous.receipt.state === "pending")
+        && (previous.draftKey === draftKey || previous.envelope.intent.chainId === intent.chainId
+          || intent.conversationId !== null && previous.envelope.intent.conversationId === intent.conversationId))) {
+        throw new Error("Check the original message receipt before sending in this conversation or draft.");
+      }
       record = await ledger.reserve({ version: 1, scope, envelope, draftKey, capturedStamp, consumedStamp,
         recovery: { text, cwd: draft.cwd, ...(draft.profileId ? { profileId: draft.profileId } : {}),
           ...(draft.upgradeId ? { upgradeProfileId: draft.upgradeId } : {}),

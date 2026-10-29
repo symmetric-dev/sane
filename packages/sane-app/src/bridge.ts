@@ -1187,7 +1187,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (storageFailed) return { ready: false as const, reason: "Storage unavailable; operator reconciliation required", code: "storage-unavailable" };
     if (meta.reconciliationRequired) return { ready: false as const, reason: "Operator reconciliation required: restart with --reconcile-interrupted after verifying previous CLI processes are stopped", code: "reconciliation-required" };
     if (closing) return { ready: false as const, reason: "Bridge is shutting down", code: "bridge-closing" };
-    if (sessionId && !(intent.kind === "worker-report" && phase === "dispatch" && lease) && (read ? read.deliveryParents.has(sessionId) : workerStore.hasActiveDelivery(sessionId))) return { ready: false as const, reason: "Worker report continuation is reserved or acceptance is unconfirmed; inspect worker delivery evidence", code: "worker-delivery-pending" };
+    const liveReport = sessionId && intent.kind === "worker-report" && phase === "enqueue" && intent.requestId
+      && workerStore.deliveriesForParent(sessionId).some(d => d.id === intent.requestId && d.mode === "live-input"
+        && d.state === "acceptance-unknown" && owners.get(sessionId)?.run.runId === d.run.runId);
+    if (sessionId && !liveReport && !(intent.kind === "worker-report" && phase === "dispatch" && lease) && (read ? read.deliveryParents.has(sessionId) : workerStore.hasActiveDelivery(sessionId))) return { ready: false as const, reason: "Worker report continuation is reserved or acceptance is unconfirmed; inspect worker delivery evidence", code: "worker-delivery-pending" };
     if (sessionId && !(intent.kind === "worker-exchange" && phase === "dispatch" && lease) && workerStore.hasActiveExchange(sessionId)) return { ready: false as const, reason: "Worker exchange delivery is reserved or acceptance is unconfirmed; it will not be resent", code: "worker-exchange-pending" };
     if (sessionId && !delivery && (handoffReservations.has(sessionId) || handoffDispatches.has(sessionId))) return { ready: false as const, reason: "Recipient has an active or uncertain handoff", code: "handoff-pending" };
     const admission = sessionId ? admissions.get(sessionId) : undefined;
@@ -3425,7 +3428,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (isExplicitWorker(w)) return observeExplicit(w);
       const results = workerResults(w);
       // Durable delivery run identity recovers continuations after restart without replay.
-      const continuationDeliveries = workerStore.deliveriesForParent(w.sessionId);
+      const continuationDeliveries = workerStore.deliveriesForParent(w.sessionId).filter(d => d.mode !== "live-input");
       const continuationIds = new Set(continuationDeliveries.filter(d => d.state !== "not-submitted" && workerDeliveryEvidence(d, meta.runs.find(r => r.runId === d.run.runId), journalEvents(d.run.runId)) !== "not-submitted").map(d => d.run.runId));
       const candidates = meta.runs.filter(r => r.sessionId === w.sessionId && r.operation !== "compact" && (!continuationDeliveries.some(d => d.run.runId === r.runId) || continuationIds.has(r.runId)));
       // Coordinated idle turns are checkpoints, not results. The latest accepted
@@ -3523,6 +3526,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       return workerStore.advanceDelivery(d.id, "delivered", evidence === "wrapper-completed" ? "Grok owned wrapper completed with drained output; provider acceptance and comprehension remain unknown" : undefined);
     }
     if (evidence === "not-submitted" && owners.get(d.parentSessionId)?.settled !== false) return workerStore.advanceDelivery(d.id, "not-submitted", "Continuation did not submit; check parent suppression, visibility and executor configuration before retry");
+    if (d.mode === "live-input" && evidence === "not-submitted") return workerStore.advanceDelivery(d.id, "not-submitted", "Live report was withheld before native input; outcomes remain pending");
     const problem = run.status === "running" ? "Waiting for correlated native acceptance; continuation will not be resent" : "Run ended without proof of acceptance or non-submission. Inspect the original native command; no automatic resend, even after termination acknowledgement.";
     return d.error === problem && d.state === "acceptance-unknown" ? d : workerStore.advanceDelivery(d.id, "acceptance-unknown", problem);
   }
@@ -3536,7 +3540,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Hidden is a reversible soft-hide: retain outcomes and pause automatic turns.
     if (session.hidden) return problem("Parent is soft-hidden; unhide to restore report eligibility. Explicit stop suppression still requires user submission.");
     if (workerStore.suppressed(parentSessionId)) return problem("Automatic continuation stopped; explicit user submission resumes report eligibility");
-    const reportReadiness = () => coordinator.inspectReadiness({ conversationId: parentSessionId, intent: { kind: "worker-report" }, phase: "admission" });
+    const liveOwner = session.harness === "claude-code" ? owners.get(parentSessionId) : undefined;
+    const liveReadiness = (requestId?: string) => {
+      if (!liveOwner || owners.get(parentSessionId) !== liveOwner || coordinator.hasAdmission(parentSessionId)
+        || coordinator.hasReconciliation(parentSessionId) || pendingInputs?.hasChain(parentSessionId)) {
+        return { ready: false as const, code: "claude-input-unavailable", reason: "Original Claude report recipient is no longer available for live input" };
+      }
+      return coordinator.inspectReadiness({ conversationId: parentSessionId, intent: { kind: "worker-report", requestId }, phase: "enqueue" });
+    };
+    const reportReadiness = () => {
+      const idle = coordinator.inspectReadiness({ conversationId: parentSessionId, intent: { kind: "worker-report" }, phase: "admission" });
+      return !idle.ready && idle.code === "conversation-busy" && liveOwner && claudeRuns.canSendWorkerReport(liveOwner) ? liveReadiness() : idle;
+    };
     let available = reportReadiness();
     if (!available.ready) return problem(available.reason);
     const a = admissions.get(parentSessionId);
@@ -3557,6 +3572,39 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!available.ready) return problem(available.reason);
     assertDispatchSnapshot(parentSessionId, snapshot);
     if (session.hidden || workerStore.suppressed(parentSessionId)) return problem("Parent hidden or stopped during preparation; outcomes remain pending");
+    if (liveOwner) {
+      const now = new Date().toISOString(), uuid = crypto.randomUUID();
+      const commandId = `${liveOwner.run.runId}:user:${uuid}`;
+      const d = (() => { try {
+        const claimed = workerStore.claimDelivery({ id: crypto.randomUUID(), parentSessionId,
+          native: { harness: "cc", authorityId: a.source.authorityId, nativeId: session.nativeSessionId! },
+          run: liveOwner.run, commandId, mode: "live-input", createdAt: now, updatedAt: now });
+        return claimed ? workerStore.advanceDelivery(claimed.id, "acceptance-unknown") : undefined;
+      } catch (error) { failClosed(error, "worker-report-claim"); throw error; } })();
+      if (!d) return;
+      const assertCurrent = () => {
+        const ready = liveReadiness(d.id);
+        if (!ready.ready) throw new WorkstreamAdapterError(409, ready.code, ready.reason);
+        assertDispatchSnapshot(parentSessionId, snapshot);
+        if (retirementPaused(parentSessionId) || session.hidden || workerStore.suppressed(parentSessionId)) throw new WorkstreamAdapterError(409, "worker-report-paused", "Parent hidden, stopped or retiring; live report withheld");
+      };
+      try {
+        await claudeRuns.sendWorkerReport(liveOwner, workerReportPrompt(d, workerStore.listForDelivery(d)), uuid, assertCurrent);
+      } catch (error) {
+        if (storageFailed) throw error;
+        const attempted = journalEvents(d.run.runId).some(event => event.kind === "context"
+          && (event.data as any)?.type === "context-message-dispatch" && (event.data as any).messageId === commandId
+          && (event.data as any).stage === "before-native");
+        // No write is possible without this exact durable message intent. A
+        // possible/partial write stays unknown and must never be auto-replayed.
+        if (!attempted) {
+          await emit(liveOwner.run, "status", { status: liveOwner.run.status, workerDeliveryNotSubmitted: d.id });
+          workerStore.advanceDelivery(d.id, "not-submitted", error instanceof Error ? error.message : "Live report withheld before native input");
+        }
+      }
+      if (!storageFailed) await reconcileWorkerDelivery(d);
+      return;
+    }
     const workerParent = workerStore.getBySession(parentSessionId);
     if (workerParent && workers.executionCount(cwd, parentSessionId) >= maxWorkersPerCheckout) return problem(`Checkout worker capacity reached (${maxWorkersPerCheckout}); continuation remains pending`);
     const now = new Date().toISOString();
@@ -3583,7 +3631,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
 
   async function observeExplicit(w: WorkerRecord): Promise<Partial<WorkerRecord>> {
-    const continuationDeliveries = workerStore.deliveriesForParent(w.sessionId);
+    const continuationDeliveries = workerStore.deliveriesForParent(w.sessionId).filter(d => d.mode !== "live-input");
     const continuationIds = new Set(continuationDeliveries.filter(d => d.state !== "not-submitted" && workerDeliveryEvidence(d, meta.runs.find(r => r.runId === d.run.runId), journalEvents(d.run.runId)) !== "not-submitted").map(d => d.run.runId));
     const candidates = meta.runs.filter(r => r.sessionId === w.sessionId && r.operation !== "compact" && (!continuationDeliveries.some(d => d.run.runId === r.runId) || continuationIds.has(r.runId)));
     const run = candidates.at(-1);
@@ -5569,7 +5617,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const admission = admissions.get(sessionId);
           if (!admission) return json({ error: "Conversation admission is unavailable", code: "admission-missing" }, 409);
           const adapter = await router!.forAdmission(admission);
-          if (!adapter) return json({ error: "Conversation has no repository domain", code: "not-repository" }, 409);
+          if (!adapter) return !handoffApprovals[2] && req.method === "GET"
+            ? json({ approvals: [] })
+            : json({ error: "Conversation has no repository domain", code: "not-repository" }, 409);
           // Single harness mapping: bans raw ternaries for session/native conversion.
           const nativeHarness = toNativeHarness(sessionHarness(session));
           const senderRef = adapter.reference(session);
