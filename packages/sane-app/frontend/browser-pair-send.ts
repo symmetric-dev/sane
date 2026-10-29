@@ -22,13 +22,14 @@ export function browserPairMessageBlocked(state: State, text: string, nativeStop
   const capabilities = store.capabilities();
   if (compactCommand(text)) return "Paired, but /compact was not sent. Use the composer or Context controls to compact this conversation.";
   if (!conversation) return "The paired conversation is unavailable. No message was sent.";
+  const legacyScienceBlocked = store.legacyScienceSendBlocked();
+  if (legacyScienceBlocked) return legacyScienceBlocked;
   if (pendingInteractions(state, capabilities).length || state.interactionError) return "Resolve pending requests in the conversation before sending this message.";
   if (store.pendingInputChainLocked() || state.pendingInputLoading || state.pendingInputError
     || Object.values(state.pendingInputOperations ?? {}).some(operation => operation.conversationId === conversation.id && ["pending", "unknown"].includes(operation.state))) {
     return "Resolve or check the existing input queue in the conversation before sending this message.";
   }
-  if (Object.values(state.unconfirmedSubmissions ?? {}).some(item => item.conversationId === conversation.id) || state.sciencePending?.[conversation.id]
-    || state.scienceSubmissions?.[conversation.id]?.some(item => item.state === "prepared" || item.state === "unknown") || state.scienceSubmissionError) {
+  if (Object.values(state.unconfirmedSubmissions ?? {}).some(item => item.conversationId === conversation.id)) {
     return "A previous submission is unresolved. Check this conversation’s history and submission controls before sending again.";
   }
   if (store.compactBlocked() || state.pendingCompacts?.[conversation.id]?.phase === "unconfirmed") return "Resolve the current or unconfirmed compaction in Context before sending this message.";
@@ -76,11 +77,12 @@ export async function checkBrowserPairPrompt(intent: BrowserPairIntent, text: st
     assertCurrent();
     if (compact.operations.some(item => ["requested", "running", "unconfirmed"].includes(item.lifecycle))) return "Resolve the current or unconfirmed compaction in Context before sending this message.";
   }
-  // Science discovery also runs independently of selected-history hydration.
+  // Retained legacy safety query: old clients may have an unresolved science
+  // send even without a marker in this browser. This never resends it.
   if (conversationClient.scienceSubmissions) {
     const submissions = await conversationClient.scienceSubmissions(intent.sessionId, signal);
     assertCurrent();
-    if (submissions.some(item => item.state === "prepared" || item.state === "unknown")) return "A science submission is unresolved. Check the conversation’s submission controls before sending again.";
+    if (submissions.some(item => item.state === "prepared" || item.state === "unknown")) return "A legacy science submission is unresolved. Check its original receipt before sending again; nothing was resent.";
   }
   const state = store.snapshot();
   const requests = pendingInteractions({ ...state, interactions: [...state.interactions, ...interactions], handoffApprovals: [...state.handoffApprovals, ...approvals] }, capabilities);

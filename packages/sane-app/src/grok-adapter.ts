@@ -17,7 +17,7 @@ import { grokSessionExists } from "./grok-native-history";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GROK_AUTHORITY = /^sane-native-v1:gk:[a-f0-9]{64}$/;
-const AUTOMATIC_ORIGINS = ["queued-user", "questionnaire-response", "worker-report", "worker-exchange", "handoff"] as const satisfies readonly AutomationDispatchOrigin[];
+const AUTOMATIC_ORIGINS = ["queued-user", "questionnaire-response", "worker-report", "worker-exchange", "worker-recovery", "handoff"] as const satisfies readonly AutomationDispatchOrigin[];
 const TERM_GRACE_MS = 1_000;
 const KILL_GRACE_MS = 1_000;
 const automation = Object.freeze(Object.fromEntries(AUTOMATIC_ORIGINS.map(origin => [origin, {

@@ -8,7 +8,6 @@ import { receivedWorkerExchange, workerExchanges, workerReportDelivery } from ".
 import type { Harness, PendingTurn, ToolPart } from "./types";
 import { AssistantRuntimeProvider, MessagePrimitive, ThreadPrimitive, useAuiState, useExternalStoreRuntime } from "@assistant-ui/react";
 import { ChatComposer, type ChatFlowPresentation } from "./chat-composer";
-import { ScienceSentSnapshots } from "./science-sharing";
 import { ChatScroll } from "./chat-scroll";
 import { SessionSearch } from "./session-search";
 import { ConversationLoading, PendingUserText } from "./chat-loading";
@@ -53,7 +52,6 @@ import { NativeSubagentCard, NativeSubagentDiscovery, useNativeSubagents } from 
 import { claudeReplyPresentation } from "./claude-reply-presentation";
 import { ChatFileLink } from "./chat-file-link";
 import { pendingInputStopAction } from "./pending-input-ui";
-import { ScienceChatBlocks, useScienceChat, type ScienceChatController, type ScienceChatIntegration } from "./science-chat";
 import { useUserQuestions, type UserQuestionsController } from "./user-questions-client";
 import { UserQuestionsReference } from "./user-questions";
 
@@ -82,7 +80,6 @@ function Markdown({ text }: { text: string }) {
 
 export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; codeShares?: CodeShareProjection; userQuestions?: UserQuestionsController };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
-const ScienceTimelineContext = createContext<ScienceChatController | null>(null);
 export function useTranscriptIndex(messages: Message[]) {
   return useMemo(() => {
     const messagesById = new Map<string, Message>(), messageIndices = new Map<string, number>();
@@ -138,14 +135,13 @@ function TranscriptToolContent({ part, source, classification }: { part: ToolPar
 export function ChatMessage() {
   const id = useAuiState(s => s.message.id);
   const context = useContext(TranscriptContext)!;
-  const science = useContext(ScienceTimelineContext);
   const state = context.pageState;
   const gap = state?.transcript?.islands.slice(1).find(island => gapId(island) === id);
   if (gap && state) return <HistoryGap state={state} island={gap} />;
   const island = state?.transcript?.islands.find(island => island.messages.some(message => message.id === id));
   const first = island?.messages[0]?.id === id, last = island?.messages.at(-1)?.id === id;
   const source = context.messagesById?.get(id) ?? context.messages.find(message => message.id === id);
-  return <>{first && state && island && state.transcript?.islands[0] === island && <HistoryEdge state={state} island={island} direction="older" />}<CompactionMarkers records={context.compactionPositions?.get(id)} /><div data-transcript-message={id} tabIndex={-1}><ChatMessageBody />{source && <UserQuestionsReference questions={context.userQuestions} source={source} sessionId={context.sessionId} />}</div>{science && <ScienceChatBlocks science={science} position="after-message" messageId={id} />}{last && state && island && state.transcript?.islands.at(-1) === island && <HistoryEdge state={state} island={island} direction="newer" />}</>;
+  return <>{first && state && island && state.transcript?.islands[0] === island && <HistoryEdge state={state} island={island} direction="older" />}<CompactionMarkers records={context.compactionPositions?.get(id)} /><div data-transcript-message={id} tabIndex={-1}><ChatMessageBody />{source && <UserQuestionsReference questions={context.userQuestions} source={source} sessionId={context.sessionId} />}</div>{last && state && island && state.transcript?.islands.at(-1) === island && <HistoryEdge state={state} island={island} direction="newer" />}</>;
 }
 function ChatMessageBody() {
   const message = useAuiState(s => s.message);
@@ -200,7 +196,6 @@ function ChatMessageBody() {
         return null;
       })}
       {source?.queuedFollowup && <span className="muted">{source.queuedFollowup.state === "queued" ? "Queued" : source.queuedFollowup.state === "not-submitted" ? "Not sent" : source.queuedFollowup.state === "dispatched" ? "Run created" : "Unconfirmed"}</span>}
-      {isUser && source && !pending && <ScienceSentSnapshots conversationId={context.sessionId} runId={source.runId} />}
       {source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}
       {!isUser && source?.runId !== "native-import" && message.status?.type === "incomplete" && <p className="run-warning" role="status">{message.status.reason === "error" ? "This run failed. The response may be incomplete." : "This run was interrupted or its completion is unknown."} {context.readOnly ? "Only recorded evidence is shown." : "See details for the recorded evidence."}</p>}
     </div>
@@ -228,7 +223,6 @@ export type ThreadProps = {
   navigation?: ReactNode;
   reviewRequest?: DocumentReviewRequest | null;
   reviewRequestHandled?: (requestId: number) => void;
-  scienceIntegration?: ScienceChatIntegration;
   /** Layout-only destination. Keep this Thread mounted when changing regions. */
   transcriptTarget?: HTMLElement | null;
   /** Hide/inert the transcript without deactivating the composer or requests. */
@@ -239,7 +233,7 @@ export type ThreadProps = {
   onOpenChatFlow?: () => void;
 };
 
-export function Thread({ state, active: isActive = true, navigation, reviewRequest, reviewRequestHandled, scienceIntegration, transcriptTarget, transcriptVisible = true, paired = false, onOpenChatFlow }: ThreadProps) {
+export function Thread({ state, active: isActive = true, navigation, reviewRequest, reviewRequestHandled, transcriptTarget, transcriptVisible = true, paired = false, onOpenChatFlow }: ThreadProps) {
   const searchRoot = useRef<HTMLDivElement>(null);
   const grok = store.harness() === "grok";
   const projection = useWorkers(state.selected);
@@ -309,7 +303,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   });
   const sendDisabled = !isActive || hasRequests || chainLocked || !capabilities.prompt || busyInput || compactBlocked || state.actionBusy || state.sending || !(state.interactive ?? state.connected) || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
   // A paired launcher intent survives activation of full Chat, independently
-  // of the review/science controllers that resume there with their edits intact.
+  // of the document review controller that resumes there with its edits intact.
   const flowPresentationScope = JSON.stringify([workerRefreshScope, conversation?.workspaceId, conversation?.worktreeId, conversation?.replacedBy]);
   const [flowOverride, setFlowOverride] = useState<{ scope: string; presentation: ChatFlowPresentation } | null>(null);
   const flowPresentation = flowOverride?.scope === flowPresentationScope ? flowOverride.presentation : null;
@@ -318,13 +312,12 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const reviewPresented = !paired && (!flowPresentation || flowPresentation === "documents");
   const sendReview = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped, { preserveDraft: true }); };
   const review = useDocumentReview(state, isActive && !paired && !hasRequests, sendDisabled, sendReview);
-  const science = useScienceChat(state, isActive && !paired, sendDisabled || (reviewPresented && !!review.flow), scienceIntegration);
   const documentFlow = reviewPresented ? review.flow : null;
   const readingDocument = !hasRequests && !!documentFlow?.path;
   useEffect(() => {
     if (paired || !isActive) return;
-    if ((flowPresentation === "documents" && !review.flow) || (flowPresentation === "python" && !science.view.flow)) changeFlowPresentation(null);
-  }, [paired, isActive, flowPresentation, !!review.flow, science.view.flow, changeFlowPresentation]);
+    if (flowPresentation === "documents" && !review.flow) changeFlowPresentation(null);
+  }, [paired, isActive, flowPresentation, !!review.flow, changeFlowPresentation]);
   const reviewSidebar = useMemo(() => <DocumentToc review={review} />, [review]);
   useChatFlowSidebar(isActive && !hasRequests && documentFlow ? {
     scope: { sessionId: documentFlow.identity.sessionId, nativeSessionId: conversation?.nativeSessionId, harness: conversation?.harness, workspaceId: documentFlow.identity.workspaceId, worktreeId: repository.navigation.worktreeId },
@@ -360,7 +353,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const statusActions = pendingInputStopAction({ chainLocked, appRunning: grok ? state.grokView?.active === true : appRunning, cancelRun: capabilities.cancelRun === true, nativeQueueWaiting,
     disabled: !isActive || state.actionBusy || state.sending || (chainLocked ? state.phase !== "ready" || state.config?.authenticated !== true : !state.connected),
     cancel: () => void store.cancel() });
-  const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} paired={paired} onOpenChatFlow={onOpenChatFlow} flowPresentation={flowPresentation} onFlowPresentationChange={changeFlowPresentation} questions={userQuestions} questionsReadOnlyReason={questionsReadOnlyReason} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={paired ? undefined : review} science={paired ? undefined : science} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
+  const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} paired={paired} onOpenChatFlow={onOpenChatFlow} flowPresentation={flowPresentation} onFlowPresentationChange={changeFlowPresentation} questions={userQuestions} questionsReadOnlyReason={questionsReadOnlyReason} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={paired ? undefined : review} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
   const transcriptHeader = <>
     <SessionSearch root={searchRoot} active={isActive && transcriptVisible && !readingDocument} state={state} />
     <BranchLinks key={state.selected} conversation={conversation} />
@@ -371,9 +364,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
       <div className="transcript" ref={searchRoot}>
         <NativeSubagentDiscovery loaded={loadedNativeSubagents} />
         {!messages.length && (state.transcriptInitialLoading || state.loading || !repository.ready || (state.selected && state.connectionError) ? <ConversationLoading /> : !state.selected ? <div className="welcome framework-welcome"><span className="welcome-mark" aria-hidden="true"><FrameworkMark active={isActive} /></span>{/* <h1>SANE</h1> */}<p className="eyebrow">Design | Engineer | Plan | Execute</p></div> : <div className="chat-empty"><PenroseTriangle size={24} aria-hidden="true" /><p>No messages yet.</p><span>Send a message to begin.</span></div>)}
-        <ScienceChatBlocks science={science} position="unplaced" loadedMessageIds={state.messages.map(message => message.id)} historyStartAvailable={!state.loading && !state.transcriptError && (state.transcript ? state.transcript.islands[0]?.coverage.firstIndex === 0 || canonicalCount(state.transcript) === 0 : !state.transcriptPaged)} />
-        <ScienceChatBlocks science={science} position="start" historyStartAvailable={!state.loading && !state.transcriptError && (state.transcript ? state.transcript.islands[0]?.coverage.firstIndex === 0 || canonicalCount(state.transcript) === 0 : !state.transcriptPaged)} />
-        <ScienceTimelineContext.Provider value={science}><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /></ScienceTimelineContext.Provider>
+        <ThreadPrimitive.Messages components={{ Message: ChatMessage }} />
         <SendTranscriptReady sessionId={state.selected} messages={messages} />
         <CompactionMarkers records={positions.get("")} />
       </div>

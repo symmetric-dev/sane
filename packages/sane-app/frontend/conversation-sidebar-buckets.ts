@@ -28,7 +28,7 @@ export function conversationSidebarBinding(conversation: Pick<Conversation, "wor
 }
 
 /** Directory order follows the catalog, never the newest conversation in a page. */
-export function conversationSidebarBucketDirectory(workspaces: WorkspaceRecord[], currentWorkspaceId: string | null, filter: ConversationFilterState, directory: SessionCatalogGroup[], ready: boolean) {
+export function conversationSidebarBucketDirectory(workspaces: WorkspaceRecord[], currentWorkspaceId: string | null, currentWorktreeId: string | null, filter: ConversationFilterState, directory: SessionCatalogGroup[], ready: boolean) {
   const workspaceGroups = [...workspaces.map(workspace => ({ id: workspace.workspaceId as string | null, name: workspace.name })), { id: null, name: "Unavailable workspace · recorded history" }]
     .sort((a, b) => Number(b.id === currentWorkspaceId) - Number(a.id === currentWorkspaceId));
   return workspaceGroups.flatMap(group => {
@@ -40,7 +40,9 @@ export function conversationSidebarBucketDirectory(workspaces: WorkspaceRecord[]
     for (const tree of workspace?.worktrees ?? []) {
       if (!matchesTree(tree.worktreeId)) continue;
       const entry = entries.find(entry => entry.worktreeId === tree.worktreeId);
-      if (!entry && workspace?.workspaceId !== currentWorkspaceId) continue;
+      const isCurrentWorktree = workspace?.workspaceId === currentWorkspaceId && tree.worktreeId === currentWorktreeId;
+      // Use directory totals, not loaded pages: collapsed worktrees may have no cached rows.
+      if (!entry?.total && !isCurrentWorktree) continue;
       buckets.push({ key: `${group.id}:${tree.worktreeId}`, workspaceId: group.id, worktreeId: tree.worktreeId,
         label: worktreeDisplay(tree), root: tree.root, title: `${worktreeLabel(tree)} · ${tree.root}${tree.state !== "available" ? " (Unavailable)" : ""}`,
         available: tree.state === "available", conversations: [], total: entry?.total ?? (ready ? 0 : undefined) });
@@ -71,7 +73,6 @@ export function conversationSidebarGroups(model: ConversationSidebarModel, mode:
       return { ...bucket, conversations, pinned };
     }) }));
   }
-  const hasQuery = !!filter.query.trim();
   const filteredWorktreeId = filter.worktreeId !== "all" && filter.worktreeId !== null ? filter.worktreeId : null;
   return groups.flatMap(group => {
     if (filter.workspaceId === "unavailable" && group.id !== null) return [];
@@ -91,7 +92,7 @@ export function conversationSidebarGroups(model: ConversationSidebarModel, mode:
         if (filteredWorktreeId && tree.worktreeId !== filteredWorktreeId) continue;
         const treeConversations = conversations.filter(c => c.worktreeId === tree.worktreeId);
         const isCurrentWorktree = isCurrentWorkspace && tree.worktreeId === nav.worktreeId;
-        if (!treeConversations.length && !(isCurrentWorkspace && !hasQuery) && !isCurrentWorktree) continue;
+        if (!treeConversations.length && !isCurrentWorktree) continue;
         buckets.push({
           key: `${workspace.workspaceId}:${tree.worktreeId}`,
           workspaceId: workspace.workspaceId, worktreeId: tree.worktreeId,

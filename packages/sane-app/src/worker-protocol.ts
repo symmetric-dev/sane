@@ -138,6 +138,12 @@ export function explicitObservationChange(worker: WorkerRecord, input: ExplicitO
     return { state: "uncertain", error: "Execution ownership or termination remains unconfirmed; reconcile the original native run without resubmitting.", ...(continuation ? { continuation: { ...continuation, state: "uncertain", error: "Execution ownership or termination unconfirmed" } } : {}) };
   }
   if (input.ownerPresent && !input.ownerSettled) return continuation ? { continuation, state: settlingState(worker, input) } : {};
+  // An app-owned protocol failure can accompany a successfully completed native
+  // turn. Later observations must not relabel that terminal assignment idle.
+  if (worker.outcome && worker.assignment === "terminal" && !completion) return {
+    state: worker.outcome.status,
+    ...(continuation ? { continuation } : {}),
+  };
   if (!input.run) {
     if (input.ownerPresent) return {};
     if (completion) return publishAccepted(worker, completion, null, input);

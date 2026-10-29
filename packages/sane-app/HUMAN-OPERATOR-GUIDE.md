@@ -111,13 +111,20 @@ not on a remote client device. Conversation pairing alone does not grant agent
 access: Observe/Control grants are separate. Review screenshots and diagnostics
 before sharing; saved captures live under `<dataDir>/browser-artifacts/`.
 
-Python notebook provisioning is explicit in the chat's **Notebook settings** and
-requires [uv](https://docs.astral.sh/uv/) satisfying the
-[runtime manifest](../sane-science/pyproject.toml). The project must have initialized
-SANE state. Notebooks and their environment live under the primary checkout's
-`.sane/science`; App chat history remains in the configured App data directory.
-Local Python cells are not sent to the agent unless explicitly shared. Python
-executes on the host: a virtual environment is not a security sandbox.
+Open a saved `.py` file in **Files** and use **Configure Notebook view** to connect
+an existing, trusted Marimo editor server serving that exact checkout. Configure
+its dedicated server URL and worktree-relative notebook root on each device.
+SANE does not install or start that server; use Marimo's own sign-in UI. An HTTPS
+App requires an HTTPS Marimo server, and the server must permit trusted embedding.
+Notebook activation is explicit; opening a notebook may execute Python with that
+server's permissions.
+
+The former Python chat flow and snapshot-sharing controls have been retired.
+Existing chat history, submission recovery records, and managed notebooks under
+the primary checkout's `.sane/science` are preserved, not migrated or deleted.
+Files does not expose that protected directory. The separate managed science API
+and [runtime package](../sane-science/README.md) remain available; a virtual
+environment is not a security sandbox.
 
 ## Shutdown, recovery, and backups
 
@@ -141,4 +148,4 @@ The browser's install menu or **Install SANE**, where offered, can create a
 standalone frontend window. This does not install a background server or provide
 offline operation; the App server must remain reachable.
 
-For performance captures and science timing logs, see [PROFILING.md](PROFILING.md).
+For performance captures, see [PROFILING.md](PROFILING.md).

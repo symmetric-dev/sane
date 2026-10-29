@@ -83,7 +83,7 @@ type ManagedRun<Owner extends RunOwner> = {
   };
 };
 
-const automaticOrigins = ["queued-user", "questionnaire-response", "worker-report", "worker-exchange", "handoff"] as const satisfies readonly AutomationDispatchOrigin[];
+const automaticOrigins = ["queued-user", "questionnaire-response", "worker-report", "worker-exchange", "worker-recovery", "handoff"] as const satisfies readonly AutomationDispatchOrigin[];
 const automation = Object.freeze(Object.fromEntries(automaticOrigins.map(origin => [origin, Object.freeze({ supported: true as const })])) as Record<AutomationDispatchOrigin, Readonly<{ supported: true }>>);
 const authorityPattern = /^sane-native-v1:gk:[a-f0-9]{64}$/;
 const absolute = (value: unknown): value is string => typeof value === "string" && isAbsolute(value) && !value.includes("\0");

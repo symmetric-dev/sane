@@ -50,11 +50,11 @@ import { grokAvailability, grokMessages, grokProfileChoices, grokRuns, grokSessi
 
 export type SessionNameIntent = { conversationId: string; mode: "rename" | "regenerate"; title: string; expectedRevision: number; scope: string; restoreFocus?: () => HTMLElement | null };
 
-/** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
- * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
+/** Legacy science payloads are retained for recovery only, never new sends. */
 export type ScienceStagedSnapshot = ScienceShareSnapshot & { snapshotId: string };
 export type SciencePendingSend = { version: 1; requestId: string; conversationId: string; text: string; snapshots: ScienceStagedSnapshot[] };
 export type ScienceRejectedRecovery = SciencePendingSend & { status: "rejected" };
+/** Composer draft. scienceSnapshots is a legacy recovery fence, not attachments. */
 export type Draft = { text: string; cwd: string; profileId: string; upgradeId: string; scienceSnapshots?: ScienceStagedSnapshot[] };
 export type UnconfirmedSubmission = { conversationId: string; sourceKey: string; localId: string; requestId?: string; text: string; draft: Draft };
 export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "queued"; conversationId: string; requestId: string } | { status: "recorded"; requestId: string; conversationId?: string } | { status: "blocked" | "rejected" | "unknown" };
@@ -67,7 +67,7 @@ export type State = {
   appAdmissionLoading?: boolean; appAdmissionError?: string; appAdmissionChecking?: string[];
   sessionNameDialog?: SessionNameIntent;
   sessionTitleRequests?: Record<string, boolean>;
-  /** Separate durable run-ID map, independent of transcript page versions. */
+  /** Legacy evidence/recovery only; independent of transcript page versions. */
   scienceSubmissions?: Record<string, ScienceSubmissionView[]>;
   sciencePending?: Record<string, SciencePendingSend | null>;
   scienceRecoveries?: Record<string, ScienceRejectedRecovery[]>;
@@ -376,7 +376,7 @@ export class ChatStore {
       ...(conversationId === this.state.selected ? { pendingTurn: pendingTurnRecorded(this.state.messages, turn) ? null : turn } : {}) });
     if (!context.selected && owns) { this.choose(conversationId, turn); catalog.navigate({ conversationId }); }
     else this.requestSelectedRefresh();
-    this.sciencePolling(true);
+    if (record.envelope.intent.operation === "science-message") this.legacySciencePolling(true);
   }
   private async settleAppAdmission(ledger: AppAdmissionLedger, record: AppAdmissionRecoveryRecord, evidence: AppAdmissionLookup | AppAdmissionReceipt, auth: number) {
     // Persist first, independent of selected-chat generations. A late response
@@ -472,13 +472,17 @@ export class ChatStore {
       if (this.appAdmissionCurrent(ledger, auth)) this.update({ appAdmissionChecking: [...this.appAdmissionChecks.keys()] });
     }
   };
-  /** Explicit empty-composer action only. Reloaded science references remain in
-   * the recovery card; only the in-process original contains staged previews. */
+  /** Explicit empty-composer action only. Retired science drafts stay read-only
+   * in recovery: restoring just their text would change the original intent. */
   restoreAppAdmissionDraft = async (requestId: string): Promise<boolean> => {
     const record = this.appAdmissionRecords.get(requestId), ledger = this.appAdmissionLedger, auth = this.authEpoch;
     if (!record || !ledger || !this.appAdmissionCurrent(ledger, auth) || this.state.sending || this.state.actionBusy
       || this.appAdmissionChecks.has(requestId) || this.appAdmissionChecks.size >= 4
       || record.draftKey !== this.draftKey() || this.draft().text || this.draft().scienceSnapshots?.length) return false;
+    if (record.envelope.intent.operation === "science-message" || record.recovery.scienceSnapshots?.length) {
+      this.update({ actionNotice: "Science chat sharing was retired. The original text and snapshot references remain in recovery; they cannot be restored as an ordinary message. Nothing was resent." });
+      return false;
+    }
     const stamp = this.composerStamp(record.draftKey), selection = this.selectionEpoch, generation = this.generation;
     const navigation = { ...catalog.state.navigation }, controller = new AbortController();
     this.appAdmissionChecks.set(requestId, controller); this.publishAppAdmissions();
@@ -496,9 +500,7 @@ export class ChatStore {
       const original = context?.auth === this.authEpoch && !context.preserveDraft ? context.draft : undefined;
       const draft: Draft = original ? structuredClone(original) : { text: record.recovery.text, cwd: record.recovery.cwd,
         profileId: record.recovery.profileId ?? "", upgradeId: record.recovery.upgradeProfileId ?? "" };
-      this.update({ drafts: { ...this.state.drafts, [record.draftKey]: draft }, actionNotice: !original && record.recovery.scienceSnapshots?.length
-        ? "Recovered text only. Original science snapshot references remain in recovery; re-open their previews explicitly. No request was resent."
-        : "Draft explicitly restored. The original request remains in recovery; nothing was resent." });
+      this.update({ drafts: { ...this.state.drafts, [record.draftKey]: draft }, actionNotice: "Draft explicitly restored. The original request remains in recovery; nothing was resent." });
       return true;
     } catch (error) {
       if (current() && !this.expired(error)) this.publishAppAdmissions(error instanceof Error ? error.message : "Original draft source unavailable.");
@@ -887,7 +889,8 @@ export class ChatStore {
         return { status: "blocked" };
       }
     }
-    if (kind === "enqueue" && this.draft().scienceSnapshots?.length) { this.update({ pendingInputError: "Science snapshots cannot be queued. Send them from an idle conversation." }); return { status: "blocked" }; }
+    const legacyScienceBlocked = kind === "enqueue" ? this.legacyScienceSendBlocked() : "";
+    if (legacyScienceBlocked) { this.update({ pendingInputError: legacyScienceBlocked }); return { status: "blocked" }; }
     const id = this.state.selected, fence = this.pendingInputFence(), namespace = this.pendingInputKey(), lock = `${namespace}:${id}`;
     if (!id || !namespace || !isPendingInputCapability(this.state.config?.pendingInputCapability) || this.pendingInputMutations.has(lock)) return { status: "blocked" };
     this.loadPendingInputLedger();
@@ -908,7 +911,8 @@ export class ChatStore {
       const view = this.state.pendingInputs!, p = view.presentation;
       let body: PendingInputRecord["body"];
       if (kind === "enqueue") {
-        if (this.draft().scienceSnapshots?.length) { this.update({ pendingInputError: "Science snapshots cannot be queued." }); return { status: "blocked" }; }
+        const legacyScienceBlocked = this.legacyScienceSendBlocked();
+        if (legacyScienceBlocked) { this.update({ pendingInputError: legacyScienceBlocked }); return { status: "blocked" }; }
         const unavailable = this.pendingInputUnavailable();
         if (unavailable || !this.client.enqueuePendingInput) { this.update({ pendingInputError: unavailable || "Queue submission is unavailable." }); return { status: "blocked" }; }
         const source = p.currentAssertions!.source;
@@ -1566,7 +1570,7 @@ export class ChatStore {
     this.state = { ...this.state, ...patch };
     if (publishShell) this.shellRevision++;
     this.listeners.forEach(fn => fn());
-    if (scienceChanged) this.sciencePolling(true);
+    if (scienceChanged) this.legacySciencePolling(true);
   }
   draftKey = (id = this.state.selected) => id || `draft:${catalog.state.navigation.workspaceId}:${catalog.state.navigation.worktreeId}`;
   draft = (id = this.state.selected): Draft => {
@@ -1581,16 +1585,23 @@ export class ChatStore {
     if (this.state.drafts[key] && textOnly && previous.text === next.text) return;
     this.update({ drafts: { ...this.state.drafts, [key]: next } }, !textOnly);
   };
-  /** Preview is advisory only: submit strips everything except immutable IDs. */
-  stageScienceSnapshot = (snapshot: ScienceShareSnapshot, conversationId = this.state.selected) => {
-    if (!conversationId || conversationId !== this.state.selected || this.state.sending || this.state.actionBusy || this.pendingInputChainLocked()) return;
-    const snapshots = this.draft(conversationId).scienceSnapshots ?? [];
-    if (snapshots.some(s => s.snapshotId === snapshot.id)) return;
-    if (snapshots.length >= 4) { this.update({ submissionError: "At most four science snapshots can be staged." }); return; }
-    this.setDraft({ scienceSnapshots: [...snapshots, { ...structuredClone(snapshot), snapshotId: snapshot.id }] }, conversationId);
+  /** Shared by ordinary and auxiliary prompt surfaces. Never strip old staged
+   * snapshots implicitly, including for preserveDraft/document-review sends. */
+  legacyScienceSendBlocked = () => {
+    if (this.draft().scienceSnapshots?.length) return "Science chat sharing was retired. This draft still contains legacy snapshots. Inspect or explicitly discard them before sending text; nothing was sent.";
+    const id = this.state.selected;
+    if (id && this.state.config?.storeId && this.sciencePendingFor(id)) return "A previous science send is unresolved. The original request is retained; check its receipt before sending. Nothing was resent.";
+    if (id && this.state.scienceSubmissionError) return `Legacy science recovery could not be checked: ${this.state.scienceSubmissionError}. Nothing was sent.`;
+    return "";
   };
-  removeScienceSnapshot = (snapshotId: string) => this.setDraft({ scienceSnapshots: (this.draft().scienceSnapshots ?? []).filter(s => s.snapshotId !== snapshotId) });
-  sciencePreview = () => this.draft().scienceSnapshots ?? [];
+  /** Explicit status refresh only, never a replay/retry of the original send. */
+  checkLegacyScienceRecovery = () => this.legacySciencePolling(true);
+  /** Explicit UI discard only; preserve comment text and all durable receipts. */
+  discardLegacyScienceDraft = (id: string, storeId: string) => {
+    if (this.state.selected !== id || this.state.config?.storeId !== storeId || this.state.phase !== "ready" || !this.state.config.authenticated || this.state.sending || this.state.actionBusy || this.pendingInputChainLocked()) return;
+    this.setDraft({ scienceSnapshots: [] }, id);
+    this.update({ actionNotice: "Legacy draft snapshots explicitly discarded. Comment text and original send records were retained. Nothing was sent." });
+  };
   private scienceStorageKey(id = this.state.selected) {
     if (!this.state.config?.storeId || !id) throw new Error("Science send storage identity unavailable");
     return `sane:science-send:v1:${this.state.config.storeId}:${id}`;
@@ -1613,23 +1624,22 @@ export class ChatStore {
     if (!Array.isArray(items) || items.some(item => item.version !== 1 || item.status !== "rejected" || item.conversationId !== id || typeof item.requestId !== "string" || typeof item.text !== "string" || !Array.isArray(item.snapshots))) throw new Error("Rejected science draft recovery cannot be read");
     return items;
   }
-  consumeScienceRecovery = (id: string, requestId: string, restore: boolean, storeId: string) => {
+  /** Rejected legacy payloads remain inspectable until explicitly discarded;
+   * there is no restore-to-composer or resend path for retired science shares. */
+  discardLegacyScienceRecovery = (id: string, requestId: string, storeId: string) => {
     if (this.state.selected !== id || this.state.config?.storeId !== storeId || this.state.phase !== "ready" || !this.state.config.authenticated || this.state.sending || this.state.actionBusy || this.pendingInputChainLocked()) return;
     try {
       const items = this.readScienceRecoveries(id), item = items.find(item => item.requestId === requestId);
       if (!item) return;
-      const draft = this.draft(id);
-      if (restore && (draft.text || draft.scienceSnapshots?.length)) { this.update({ scienceSubmissionError: "Keep or clear your current draft before restoring the rejected science draft." }); return; }
-      if (restore) this.setDraft({ text: item.text, scienceSnapshots: item.snapshots }, id);
       const remaining = items.filter(item => item.requestId !== requestId);
       localStorage.setItem(`${this.scienceStorageKey(id)}:rejected`, JSON.stringify(remaining));
       this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: remaining }, scienceSubmissionError: "" });
     } catch (error) { this.update({ scienceSubmissionError: error instanceof Error ? error.message : "Science draft recovery unavailable" }); }
   };
-  private async refreshScienceSubmissions(id: string, current: () => boolean, signal: AbortSignal, supplied?: ScienceSubmissionView[]) {
-    if (!this.state.config?.storeId || !supplied && !this.client.scienceSubmissions) return;
+  private async refreshLegacyScienceSubmissions(id: string, current: () => boolean, signal: AbortSignal) {
+    if (!this.state.config?.storeId || !this.client.scienceSubmissions) return;
     try {
-      const pending = this.readSciencePending(id), submissions = supplied ?? await this.client.scienceSubmissions!(id, signal);
+      const pending = this.readSciencePending(id), submissions = await this.client.scienceSubmissions(id, signal);
       if (!current()) return;
       // Another tab can replace the durable marker while discovery is in flight.
       // Leave that newer intent and its composer untouched until the next read.
@@ -1767,7 +1777,8 @@ export class ChatStore {
     return Boolean(this.state.compactions?.some(r => r.lifecycle === "unconfirmed") && this.state.compactState?.eligibility.eligible !== true && (!this.state.availability.canSend || !!this.state.availability.queueAfterRunId));
   };
   openCompact = (instructions?: string) => {
-    if (this.draft().scienceSnapshots?.length) { this.update({ compactError: "Remove staged science snapshots before compacting; they cannot be compact instructions." }); return; }
+    const legacyScienceBlocked = this.legacyScienceSendBlocked();
+    if (legacyScienceBlocked) { this.update({ compactError: legacyScienceBlocked }); return; }
     if (this.pendingInputChainLocked()) { this.update({ compactError: "Resolve the existing input chain before compacting." }); return; }
     if (!this.state.selected) { this.update({ submissionError: "Choose an existing conversation before using /compact." }); return; }
     if (!this.supportedCapabilities().compaction) { this.update({ submissionError: "Context compaction is unavailable for this harness. Your draft is unchanged." }); return; }
@@ -1814,7 +1825,8 @@ export class ChatStore {
     this.update({ compactState, compactError: this.compactReadFeedback(undefined, !!recovered && pending?.phase === "unconfirmed"), compactions, ...(conversation ? { contextUsage: contextUsageFor(conversation.harness, this.state.runs, this.state.models, this.state.nativeHistory, compactions) } : {}), ...(recovered && pending!.phase !== "sending" ? { pendingCompacts: { ...this.state.pendingCompacts, [compactState.sessionId]: { ...pending!, phase: "accepted", runId: recovered.runId } } } : {}) });
   }
   compact = async (nativeStopped = false) => {
-    if (this.draft().scienceSnapshots?.length) { this.update({ compactError: "Staged science snapshots cannot be compact instructions." }); return; }
+    const legacyScienceBlocked = this.legacyScienceSendBlocked();
+    if (legacyScienceBlocked) { this.update({ compactError: legacyScienceBlocked }); return; }
     if (this.pendingInputChainLocked()) { this.update({ compactError: "Resolve the existing input chain before compacting." }); return; }
     const id = this.state.selected, selection = this.selectionEpoch, auth = this.authEpoch;
     const conversation = this.state.conversations.find(c => c.id === id);
@@ -2259,7 +2271,7 @@ export class ChatStore {
     this.groupListing.refresh();
     if (this.state.sending) { void this.pollNotifications(); return; }
     this.pendingInputFresh = ""; this.pendingInputPolling();
-    void this.pollNotifications(); this.sciencePolling(true);
+    void this.pollNotifications(); this.legacySciencePolling(true);
     if (this.state.phase === "connecting") void this.boot();
     else this.requestSelectedRefresh();
   };
@@ -2383,12 +2395,12 @@ export class ChatStore {
       if (view) this.publishGrok(view);
       this.update({ availability: { canSend: false }, loading: true, interactive: false, transcript: null,
         transcriptPaged: false, transcriptInitialLoading: false, workerLoading: false });
-      this.sciencePolling(true);
+      this.legacySciencePolling(true);
       void this.poll();
       return;
     }
     if (this.paged) this.update({ transcript: cached?.transcript ?? null, transcriptInitialLoading: !!selected && !cached?.messages.length, transcriptError: "", metadataError: "", pageBusy: "", pageErrors: {}, workerLoading: !!selected && !!this.client.workers, compactions: cached?.transcript?.compactions ?? [] });
-    this.sciencePolling(true);
+    this.legacySciencePolling(true);
     void this.poll();
   };
   private async pollPaged(listing: { conversations: Conversation[]; availability: Availability }, current: () => boolean, signal: AbortSignal, forceRead = false) {
@@ -2616,8 +2628,10 @@ export class ChatStore {
     try { return !!this.readSciencePending(id); }
     catch { return true; }
   }
-  /** Independent single-flight discovery also covers sends made by other clients. */
-  private sciencePolling(discover = false) {
+  /** Legacy safety only: discover prepared/unknown sends from old clients even
+   * when this browser has no local marker. Single-flight reads stop once idle;
+   * transcript/listing changes invalidate evidence, not a science-chat runtime. */
+  private legacySciencePolling(discover = false) {
     // Keep invalidations that arrive during a read or while polling is paused.
     if (discover) this.scienceDiscoveryPending = true;
     if (this.state.phase !== "ready" || this.scienceTimer || this.scienceController || !this.client.scienceSubmissions || !this.state.selected || !this.state.config?.authenticated || !this.state.config.storeId || typeof document !== "undefined" && document.hidden) return;
@@ -2627,14 +2641,14 @@ export class ChatStore {
     const controller = this.scienceController = new AbortController();
     const current = () => !controller.signal.aborted && this.state.phase === "ready" && this.state.config?.authenticated === true && this.state.config.storeId === storeId && auth === this.authEpoch && selection === this.selectionEpoch && generation === this.generation && id === this.state.selected;
     const deadline = setTimeout(() => controller.abort(), 25000);
-    void this.refreshScienceSubmissions(id, current, controller.signal).then(refreshed => {
+    void this.refreshLegacyScienceSubmissions(id, current, controller.signal).then(refreshed => {
       if (!refreshed && this.scienceController === controller) this.scienceDiscoveryPending = true;
     }).finally(() => {
       clearTimeout(deadline);
       if (this.scienceController !== controller) return;
       this.scienceController = undefined;
       if (auth !== this.authEpoch || selection !== this.selectionEpoch || generation !== this.generation || this.state.phase !== "ready") return;
-      if (this.scienceDiscoveryPending || this.sciencePendingFor(id) || this.state.scienceSubmissions?.[id] === undefined) this.scienceTimer = setTimeout(() => { this.scienceTimer = undefined; this.sciencePolling(); }, jitteredDelay(5000));
+      if (this.scienceDiscoveryPending || this.sciencePendingFor(id) || this.state.scienceSubmissions?.[id] === undefined) this.scienceTimer = setTimeout(() => { this.scienceTimer = undefined; this.legacySciencePolling(); }, jitteredDelay(5000));
     });
   }
   /** Live sessions (running work or pending submission state) poll fast; static opened sessions back off. */
@@ -2677,7 +2691,7 @@ export class ChatStore {
       }
       const selectedGrok = !!selected && this.harness() === "grok";
       this.pendingInputPolling();
-      this.sciencePolling();
+      this.legacySciencePolling();
       if (!selectedGrok && this.harness() !== "grok") {
         this.appAdmissionPolling();
       }
@@ -2726,7 +2740,7 @@ export class ChatStore {
         if (current()) {
           this.publishGrok(view, currentConversation.availability, history);
           if (historyError) this.update({ metadataError: historyError });
-          if (!equalValue(this.scienceListing, currentConversation)) { this.scienceListing = currentConversation; this.sciencePolling(true); }
+          if (!equalValue(this.scienceListing, currentConversation)) { this.scienceListing = currentConversation; this.legacySciencePolling(true); }
         }
         if (!current()) return;
         if (this.supportedCapabilities("grok").compaction && this.client.compactState) {
@@ -2769,7 +2783,7 @@ export class ChatStore {
       // Compare server rows, not locally derived titles or optimistic updates.
       if (selected && !equalValue(this.scienceListing, currentConversation)) {
         this.scienceListing = currentConversation;
-        this.sciencePolling(true);
+        this.legacySciencePolling(true);
         // Run/worker markers changed (possibly from another client).
         this.emittingListingWake = true;
         try { wakePolls(selected); }
@@ -2969,16 +2983,13 @@ export class ChatStore {
     const selected = this.state.selected, conversation = this.state.conversations.find(item => item.id === selected);
     const profile = options.preserveDraft && selected ? this.conversationProfile(selected) : this.effectiveProfile();
     const upgrade = options.preserveDraft ? undefined : this.pendingUpgrade();
-    const scienceSnapshots = options.preserveDraft ? [] : structuredClone(this.draft().scienceSnapshots ?? []);
     if (!this.grokCaptureSupported()) {
       this.update({ submissionError: this.state.config?.grokCapability?.reason || "Grok capture is not configured on this bridge. Your draft is unchanged." });
       return { status: "blocked" };
     }
     const command = compactCommand(text);
-    if (command && scienceSnapshots.length) { this.update({ submissionError: "Remove staged science snapshots before compacting." }); return { status: "blocked" }; }
     if (command) { this.openCompact(command.instructions); return { status: "blocked" }; }
-    const unsupported = !selected && (scienceSnapshots.length || options.preserveDraft) ? "Start a conversation before sharing snapshots or a document review."
-      : scienceSnapshots.length && this.draft().text !== text ? "Send snapshots from their original conversation draft."
+    const unsupported = !selected && options.preserveDraft ? "Start a conversation before sending a document review."
       : !options.preserveDraft && this.draft().upgradeId && (!upgrade || !this.assignable(upgrade).ok) ? "This bridge does not support the selected Grok profile upgrade."
       : this.pendingInputChainLocked() ? "Resolve the existing input chain before sending ordinary input."
       : this.state.availability.queueAfterRunId || this.state.availability.nativeQueue ? "Wait for the current run to finish before sending."
@@ -2991,18 +3002,13 @@ export class ChatStore {
     if (conversation?.attachment && this.supportedCapabilities("grok").attachedSendRequiresNativeStopped && !nativeStopped) {
       this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" };
     }
-    if (selected && this.state.config?.storeId && this.sciencePendingFor(selected)) {
-      this.update({ submissionError: "A previous science send is unresolved. Check its original receipt before sending; nothing was resent." });
-      this.sciencePolling(true); return { status: "blocked" };
-    }
-    if (!text.trim() && !scienceSnapshots.length || this.state.sending || this.state.actionBusy || this.executionUnavailable()
+    if (!text.trim() || this.state.sending || this.state.actionBusy || this.executionUnavailable()
       || !(this.state.interactive ?? this.state.connected) || selected && (!this.state.availability.canSend || this.grokUnconfirmed.has(selected))) return { status: "blocked" };
     // Use the same synchronous guard and composer lineage as ordinary sends.
     this.appAdmissionSendGuard = true;
     const draft = structuredClone(this.draft()), draftKey = this.draftKey(), stamp = this.composerStamp(draftKey);
     const navigation = { ...catalog.state.navigation }, auth = this.authEpoch, selection = this.selectionEpoch;
     const sessionId = selected || crypto.randomUUID();
-    const scienceRequestId = scienceSnapshots.length ? crypto.randomUUID() : undefined;
     const choices = profile ? this.profileChoices(profile) : { model: "", effort: "" };
     const saved = selected ? this.storedDefaults(selected) : undefined;
     const model = selected && !upgrade ? saved?.model || choices.model : choices.model;
@@ -3012,7 +3018,7 @@ export class ChatStore {
     const generation = this.generation;
     const current = () => auth === this.authEpoch && selection === this.selectionEpoch && generation === this.generation
       && selected === this.state.selected && draftKey === this.draftKey();
-    this.update({ sending: true, submissionError: "", scienceSubmissionError: "" });
+    this.update({ sending: true, submissionError: "" });
     let posted = false, input: GrokTurnInput | undefined;
     try {
       const before = selected ? grokSessionView(await this.client.grokSession!(sessionId, AbortSignal.timeout(25000)), sessionId) : undefined;
@@ -3026,44 +3032,20 @@ export class ChatStore {
         profileId: upgrade?.id ?? (selected ? before?.profileId ?? conversation?.profileId : profile?.id),
         workspaceId: selected ? before?.workspaceId ?? conversation?.workspaceId : navigation.workspaceId,
         worktreeId: selected ? before?.worktreeId ?? conversation?.worktreeId : navigation.worktreeId,
-        ...(scienceRequestId ? { requestId: scienceRequestId, scienceSnapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) } : {}),
         ...(nativeStopped ? { nativeStopped: true } : {}) };
       if (!input.model.trim() || !input.effort.trim()) throw new Error("Grok requires explicit nonempty model and effort strings in its profile.");
-      if (scienceRequestId) {
-        if (this.readSciencePending(sessionId)) throw new Error("A previous science request is unresolved. No replacement request was posted.");
-        const pending: SciencePendingSend = { version: 1, requestId: scienceRequestId, conversationId: sessionId, text, snapshots: scienceSnapshots };
-        const key = this.scienceStorageKey(sessionId), encoded = JSON.stringify(pending);
-        localStorage.setItem(key, encoded);
-        if (localStorage.getItem(key) !== encoded) throw new Error("The original science request could not be saved. Nothing was posted.");
-        this.update({ sciencePending: { ...this.state.sciencePending, [sessionId]: pending } });
-        if (sameComposerStamp(this.composerStamp(draftKey), stamp)) this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "", scienceSnapshots: [] } } });
-      }
       posted = true;
       let view: GrokSessionView;
       try {
         view = grokSessionView(await this.client.grokTurn!(input, AbortSignal.timeout(25000)), sessionId);
       } catch (error) {
         if (!current() || this.expired(error)) return { status: "unknown" };
-        if (!scienceRequestId) this.grokUnconfirmed.set(sessionId, { turnIndex: input.turnIndex, draftKey, stamp, preserveDraft: options.preserveDraft });
-        if (scienceRequestId) await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000));
+        this.grokUnconfirmed.set(sessionId, { turnIndex: input.turnIndex, draftKey, stamp, preserveDraft: options.preserveDraft });
         // Never repeat the POST, including when this exact GET is absent/stale.
         view = grokSessionView(await this.client.grokSession!(sessionId, AbortSignal.timeout(25000)), sessionId);
       }
       if (!current()) return { status: "unknown" };
       this.publishGrok(view);
-      if (scienceRequestId) {
-        if (view.scienceSubmission) {
-          if (view.scienceSubmission.requestId !== scienceRequestId || !equalValue(view.scienceSubmission.snapshots, input.scienceSnapshots)) throw new Error("Science response does not match the original request.");
-          const supplied = [...(this.state.scienceSubmissions?.[sessionId] ?? []).filter(item => item.requestId !== scienceRequestId), view.scienceSubmission];
-          await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000), supplied);
-        } else await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000));
-        if (!current()) return { status: "unknown" };
-        const receipt = this.state.scienceSubmissions?.[sessionId]?.find(item => item.requestId === scienceRequestId);
-        if (receipt?.state === "submitted" && receipt.runId && !this.state.sciencePending?.[sessionId]) return { status: "accepted", conversationId: sessionId, runId: receipt.runId };
-        if (receipt?.state === "not-submitted" && !this.state.sciencePending?.[sessionId]) return { status: "rejected" };
-        this.update({ submissionError: "Science send outcome is unresolved. The original request is retained; check its receipt. Nothing will be resent automatically." });
-        return { status: "unknown" };
-      }
       const unresolved = this.grokUnconfirmed.has(sessionId);
       if (!options.preserveDraft && !unresolved && view.phase !== "not-submitted" && sameComposerStamp(this.composerStamp(draftKey), stamp)) {
         this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "",
@@ -3089,14 +3071,6 @@ export class ChatStore {
     } catch (error) {
       if (current() && !this.expired(error)) {
         if (posted && input) {
-          if (scienceRequestId) {
-            this.update({ submissionError: `Science send outcome is unresolved. ${error instanceof Error ? error.message : "Science response unavailable."} The original science request is retained; check its receipt. Nothing was resent.` });
-            await this.refreshScienceSubmissions(sessionId, current, AbortSignal.timeout(25000));
-            const receipt = this.state.scienceSubmissions?.[sessionId]?.find(item => item.requestId === scienceRequestId);
-            if (current() && receipt?.state === "submitted" && receipt.runId && !this.state.sciencePending?.[sessionId]) return { status: "accepted", conversationId: sessionId, runId: receipt.runId };
-            if (current() && receipt?.state === "not-submitted" && !this.state.sciencePending?.[sessionId]) return { status: "rejected" };
-            return { status: "unknown" };
-          }
           this.grokUnconfirmed.set(sessionId, { turnIndex: input.turnIndex, draftKey, stamp, preserveDraft: options.preserveDraft });
           if (!selected) {
             // Keep the original App UUID reachable even if both responses were
@@ -3109,21 +3083,23 @@ export class ChatStore {
           }
           this.update({ availability: { canSend: false, reason: GROK_UNKNOWN_NOTICE }, submissionError: GROK_UNKNOWN_NOTICE });
         } else {
-          if (scienceRequestId) {
-            try { if (this.readSciencePending(sessionId)?.requestId === scienceRequestId) localStorage.removeItem(this.scienceStorageKey(sessionId)); }
-            catch { /* Keep any unremovable identity fenced; never repost it. */ }
-          }
           this.update({ submissionError: `${error instanceof Error ? error.message : "Grok capture unavailable."} Your draft is unchanged; nothing was posted.` });
         }
       }
       return { status: posted ? "unknown" : "blocked" };
     } finally {
       this.appAdmissionSendGuard = false;
-      if (auth === this.authEpoch) { this.update({ sending: false }); this.sciencePolling(true); void this.poll(); }
+      if (auth === this.authEpoch) { this.update({ sending: false }); void this.poll(); }
     }
   }
   send = async (text: string, nativeStopped = false, options: { preserveDraft?: boolean } = {}): Promise<SendOutcome> => {
     if (this.appAdmissionSendGuard) return { status: "blocked" };
+    const legacyScienceBlocked = this.legacyScienceSendBlocked();
+    if (legacyScienceBlocked) {
+      this.update({ submissionError: legacyScienceBlocked });
+      this.legacySciencePolling(true);
+      return { status: "blocked" };
+    }
     if (this.harness() === "grok" || this.effectiveProfile()?.harness === "grok") return this.sendGrok(text, options, nativeStopped);
     if (!this.appAdmissionSupported() && !compactCommand(text)) {
       this.update({ submissionError: "App admission requires initialization on this bridge. Update and initialize the App admission store before sending; your draft is unchanged. Legacy submission is not used." });
@@ -3132,30 +3108,26 @@ export class ChatStore {
     if (this.pendingInputChainLocked()) { this.update({ submissionError: "Resolve the existing input chain before sending ordinary input." }); return { status: "blocked" }; }
     if (this.state.availability.queueAfterRunId || this.state.availability.nativeQueue) { this.update({ submissionError: "Wait for the current run to finish before sending." }); return { status: "blocked" }; }
     if (options.preserveDraft && !this.state.selected) return { status: "blocked" };
-    const scienceSnapshots = options.preserveDraft ? [] : structuredClone(this.draft().scienceSnapshots ?? []);
-    if (scienceSnapshots.length && (!this.state.selected || this.draft().text !== text || this.state.availability.queueAfterRunId || this.state.availability.nativeQueue)) { this.update({ submissionError: "Science snapshots require an ordinary idle-conversation send." }); return { status: "blocked" }; }
     const command = compactCommand(text);
-    if (scienceSnapshots.length && command) { this.update({ submissionError: "Science snapshots cannot be sent as compaction instructions." }); return { status: "blocked" }; }
     if (command) { this.openCompact(command.instructions); return { status: "blocked" }; }
     if (this.compactBlocked() || this.state.actionBusy) return { status: "blocked" };
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
     if (!this.supportedCapabilities().prompt) return { status: "blocked" };
     if (conversation?.attachment && this.supportedCapabilities(conversation.harness).attachedSendRequiresNativeStopped && !nativeStopped) { this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" }; }
     const running = conversation?.status === "starting" || conversation?.status === "running" || this.state.runs.some(r => r.status === "starting" || r.status === "running");
-    if (scienceSnapshots.length && running) { this.update({ submissionError: "Science snapshots require an idle conversation." }); return { status: "blocked" }; }
-    if (!text.trim() && !scienceSnapshots.length || running && !liveInputReady(conversation, this.state.availability) || this.state.sending || !(this.state.interactive ?? this.state.connected) || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
+    if (!text.trim() || running && !liveInputReady(conversation, this.state.availability) || this.state.sending || !(this.state.interactive ?? this.state.connected) || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
     // Acquire synchronously, before hashing or any other await. Freeze every
     // wire selector now; later composer/navigation/profile changes cannot alter
     // either the persisted intent or the single POST body.
     this.appAdmissionSendGuard = true;
     const selected = this.state.selected, draft = structuredClone(this.draft()), draftKey = this.draftKey();
     const capturedStamp = this.composerStamp(draftKey), preserveDraft = !!options.preserveDraft;
-    const clientRequestId = crypto.randomUUID(), scienceRequestId = scienceSnapshots.length ? crypto.randomUUID() : undefined;
+    const clientRequestId = crypto.randomUUID();
     const pendingTurn: PendingTurn = { id: `admission:${clientRequestId}`, conversationId: selected, text, time: new Date().toISOString() };
     const upgrade = selected && !preserveDraft ? this.pendingUpgrade() : undefined;
     const profileId = selected ? upgrade && this.assignable(upgrade).ok ? upgrade.id : "" : this.draftProfile().id;
     const navigation = { ...catalog.state.navigation };
-    const live = !!selected && !scienceRequestId && liveInputReady(conversation, this.state.availability);
+    const live = !!selected && liveInputReady(conversation, this.state.availability);
     const expectedLiveRunId = live ? this.state.availability.liveInputRunId ?? null : null;
     const expectedSource = selected ? this.appAdmissionSource(conversation) : null;
     const auth = this.authEpoch;
@@ -3164,16 +3136,14 @@ export class ChatStore {
       const scope = this.appAdmissionScope();
       if (!scope) throw new Error("Sign in to an identified App store before sending.");
       if (selected && !expectedSource) throw new Error("The original conversation source is unavailable. Refresh it before sending; no request was posted.");
-      if (scienceRequestId === clientRequestId) throw new Error("Science and App admission request identities must be distinct.");
       const intent: AppAdmissionIntent = decodeAppAdmissionIntent({ version: 1,
-        operation: !selected ? "new-conversation" : scienceRequestId ? "science-message" : live ? "live-input" : "message",
+        operation: !selected ? "new-conversation" : live ? "live-input" : "message",
         conversationId: selected || null, expectedSource, expectedLiveRunId, chainId: capturedStamp.chainId,
         payload: { prompt: text, ...(selected ? { sessionId: selected } : {
           ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}),
           ...(navigation.workspaceId !== undefined ? { workspaceId: navigation.workspaceId } : {}),
           ...(navigation.worktreeId !== undefined ? { worktreeId: navigation.worktreeId } : {}) }),
-          ...(profileId ? { profileId } : {}), ...(nativeStopped ? { nativeStopped: true } : {}),
-          ...(scienceRequestId ? { requestId: scienceRequestId, scienceSnapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) } : {}) } });
+          ...(profileId ? { profileId } : {}), ...(nativeStopped ? { nativeStopped: true } : {}) } });
       const consumedStamp = preserveDraft ? null : advanceComposerStamp(capturedStamp);
       // A pre-existing legacy science marker is also unresolved; never bypass it
       // by minting an App UUID, even though new sends no longer write that format.
@@ -3194,10 +3164,11 @@ export class ChatStore {
           || intent.conversationId !== null && previous.envelope.intent.conversationId === intent.conversationId))) {
         throw new Error("Check the original message receipt before sending in this conversation or draft.");
       }
+      const legacyScienceBlocked = this.legacyScienceSendBlocked();
+      if (legacyScienceBlocked) throw new Error(legacyScienceBlocked);
       record = await ledger.reserve({ version: 1, scope, envelope, draftKey, capturedStamp, consumedStamp,
         recovery: { text, cwd: draft.cwd, ...(draft.profileId ? { profileId: draft.profileId } : {}),
-          ...(draft.upgradeId ? { upgradeProfileId: draft.upgradeId } : {}),
-          ...(scienceSnapshots.length ? { scienceSnapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) } : {}) },
+          ...(draft.upgradeId ? { upgradeProfileId: draft.upgradeId } : {}) },
         receipt: null, uncertain: true });
       this.appAdmissionContexts.set(clientRequestId, context);
       if (this.appAdmissionCurrent(ledger, auth)) {
@@ -3210,7 +3181,7 @@ export class ChatStore {
       // A write during hashing/storage leaves the newer composer untouched.
       if (!preserveDraft && sameComposerStamp(this.composerStamp(draftKey), capturedStamp)) {
         context.consumed = true;
-        this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "", scienceSnapshots: [] } } });
+        this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "" } } });
       }
       this.update({ pendingTurn, availability: { canSend: false, reason: "Recording App admission…" } });
       posted = true;

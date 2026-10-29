@@ -1199,6 +1199,9 @@ h3 {
   background:var(--muted);
   line-height:1.6;
 }
+.legacy-science-recovery { min-width:0; overflow-wrap:anywhere; }
+.legacy-science-recovery pre { max-height:320px; max-width:100%; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+.legacy-science-recovery summary { cursor:pointer; }
 
 /* === error === */
 .error {

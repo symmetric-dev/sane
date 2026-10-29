@@ -33,7 +33,7 @@ export type AppAdmissionPending = Readonly<{
   binding: AppAdmissionConversationBinding;
   chainId: string;
 }>;
-export type AppAdmissionRequestCode = "invalid-request" | "store-mismatch" | "payload-conflict" | "pending-admission" | "target-conflict" | "no-permit" | "already-initialized" | "capacity";
+export type AppAdmissionRequestCode = "invalid-request" | "store-mismatch" | "payload-conflict" | "pending-admission" | "target-conflict" | "no-permit" | "already-initialized" | "capacity" | "science-chat-retired";
 export class AppAdmissionRequestError extends Error {
   constructor(readonly code: AppAdmissionRequestCode, message: string, readonly status: 400 | 409 | 429 = 409) { super(message); }
 }

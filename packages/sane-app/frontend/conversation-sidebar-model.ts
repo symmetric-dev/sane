@@ -198,8 +198,8 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   const directory = state.conversationGroupDirectory;
   const directoryCurrent = directory?.queryKey === queryKey;
   const directoryReady = !!directoryCurrent && !directory?.loading && !directory?.error;
-  const bucketDirectory = useMemo(() => conversationSidebarBucketDirectory(repository.workspaces, nav.workspaceId, deferred,
-    directoryCurrent ? directory?.groups ?? [] : [], directoryReady), [repository.workspaces, nav.workspaceId, deferred, directoryCurrent, directory?.groups, directoryReady]);
+  const bucketDirectory = useMemo(() => conversationSidebarBucketDirectory(repository.workspaces, nav.workspaceId, nav.worktreeId, deferred,
+    directoryCurrent ? directory?.groups ?? [] : [], directoryReady), [repository.workspaces, nav.workspaceId, nav.worktreeId, deferred, directoryCurrent, directory?.groups, directoryReady]);
   const groupQuery = useCallback((bucket: Pick<WorktreeBucket, "workspaceId" | "worktreeId">): SessionCatalogQuery => ({ ...query,
     workspaceId: bucket.workspaceId ?? "unavailable", worktreeId: bucket.worktreeId ?? "unavailable", limit: conversationGroupPageSize(query.mode) }), [query]);
   const groupPage = useCallback((bucket: Pick<WorktreeBucket, "workspaceId" | "worktreeId">) => state.conversationGroups?.[conversationQueryKey(groupQuery(bucket))], [state.conversationGroups, groupQuery]);

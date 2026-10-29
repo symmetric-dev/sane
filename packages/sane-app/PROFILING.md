@@ -20,13 +20,13 @@ Stop normally to finish the current write. SIGKILL or a crash can lose the activ
 window. Omit `SANE_APP_PROFILE` on the next launch to disable capture; restart to
 capture another run.
 
-## Correlate science runs
+## Legacy science timing logs
 
-Science run-attempt timings are appended to `<dataDir>/science-timing.jsonl`, with
-one rotated `.1` file. Correlate UTC timestamps and attempt/request IDs with the
-CPU capture. Spans may overlap or nest; do not sum them. Compare like operations,
-keep initial opens separate from repeated runs, and check dropped-span counts.
-Timing logs are metadata, not notebook output or proof of kernel execution.
+The retired Python chat integration wrote `<dataDir>/science-timing.jsonl` and
+one rotated `.1` file. Existing logs are retained, but Files' Notebook view does
+not produce them: its Marimo server runs independently of the App. Diagnose that
+server separately. Legacy timing logs are metadata, not notebook output or proof
+of kernel execution.
 
 ## Alternative: standard CPU profile
 

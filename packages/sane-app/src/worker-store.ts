@@ -5,9 +5,10 @@ import { uuid } from "./history";
 import { isWorkerAgentId, workerJobsProblem, workerSubjectProblem } from "sane-core/agent-catalog";
 import { validNativeAuthorityId } from "sane-core/native-source-contract";
 import type { ConversationRef } from "sane-core/contracts";
-import type { SessionListDelivery, SessionListWorker, WorkerAttention, WorkerCompletion, WorkerExchange, WorkerOperationReceipt, WorkerProtocolPin, WorkerRecord, WorkerRecords, WorkerDelivery, WorkerWait } from "./worker-contract";
-import { workerResults } from "./worker-contract";
-import { completionBlockers, sameProtocolPin, validProtocolPin, workerBlocksParentGate, type CompletionBlocker } from "./worker-protocol";
+import type { SessionListDelivery, SessionListWorker, WorkerAttention, WorkerCompletion, WorkerCompletionRecovery, WorkerExchange, WorkerOperationReceipt, WorkerProtocolPin, WorkerRecord, WorkerRecords, WorkerDelivery, WorkerWait } from "./worker-contract";
+import { workerResults, workerTerminal } from "./worker-contract";
+import { completionBlockers, continuationActive, sameProtocolPin, validProtocolPin, workerBlocksParentGate, type CompletionBlocker } from "./worker-protocol";
+import { classifyWorkerCompletionRecovery, workerCompletionRecoveryAttemptKey, type WorkerCompletionRecoveryInput } from "./worker-completion-recovery";
 
 /** Detached scalar selection metadata, never a truncated WorkerRecord. */
 export type WorkerSelection = Pick<WorkerRecord, "id" | "sessionId" | "runId" | "checkout" | "state" | "assignment" | "cancelRequestedAt"> & {
@@ -51,10 +52,25 @@ function nativeRef(value: ConversationRef | undefined | null) {
 function party(value: WorkerExchange["sender"] | undefined) {
   return !!value && uuid(value.sessionId) && nativeRef(value.native);
 }
+function validCompletionRecovery(worker: WorkerRecord) {
+  const recovery = worker.completionRecovery;
+  if (recovery === undefined) return true;
+  const timestamp = (value: unknown) => bounded(value, 64) && Number.isFinite(Date.parse(value));
+  if (!recovery || !bounded(recovery.attemptKey, 1000) || recovery.attemptKey !== workerCompletionRecoveryAttemptKey(worker)
+    || !uuid(recovery.triggerRunId) || !timestamp(recovery.createdAt) || !timestamp(recovery.updatedAt)) return false;
+  const delivery = recovery.delivery;
+  if (!delivery || !uuid(delivery.id) || !uuid(delivery.runId) || delivery.runId === recovery.triggerRunId
+    || !bounded(delivery.commandId, 1000) || /[\u0000-\u001f\u007f]/.test(delivery.commandId) || !nativeRef(delivery.native)
+    || !bounded(delivery.native.nativeId, 2000) || !bounded(delivery.native.authorityId, 2000)
+    || !["claimed", "acceptance-unknown", "delivered", "wrapper-completed", "not-submitted"].includes(delivery.state)
+    || delivery.error !== undefined && !bounded(delivery.error, 4000)) return false;
+  if (recovery.escalation !== undefined && (!recovery.escalation || !uuid(recovery.escalation.id) || !uuid(recovery.escalation.runId) || !timestamp(recovery.escalation.at))) return false;
+  return true;
+}
 function validWorkerProtocol(worker: WorkerRecord) {
   const explicit = worker.protocol?.id === "explicit-v1";
   if (worker.state === "idle" && !explicit) return false;
-  if (!explicit) return worker.protocol === undefined && worker.assignment === undefined && worker.wait === undefined && worker.completion === undefined && worker.settlement === undefined && worker.exchanges === undefined && worker.operationReceipts === undefined && worker.attention === undefined;
+  if (!explicit) return worker.protocol === undefined && worker.assignment === undefined && worker.wait === undefined && worker.completion === undefined && worker.settlement === undefined && worker.exchanges === undefined && worker.operationReceipts === undefined && worker.attention === undefined && worker.completionRecovery === undefined;
   if (!worker.protocol || !validProtocolPin(worker.protocol) || worker.protocol.operations.some(operation => !PROTOCOL_OPS.includes(operation))) return false;
   if (worker.assignment !== undefined && !["open", "closing", "terminal"].includes(worker.assignment)) return false;
   if (worker.assignment === "closing" && !worker.completion) return false;
@@ -64,6 +80,7 @@ function validWorkerProtocol(worker: WorkerRecord) {
   if (worker.settlement && (!bounded(worker.settlement.status, 64) || !Number.isFinite(Date.parse(worker.settlement.at)) || !bounded(worker.settlement.summary, 4000))) return false;
   if (worker.usageRecovery && (!uuid(worker.usageRecovery.runId) || !uuid(worker.usageRecovery.throughRunId) || !Number.isSafeInteger(worker.usageRecovery.throughRevision) || worker.usageRecovery.throughRevision < 1 || !Number.isFinite(Date.parse(worker.usageRecovery.at)) || !worker.results?.some(result => result.revision <= worker.usageRecovery!.throughRevision && result.runId === worker.usageRecovery!.runId && result.outcome.status === "failed") || !worker.results.some(result => result.revision === worker.usageRecovery!.throughRevision))) return false;
   if (worker.stopRecovery && (worker.usageRecovery || !uuid(worker.stopRecovery.runId) || !uuid(worker.stopRecovery.throughRunId) || !Number.isSafeInteger(worker.stopRecovery.throughRevision) || worker.stopRecovery.throughRevision < 1 || !Number.isFinite(Date.parse(worker.stopRecovery.at)) || !worker.results?.some(result => result.revision <= worker.stopRecovery!.throughRevision && result.runId === worker.stopRecovery!.runId && result.outcome.status === "interrupted") || !worker.results.some(result => result.revision === worker.stopRecovery!.throughRevision))) return false;
+  if (!validCompletionRecovery(worker)) return false;
   const requests = new Set<string>(), exchangeIds = new Set<string>();
   for (const receipt of worker.operationReceipts ?? []) {
     if (requests.has(receipt.requestId) || !bounded(receipt.requestId, 200) || !PROTOCOL_OPS.includes(receipt.operation) || !bounded(receipt.fingerprint, 128) || !bounded(receipt.invocationKey, 8000) || !uuid(receipt.receipt.id) || receipt.receipt.state !== "accepted" || receipt.receipt.revision !== 1) return false;
@@ -119,7 +136,7 @@ export class WorkerStore {
       const children = this.childrenByParent.get(worker.parent.sessionId) ?? [];
       children.push(worker); this.childrenByParent.set(worker.parent.sessionId, children);
       if (worker.runId && !this.workersByRun.has(worker.runId)) this.workersByRun.set(worker.runId, worker);
-      const executionRuns = [worker.runId, worker.continuation?.runId, ...(worker.exchanges ?? []).map(exchange => exchange.delivery.runId)];
+      const executionRuns = [worker.runId, worker.continuation?.runId, worker.completionRecovery?.delivery.runId, ...(worker.exchanges ?? []).map(exchange => exchange.delivery.runId)];
       for (const runId of executionRuns) if (typeof runId === "string" && !this.workersByExecutionRun.has(runId)) this.workersByExecutionRun.set(runId, worker);
       for (const exchange of worker.exchanges ?? []) if (!this.exchangesById.has(exchange.id)) this.exchangesById.set(exchange.id, exchange);
     }
@@ -177,6 +194,7 @@ export class WorkerStore {
     const fail = () => { throw new Error("Corrupt workers.json; operator reconciliation required"); };
     if (!r || r.version !== 1 || !Array.isArray(r.workers) || !Array.isArray(r.suppressedParents) || !r.suppressedParents.every(uuid)) fail();
     const ids = new Set<string>(), sessions = new Set<string>(), requests = new Set<string>();
+    const recoveryDeliveries = new Set<string>(), recoveryRuns = new Set<string>();
     for (const w of r.workers) {
       const key = JSON.stringify([w.parent?.sessionId, w.input?.requestId]);
       // Older v1 records predate jobs. Validate assignments when present;
@@ -187,6 +205,11 @@ export class WorkerStore {
       if (w.outcome && (!["completed", "failed", "interrupted"].includes(w.outcome.status) || !w.notification?.id)) fail();
       if (w.coordination !== undefined && !(w.coordination === "scouts" && w.input.worker === "scout-crew" || w.coordination === "workers" && (w.input.worker === "implementer" || w.input.worker === "verification-crew"))) fail();
       if (!validWorkerProtocol(w)) fail();
+      if (w.completionRecovery) {
+        const delivery = w.completionRecovery.delivery;
+        if (recoveryDeliveries.has(delivery.id) || recoveryRuns.has(delivery.runId)) fail();
+        recoveryDeliveries.add(delivery.id); recoveryRuns.add(delivery.runId);
+      }
       const runs = new Set<string | null>(), notifications = new Set<string>();
       for (const [index, result] of (w.results ?? []).entries()) {
         if (result.revision !== index + 1 || runs.has(result.runId) || notifications.has(result.notification.id) || !result.notification.id || !["pending", "wait-consumed", "claimed", "acceptance-unknown", "delivered"].includes(result.notification.state) || !["completed", "failed", "interrupted"].includes(result.outcome.status) || result.runId !== null && !uuid(result.runId)) fail();
@@ -328,6 +351,94 @@ export class WorkerStore {
     const next = structuredClone(this.records), w = next.workers.find(w => w.id === id);
     if (!w) throw new Error("Unknown worker");
     Object.assign(w, change, { updatedAt: new Date().toISOString() }); this.commit(next); return structuredClone(w);
+  }
+  /** Merge live facts with durable blockers from BOTH exchange directions and all
+   * descendant result histories. Idle alone never grants a recovery dispatch. */
+  private completionRecoveryInput(worker: WorkerRecord, input: WorkerCompletionRecoveryInput): WorkerCompletionRecoveryInput {
+    const children = this.descendantRecords(worker.sessionId);
+    const sessions = new Set([worker.sessionId, ...children.map(child => child.sessionId)]);
+    let incomingExchanges = false, outgoingExchanges = false;
+    for (const owner of this.records.workers) for (const exchange of owner.exchanges ?? []) {
+      if (!["queued", "claimed", "acceptance-unknown"].includes(exchange.delivery.state)) continue;
+      if (sessions.has(exchange.recipient.sessionId)) incomingExchanges = true;
+      if (sessions.has(exchange.sender.sessionId)) outgoingExchanges = true;
+    }
+    return { ...input, blockers: {
+      ...input.blockers,
+      suppressed: input.blockers.suppressed !== false || this.suppressed(worker.sessionId) || this.suppressed(worker.parent.sessionId),
+      unfinishedDescendants: input.blockers.unfinishedDescendants !== false || children.some(child => !workerTerminal(child) || continuationActive(child)),
+      incomingExchanges: input.blockers.incomingExchanges !== false || incomingExchanges,
+      outgoingExchanges: input.blockers.outgoingExchanges !== false || outgoingExchanges,
+      resultDeliveries: input.blockers.resultDeliveries !== false || this.hasActiveDelivery(worker.sessionId)
+        || [worker, ...children].some(owner => workerResults(owner).some(result => ["pending", "claimed", "acceptance-unknown"].includes(result.notification.state))),
+    } };
+  }
+  /** First publisher wins. expectedRevision fences the durable snapshot gathered
+   * alongside live coordinator facts. Persist BEFORE native dispatch; any claim,
+   * including not-submitted/unknown, consumes this attempt's one reminder. */
+  claimCompletionRecovery(id: string, input: {
+    expectedRevision: number;
+    snapshot: WorkerCompletionRecoveryInput;
+    delivery: Omit<WorkerCompletionRecovery["delivery"], "state" | "error">;
+  }): WorkerCompletionRecovery | undefined {
+    const current = this.workersById.get(id);
+    if (!current || input.expectedRevision !== this.revision || current.completionRecovery) return;
+    if (classifyWorkerCompletionRecovery(current, this.completionRecoveryInput(current, input.snapshot)).status !== "recovery-needed") return;
+    if (!current.child || input.delivery.native.harness !== current.child.harness || input.delivery.native.authorityId !== current.child.authorityId || input.delivery.native.nativeId !== current.child.nativeId) return;
+    if (this.hasExecutionRun(input.delivery.runId) || this.records.workers.some(worker => worker.completionRecovery?.delivery.id === input.delivery.id)) return;
+    const next = structuredClone(this.records), worker = next.workers.find(worker => worker.id === id)!;
+    const now = new Date().toISOString();
+    worker.completionRecovery = {
+      attemptKey: input.snapshot.attemptKey, triggerRunId: input.snapshot.run!.runId,
+      delivery: { ...structuredClone(input.delivery), state: "claimed" }, createdAt: now, updatedAt: now,
+    };
+    worker.updatedAt = now;
+    this.commit(next);
+    return structuredClone(worker.completionRecovery);
+  }
+  /** Exact delivery identity fences late reconciliation from an earlier attempt.
+   * Terminal evidence is absorbing; no state transition restores reminder budget. */
+  advanceCompletionRecovery(id: string, deliveryId: string, state: Exclude<WorkerCompletionRecovery["delivery"]["state"], "claimed">, error?: string): WorkerCompletionRecovery | undefined {
+    const current = this.workersById.get(id)?.completionRecovery;
+    if (!current || current.delivery.id !== deliveryId) return;
+    if (["delivered", "wrapper-completed", "not-submitted"].includes(current.delivery.state) || current.delivery.state === state && current.delivery.error === error) return structuredClone(current);
+    const next = structuredClone(this.records), worker = next.workers.find(worker => worker.id === id)!, recovery = worker.completionRecovery!;
+    recovery.delivery = { ...recovery.delivery, state, error };
+    recovery.updatedAt = worker.updatedAt = new Date().toISOString();
+    this.commit(next);
+    return structuredClone(recovery);
+  }
+  /** Durable attention claim, not a completion or a retryable outbox item.
+   * Publish only when this method returns a NEW claim; never republish on reads. */
+  claimCompletionRecoveryEscalation(id: string, input: { expectedRevision: number; snapshot: WorkerCompletionRecoveryInput; deliveryId: string; escalationId: string }): WorkerCompletionRecovery | undefined {
+    const current = this.workersById.get(id);
+    if (!current || input.expectedRevision !== this.revision || current.completionRecovery?.delivery.id !== input.deliveryId) return;
+    if (classifyWorkerCompletionRecovery(current, this.completionRecoveryInput(current, input.snapshot)).status !== "escalation-needed") return;
+    const next = structuredClone(this.records), worker = next.workers.find(worker => worker.id === id)!, recovery = worker.completionRecovery!;
+    const now = new Date().toISOString();
+    recovery.escalation = { id: input.escalationId, runId: input.snapshot.run!.runId, at: now };
+    recovery.updatedAt = worker.updatedAt = now;
+    this.commit(next);
+    return structuredClone(recovery);
+  }
+  /** App-owned protocol failure, never a worker completion receipt or inferred
+   * successful task result. Only the exact successfully settled reminder may
+   * close the assignment; unknown/non-submitted reminders remain inspectable. */
+  failCompletionRecovery(id: string, input: { expectedRevision: number; snapshot: WorkerCompletionRecoveryInput; deliveryId: string; summary: string }): WorkerRecord | undefined {
+    const current = this.workersById.get(id), claim = current?.completionRecovery;
+    if (!current || !claim || input.expectedRevision !== this.revision || claim.delivery.id !== input.deliveryId
+      || input.snapshot.run?.runId !== claim.delivery.runId || !["delivered", "wrapper-completed"].includes(claim.delivery.state)
+      || classifyWorkerCompletionRecovery(current, this.completionRecoveryInput(current, input.snapshot)).status !== "escalation-needed") return;
+    const next = structuredClone(this.records), worker = next.workers.find(worker => worker.id === id)!;
+    const at = new Date().toISOString(), runId = claim.delivery.runId, revision = (worker.results?.length ?? 0) + 1;
+    const outcome = { status: "failed" as const, at, summary: input.summary, log: { sessionId: worker.sessionId, runId } };
+    const notification = { id: revision === 1 ? `worker-outcome:${id}` : `worker-outcome:${id}:${runId}`, state: "pending" as const };
+    worker.state = "failed"; worker.assignment = "terminal"; worker.error = input.summary;
+    worker.outcome = outcome; worker.notification = notification;
+    worker.results = [...(worker.results ?? []), { revision, runId, outcome, notification }];
+    worker.updatedAt = at;
+    this.commit(next);
+    return structuredClone(worker);
   }
   acknowledgeResults(refs: NonNullable<WorkerDelivery["resultRefs"]>, consumedBy: { runId: string; toolCallId: string }) {
     const next = structuredClone(this.records);
@@ -540,6 +651,7 @@ export class WorkerStore {
       || runs.slice(boundaryIndex + 1).some(run => !["running", "completed"].includes(run.status))) throw new Error("Later worker execution must be inspected before recovery");
     w.usageRecovery = { runId, throughRunId: runs[boundaryIndex]!.runId, throughRevision: w.results.at(-1)!.revision, at: new Date().toISOString() };
     delete w.stopRecovery;
+    delete w.completionRecovery;
     w.assignment = "open";
     w.state = "idle";
     delete w.outcome;
@@ -574,6 +686,7 @@ export class WorkerStore {
       || events.at(-1)?.kind !== "status" || events.at(-1)?.data?.status !== "interrupted") throw new Error("Original run does not prove a settled Stop");
     w.stopRecovery = { runId, throughRunId, throughRevision: w.results.at(-1)!.revision, at: new Date().toISOString() };
     delete w.usageRecovery;
+    delete w.completionRecovery;
     delete w.cancelRequestedAt;
     delete w.outcome;
     delete w.notification;
@@ -591,6 +704,16 @@ export class WorkerStore {
     const next = structuredClone(this.records), w = next.workers.find(worker => worker.id === id);
     if (!w) throw new Error("Unknown worker");
     if (w.protocol?.id !== "explicit-v1") throw new Error("Explicit observation requires an explicit protocol pin");
+    // A read may have begun before the atomic app-owned protocol failure. Its
+    // stale idle projection cannot undo that failure's state or diagnostic.
+    if (w.outcome && w.assignment === "terminal" && w.completionRecovery?.delivery.runId === w.outcome.log?.runId && !w.completion) {
+      if (change.state === "uncertain") w.state = "uncertain";
+      else w.state = w.outcome.status;
+      if (change.continuation) w.continuation = change.continuation;
+      w.updatedAt = new Date().toISOString();
+      this.commit(next);
+      return structuredClone(w);
+    }
     // An observation begun before admission must not republish a superseded closure.
     const recovery = w.usageRecovery ?? w.stopRecovery;
     if (recovery && change.outcome?.log && [recovery.runId, recovery.throughRunId].includes(change.outcome.log.runId)

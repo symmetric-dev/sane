@@ -38,7 +38,7 @@ function useActionMembership(workspaceId: string | null, sessionId: string | nul
   return { overview: state.overview, loading: active && !state.overview && state.loading, failed: active && !!state.error, retry: () => { void refresh().catch(() => {}); }, refresh };
 }
 
-export function ChatWorkstreamActions({ conversation, active, onDocuments, close, onTerminal, onGit, onPython, pythonUnavailable }: { conversation?: Conversation; active: boolean; onDocuments?: (identity: DocumentReviewStart) => void; close: () => void; onTerminal: () => void; onGit: () => void; onPython: () => void; pythonUnavailable?: string }) {
+export function ChatWorkstreamActions({ conversation, active, onDocuments, close, onTerminal, onGit }: { conversation?: Conversation; active: boolean; onDocuments?: (identity: DocumentReviewStart) => void; close: () => void; onTerminal: () => void; onGit: () => void }) {
   const { workspaces } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   // Chat association, never the workspace currently being browsed in Settings.
   const workspaceId = conversation?.workspaceId ?? null;
@@ -58,11 +58,10 @@ export function ChatWorkstreamActions({ conversation, active, onDocuments, close
     : membershipReady && !workstreamId ? "Assign this chat to a workstream"
     : flowsAvailable ? "Flows" : reason;
   return <>
-    <FlowLauncher subtitle={detail?.workstream.title} close={close} unavailable={{ "sane-review": flowsAvailable ? undefined : flowsReason, python: pythonUnavailable, git: gitTargetUnavailable() }} onSelect={flow => {
+    <FlowLauncher subtitle={detail?.workstream.title} close={close} unavailable={{ "sane-review": flowsAvailable ? undefined : flowsReason, git: gitTargetUnavailable() }} onSelect={flow => {
       if (!active) return;
       if (flow === "terminal") { onTerminal(); return; }
       if (flow === "git") { if (!gitTargetUnavailable()) onGit(); return; }
-      if (flow === "python") { if (!pythonUnavailable) onPython(); return; }
       if (!flowsAvailable || !workspaceId || !conversation || !detail) return;
       const identity = { sessionId: conversation.id, workspaceId, repositoryId: detail.workstream.repositoryId, workstreamId: detail.workstream.id };
       close();

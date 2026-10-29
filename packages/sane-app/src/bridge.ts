@@ -97,9 +97,9 @@ import { assertPendingInputDomainMutation, assertDomainInitializationIdle, chain
 import { equal as equalPendingPin } from "./prepared-input-codec";
 import { decodePendingInputPins } from "./pending-input-codec";
 import { prepareUserInput, revalidatePreparedUserInput, assertPreparedUserInputCurrent, UserInputPreparationError, createCanonicalActivation, validateCanonicalActivation, type ActivationSnapshot, type PreparedUserInput } from "./user-input-preparation";
-import { ScienceSubmissionStore, ScienceSubmissionError, ScienceSubmissionStorageError, scienceContextMessageInput, type SciencePreparedSnapshotReference, type ScienceSubmissionReceipt } from "./science-submission-store";
+import { ScienceSubmissionStore, ScienceSubmissionError, ScienceSubmissionStorageError, type ScienceSubmissionReceipt } from "./science-submission-store";
 import { canonicalJSON } from "./prepared-input-codec";
-import type { ScienceSnapshotReference, ScienceSubmissionView } from "../shared/conversation/types";
+import type { ScienceSubmissionView } from "../shared/conversation/types";
 import { WorkspaceService, WorkspaceError } from "./workspace";
 import { createWorkspaceRoute, matchesWorkspaceRoute } from "./workspace-routes";
 import { GitOperationsService } from "./git-operations";
@@ -111,8 +111,6 @@ import { BrowserService, type BrowserSocketData } from "./browser/browser-servic
 import { BrowserGrantError } from "./browser/browser-grant-registry";
 import { BROWSER_MCP_TOOLS } from "../shared/browser-host-contract";
 import { ScienceService, scienceRoute } from "./science";
-import { ScienceChatService, scienceChatRoute } from "./science-chat-service";
-import { ScienceStore } from "./science-store";
 import { RepositoryRouter, RepositoryStoreError, WorkstreamAdapterError, flushAndCloseWorkstreams } from "./workstreams";
 import { createWorkstreamRoute, matchesWorkstreamRoute } from "./workstream-routes";
 import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult, WorkstreamCompleteResult } from "./workstreams-contract";
@@ -126,6 +124,8 @@ import { DomainError, canonicalSlot, equivalentSlots, normalizeNativeSource, rev
 import type { Handoff, NativeSourceDescriptor } from "sane-core/contracts";
 import { WorkerStorageError, WorkerStore } from "./worker-store";
 import { WorkerService, type WorkerParent } from "./workers";
+import { WorkerCompletionRecoveryCoordinator, WORKER_COMPLETION_REMINDER, type WorkerCompletionRecoveryCandidate } from "./worker-completion-recovery-coordinator";
+import { classifyWorkerCompletionRecovery, workerCompletionRecoveryAttemptKey, type WorkerCompletionRecoveryInput } from "./worker-completion-recovery";
 import type { ExplicitWorkerOperations } from "./native-workers";
 import { createNativeWorkerHandler, NativeWorkerRequestError, type NativeWorkerCallerResolver } from "./native-workers";
 import { matchesOpenCodeWorkerPart, nativeWorkerInput, projectNativeWorkerReply, type NativeWorkerInvocation } from "../../sane-cli/src/native-worker-contract";
@@ -445,6 +445,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const searches = createWorkspaceSearchLifecycle();
   let workspaceCreations: WorkspaceCreationService | undefined;
   let gitOperations: GitOperationsService | undefined;
+  let workerCompletionRecovery: WorkerCompletionRecoveryCoordinator | undefined;
   async function abortStartup() {
     closing = true;
     stopGrokForks?.();
@@ -453,6 +454,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     pendingInputWake?.close();
     pendingInputRecovery?.close();
     const queueDrain = pendingInputBridge?.close();
+    const workerRecoveryDrain = workerCompletionRecovery?.close();
     stopStartupConsumers?.();
     // Stop EVERY acquired listener first, even if one stop rejects. Cleanup is
     // bounded and failures retain both locks; nothing may serve unlocked after
@@ -461,6 +463,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await boundedStartupCleanup(() => repositoryReadDrain);
     await boundedStartupCleanup(() => drainStartupExecution?.());
     await boundedStartupCleanup(() => queueDrain);
+    await boundedStartupCleanup(() => workerRecoveryDrain);
     await Promise.all([
       () => chromePush?.close(), () => workspaceCreations?.close(), () => gitOperations?.close(), () => science?.close(),
       async () => { if (grokApp && !(await grokApp.close()).drained) retainOwner = true; },
@@ -541,16 +544,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       grok: () => ({ harness: "gk", kind: "allocated", allocate: () => crypto.randomUUID() }),
     });
   }
-  const scienceChats = new ScienceChatService(new ScienceStore(options.dataDir, store.manifest.storeId), science, catalog, admissions, id => meta.sessions.find(s => s.sessionId === id), async (id, messageId) => {
-    const session = meta.sessions.find(s => s.sessionId === id);
-    if (!session) return false;
-    try {
-      ensureSessionJournals(id);
-      const page = await transcripts.page(session, new URLSearchParams({ targetMessageId: messageId, limit: "1" }));
-      // Native aliases may locate a page, but only its exact canonical ID is an anchor.
-      return page.target?.messageId === messageId;
-    } catch { return false; }
-  });
   const workerStore = new WorkerStore(options.dataDir);
   const branches = new BranchStore(options.dataDir);
   const branchRequests = new Set<string>();
@@ -748,6 +741,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // that notification back into its own scheduler. Foreign changes during
       // this bounded pass are reconsidered by lifecycle hints/the 15s backstop.
       if (!pendingInputBridge?.isReconsidering()) notifyPendingInput("capacity");
+      // Explicit admission/ownership/barrier releases are operational events,
+      // not worker-store observation commits. A blocked pass acquires nothing,
+      // so reconsideration cannot wake itself indefinitely.
+      workerCompletionRecovery?.notify();
     }, onError: failClosed },
   });
   // Read-only projections for existing domain observers; all mutation authority
@@ -867,7 +864,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     catch { /* Optional bounded diagnostics; no authoritative writes or gates. */ }
     // A delayed native interrupt must finish before a replacement can acquire
     // this conversation, even if terminal observation arrived first.
-    coordinator.releaseOwner(owner);
+    if (coordinator.releaseOwner(owner)) {
+      // Release precedes after-release reconciliation. Never await done inside
+      // the lifecycle finalizer or dispatch from this synchronous release hook.
+      void owner.done.then(() => workerCompletionRecovery?.notify()).catch(error => failClosed(error, "worker-completion-release"));
+    }
   }
   let replyIndexedSessionCount = -1;
   let replyLiveSessions = new Map<string, Session>();
@@ -1203,7 +1204,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Read-only inspection and a source-owned child launch do not compete for
     // this recipient's turn. Every mutating recipient intent does, independently
     // of delivery origin or a copied queue request ID.
-    if (sessionId && phase !== "enqueue" && ["user-prompt", "questionnaire-response", "worker-report", "worker-exchange", "handoff", "prepare-recipient", "branch", "compact", "branch-recovery", "enroll", "retry-admission", "attach"].includes(intent.kind) && pendingInputs?.hasChain(sessionId)
+    if (sessionId && phase !== "enqueue" && ["user-prompt", "questionnaire-response", "worker-report", "worker-exchange", "worker-recovery", "handoff", "prepare-recipient", "branch", "compact", "branch-recovery", "enroll", "retry-admission", "attach"].includes(intent.kind) && pendingInputs?.hasChain(sessionId)
       && !pendingInputBridge?.allowsReadiness(options)) return { ready: false as const, reason: "A durable input chain is active; use the explicit pending-inputs API", code: "pending-input-chain-active" };
     return undefined;
   }
@@ -1325,9 +1326,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return next;
   }
   const grokManagedProjections = new Map<string, { projection: GrokOutputProjection; through: number; stderr: string; reason?: string; finished: boolean }>();
-  class GrokManagedSubmissionResponse extends Error {
-    constructor(readonly response: Response) { super("Original Grok science submission response"); }
-  }
   function grokAuthoredBody(run: Run): string | undefined {
     for (const event of journalEvents(run.runId)) {
       if (event.kind !== "submission") continue;
@@ -1414,26 +1412,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
     managedView: grokManagedView,
     managedSubmit: async input => {
+      if (Object.hasOwn(input, "scienceSnapshots")) throw new WorkstreamAdapterError(409, "science-chat-retired", "Science chat has been retired; saved submission history remains available");
       const current = await grokManagedView(input.sessionId);
       const existing = meta.sessions.find(session => session.sessionId === input.sessionId);
       if (existing && existing.harness !== "grok") throw new WorkstreamAdapterError(409, "grok-session-conflict", "This App conversation belongs to a different harness");
-      if (input.scienceSnapshots !== undefined) {
-        if (!current) throw new WorkstreamAdapterError(409, "science-send-invalid", "Science sharing requires an existing admitted Grok conversation");
-        if (input.cwd !== undefined && input.cwd !== current.cwd || input.workspaceId != null && input.workspaceId !== current.workspaceId
-          || input.worktreeId != null && input.worktreeId !== current.worktreeId) throw new WorkstreamAdapterError(409, "grok-binding-conflict", "Science sharing must retain the original Grok execution source");
-        const prior = uuid(input.requestId) ? scienceSubmissions.get({ conversationId: input.sessionId, requestId: input.requestId }) : undefined;
-        if ((!prior || prior.state === "prepared") && input.turnIndex !== current.nextTurnIndex) throw new WorkstreamAdapterError(409, "grok-turn-conflict", "Grok turn index changed; refresh before sharing");
-        // Domain receipts compare the entire frozen snapshot/settings payload.
-        // Never deduplicate science sends using just the visible comment text.
-        const response = await submitUserInput({ sessionId: input.sessionId, prompt: input.prompt, model: input.model, effort: input.effort,
-          ...(input.profileId ? { profileId: input.profileId } : {}), ...(input.nativeStopped !== undefined ? { nativeStopped: input.nativeStopped } : {}),
-          requestId: input.requestId, scienceSnapshots: input.scienceSnapshots });
-        const result = await response.clone().json() as { scienceSubmission?: ScienceSubmissionView; error?: unknown };
-        if (!response.ok || result.error) throw new GrokManagedSubmissionResponse(response);
-        const view = await grokManagedView(input.sessionId);
-        if (!view) throw new GrokManagedSubmissionResponse(response);
-        return { ...view, ...(result.scienceSubmission ? { scienceSubmission: result.scienceSubmission } : {}) };
-      }
       if (current && input.turnIndex < current.nextTurnIndex) {
         const prior = meta.runs.filter(run => run.sessionId === input.sessionId)[input.turnIndex];
         if (!prior || grokAuthoredBody(prior) !== input.prompt || prior.model !== input.model || prior.effort !== input.effort) throw new WorkstreamAdapterError(409, "grok-turn-conflict", "This turn already identifies a different message");
@@ -1451,6 +1433,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       return (await grokManagedView(input.sessionId))!;
     },
     managedStop: async sessionId => {
+      pendingInputControls.cancellationWrite(() => workerStore.suppress(sessionId, true));
       const forks = [...grokForkProcesses.values()].filter(fork => fork.sourceId === sessionId);
       for (const fork of forks) fork.controller.abort();
       const owner = pendingInputControls.stop(sessionId);
@@ -2207,7 +2190,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       throw error;
     }
   }
-  const automation = { "queued-user": { supported: true as const }, "questionnaire-response": { supported: true as const }, "worker-report": { supported: true as const }, "worker-exchange": { supported: true as const }, handoff: { supported: true as const } };
+  const automation = { "queued-user": { supported: true as const }, "questionnaire-response": { supported: true as const }, "worker-report": { supported: true as const }, "worker-exchange": { supported: true as const }, "worker-recovery": { supported: true as const }, handoff: { supported: true as const } };
   dispatchRegistry.register(createClaudeDispatchAdapter({
     automation,
     readiness: async source => ({ source, readiness: { ready: false, reason: "Claude automatic readiness requires the exact completed process lifecycle", code: "dispatch-proof-unproven" } }),
@@ -2368,7 +2351,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           }
         }
         const ownLease = coordinator.holdsAdmission(lease, current.sessionId);
-        const intent: ConversationOperationIntent = { kind: options.coordinatorIntent ?? (origin === "handoff" ? "handoff" : origin === "worker-report" ? "worker-report" : origin === "worker-exchange" ? "worker-exchange" : origin === "questionnaire-response" ? "questionnaire-response" : "user-prompt"), requestId: options.requestId };
+        const intent: ConversationOperationIntent = { kind: options.coordinatorIntent ?? (origin === "handoff" ? "handoff" : origin === "worker-report" ? "worker-report" : origin === "worker-exchange" ? "worker-exchange" : origin === "worker-recovery" ? "worker-recovery" : origin === "questionnaire-response" ? "questionnaire-response" : "user-prompt"), requestId: options.requestId };
         const input = { conversationId: current.sessionId, intent, phase: "dispatch" as const, ...(ownLease ? { lease } : {}) };
         const ready = pendingInputBridge!.releasedReadiness(owner, input);
         return { source: dispatchSource(current), installation: JSON.stringify([dispatchSnapshot(current), admission, association, repository]),
@@ -2396,6 +2379,24 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     });
     dispatchTasks.add(lifecycle.done);
     pendingInputBridge!.recordLifecycle(session.sessionId, lifecycle);
+    // Central shared dispatch covers worker launch, user/handoff turns and every
+    // report/exchange continuation across Claude, OpenCode and Grok. Observation
+    // remains read-only with respect to native sends; only this settled event
+    // makes the original lifecycle a recovery candidate.
+    if (workerStore.hasSession(session.sessionId)) {
+      const settled = lifecycle.done.then(async () => {
+        if (closing || storageFailed) return;
+        const worker = workerStore.getBySession(session.sessionId);
+        if (worker) {
+          await reconcileCompletionRecoveryDelivery(worker);
+          await workers.refresh(workerStore.get(worker.id)!);
+        }
+        workerCompletionRecovery?.notify();
+      });
+      dispatchTasks.add(settled);
+      void settled.finally(() => dispatchTasks.delete(settled)).catch(error => failClosed(error, "worker-completion-settlement"));
+      workerCompletionRecovery?.track({ runId: run.runId, source: Object.freeze({ ...dispatchSource(session) }), successfulSettlement: lifecycle.successfulSettlement }, settled);
+    }
     void lifecycle.done.finally(() => { dispatchTasks.delete(lifecycle.done); });
     try { synchronousDispatchHook(() => options.publish?.(lifecycle)); }
     catch (error) {
@@ -2412,25 +2413,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!(await stat(cwd)).isDirectory()) throw new Error("Execution directory unavailable");
   }
   const preparationState = () => ({ getSession: (id: string) => meta.sessions.find(s => s.sessionId === id), profiles: agentProfiles, sourceAuthorityId: nativeSource, prepareCanonicalExecution });
-  // Ordinary-send science authority. Preview data never enters this resolver.
-  function scienceReferences(conversationId: string, refs: ScienceSnapshotReference[], settings: Record<string, any>): SciencePreparedSnapshotReference[] {
-    const snapshots = scienceChats.resolveShareSnapshots(conversationId, refs.map(ref => ref.snapshotId));
-    const chat = scienceChats.store.get(conversationId)!;
-    return refs.map(ref => {
-      const saved = snapshots.find(s => s.id === ref.snapshotId && s.blockId === ref.blockId);
-      if (!saved) throw new ScienceSubmissionError("science-snapshot-not-found", "Frozen science snapshot not found in this conversation", 404);
-      return { snapshotId: saved.id, blockId: saved.blockId, source: saved.source, agentText: saved.agentText,
-        provenance: { workspaceId: chat.workspaceId, worktreeId: chat.worktreeId, admissionKey: chat.admissionKey, notebook: chat.notebook,
-          shareRequestId: saved.requestId, revision: saved.revision, operationId: saved.operationId, representation: saved.representation, createdAt: saved.createdAt, settings } };
-    });
-  }
+  // Historical receipts retain their exact frozen bytes. Never load, migrate or
+  // replay retired chat storage to prepare a new submission.
   const scienceOutcomeEvidence = new Map<string, import("../shared/conversation/dispatch-contract").DispatchSubmissionEvidence>();
   const scienceSubmissions = new ScienceSubmissionStore(options.dataDir, store.manifest.storeId, {
     beforeMutation: () => { if (closing || storageFailed || !startupReady) throw new ScienceSubmissionStorageError("Science submission ownership is unavailable"); },
     validateLive: ({ stage, receipt }) => {
       const { intent } = receipt;
-      const settings = intent.snapshots[0]?.provenance.settings as Record<string, any>;
-      if (canonicalJSON(scienceReferences(intent.conversationId, intent.snapshots, settings)) !== canonicalJSON(intent.snapshots)) throw new ScienceSubmissionError("science-snapshot-changed", "Frozen science snapshot authority changed");
+      if (stage !== "outcome") throw new ScienceSubmissionError("science-chat-retired", "Science chat has been retired; saved submission history remains available");
       if (stage === "outcome") {
         const evidence = scienceOutcomeEvidence.get(`${intent.conversationId}/${intent.requestId}`);
         if (!evidence || evidence.requestId !== intent.requestId || evidence.source.sessionId !== intent.conversationId
@@ -2445,23 +2435,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   /** Backend launch authority shared by immediate admission and explicit queue
    * recovery. Ordinary user sends are idle-only. */
-  async function admitPreparedInput(prepared: PreparedUserInput, lease: ConversationAdmissionLease, options: PreparedAdmissionOptions & { scienceSubmission?: { conversationId: string; requestId: string }; messageIntent?: BridgeMessageIntent; submissionPublication?: SubmissionPublicationFactory } = {}) {
+  async function admitPreparedInput(prepared: PreparedUserInput, lease: ConversationAdmissionLease, options: PreparedAdmissionOptions & { messageIntent?: BridgeMessageIntent; submissionPublication?: SubmissionPublicationFactory } = {}) {
     const { conversationId, cwd, harness } = prepared.binding;
     const input = prepared.normalized, { model, effort, agent } = prepared.configuration;
     const { queuedFollowupId, publish } = options;
-    let namingText = prepared.prompt;
+    const namingText = prepared.prompt;
     // Copy explicit context before any await. Hooks are capabilities, not mutable
     // settings aliases; IDs, intent and origin cannot drift during preflight.
     const context = options.context && Object.freeze({ ...options.context, intent: Object.freeze({ ...options.context.intent }), evidence: options.context.evidence && Object.freeze({ ...options.context.evidence }) });
-    if (options.scienceSubmission) {
-      const receipt = scienceSubmissions.get(options.scienceSubmission);
-      if (!receipt || receipt.state !== "unknown" || receipt.nativeAttempted || receipt.dispatchText !== prepared.prompt
-        || receipt.intent.conversationId !== conversationId || context?.intent.requestId !== receipt.intent.requestId
-        || context?.runId !== receipt.association?.runId || (context?.nativeCommandId ?? null) !== receipt.association?.nativeCommandId
-        || context?.origin !== "user" || context.delivery !== "idle-only" || queuedFollowupId) throw new UserInputPreparationError("Science admission must use its exact reserved text and original dispatch identity", 409);
-      if (receipt.intent.version !== 3) throw new UserInputPreparationError("Historical science dispatch text cannot be converted or replayed through shared context", 409, "science-legacy-context-unproven");
-      namingText = receipt.intent.text;
-    }
     if (context && (context.delivery !== "idle-only" && context.delivery !== "native-queued-handoff"
       || !["user", "queued-user", "questionnaire-response", "worker-report", "worker-exchange", "handoff"].includes(context.origin))) throw new UserInputPreparationError("Explicit admission requires a known delivery policy and origin", 409);
     if (publish !== undefined && typeof publish !== "function") throw new UserInputPreparationError("Lifecycle publisher must be a function", 409);
@@ -2483,7 +2464,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const priorSession = meta.sessions.find(row => row.sessionId === conversationId);
     const noPriorRun = !meta.runs.some(row => row.sessionId === conversationId);
     const anchored = noPriorRun && pendingActivations.hasPending(conversationId);
-    const prepareActivationJournal = !context && !options.scienceSubmission && !queuedFollowupId && !prepared.stagedUpgrade && origin === "user"
+    const prepareActivationJournal = !context && !queuedFollowupId && !prepared.stagedUpgrade && origin === "user"
       && ((!prepared.resume && prepared.canonicalActivation !== undefined) || anchored);
     if (anchored && !prepareActivationJournal) throw new UserInputPreparationError("Pending activation requires explicit original-journal adoption; this delivery path cannot replace it", 409);
     let activationPreparation: PendingActivationPreparation | undefined;
@@ -2632,8 +2613,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // it must not normalize preferences or upgrade metadata during a claim.
       profileId: nativeHandoff ? configured.profileId : sessionProfileId(configured), ...saneContextSnapshot(configured), ...(queuedFollowupId ? { queuedFollowupId } : {}) };
     if (harness === "opencode") { run.nativeCommandId = nativeCommandId!; run.nativePhase = "preparing"; }
-    const science = options.scienceSubmission && scienceSubmissions.get(options.scienceSubmission);
-    const effectivePrompt = science ? science.intent.text : prepared.prompt;
     const installedSnapshot = structuredClone(configured);
     const assertActivationPreparation = () => {
       if (!activationPreparation || !activationInput) throw new Error("Activation preparation capability unavailable");
@@ -2646,30 +2625,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         || canonicalJSON({ saneExecution: session!.saneExecution, saneContext: session!.saneContext }) !== canonicalJSON(activationInput.activation)) throw new UserInputPreparationError("Activation journal has no exact ready original native admission and pinned pair", 409);
       pendingActivations.assertCurrent(activationPreparation, activationInput);
     };
-    const messageIntent: BridgeMessageIntent | undefined = science ? {
-      kind: "selected", source: `app:${store.manifest.storeId}/science-submission:${science.intent.requestId}`,
-      assertCurrent: () => {
-        const current = scienceSubmissions.get(options.scienceSubmission!);
-        if (!current || current.fingerprint !== science.fingerprint || current.dispatchText !== prepared.prompt || current.intent.version !== 3) throw new UserInputPreparationError("Original science sharing authority changed", 409);
-        const settings = current.intent.snapshots[0].provenance.settings as Record<string, any>;
-        if (canonicalJSON(scienceReferences(conversationId, current.intent.snapshots, settings)) !== canonicalJSON(current.intent.snapshots)) throw new UserInputPreparationError("Frozen science snapshot sources changed", 409);
-      },
-      readCurrent: () => {
-        const current = scienceSubmissions.get(options.scienceSubmission!);
-        if (!current || current.intent.version !== 3) throw new UserInputPreparationError("Original science sharing intent unavailable", 409);
-        return scienceContextMessageInput(current.intent);
-      },
-    } : options.messageIntent ?? (activationPreparation || upgradeContext ? {
+    const messageIntent: BridgeMessageIntent | undefined = options.messageIntent ?? (activationPreparation || upgradeContext ? {
       kind: upgradeContext ? "assistant-upgrade" : "assistant-activation",
       source: activationPreparation ? `app:${store.manifest.storeId}/activation-run:${activationPreparation.runId}` : `app:${store.manifest.storeId}/prepared-upgrade:${run.runId}`,
       assertCurrent: () => {
         assertPreparedUserInputCurrent(prepared, preparationState(), installedSnapshot);
         if (run.runId !== runId || !meta.runs.includes(run) || !configured.saneExecution || !configured.saneContext?.package) throw new UserInputPreparationError("Original canonical activation intent is unavailable", 409);
       },
-    } : undefined);    // Capture only user-origin input before role/science/context expansion.
+    } : undefined);    // Capture only user-origin input before role/context expansion.
     // Other dispatch origins and inherited/attached sessions remain ineligible.
     if ((origin === "user" || origin === "queued-user") && session.titleAutoEligible && session.agentKind !== "worker" && !session.attachment) namingSubmissions.set(run, namingText);
-    const lifecycle = executePrompt(lease, session, run, effectivePrompt, prepared.resume, origin, {
+    const lifecycle = executePrompt(lease, session, run, prepared.prompt, prepared.resume, origin, {
       requestId: intent.requestId,
       coordinatorIntent: intent.kind,
       validate: () => { assertDispatch(); assertContext(); assertPreparedUserInputCurrent(prepared, preparationState(), createdSnapshot); },
@@ -2690,7 +2656,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (origin === "user" || origin === "queued-user") {
           const accepted = workerStore.getBySession(conversationId);
           const correlationId = accepted?.protocol?.id === "explicit-v1" && accepted.wait?.reason === "user" ? accepted.wait.correlationId : undefined;
-          if (correlationId) workerStore.resolveAcceptedUserWait(conversationId, correlationId);
+          if (correlationId) {
+            workerStore.resolveAcceptedUserWait(conversationId, correlationId);
+            workerCompletionRecovery?.notify(conversationId);
+          }
         }
       },
       beforeSend: () => {
@@ -3237,21 +3206,25 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return { pin: { id: "explicit-v1", operations, executionRevision, contextRevision: packageRef.revision, runtimeCapabilities: [...tools] } };
   };
   const nativeTurnActive = (worker: { sessionId: string }) => owners.has(worker.sessionId) || workerStore.hasActiveDelivery(worker.sessionId) || workerStore.hasActiveExchange(worker.sessionId);
+  async function workerOperational<T>(operation: () => T | Promise<T>): Promise<T> {
+    try { return await operation(); }
+    finally { workerCompletionRecovery?.notify(); }
+  }
   const workerHandler = createNativeWorkerHandler({
     resolveCaller: resolveTrustedWorkerInvocation,
     nativeTurnActive,
     operations: {
-      start: (caller, input, context) => workers.start(caller, input, () => context.assertActive()),
+      start: (caller, input, context) => workerOperational(() => workers.start(caller, input, () => context.assertActive())),
       status: (caller, ids, context) => { context.assertActive(); return workers.status(caller, ids); },
-      acknowledge: (caller, refs, context) => { context.assertActive(); return workers.acknowledgeWait(caller, refs); },
-      cancel: (caller, ids, descendants, context) => { context.assertActive(); return workers.cancel(caller, ids, descendants); },
-      cancelAll: (caller, scope, context) => { context.assertActive(); return workers.cancelAll(caller, scope); },
+      acknowledge: (caller, refs, context) => { context.assertActive(); return workerOperational(() => workers.acknowledgeWait(caller, refs)); },
+      cancel: (caller, ids, descendants, context) => { context.assertActive(); return workerOperational(() => workers.cancel(caller, ids, descendants)); },
+      cancelAll: (caller, scope, context) => { context.assertActive(); return workerOperational(() => workers.cancelAll(caller, scope)); },
     },
     explicit: {
-      complete: (caller, input, context) => { context.assertActive(); return workers.complete(caller, { outcome: input.outcome }, input.requestId); },
-      notify: (caller, input, context) => { context.assertActive(); return workers.notify(caller, { text: input.text, intent: input.intent }, input.requestId); },
-      messageParent: (caller, input, context) => { context.assertActive(); return workers.messageParent(caller, { text: input.text, awaitReply: input.awaitReply }, input.requestId); },
-      messageChild: (caller, input, context) => { context.assertActive(); return workers.messageChild(caller, { workerId: input.workerId, text: input.text }, input.requestId); },
+      complete: (caller, input, context) => { context.assertActive(); return workerOperational(() => workers.complete(caller, { outcome: input.outcome }, input.requestId)); },
+      notify: (caller, input, context) => { context.assertActive(); return workerOperational(() => workers.notify(caller, { text: input.text, intent: input.intent }, input.requestId)); },
+      messageParent: (caller, input, context) => { context.assertActive(); return workerOperational(() => workers.messageParent(caller, { text: input.text, awaitReply: input.awaitReply }, input.requestId)); },
+      messageChild: (caller, input, context) => { context.assertActive(); return workerOperational(() => workers.messageChild(caller, { workerId: input.workerId, text: input.text }, input.requestId)); },
     } satisfies ExplicitWorkerOperations,
   });
   async function nativeWorker(req: Request) {
@@ -3504,6 +3477,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }, () => agentProfiles, maxWorkersPerCheckout);
 
   async function reconcileWorkerDelivery(d: WorkerDelivery) {
+    const result = await reconcileWorkerDeliveryObservation(d);
+    if (result.state !== d.state && ["delivered", "not-submitted"].includes(result.state)) workerCompletionRecovery?.notify();
+    return result;
+  }
+  async function reconcileWorkerDeliveryObservation(d: WorkerDelivery) {
     if (!["claimed", "acceptance-unknown"].includes(d.state)) return d;
     const run = meta.runs.find(r => r.runId === d.run.runId && r.sessionId === d.parentSessionId);
     if (!run) {
@@ -3664,6 +3642,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       return explicitObservationChange(w, { run: null, ownerPresent: false, ownerSettled: true, terminationUncertain: false, cancelRequested, preparationOutcome: { status, summary: "Worker preparation ended before durable run publication; native work was not submitted. Original request is closed and will not be replayed." } });
     }
     const records = journalEvents(run.runId);
+    const reminder = w.completionRecovery?.delivery;
+    if (reminder?.runId === run.runId && !w.completion && !w.outcome && !ownerPresent && !cancelRequested
+      && ["claimed", "acceptance-unknown"].includes(reminder.state)) return {
+      state: "uncertain", continuation: { runId: run.runId, state: "uncertain" },
+      error: reminder.error ?? "Completion reminder acceptance or termination remains unconfirmed. Inspect its original run/native command; no automatic retry or inferred assignment success.",
+    };
+    if (reminder?.runId === run.runId && reminder.state === "not-submitted" && !w.completion && !w.outcome && !ownerPresent && !cancelRequested) return {
+      state: "idle", assignment: "open", continuation: { runId: run.runId, state: run.status },
+      error: reminder.error ?? "Completion reminder was not submitted. The one-shot claim is retained; explicit operator recovery is required, not automatic replay.",
+    };
     return explicitObservationChange(w, {
       run: { runId: run.runId, status: run.status, endedAt: run.endedAt }, ownerPresent, ownerSettled,
       terminationUncertain: !!workerTerminationUncertainty(records) || retainOwner, cancelRequested,
@@ -3672,6 +3660,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     });
   }
   async function reconcileExchange(exchange: import("./worker-contract").WorkerExchange) {
+    const result = await reconcileExchangeObservation(exchange);
+    if (result && result.delivery.state !== exchange.delivery.state && ["accepted", "wrapper-completed", "not-submitted"].includes(result.delivery.state)) workerCompletionRecovery?.notify();
+    return result;
+  }
+  async function reconcileExchangeObservation(exchange: import("./worker-contract").WorkerExchange) {
     const delivery = exchange.delivery;
     if (delivery.state !== "claimed" && delivery.state !== "acceptance-unknown" || !delivery.deliveryId || !delivery.runId) return;
     const run = meta.runs.find(r => r.runId === delivery.runId && r.sessionId === exchange.recipient.sessionId);
@@ -3731,6 +3724,198 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         } },
       });
     } finally { coordinator.releaseAdmission(lease); }
+  }
+
+  /** Gather live facts again after every await and at both install/native-send
+   * boundaries. Own admission/owner exemptions are exact identities, never an
+   * origin string or a session-wide busy exemption. */
+  function completionRecoverySnapshot(worker: WorkerRecord, candidate: WorkerCompletionRecoveryCandidate,
+    own?: { lease: ConversationAdmissionLease; runId?: string }): WorkerCompletionRecoveryInput {
+    const descendants = workerStore.listDescendants(worker.sessionId);
+    const scope = new Set([worker.sessionId, ...descendants.map(child => child.sessionId)]);
+    const session = meta.sessions.find(session => session.sessionId === worker.sessionId);
+    const latest = meta.runs.filter(run => run.sessionId === worker.sessionId && run.operation !== "compact" && run.runId !== own?.runId).at(-1);
+    const sourceCurrent = !!session && sameDispatchSource(candidate.source, dispatchSource(session));
+    const sourceUnavailable = !sourceCurrent || !session || session.hidden || !!session.attachment || retirementPaused(worker.sessionId)
+      || !!branches.replaced(worker.sessionId) || !!branches.pending(worker.sessionId);
+    const records = latest ? journalEvents(latest.runId) : [];
+    const active = (id: string, runId?: string) => {
+      const owner = owners.get(id);
+      return !!owner && (!runId || owner.run.runId === runId) && !(id === worker.sessionId && owner.run.runId === own?.runId)
+        || meta.runs.some(run => run.sessionId === id && run.status === "running" && run.runId !== own?.runId && (!runId || run.runId === runId));
+    };
+    let incomingExchanges = false, outgoingExchanges = false;
+    for (const owner of workerStore.list()) for (const exchange of owner.exchanges ?? []) {
+      const pending = ["queued", "claimed", "acceptance-unknown"].includes(exchange.delivery.state)
+        || !!exchange.delivery.runId && active(exchange.recipient.sessionId, exchange.delivery.runId);
+      if (pending && scope.has(exchange.recipient.sessionId)) incomingExchanges = true;
+      if (pending && scope.has(exchange.sender.sessionId)) outgoingExchanges = true;
+    }
+    const scopeWorkers = [worker, ...descendants], workerIds = new Set(scopeWorkers.map(worker => worker.id));
+    const resultDeliveries = scopeWorkers.some(worker => workerResults(worker).some(result => !["wait-consumed", "delivered"].includes(result.notification.state)))
+      || workerStore.deliveries().some(delivery => (scope.has(delivery.parentSessionId) || delivery.workerIds.some(id => workerIds.has(id)))
+        && (["claimed", "acceptance-unknown"].includes(delivery.state) || delivery.state === "delivered" && active(delivery.parentSessionId, delivery.run.runId)));
+    return {
+      attemptKey: workerCompletionRecoveryAttemptKey(worker), latestRunId: latest?.runId ?? null,
+      run: latest ? { runId: latest.runId, sessionId: latest.sessionId, status: latest.status,
+        // This fact is supplied only to policy preflight. Claim/failure callers
+        // must first obtain the candidate's positive exact settlement proof.
+        successful: latest.runId === candidate.runId, settled: !active(worker.sessionId),
+        stopped: records.some(event => event.kind === "status" && (event.data as { workerRunStopped?: boolean } | null)?.workerRunStopped === true) } : null,
+      blockers: {
+        suppressed: sourceUnavailable || workerStore.suppressed(worker.sessionId) || workerStore.suppressed(worker.parent.sessionId),
+        cancellationCommitted: !!worker.cancelRequestedAt || !!worker.continuationCancellation,
+        uncertainExecution: closing || storageFailed || retainOwner || !!meta.reconciliationRequired || !startupReady
+          || scopeWorkers.some(worker => worker.state === "uncertain" || worker.continuation?.state === "uncertain")
+          || [...scope].some(id => meta.runs.filter(run => run.sessionId === id && run.operation !== "compact" && run.runId !== own?.runId).slice(-1)
+            .some(run => !!workerTerminationUncertainty(journalEvents(run.runId)))),
+        unfinishedDescendants: descendants.some(worker => worker.assignment !== "terminal" && !worker.outcome
+          || worker.continuation && !["completed", "failed", "interrupted"].includes(worker.continuation.state)),
+        incomingExchanges, outgoingExchanges, resultDeliveries,
+        admission: [...scope].some(id => coordinator.hasReconciliation(id) || coordinator.hasAdmission(id) && !(id === worker.sessionId && own && coordinator.holdsAdmission(own.lease, id))
+          || !!pendingInputs?.hasChain(id) || admissions.get(id)?.state !== "ready"),
+        execution: [...scope].some(id => active(id)),
+      },
+    };
+  }
+  function noteCompletionRecovery(workerId: string, error: string) {
+    const worker = workerStore.get(workerId);
+    if (worker && !worker.completion && !worker.outcome && worker.error !== error) workerStore.update(workerId, { error });
+  }
+  async function reconcileCompletionRecoveryDelivery(worker: WorkerRecord) {
+    const recovery = worker.completionRecovery;
+    if (!recovery || !["claimed", "acceptance-unknown"].includes(recovery.delivery.state)) return;
+    const delivery = recovery.delivery;
+    const run = meta.runs.find(run => run.runId === delivery.runId && run.sessionId === worker.sessionId);
+    const evidence = exchangeDeliveryEvidence({ id: delivery.id, commandId: delivery.commandId, native: delivery.native,
+      sessionId: worker.sessionId, runId: delivery.runId }, run, run ? journalEvents(run.runId) : []);
+    if (evidence === "accepted" || evidence === "wrapper-completed") {
+      workerStore.advanceCompletionRecovery(worker.id, delivery.id, evidence === "accepted" ? "delivered" : "wrapper-completed");
+      return;
+    }
+    if (owners.has(worker.sessionId) || admitting.has(worker.sessionId)) return;
+    const error = evidence === "not-submitted"
+      ? "Completion reminder was not submitted. Its one-shot claim is retained; inspect the original reminder run before explicit operator recovery. No automatic retry."
+      : "Completion reminder dispatch or termination is unconfirmed. Inspect the original reminder run/native command; no automatic retry and no inferred assignment success.";
+    workerStore.advanceCompletionRecovery(worker.id, delivery.id, evidence === "not-submitted" ? "not-submitted" : "acceptance-unknown", error);
+    noteCompletionRecovery(worker.id, error);
+  }
+  async function reconsiderWorkerCompletion(candidate: WorkerCompletionRecoveryCandidate, isCurrent: () => boolean) {
+    const id = candidate.source.sessionId;
+    let worker = workerStore.getBySession(id);
+    if (!worker || !isExplicitWorker(worker) || !isCurrent()) return;
+    let snapshot = completionRecoverySnapshot(worker, candidate);
+    let classification = classifyWorkerCompletionRecovery(worker, snapshot);
+    if (!["recovery-needed", "escalation-needed"].includes(classification.status)) return;
+    const session = meta.sessions.find(session => session.sessionId === id)!;
+    const sourcePin = dispatchSnapshot(session);
+    const cwd = await execution(id);
+    if (!isCurrent()) return;
+    assertDispatchSnapshot(id, sourcePin);
+    worker = workerStore.getBySession(id)!;
+    snapshot = completionRecoverySnapshot(worker, candidate);
+    if (!["recovery-needed", "escalation-needed"].includes(classifyWorkerCompletionRecovery(worker, snapshot).status)) return;
+    const proof = await candidate.successfulSettlement();
+    if (!isCurrent()) return;
+    assertDispatchSnapshot(id, sourcePin);
+    worker = workerStore.getBySession(id)!;
+    snapshot = completionRecoverySnapshot(worker, candidate);
+    classification = classifyWorkerCompletionRecovery(worker, snapshot);
+    if (!["recovery-needed", "escalation-needed"].includes(classification.status)) return;
+    if (!proof.ready) {
+      noteCompletionRecovery(worker.id, `Missing completion: exact successful native settlement is not proven (${proof.reason}). Inspect the original run; no automatic task replay.`);
+      return;
+    }
+    if (classification.status === "escalation-needed") {
+      const recovery = worker.completionRecovery!;
+      // Never terminalize a claim merely because delivery is unknown or a
+      // different ordinary turn finished. Only this exact reminder can fail.
+      if (candidate.runId !== recovery.delivery.runId || !["delivered", "wrapper-completed"].includes(recovery.delivery.state)) return;
+      workerStore.failCompletionRecovery(worker.id, { expectedRevision: workerStore.revision, snapshot, deliveryId: recovery.delivery.id,
+        summary: "Missing worker completion: the App-owned completion reminder settled successfully, but the worker again neither called worker_complete nor declared a legitimate wait/dependency. The assignment failed its completion protocol; task success was not inferred. Original native reports remain in the run journals." });
+      return;
+    }
+    const readiness = coordinator.inspectReadiness({ conversationId: id, intent: { kind: "worker-recovery" }, phase: "admission" });
+    if (!readiness.ready || workers.executionCount(cwd, id) >= maxWorkersPerCheckout) return;
+    const { run, commandId } = newDispatchRun(session, { cwd });
+    const deliveryId = crypto.randomUUID();
+    const lease = reserve({ kind: "worker-recovery", requestId: deliveryId }, id);
+    let claimed = false;
+    try {
+      worker = workerStore.getBySession(id)!;
+      snapshot = completionRecoverySnapshot(worker, candidate, { lease });
+      const recovery = workerStore.claimCompletionRecovery(worker.id, { expectedRevision: workerStore.revision, snapshot,
+        delivery: { id: deliveryId, runId: run.runId, commandId, native: worker.child! } });
+      if (!recovery) return;
+      claimed = true;
+      const workerId = worker.id, attemptKey = recovery.attemptKey;
+      const assertCurrent = () => {
+        if (!isCurrent() && owners.get(id)?.run.runId !== run.runId) throw new WorkstreamAdapterError(409, "worker-recovery-stale", "Original recovery candidate is no longer current");
+        assertDispatchSnapshot(id, sourcePin);
+        const current = workerStore.get(workerId);
+        if (!current || current.completion || current.outcome || current.assignment !== "open" || current.cancelRequestedAt || current.continuationCancellation
+          || current.wait?.reason === "parent" || current.wait?.reason === "user" || workerCompletionRecoveryAttemptKey(current) !== attemptKey
+          || current.completionRecovery?.delivery.id !== deliveryId || current.completionRecovery.triggerRunId !== candidate.runId) throw new WorkstreamAdapterError(409, "worker-recovery-stale", "Completion, wait or assignment authority changed before reminder dispatch");
+        const live = completionRecoverySnapshot(current, candidate, { lease, runId: run.runId });
+        if (live.latestRunId !== candidate.runId || Object.values(live.blockers).some(Boolean)) throw new WorkstreamAdapterError(409, "worker-recovery-blocked", "Worker acquired new work, dependencies or execution uncertainty before reminder dispatch");
+      };
+      // Persist possible submission before installing the native execution. A
+      // restart never interprets this durable claim as permission to resend.
+      workerStore.advanceCompletionRecovery(workerId, deliveryId, "acceptance-unknown");
+      executePrompt(lease, session, run, WORKER_COMPLETION_REMINDER, true, "worker-recovery", {
+        requestId: deliveryId, coordinatorIntent: "worker-recovery", workerDeliveryId: deliveryId,
+        validate: assertCurrent, beforeSend: assertCurrent,
+        reconciliation: { order: "after-release", run: async () => {
+          if (!storageFailed) { await reconcileCompletionRecoveryDelivery(workerStore.get(workerId)!); await workers.refresh(workerStore.get(workerId)!); }
+        } },
+      });
+    } catch (error) {
+      if (claimed && !storageFailed) {
+        const current = workerStore.getBySession(id)!;
+        await reconcileCompletionRecoveryDelivery(current);
+      }
+      throw error;
+    } finally { coordinator.releaseAdmission(lease); }
+  }
+  workerCompletionRecovery = new WorkerCompletionRecoveryCoordinator({
+    available: () => startupReady && !closing && !storageFailed && !retainOwner && !meta.reconciliationRequired,
+    reconsider: (candidate, current) => reconsiderWorkerCompletion(candidate, current),
+    onError: error => {
+      // Readiness/source refusals are scoped and consume no budget before claim.
+      if (!(error instanceof WorkstreamAdapterError || error instanceof DispatchProofUnavailableError || error instanceof OpenCodeUnavailableError || error instanceof OpenCodeSourceMismatchError)) failClosed(error, "worker-completion-recovery");
+    },
+  });
+
+  function trackRecoveredWorkerCompletion(sessionId: string) {
+    if (workerCompletionRecovery?.has(sessionId)) { workerCompletionRecovery.notify(sessionId); return; }
+    const worker = workerStore.getBySession(sessionId), session = meta.sessions.find(session => session.sessionId === sessionId);
+    const run = meta.runs.filter(run => run.sessionId === sessionId && run.operation !== "compact").at(-1);
+    if (!worker || !isExplicitWorker(worker) || worker.assignment !== "open" || worker.completion || worker.outcome
+      || !session || !run || run.status !== "completed" || owners.has(sessionId)) return;
+    const source = Object.freeze({ ...dispatchSource(session) }), sourcePin = dispatchSnapshot(session);
+    const current = () => !closing && !storageFailed && !retainOwner && startupReady && !meta.reconciliationRequired
+      && meta.sessions.includes(session) && meta.runs.includes(run) && run.status === "completed" && !!run.endedAt
+      && dispatchSnapshot(session) === sourcePin && sameDispatchSource(source, dispatchSource(session))
+      && meta.runs.filter(run => run.sessionId === sessionId && run.operation !== "compact").at(-1) === run
+      && !owners.has(sessionId) && !admitting.has(sessionId) && !coordinator.hasReconciliation(sessionId);
+    workerCompletionRecovery?.track({ runId: run.runId, source, successfulSettlement: async () => {
+      const denied = (reason: string) => ({ ready: false as const, reason, code: "dispatch-proof-unavailable" });
+      if (!current() || workerTerminationUncertainty(journalEvents(run.runId))) return denied("Original startup run/source settlement remains unconfirmed");
+      // Do not manufacture a live process handle after restart. Claude journals
+      // do not positively retain original process-group exit plus stream drain.
+      if (session.harness === "claude-code") return denied("Original Claude process exit and stream drain cannot be recertified after restart");
+      if (session.harness === "grok") {
+        if (!worker.child || !grokWrapperCompletion(worker.child, run, journalEvents(run.runId))) return denied("Original Grok wrapper close, drained output and zero-exit proof are absent");
+      } else if (session.harness === "opencode") {
+        if (!run.nativeCommandId || run.nativePhase !== "accepted" || journalEvents(run.runId).some(event => event.kind === "context"
+          && (event.data as { type?: string; proofKind?: string } | null)?.type === "completion-reconciliation"
+          && (event.data as { proofKind?: string }).proofKind === "operator-verified")) return denied("Original exact OpenCode command success is not proven");
+        const observed = await readOnlyDispatchProof(() => oc.snapshot(source.nativeSessionId!, run.nativeCommandId!, source.cwd));
+        if (!current() || observed.outcome !== "succeeded") return denied("Original exact OpenCode command success is not proven");
+      } else return denied("Native startup settlement proof is unsupported");
+      const native = await dispatchRegistry.readiness(source, "worker-recovery");
+      return current() ? native : denied("Original startup run/source changed during native readiness");
+    } });
   }
 
   let workerOutboxTask: Promise<void> | undefined;
@@ -4403,12 +4588,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     ...admissionSetupPorts,
     assertStorage: () => { assertAppAdmissionStorage(); appAdmissionFeature.assertCurrent(); },
     assertCanBegin: (envelope, _pending, binding) => {
-      assertAppAdmissionEligibility(assertStartupReady);
       const { intent } = envelope, input = intent.payload;
-      const allowed = ["prompt", "sessionId", "nativeStopped", "harness", "cwd", "workspaceId", "worktreeId", "model", "effort", "agent", "profileId", "requestId", "scienceSnapshots"];
-      const science = Object.hasOwn(input, "scienceSnapshots");
+      // Existing envelopes are decoded/looked up by the store without entering
+      // this new-intake hook. Retirement must not erase their recovery evidence.
+      if (intent.operation === "science-message" || Object.hasOwn(input, "scienceSnapshots")) throw new AppAdmissionRequestError("science-chat-retired", "Science chat has been retired; saved submission history remains available");
+      assertAppAdmissionEligibility(assertStartupReady);
+      const allowed = ["prompt", "sessionId", "nativeStopped", "harness", "cwd", "workspaceId", "worktreeId", "model", "effort", "agent", "profileId"];
       if (Object.keys(input).some(key => !allowed.includes(key)) || typeof input.prompt !== "string"
-        || !input.prompt.trim() && !(input.prompt === "" && science && intent.operation === "science-message")
+        || !input.prompt.trim()
         || /^\s*\/compact(?:\s|$)/i.test(input.prompt) || input.nativeStopped !== undefined && typeof input.nativeStopped !== "boolean") throw new AppAdmissionRequestError("invalid-request", "Invalid ordinary submission payload", 400);
       for (const key of ["sessionId", "harness", "cwd", "workspaceId", "worktreeId", "model", "effort", "agent", "profileId"] as const) {
         if (input[key] !== undefined && typeof input[key] !== "string") throw new AppAdmissionRequestError("invalid-request", "Invalid ordinary submission selection", 400);
@@ -4421,15 +4608,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         assertAppAdmissionEligibility(() => assertCatalogActive(session));
         if (!session) throw new AppAdmissionRequestError("target-conflict", "The original conversation is unavailable");
         assertAppAdmissionExpectedSource(intent, dispatchSource(session));
-      }
-      if (science !== (intent.operation === "science-message") || !science && Object.hasOwn(input, "requestId")) throw new AppAdmissionRequestError("invalid-request", "Submission operation differs from its frozen payload", 400);
-      if (science) {
-        if (!uuid(input.requestId) || !Array.isArray(input.scienceSnapshots) || input.scienceSnapshots.length < 1 || input.scienceSnapshots.length > 4
-          || input.scienceSnapshots.some(ref => !ref || typeof ref !== "object" || Array.isArray(ref) || Object.keys(ref).length !== 2
-            || !("snapshotId" in ref) || typeof ref.snapshotId !== "string" || !("blockId" in ref) || typeof ref.blockId !== "string")
-          || new Set(input.scienceSnapshots.map(ref => (ref as { snapshotId: string }).snapshotId)).size !== input.scienceSnapshots.length) throw new AppAdmissionRequestError("invalid-request", "Invalid frozen science submission", 400);
-        const prior = scienceSubmissions.get({ conversationId: binding.conversationId, requestId: input.requestId });
-        if (prior && prior.state !== "prepared") throw new AppAdmissionRequestError("pending-admission", "The original science request requires exact reconciliation; it cannot be replayed");
       }
       if (intent.operation === "live-input") {
         const owner = owners.get(binding.conversationId);
@@ -4659,6 +4837,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
    * durable intake. No Request/auth reentry, replay or receipt scheduling here. */
   async function submitUserInput(input: Awaited<ReturnType<typeof body>>, submissionPublication?: SubmissionPublicationFactory, originalSubmission?: OriginalSubmission): Promise<Response> {
     const originalIntent = originalSubmission?.envelope.intent;
+    if (originalIntent?.operation === "science-message" || input && Object.hasOwn(input, "scienceSnapshots")) return json({ error: "Science chat has been retired; saved submission history remains available", code: "science-chat-retired" }, 409);
     if (originalSubmission?.binding.kind === "server-provisional"
       && (meta.sessions.some(session => session.sessionId === originalSubmission.binding.conversationId) || admissions.get(originalSubmission.binding.conversationId))) throw new AppAdmissionRequestError("target-conflict", "Reserved conversation collides with existing App state; it cannot be adopted");
     if (input?.sessionId) {
@@ -4668,33 +4847,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!session) throw new AppAdmissionRequestError("target-conflict", "The original conversation is unavailable");
         assertAppAdmissionExpectedSource(originalIntent, dispatchSource(session));
       }
-    }
-    let scienceReceipt: ScienceSubmissionReceipt | undefined;
-    if (input && Object.hasOwn(input, "scienceSnapshots")) {
-      const allowed = ["prompt", "sessionId", "requestId", "scienceSnapshots", "nativeStopped", "harness", "cwd", "workspaceId", "worktreeId", "model", "effort", "agent", "profileId"];
-      if (Object.keys(input).some(key => !allowed.includes(key)) || !uuid(input.sessionId) || !uuid(input.requestId)
-        || typeof input.prompt !== "string" || input.prompt !== "" && !input.prompt.trim() || /^\s*\/compact(?:\s|$)/i.test(input.prompt)
-        || !Array.isArray(input.scienceSnapshots) || !input.scienceSnapshots.length || input.scienceSnapshots.length > 4
-        || input.scienceSnapshots.some((ref: any) => !ref || typeof ref !== "object" || Object.keys(ref).length !== 2 || typeof ref.snapshotId !== "string" || typeof ref.blockId !== "string")) return json({ error: "Science sends require an existing conversation, request ID and frozen snapshot references; the comment may be exactly empty", code: "science-send-invalid" }, 400);
-      const settings = Object.fromEntries(Object.entries(input).filter(([key]) => !["prompt", "sessionId", "requestId", "scienceSnapshots"].includes(key)));
-      const prior = scienceSubmissions.get({ conversationId: input.sessionId, requestId: input.requestId });
-      const snapshots = scienceReferences(input.sessionId, input.scienceSnapshots, settings);
-      const sharingSession = meta.sessions.find(row => row.sessionId === input.sessionId);
-      if (!sharingSession) return json({ error: "Unknown science-sharing conversation" }, 404);
-      scienceReceipt = scienceSubmissions.prepare(prior && prior.intent.version !== 3
-        ? { ...prior.intent, text: input.prompt, snapshots }
-        : { version: 3, binding: contextBinding(sharingSession), storeId: store.manifest.storeId, conversationId: input.sessionId, requestId: input.requestId, text: input.prompt, snapshots });
-      if (scienceReceipt.state !== "prepared") {
-        if (scienceReceipt.state === "submitted" && scienceReceipt.association) return json({ sessionId: input.sessionId, runId: scienceReceipt.association.runId, scienceSubmission: scienceView(scienceReceipt) }, 202);
-        return json({ error: "Original science send outcome requires reconciliation; it will not be replayed", code: "science-submission-unknown", scienceSubmission: scienceView(scienceReceipt) }, 409);
-      }
-      if (scienceReceipt.intent.version !== 3) return json({ error: "Historical science receipt cannot be rewritten or replayed through shared context", code: "science-legacy-context-unproven", scienceSubmission: scienceView(scienceReceipt) }, 409);
-      const { scienceSnapshots: _refs, requestId: _requestId, ...ordinary } = input;
-      // Preparation already consumes the verified receipt's NONEMPTY framed
-      // transport text. Its exact authored body (including '') remains in the
-      // receipt and is used by scienceContextMessageInput at composition. No
-      // client allow-empty flag, placeholder, hash rewrite or ordinary exception.
-      input = { ...ordinary, prompt: scienceReceipt.dispatchText };
     }
     if (input?.sessionId && uuid(input.sessionId) && pendingInputs!.hasChain(input.sessionId)) return json({ error: "A durable input chain is active; use the explicit pending-inputs API", code: "pending-input-chain-active" }, 409);
     const prepared = await prepareUserInput(input, { ...preparationState(), profiles: agentProfiles, getSession: id => meta.sessions.find(s => s.sessionId === id),
@@ -4714,7 +4866,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
     const liveOwner = owners.get(conversationId);
     if (originalIntent?.operation === "live-input" && (!liveOwner || liveOwner.run.runId !== originalIntent.expectedLiveRunId || !claudeRuns.canSendInput(liveOwner))) throw new AppAdmissionRequestError("target-conflict", "The selected live run changed during preparation; no replacement send is allowed");
-    if (!scienceReceipt && (!originalIntent || originalIntent.operation === "live-input") && prepared.binding.harness === "claude-code" && liveOwner && claudeRuns.canSendInput(liveOwner)) {
+    if ((!originalIntent || originalIntent.operation === "live-input") && prepared.binding.harness === "claude-code" && liveOwner && claudeRuns.canSendInput(liveOwner)) {
       if (prepared.stagedUpgrade || prepared.configuration.model !== liveOwner.run.model || prepared.configuration.effort !== liveOwner.run.effort) return json({ error: "Wait for this run to finish before changing assistant settings", code: "claude-input-configuration" }, 409);
       const checkCurrent = () => {
         if (originalIntent && liveOwner.run.runId !== originalIntent.expectedLiveRunId) throw new AppAdmissionRequestError("target-conflict", "The original selected live run changed");
@@ -4735,61 +4887,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return json({ sessionId: conversationId, ...await claudeRuns.sendInput(liveOwner, prepared.prompt, assertCurrent, submissionPublication?.(liveOwner)) }, 202);
       } finally { task.resolve(); attachmentTasks.delete(task.promise); }
     }
-    // Science preserves its domain request identity and separate transport facts.
-    const reserveOriginal = () => coordinator.reserveAdmission({ conversationIds: [conversationId], intent: { kind: "user-prompt", ...(scienceReceipt ? { requestId: scienceReceipt.intent.requestId } : {}) } });
+    const reserveOriginal = () => coordinator.reserveAdmission({ conversationIds: [conversationId], intent: { kind: "user-prompt" } });
     const admission = originalSubmission ? withOriginalAdmission(originalSubmission.original, reserveOriginal) : reserveOriginal();
     if (!admission.ready) return json({ error: admission.reason, code: admission.code }, admission.code === "capacity" ? 429 : 409);
     const lease = admission.lease;
     if (originalSubmission) appAdmissionLeases.set(lease, originalSubmission.original);
     const task = Promise.withResolvers<void>(); attachmentTasks.add(task.promise);
     try {
-      if (scienceReceipt) {
-        const key = { conversationId, requestId: scienceReceipt.intent.requestId };
-        try {
-          const reservation = scienceSubmissions.reserve(key);
-          if (!reservation.reserved) return json({ error: "Science submission already reserved; no replay", code: "science-submission-unknown" }, 409);
-          const runId = crypto.randomUUID(), nativeCommandId = preparedAdmissionNativeCommandId(prepared.binding.harness);
-          const association = { runId, nativeCommandId };
-          scienceSubmissions.associate(key, association);
-          const validateIdentity = (identity: DispatchIdentity) => {
-            if (identity.runId !== runId || identity.nativeCommandId !== nativeCommandId || identity.requestId !== key.requestId
-              || identity.source.sessionId !== conversationId || identity.source.authorityId !== prepared.binding.authorityId
-              || identity.source.nativeSessionId !== prepared.binding.nativeSessionId || identity.source.harnessId !== prepared.binding.harness || identity.source.cwd !== cwd) throw new Error("Science dispatch identity changed");
-            const receipt = scienceSubmissions.get(key)!;
-            if (canonicalJSON(scienceReferences(conversationId, receipt.intent.snapshots, receipt.intent.snapshots[0].provenance.settings as Record<string, any>)) !== canonicalJSON(receipt.intent.snapshots)) throw new UserInputPreparationError("Science snapshot authority changed", 409);
-          };
-          const submission = Promise.withResolvers<void>();
-          const context: PreparedAdmissionContext = { origin: "user", delivery: "idle-only", intent: { kind: "user-prompt", requestId: key.requestId }, runId,
-            ...(nativeCommandId ? { nativeCommandId } : {}), validate: validateIdentity,
-            link: identity => { validateIdentity(identity); scienceSubmissions.associate(key, association); },
-            evidence: {
-              beforeNative: evidence => {
-                validateIdentity(evidence);
-                if (evidence.submission !== "attempted" || evidence.nativeAcceptance !== "unknown") throw new Error("Invalid science native boundary evidence");
-                scienceSubmissions.beforeNative(key, association);
-              },
-              outcome: evidence => {
-                validateIdentity(evidence);
-                if (evidence.submission === "attempted") throw new Error("Unexpected science outcome");
-                const evidenceKey = `${conversationId}/${key.requestId}`;
-                scienceOutcomeEvidence.set(evidenceKey, evidence);
-                try { scienceSubmissions.markOutcome(key, evidence.submission); }
-                finally { scienceOutcomeEvidence.delete(evidenceKey); }
-                submission.resolve();
-              },
-            } };
-          const { lifecycle, ...response } = await admitPreparedInput(prepared, lease, { context, scienceSubmission: key, submissionPublication });
-          let timeout: ReturnType<typeof setTimeout> | undefined;
-          try { await Promise.race([submission.promise, new Promise<void>(resolve => { timeout = setTimeout(resolve, 10_000); })]); }
-          finally { if (timeout) clearTimeout(timeout); }
-          const receipt = scienceSubmissions.get(key)!;
-          if (receipt.state !== "submitted") return json({ ...response, error: "Science submission outcome is unconfirmed; no automatic resend", code: "science-submission-unknown", scienceSubmission: scienceView(receipt) }, receipt.state === "unknown" ? 202 : 409);
-          return json({ ...response, scienceSubmission: scienceView(receipt) }, 202);
-        } catch (error) {
-          if (error instanceof ScienceSubmissionStorageError) failClosed();
-          return json({ error: "Science submission is reserved; reconcile the original request without resending", code: "science-submission-unknown", scienceSubmission: scienceView(scienceSubmissions.get(key)!) }, 503);
-        }
-      }
       const { lifecycle: _lifecycle, ...response } = await admitPreparedInput(prepared, lease, { submissionPublication }); return json(response, 202);
     } finally { coordinator.releaseAdmission(lease); task.resolve(); attachmentTasks.delete(task.promise); }
   }
@@ -4851,10 +4955,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
         const input = await body(req);
         if (!auth.authenticated(req)) return json({ error: "Authentication required" }, 401);
+        if (input && Object.hasOwn(input, "scienceSnapshots")) return json({ error: "Science chat has been retired; saved submission history remains available", code: "science-chat-retired" }, 409);
         const task = Promise.withResolvers<void>();
         attachmentTasks.add(task.promise);
         try { return json(await grokApp!.submit(input as GrokTurnInput), 202); }
-        catch (error) { if (error instanceof GrokManagedSubmissionResponse) return error.response; throw error; }
         finally { task.resolve(); attachmentTasks.delete(task.promise); }
       }
       const grokSession = /^\/api\/grok\/sessions\/([^/]+)(\/stop)?$/.exec(path);
@@ -5104,10 +5208,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         // Host/Origin checks above have already accepted this exact request.
         const response = await workstreamRoute(req, url);
         if (response !== null) return response;
-      }
-      if (/^\/api\/workspaces\/[^/]+\/worktrees\/[^/]+\/science\/chats\/[^/]+$/.test(path)) {
-        const token = auth.terminalToken(req);
-        return (await scienceChatRoute(req, scienceChats, () => !closing && !storageFailed && !!token && auth.terminalToken(req) === token))!;
       }
       if (/^\/api\/workspaces\/[^/]+\/worktrees\/[^/]+\/science$/.test(path)) {
         const token = auth.terminalToken(req);
@@ -6044,8 +6144,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const reconciliationWasRequired = !!meta.reconciliationRequired;
           const token = coordinator.beginReconciliation(owner);
           owner.settled = true; releaseOwner(owner);
-          const w = workerStore.getByRun(recovering.runId) ?? workerStore.getByExecutionRun(recovering.runId);
-          if (w && !storageFailed) await workers.refresh(w);
+          const w = workerStore.getBySession(recovering.sessionId);
+          if (w && !storageFailed) {
+            await reconcileCompletionRecoveryDelivery(w);
+            await workers.refresh(workerStore.get(w.id)!);
+          }
           // A preexisting operator pause does not turn healthy observation into
           // a failed source hook. It still denies all admissions independently;
           // ending this barrier supplies NO automatic continuation proof.
@@ -6054,7 +6157,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           }
         }
         catch (error) { recoveryHealthy = false; failClosed(error, "startup-recovery-finalize"); }
-        finally { finished.resolve(); }
+        finally {
+          finished.resolve();
+          if (recoveryHealthy && startupReady) trackRecoveredWorkerCompletion(recovering.sessionId);
+        }
       });
     dispatchTasks.add(recoveryTask);
     void recoveryTask.finally(() => { dispatchTasks.delete(recoveryTask); });
@@ -6113,6 +6219,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // Startup-only reconciliation, after run ownership and worker recovery are known.
   // The admission locks and attachment task set also coordinate request/shutdown races.
   for (const op of branches.list()) void reconcileBranch(op).catch(error => { failClosed(error, "branch-reconciliation"); });
+  // Startup is a one-shot operational trigger after ownership classification.
+  // Persisted claims are reconciled, never replayed. Durable exact-command or
+  // drained-wrapper evidence is distinct from a manufactured live lifecycle.
+  for (const worker of workerStore.list()) if (isExplicitWorker(worker)) {
+    await reconcileCompletionRecoveryDelivery(worker);
+    await workers.refresh(workerStore.get(worker.id)!);
+    trackRecoveredWorkerCompletion(worker.sessionId);
+  }
+  workerCompletionRecovery.notify();
   const handoffPoller = createPoller(() => consumeHandoffs(), { intervalMs: 500, shouldRun: () => !closing && !storageFailed, onError: (error) => failClosed(error, "handoff-consumer") });
   const workerOutboxPoller = createPoller(() => consumeWorkerReports(), { intervalMs: 500, shouldRun: () => !closing && !storageFailed, onError: (error) => failClosed(error, "worker-outbox") });
   const userQuestionsPoller = createPoller(() => userQuestionsDelivery.poll(), { intervalMs: 500, shouldRun: () => !closing && !storageFailed, onError: error => failClosed(error, "user-questions-consumer") });
@@ -6149,6 +6264,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     pendingInputWake!.close();
     pendingInputRecovery!.close();
     const queueDrain = pendingInputBridge!.close();
+    const workerRecoveryDrain = workerCompletionRecovery!.close();
     const userQuestionsDrain = userQuestionsDelivery.close();
     const coordinatorDrain = coordinator.close();
     const namingDrain = sessionNaming?.close();
@@ -6172,6 +6288,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await boundedStartupCleanup(() => titleMutations);
     await boundedStartupCleanup(() => repositoryReadDrain);
     await boundedStartupCleanup(() => queueDrain);
+    await boundedStartupCleanup(() => workerRecoveryDrain);
     await boundedStartupCleanup(() => userQuestionsDrain);
     await boundedStartupCleanup(() => Promise.all([...queueServiceTasks]));
     await coordinatorDrain;

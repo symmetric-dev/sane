@@ -95,7 +95,7 @@ export type ContextMessage = Readonly<{
 type SegmentContent = Omit<ContextMessageSegment, "range">;
 
 const HASH = /^[a-f0-9]{64}$/;
-const origins = new Set<ContextMessageOrigin>(["user", "queued-user", "worker-report", "worker-exchange", "handoff", "questionnaire-response", "activation", "context-update", "worker-launch", "branch"]);
+const origins = new Set<ContextMessageOrigin>(["user", "queued-user", "worker-report", "worker-exchange", "worker-recovery", "handoff", "questionnaire-response", "activation", "context-update", "worker-launch", "branch"]);
 const categories = new Set(["role", "framework", "procedure", "resource", "procedure-index", "session", "worker-assignment", "branch", "protocol", "shared"]);
 function fail(message: string): never { throw new Error(`Invalid context message: ${message}`); }
 function record(value: unknown): Record<string, unknown> {

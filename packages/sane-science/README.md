@@ -1,8 +1,11 @@
 # SANE Science
 
 Private Bun package for SANE App's managed Python environments and Marimo notebooks.
-For normal use, provision notebooks through the App; see the
-[operator guide](../sane-app/HUMAN-OPERATOR-GUIDE.md#browser-and-python).
+The App's Files **Notebook** view connects to an existing Marimo server and does
+not provision or depend on this managed runtime. See the
+[operator guide](../sane-app/HUMAN-OPERATOR-GUIDE.md#browser-and-python). The former
+Python chat integration is retired; this package and the managed science API
+remain available independently.
 
 ## Development environment
 
@@ -37,9 +40,10 @@ See [package.json](package.json) for exported module paths:
 - [src/marimo-pair.ts](src/marimo-pair.ts) and
   [its contracts](src/marimo-contracts.ts) — authenticated HTTP cell inspection, edits, and execution.
 
-The App-facing request/response interfaces live in
-[../sane-app/shared/science-contract.ts](../sane-app/shared/science-contract.ts) and
-[../sane-app/shared/science-chat-contract.ts](../sane-app/shared/science-chat-contract.ts).
+The managed API's request/response interfaces live in
+[../sane-app/shared/science-contract.ts](../sane-app/shared/science-contract.ts).
+Legacy chat snapshot contracts are retained only where needed to read existing
+submission history and recover unresolved sends; they are not a notebook UI.
 
 ## Ownership and recovery
 

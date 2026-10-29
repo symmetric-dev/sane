@@ -25,10 +25,8 @@ import { RequestToggle } from "./composer-request";
 import { pendingInteractions } from "./interaction-presentation";
 import { active as runtimeActive, liveInputReady } from "./types";
 import { PendingInputDetails } from "./pending-input-ui";
-import { AppAdmissionRecoveryPanel } from "./app-admission-recovery-panel";
+import { AppAdmissionRecoveryPanel, LegacyScienceRecovery } from "./app-admission-recovery-panel";
 import { pendingInputContextReady, pendingInputLid, pendingInputPrimaryAction, unresolvedOperations } from "./pending-input-primary-action";
-import { ScienceComposer, type ScienceChatController } from "./science-chat";
-import { ScienceShareDraftPreview } from "./science-sharing";
 import { captureGitTarget, GitFlow } from "./git-flow";
 import type { GitTarget } from "./git-operations-client";
 
@@ -64,10 +62,10 @@ function RetainedInputDetails({ state, disabled, operate }: { state: State; disa
 }
 
 /** Explicit presentation intent, independent of retained rich-flow controllers. */
-export type ChatFlowPresentation = "local" | "documents" | "python";
+export type ChatFlowPresentation = "local" | "documents";
 
 /** Kept mounted with Thread: only the draft identity may replace the DOM input. */
-export function ChatComposer({ state, active = true, paired = false, onOpenChatFlow, flowPresentation = null, onFlowPresentationChange, navigation, ack, onAckChange, send, sendDisabled, parentId, review, statusContext, statusActions, science, questions, questionsReadOnlyReason }: {
+export function ChatComposer({ state, active = true, paired = false, onOpenChatFlow, flowPresentation = null, onFlowPresentationChange, navigation, ack, onAckChange, send, sendDisabled, parentId, review, statusContext, statusActions, questions, questionsReadOnlyReason }: {
   state: State;
   active?: boolean;
   paired?: boolean;
@@ -83,7 +81,6 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   review?: DocumentReviewController;
   statusContext?: ChatStatusContext;
   statusActions?: ReactNode;
-  science?: ScienceChatController;
   questions?: UserQuestionsController;
   questionsReadOnlyReason?: string;
 }) {
@@ -144,12 +141,11 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   const flowScope = JSON.stringify([pendingScope, conversation?.workspaceId, conversation?.worktreeId, conversation?.replacedBy, workspace?.commonDir, workspace?.kind]);
   const [localFlow, setLocalFlow] = useState<{ scope: string; page: "flows" | "terminal" | "git"; gitTarget?: GitTarget } | null>(null);
   // Keep the selected flow for a return to Chat, without mounting its terminal,
-  // git tools, or document/science controls in the Browser composer.
+  // git tools, or document controls in the Browser composer.
   const localPage = !paired && (!flowPresentation || flowPresentation === "local") && localFlow?.scope === flowScope ? localFlow.page : null;
   const hasRequests = pendingInteractions(state, store.capabilities()).length > 0;
   const reviewFlow = (!flowPresentation || flowPresentation === "documents") && !!review?.flow;
-  const scienceFlow = (!flowPresentation || flowPresentation === "python") && science?.view.flow && !reviewFlow;
-  const flowOpen = hasRequests || reviewFlow || !!scienceFlow || !!localPage;
+  const flowOpen = hasRequests || reviewFlow || !!localPage;
   const revealedQuestions = useRef<object | undefined>(undefined);
   const questionsReveal = questions?.revealRequest;
   useEffect(() => {
@@ -157,14 +153,13 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     revealedQuestions.current = questionsReveal;
     setLocalFlow(null);
     if (flowPresentation) onFlowPresentationChange?.(null);
-    if (science?.view.flow) science.back();
   }, [active, hasRequests, questionsReveal, flowPresentation, onFlowPresentationChange]);
   useEffect(() => {
     setLocalFlow(null);
     if (flowPresentation === "local") onFlowPresentationChange?.(null);
   }, [flowScope]);
   useEffect(() => { if (active && !hasRequests && localPage === "terminal") flowComposer.current?.querySelector<HTMLButtonElement>(".terminal-composer button")?.focus({ preventScroll: true }); }, [active, hasRequests, localPage]);
-  useEffect(() => { if (reviewFlow || scienceFlow) setLocalFlow(null); }, [reviewFlow, !!scienceFlow]);
+  useEffect(() => { if (reviewFlow) setLocalFlow(null); }, [reviewFlow]);
   const showLocalFlow = (page: "flows" | "terminal" | "git", gitTarget?: GitTarget) => {
     setLocalFlow({ scope: flowScope, page, gitTarget });
     // Only a paired launch opts into the override; ordinary Chat retains its
@@ -187,15 +182,6 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
       }
     }
     void review.start(identity);
-  };
-  const openPython = () => {
-    if (!science || science.disabled || chainLocked) return;
-    setLocalFlow(null);
-    if (flowPresentation) {
-      onFlowPresentationChange?.("python");
-      if (science.view.flow) return; // Keep the selected cell and unsaved drafts.
-    }
-    science.start();
   };
   const openFlows = () => {
     if (!active || hasRequests || conversation?.replacedBy || paired && !onOpenChatFlow) return;
@@ -237,6 +223,8 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   const reviewBlocked = !active || hasRequests || chainLocked || !capabilities.prompt || !store.captureSendSupported() || sendDisabled || (needsAck && ack !== state.selected);
   const deriveAction = (current: State, text: string) => {
     const currentConversation = current.conversations.find(item => item.id === current.selected);
+    const legacyScienceBlocked = store.legacyScienceSendBlocked();
+    if (legacyScienceBlocked) return { mode: "send" as const, label: "Send" as const, disabled: true, reason: legacyScienceBlocked };
     const currentCapabilities = store.capabilities();
     const supported = store.pendingInputSupported();
     const locked = store.pendingInputChainLocked();
@@ -269,18 +257,6 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
       : !command && current.actionBusy ? "Wait for the current action to finish."
       : store.compactBlocked() ? "Wait for context compaction to finish."
       : store.executionUnavailable() || (store.modelUnavailable() ? "Waiting for the model catalog…" : "") || (ordinaryBlocked ? "Sending is currently unavailable." : "Send message");
-    const snapshots = current.drafts[store.draftKey(current.selected)]?.scienceSnapshots ?? [];
-    if (current.sciencePending?.[current.selected]) {
-      return { mode: "send" as const, label: "Send" as const, disabled: true, reason: "The previous science send is unresolved. Refresh conversation history before sending again." };
-    }
-    if (snapshots.length) {
-      const unresolved = !!current.sciencePending?.[current.selected];
-      const reason = unresolved ? "The previous science send is unresolved. Refresh conversation history before sending again."
-        : command ? "Remove staged science snapshots before compacting."
-        : running || locked || current.availability.nativeQueue || current.availability.queueAfterRunId ? "Science snapshots require an idle conversation; they cannot be queued."
-        : ordinaryBlocked ? sendReason : null;
-      return { mode: "send" as const, label: "Send" as const, disabled: !active || flowOpen || !!currentConversation?.replacedBy || composingRef.current || composing || !!reason || unresolvedOperations(current).length > 0, reason };
-    }
     return pendingInputPrimaryAction({ state: current, chainLocked: locked, text, sendBlocked: !!ordinaryBlocked,
       sendReason, inactive: !active || flowOpen || !!currentConversation?.replacedBy, composing: composingRef.current || composing });
   };
@@ -301,6 +277,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
 
   return <>
     {state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}
+    <LegacyScienceRecovery state={state} active={active && !flowOpen && !conversation?.replacedBy} />
     {grokNotice && <p className="notice" role="status">{grokNotice}</p>}
     {conversation?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {conversation.attachment.error}</p>}
     <div className="composer-surface">
@@ -310,11 +287,10 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
         : <RetainedInputDetails state={state} disabled={!active || flowOpen || !!conversation?.replacedBy || pendingBusy || state.actionBusy || state.sending || state.loading || !!state.pendingInputLoading} operate={operatePending} /> } : undefined}
       restoreFocus={() => !flowOpen ? normalComposer.current?.querySelector("textarea") ?? document.body : document.body} />
     <div ref={flowComposer} className="composer-flow-slot" hidden={hasRequests} style={{ display: hasRequests ? "none" : "contents" }}>
-      {localPage === "flows" && active && !hasRequests && <ChatWorkstreamActions key={flowScope} conversation={conversation} active={active} close={closeLocalFlow} onDocuments={review ? openDocuments : undefined} onTerminal={() => showLocalFlow("terminal")} onGit={() => { const gitTarget = captureGitTarget(); if (gitTarget) showLocalFlow("git", gitTarget); }} onPython={openPython} pythonUnavailable={!science?.available ? "Select a conversation to use Python" : science.disabled || chainLocked ? "Python is currently unavailable" : undefined} />}
+      {localPage === "flows" && active && !hasRequests && <ChatWorkstreamActions key={flowScope} conversation={conversation} active={active} close={closeLocalFlow} onDocuments={review ? openDocuments : undefined} onTerminal={() => showLocalFlow("terminal")} onGit={() => { const gitTarget = captureGitTarget(); if (gitTarget) showLocalFlow("git", gitTarget); }} />}
       {localPage === "terminal" && active && !hasRequests && <TerminalProvider view="terminal"><section className="workstream-status-composer terminal-composer" aria-label="Terminal flow"><header className="workstream-status-heading"><TerminalHeader /><FlowNavigation back={() => showLocalFlow("flows")} exit={closeLocalFlow} /></header><TerminalView exit={closeLocalFlow} /></section></TerminalProvider>}
       {localPage === "git" && localFlow?.gitTarget && active && !hasRequests && <GitFlow target={localFlow.gitTarget} back={() => showLocalFlow("flows")} exit={closeLocalFlow} />}
       {!conversation?.replacedBy && reviewFlow && review && <DocumentReviewComposer review={review} active={active && !hasRequests} disabled={reviewBlocked} back={() => showLocalFlow("flows")} navigation={navigation} acknowledgment={acknowledgment} exitToChatRequest={questionsReveal} />}
-      {!conversation?.replacedBy && scienceFlow && science && active && !hasRequests && <ScienceComposer key={science.scope} science={science} back={() => showLocalFlow("flows")} navigation={navigation} />}
     </div>
     <div className="composer-frame" hidden={flowOpen && !hasRequests}>
     {hasRequests && <Interactions key={flowScope} state={state} active={active && !helpOpen && !pickerOpen} navigation={navigation} showNotice={false} />}
@@ -323,7 +299,6 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     </div>
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onCompositionStartCapture={() => { composingRef.current = true; setComposing(true); }} onCompositionEndCapture={() => { composingRef.current = false; setComposing(false); }} onSubmit={event => { event.preventDefault(); submit(); }}>
       {acknowledgment}
-      <ScienceShareDraftPreview />
       <ChatInput key={draftIdentity} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input pending-input-primary-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" sendButton={<button type="submit" className="send pending-input-primary" data-mode={primary.mode} disabled={primary.disabled} aria-label={state.sending ? "Sending message" : "Send message"} aria-busy={state.sending} title={primary.reason ?? "Send message"}><Icon name="send" />{state.sending ? <span className="pending-input-send-progress"><span className="pulse" aria-hidden="true" />Sending…</span> : <span>{primary.label}</span>}</button>} />
       <div className="composer-toolbar"><div className="composer-options">
         {profile ? fixed

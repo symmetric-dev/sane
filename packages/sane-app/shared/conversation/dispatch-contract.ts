@@ -3,7 +3,7 @@
 export type DispatchHarnessId = string;
 /** Immediate user submission is distinct from an automatic queued-user drain.
  * This internal distinction does not advertise a production queue capability. */
-export type DispatchOrigin = "user" | "queued-user" | "worker-report" | "worker-exchange" | "handoff" | "questionnaire-response";
+export type DispatchOrigin = "user" | "queued-user" | "worker-report" | "worker-exchange" | "worker-recovery" | "handoff" | "questionnaire-response";
 export type AutomationDispatchOrigin = Exclude<DispatchOrigin, "user">;
 export type DispatchSupport = { readonly supported: true } | { readonly supported: false; readonly reason: string };
 

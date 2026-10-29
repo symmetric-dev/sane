@@ -77,6 +77,24 @@ export type WorkerAttention = {
   occurrenceBoundary: string;
   at: string;
 };
+/** One automatic completion reminder per assignment attempt, including failed or
+ * unknown submission. A persisted claim is never permission to resend. */
+export type WorkerCompletionRecovery = {
+  attemptKey: string;
+  triggerRunId: string;
+  delivery: {
+    id: string;
+    runId: string;
+    commandId: string;
+    native: ConversationRef;
+    state: "claimed" | "acceptance-unknown" | "delivered" | "wrapper-completed" | "not-submitted";
+    error?: string;
+  };
+  createdAt: string;
+  updatedAt: string;
+  /** Claim before publishing attention; restart must not publish it again. */
+  escalation?: { id: string; runId: string; at: string };
+};
 export type WorkerRecord = {
   id: string; sessionId: string; runId: string | null;
   parent: { sessionId: string; runId: string; toolCallId: string; native: ConversationRef; invocation?: WorkerCaller["invocation"] };
@@ -103,6 +121,7 @@ export type WorkerRecord = {
   usageRecovery?: { runId: string; throughRunId: string; throughRevision: number; at: string };
   /** Operator-reopened Stop cancellation; historical interruptions stay recorded. */
   stopRecovery?: { runId: string; throughRunId: string; throughRevision: number; at: string };
+  completionRecovery?: WorkerCompletionRecovery;
   exchanges?: WorkerExchange[];
   operationReceipts?: WorkerOperationReceipt[];
   attention?: WorkerAttention[];

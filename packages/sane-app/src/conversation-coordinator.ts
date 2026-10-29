@@ -3,7 +3,7 @@ import type { RunOwner } from "./run-owner";
 /** Domain policy stays in the bridge: these intents do not grant exemptions from
  * worker, handoff, branch, admission, attachment, or repository safety checks. */
 export type ConversationOperationIntent = Readonly<{
-  kind: "user-prompt" | "compact" | "worker-launch" | "worker-report" | "worker-exchange" | "handoff" | "questionnaire-response"
+  kind: "user-prompt" | "compact" | "worker-launch" | "worker-report" | "worker-exchange" | "worker-recovery" | "handoff" | "questionnaire-response"
     | "prepare-recipient" | "attach" | "branch" | "branch-recovery"
     | "retry-admission" | "enroll" | "history-refresh" | "recover-run";
   requestId?: string;
@@ -70,7 +70,7 @@ type Admission<O> = {
 const blocked = (code: string, reason: string): ConversationBlocked => ({ ready: false, code, reason });
 const busy = () => blocked("conversation-busy", "This conversation already has an active run or reconciliation");
 const executableIntents = new Set<ConversationOperationIntent["kind"]>([
-  "user-prompt", "compact", "worker-launch", "worker-report", "worker-exchange", "handoff", "questionnaire-response", "branch", "recover-run",
+  "user-prompt", "compact", "worker-launch", "worker-report", "worker-exchange", "worker-recovery", "handoff", "questionnaire-response", "branch", "recover-run",
 ]);
 
 /** In-memory arbitration only: no input queue, persistence, or domain ownership.
