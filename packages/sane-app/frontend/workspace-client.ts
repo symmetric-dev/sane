@@ -39,14 +39,17 @@ export function subscribeWorkspaceMutations(listener: (mutation: WorkspaceMutati
   mutationListeners.add(listener);
   return () => { mutationListeners.delete(listener); };
 }
+/** Publish only committed paths. workspaceId is the resolved binding revision. */
+export function notifyWorkspaceMutation(scopeId: string, workspaceId: string, paths: readonly string[]): void {
+  if (!paths.length) return;
+  invalidateWorkspaceGit(scopeId, workspaceId);
+  for (const listener of mutationListeners) {
+    // Metadata reconciliation must never turn a committed write into a failure.
+    try { listener({ scopeId, workspaceId, paths }); } catch { /* Independent owner. */ }
+  }
+}
 async function mutation<T>(scopeId: string, workspaceId: string, paths: string[], write: () => Promise<T>): Promise<T> {
-  const notify = () => {
-    invalidateWorkspaceGit(scopeId, workspaceId);
-    for (const listener of mutationListeners) {
-      // Metadata reconciliation must never turn a committed write into a failure.
-      try { listener({ scopeId, workspaceId, paths }); } catch { /* Independent owner. */ }
-    }
-  };
+  const notify = () => notifyWorkspaceMutation(scopeId, workspaceId, paths);
   try { const result = await write(); notify(); return result; }
   catch (error) {
     if (error instanceof WorkspaceError && error.code === "rename-committed") notify();

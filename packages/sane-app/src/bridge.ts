@@ -107,6 +107,10 @@ import { canonicalJSON } from "./prepared-input-codec";
 import type { ScienceSubmissionView } from "../shared/conversation/types";
 import { WorkspaceService, WorkspaceError } from "./workspace";
 import { createWorkspaceRoute, matchesWorkspaceRoute } from "./workspace-routes";
+import { ImageUploadService } from "./image-upload-service";
+import { createImageUploadRoute, matchesImageUploadRoute } from "./image-upload-routes";
+import { createImageUploadLifecycle } from "./image-upload-lifecycle";
+import { IMAGE_UPLOAD_LIMITS } from "../shared/image-upload-contract";
 import { GitOperationsService } from "./git-operations";
 import { CatalogService } from "./catalog";
 import { WorkspaceCreationService } from "./workspace-creation";
@@ -448,12 +452,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let replyIntegration: OpenCodeReplyIntegration | undefined;
   let chromePush: ChromePushService | undefined;
   const searches = createWorkspaceSearchLifecycle();
+  const imageUploads = createImageUploadLifecycle();
+  const imageUploadWorktrees = new Map<string, number>();
+  const imageUploadRemovals = new Set<string>();
   let workspaceCreations: WorkspaceCreationService | undefined;
   let gitOperations: GitOperationsService | undefined;
   let workerCompletionRecovery: WorkerCompletionRecoveryCoordinator | undefined;
   let workerCompletionRecoveryStarted = false;
   async function abortStartup() {
     closing = true;
+    const imageUploadDrain = imageUploads.close();
     stopGrokForks?.();
     stopPresentationReads?.();
     const repositoryReadDrain = router?.stopReads();
@@ -470,6 +478,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await boundedStartupCleanup(() => drainStartupExecution?.());
     await boundedStartupCleanup(() => queueDrain);
     await boundedStartupCleanup(() => workerRecoveryDrain);
+    await boundedStartupCleanup(() => imageUploadDrain);
     await Promise.all([
       () => chromePush?.close(), () => workspaceCreations?.close(), () => gitOperations?.close(), () => science?.close(),
       async () => { if (grokApp && !(await grokApp.close()).drained) retainOwner = true; },
@@ -4749,7 +4758,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     terminalToken: req => auth.terminalToken(req), assertDomainMutationOpen,
     canCreate: req => !closing && auth.authenticated(req),
     canRunGit: (req, token) => !closing && !storageFailed && !retainOwner && !meta.reconciliationRequired && startupReady && !!token && auth.terminalToken(req) === token,
+    withWorktreeRemoval: async (workspaceId, worktreeId, remove) => {
+      assertStorageOwned();
+      assertDomainMutationOpen();
+      const key = `${workspaceId}/${worktreeId}`;
+      if (imageUploadWorktrees.has(key) || imageUploadRemovals.has(key)) throw new WorkspaceError(409, "worktree-busy", "Wait for image uploads or removal in this worktree to finish");
+      // Reserve synchronously before terminal cleanup or catalog queue awaits.
+      imageUploadRemovals.add(key);
+      try { return await remove(); } finally { imageUploadRemovals.delete(key); }
+    },
     beforeRemoveWorktree: async (workspaceId, worktreeId) => {
+      if (imageUploadWorktrees.has(`${workspaceId}/${worktreeId}`)) throw new WorkspaceError(409, "worktree-busy", "Wait for image uploads in this worktree to finish before removing it");
       const admittingSession = meta.sessions.find(s => {
         const a = catalog.association(s.sessionId);
         return a.association === "resolved" && a.workspaceId === workspaceId && a.worktreeId === worktreeId && admitting.has(s.sessionId);
@@ -4757,6 +4776,21 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (admittingSession) throw new WorkspaceError(409, "worktree-busy", "Wait for the in-flight message submission in this worktree to finish before removing it");
       await terminals.disposeWorktree(workspaceId, worktreeId);
     },
+  });
+  const imageUploadService = new ImageUploadService(options.dataDir, worktrees);
+  const imageUploadPrincipals = new WeakMap<Request, string>();
+  const imageUploadRoute = createImageUploadRoute({ service: imageUploadService,
+    authenticated: req => {
+      const principal = imageUploadPrincipals.get(req);
+      return !!principal && auth.authenticated(req) && auth.validTerminalToken(principal) && auth.terminalToken(req) === principal;
+    },
+    assertOpen: () => {
+      imageUploads.assertOpen();
+      assertStorageOwned();
+      assertDomainMutationOpen();
+      if (closing || !ownsStorage()) throw new WorkspaceError(503, "image-upload-unavailable", "Image upload ownership is unavailable");
+    },
+    run: (signal, action) => imageUploads.run(signal, action),
   });
   const nativeSubagentEvidenceRoute = createNativeSubagentEvidenceRoute({ nativeSubagents, nativeSubagentRecorder,
     findSession: id => meta.sessions.find(session => session.sessionId === id),
@@ -5315,6 +5349,24 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           } catch (error) { return browsers.errorResponse(error); }
         }
         return browsers.route(req, workspaceId, suffix, authorized, token);
+      }
+      if (matchesImageUploadRoute(path)) {
+        const principal = auth.terminalToken(req);
+        if (!principal) return json({ error: "Authentication required" }, 401);
+        imageUploadPrincipals.set(req, principal);
+        const target = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\//.exec(path);
+        const key = target && req.method === "POST" ? `${decodeURIComponent(target[1]!)}/${decodeURIComponent(target[2]!)}` : undefined;
+        if (key && imageUploadRemovals.has(key)) return json({ error: "The worktree is being removed; image uploads are unavailable", code: "worktree-busy" }, 409);
+        if (key) imageUploadWorktrees.set(key, (imageUploadWorktrees.get(key) ?? 0) + 1);
+        try {
+          const response = await imageUploadRoute(req, url);
+          if (response !== null) return response;
+        } finally {
+          if (key) {
+            const remaining = (imageUploadWorktrees.get(key) ?? 1) - 1;
+            if (remaining) imageUploadWorktrees.set(key, remaining); else imageUploadWorktrees.delete(key);
+          }
+        }
       }
       if (matchesWorkspaceRoute(path)) {
         const response = await workspaceRoute(req, url);
@@ -5976,7 +6028,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // backend reads. Do not let Bun's short default terminate valid requests.
   const terminalSocket = (socket: Bun.ServerWebSocket<BridgeSocketData>) => socket as Bun.ServerWebSocket<TerminalSocketData>;
   const browserSocket = (socket: Bun.ServerWebSocket<BridgeSocketData>) => socket as Bun.ServerWebSocket<BrowserSocketData>;
-  const server = Bun.serve<BridgeSocketData>({ hostname: options.host, port: options.port, idleTimeout: 60, maxRequestBodySize: 1024 * 1024, websocket: {
+  // Image intake enforces its own streamed limit; ordinary JSON intake retains
+  // the independent 1 MiB bound in bridge-http.body().
+  const server = Bun.serve<BridgeSocketData>({ hostname: options.host, port: options.port, idleTimeout: 60, maxRequestBodySize: IMAGE_UPLOAD_LIMITS.imageBytes, websocket: {
     maxPayloadLength: 65536, backpressureLimit: 10 * 1024 * 1024, closeOnBackpressureLimit: true, perMessageDeflate: false, idleTimeout: 60, sendPings: true,
     open: socket => socket.data.kind === "terminal" ? terminals.websocket.open?.(terminalSocket(socket)) : browsers.websocket.open?.(browserSocket(socket)),
     message: (socket, message) => socket.data.kind === "terminal" ? terminals.websocket.message(terminalSocket(socket), message) : browsers.websocket.message(browserSocket(socket), message),
@@ -6363,6 +6417,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const replyDrain = replyIntegration?.close(); // Abort immediately, before any shutdown awaits.
     const pushDrain = chromePush?.close();
     const searchDrain = searches.close();
+    const imageUploadDrain = imageUploads.close();
     const creationDrain = workspaceCreations?.close();
     const gitOperationsDrain = gitOperations?.close();
     const scienceDrain = science?.close();
@@ -6376,6 +6431,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     userQuestionsPoller.stop();
     inputRecoveryPoller.stop();
     closePromise = (async () => {
+    await boundedStartupCleanup(() => imageUploadDrain);
     await boundedStartupCleanup(() => namingDrain);
     await boundedStartupCleanup(() => titleMutations);
     await boundedStartupCleanup(() => repositoryReadDrain);

@@ -164,6 +164,37 @@ After deploying an update that adds this tool, rebuild/restart the App and updat
 installed native integrations so their tool lists and runtime files agree. Old
 native processes do not acquire new tools automatically.
 
+## Uploading project images
+
+Use **Upload images** in Chat or Files, or paste/drop images into Chat. The modal
+lets you choose one directory for the batch, rename files, and stage new folders.
+Nothing is written until **Upload**. Files starts in the browsed directory;
+Chat remembers an explicitly selected destination for that worktree, falling
+back to `data/images/uploads/`. The repository root is an explicit choice, not
+the Chat fallback. Existing files are never overwritten; rename or skip conflicts.
+
+Uploads accept static PNG, JPEG, and WebP images, with the same 10 MiB/image,
+40-million-pixel, and 16,384-pixel dimension bounds as media sharing. The client
+limits each selection to 16 files/160 MiB; server limits apply per image, with two
+image operations admitted concurrently. Safe publication requires native Bun FFI
+support on macOS or Linux.
+
+Uploaded files are ordinary files in the selected execution worktree. Chat adds
+file references to the current draft; Files does not send or navigate to Chat.
+Uploads do not automatically stage Git changes or modify ignore rules. Closing
+after uploading does not delete successful files or folders. Unknown results
+must be checked with the original request ID, not retried under a new identity.
+
+Confinement assumes the server OS account and administrator are trusted writers;
+no path fence can prevent another process with those privileges from relocating
+an open directory between syscalls. Uploads reject shared-writable destination
+directories and untrusted ancestor ownership (trusted sticky system ancestors
+are allowed). macOS extended ACLs with mutating allow grants are rejected;
+deny-only ACLs are permitted. Private staging and exclusive publication prevent
+overwrites and source substitution by other OS users. Crash-orphan staging files may require
+manual reconciliation; never broadly delete upload recovery records to retry an
+uncertain operation.
+
 ## Shutdown, recovery, and backups
 
 Stop with Ctrl-C or SIGTERM and let draining finish. OpenCode shutdown stops App

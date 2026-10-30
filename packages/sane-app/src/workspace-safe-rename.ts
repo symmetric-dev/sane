@@ -4,15 +4,22 @@ export class ExclusiveRenameError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
 }
 export type ExclusiveRename = (directoryFd: number, source: string, destination: string) => void;
+export type ExclusiveMove = (sourceDirectoryFd: number, source: string, destinationDirectoryFd: number, destination: string) => void;
 const unsupported = () => new ExclusiveRenameError(501, "rename-unsupported", "Safe exclusive rename is not supported by this runtime or filesystem");
 let native: Promise<ExclusiveRename> | undefined;
+let nativeMove: Promise<ExclusiveMove> | undefined;
 
 /** Lazy: normal workspace operations do not require FFI. Keep the loaded
  * library alive for the process lifetime, and resolve it before source fences. */
 export function loadExclusiveRename(): Promise<ExclusiveRename> {
-  return native ??= load();
+  return native ??= loadExclusiveMove().then(move => (fd, source, destination) => move(fd, source, fd, destination));
 }
-async function load(): Promise<ExclusiveRename> {
+/** Same exclusive protocol, with independently pinned source/destination
+ * parents. Cross-filesystem moves fail closed; there is no copy fallback. */
+export function loadExclusiveMove(): Promise<ExclusiveMove> {
+  return nativeMove ??= load();
+}
+async function load(): Promise<ExclusiveMove> {
   const darwin = process.platform === "darwin";
   if (!darwin && process.platform !== "linux") throw unsupported();
   try {
@@ -20,7 +27,7 @@ async function load(): Promise<ExclusiveRename> {
     // Darwin SDK usr/include/sys/stdio.h: RENAME_EXCL = 0x00000004.
     // Linux UAPI include/uapi/linux/fs.h: RENAME_NOREPLACE = (1 << 0).
     // Both APIs accept (int, const char *, int, const char *, unsigned int).
-    // Use the *at variant to pin the same parent for both basename operands.
+    // Use the *at variant to pin both basename operands independently.
     const flags = darwin ? 0x00000004 : 1;
     const library = darwin
       ? dlopen("/usr/lib/libSystem.B.dylib", {
@@ -31,7 +38,7 @@ async function load(): Promise<ExclusiveRename> {
           renameat2: { args: ["i32", "ptr", "i32", "ptr", "u32"], returns: "i32" },
           __errno_location: { args: [], returns: "ptr" },
         });
-    return (directoryFd, source, destination) => {
+    return (sourceDirectoryFd, source, destinationDirectoryFd, destination) => {
       if ([source, destination].some(name => !name || name === "." || name === ".." || /[/\\\0]/.test(name))) throw new ExclusiveRenameError(400, "invalid-path", "Rename requires exact basenames");
       const from = Buffer.from(`${source}\0`, "utf8"), to = Buffer.from(`${destination}\0`, "utf8");
       // Fetch the thread-local errno address BEFORE the syscall. No await or
@@ -41,8 +48,8 @@ async function load(): Promise<ExclusiveRename> {
       // Pass the buffers directly as ptr operands so they stay live for the
       // whole native call, rather than retaining only numeric pointer values.
       const result = "renameatx_np" in library.symbols
-        ? library.symbols.renameatx_np(directoryFd, from, directoryFd, to, flags)
-        : library.symbols.renameat2(directoryFd, from, directoryFd, to, flags);
+        ? library.symbols.renameatx_np(sourceDirectoryFd, from, destinationDirectoryFd, to, flags)
+        : library.symbols.renameat2(sourceDirectoryFd, from, destinationDirectoryFd, to, flags);
       if (result === 0) return;
       const code = read.i32(errno);
       if (code === 17 || code === 21 || code === (darwin ? 66 : 39)) throw new ExclusiveRenameError(409, "path-exists", "Destination already exists; choose a different path");

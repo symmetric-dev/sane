@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { FiChevronDown, FiGrid, FiInfo } from "react-icons/fi";
+import { FiChevronDown, FiGrid, FiInfo, FiPaperclip } from "react-icons/fi";
 import { useRegisterCommand, isMacPlatform } from "./application-commands";
 import { FLOWS_SHORTCUT, shortcutHint } from "./shortcut-definitions";
 import { TerminalProvider, TerminalHeader, TerminalView } from "./terminal";
@@ -29,6 +29,12 @@ import { AppAdmissionRecoveryPanel, LegacyScienceRecovery } from "./app-admissio
 import { pendingInputContextReady, pendingInputLid, pendingInputPrimaryAction, unresolvedOperations } from "./pending-input-primary-action";
 import { captureGitTarget, GitFlow } from "./git-flow";
 import type { GitTarget } from "./git-operations-client";
+import { ImageUploadDialog } from "./image-upload-dialog";
+import { appendImageUploadReferences, imageUploadDraftBlocked, imageUploadDraftScope, imageUploadSelection, type ImageUploadDraftScope } from "./image-upload-draft";
+import { subscribeWorkspace, workspaceEpoch } from "./workspace-store";
+import type { ImageUploadReceipt } from "../shared/image-upload-contract";
+
+type ComposerImageUpload = { scope: ImageUploadDraftScope; files: File[]; seen: Set<string> };
 
 function pendingScopeFor(state: State) {
   const conversation = state.conversations.find(item => item.id === state.selected);
@@ -96,6 +102,10 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   const helpTrigger = useRef<HTMLButtonElement>(null);
   const normalComposer = useRef<HTMLFormElement>(null);
   const flowComposer = useRef<HTMLDivElement>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
+  const [imageUpload, setImageUpload] = useState<ComposerImageUpload | null>(null);
+  const imageUploadRef = useRef<ComposerImageUpload | null>(null);
+  const [imageNotice, setImageNotice] = useState("");
   const conversation = state.conversations.find(c => c.id === state.selected);
   const grok = store.harness() === "grok";
   const grokNotice = !grok ? "" : state.config?.grokCapability?.configured !== true
@@ -137,6 +147,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     })();
   };
   const { workspaces } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
+  useSyncExternalStore(subscribeWorkspace, workspaceEpoch);
   const workspace = workspaces.find(item => item.workspaceId === conversation?.workspaceId);
   const flowScope = JSON.stringify([pendingScope, conversation?.workspaceId, conversation?.worktreeId, conversation?.replacedBy, workspace?.commonDir, workspace?.kind]);
   const [localFlow, setLocalFlow] = useState<{ scope: string; page: "flows" | "terminal" | "git"; gitTarget?: GitTarget } | null>(null);
@@ -221,6 +232,66 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   const statuses = chatStatuses(state, statusContext ?? { workspaceReady: true });
   const infoText = infoError || chatStatusSummary(statuses)?.text;
   const reviewBlocked = !active || hasRequests || chainLocked || !capabilities.prompt || !store.captureSendSupported() || sendDisabled || (needsAck && ack !== state.selected);
+  const uploadScope = imageUploadDraftScope();
+  const uploadAvailable = active && !flowOpen && !sendDisabled && !imageUploadDraftBlocked() && !!uploadScope;
+  const uploadActivity = useRef(uploadAvailable); uploadActivity.current = uploadAvailable;
+  const closeImageUpload = () => {
+    imageUploadRef.current = null;
+    setImageUpload(null);
+    if (imageInput.current) imageInput.current.value = "";
+  };
+  // Invalidate the callback synchronously during navigation renders, before the
+  // modal's effect cleanup can abort its outstanding requests.
+  if (imageUploadRef.current && (!uploadAvailable || imageUploadRef.current.scope.key !== uploadScope?.key)) imageUploadRef.current = null;
+  useEffect(() => {
+    if (imageUpload && imageUploadRef.current !== imageUpload) closeImageUpload();
+  }, [imageUpload, uploadAvailable, uploadScope?.key]);
+  useEffect(() => {
+    const invalidate = () => {
+      const current = imageUploadRef.current;
+      if (current && (imageUploadDraftScope()?.key !== current.scope.key || imageUploadDraftBlocked())) closeImageUpload();
+    };
+    // Catch even a scope that changes away and back before React rerenders.
+    const unsubscribe = [store.subscribe(invalidate), catalog.subscribe(invalidate), subscribeWorkspace(invalidate)];
+    return () => { unsubscribe.forEach(stop => stop()); imageUploadRef.current = null; };
+  }, []);
+  useEffect(() => {
+    const input = imageInput.current;
+    input?.addEventListener("cancel", closeImageUpload);
+    return () => input?.removeEventListener("cancel", closeImageUpload);
+  }, [draftIdentity, conversation?.replacedBy]);
+  useEffect(() => { setImageNotice(""); }, [uploadScope?.key, active]);
+  const uploadCurrent = (upload: ComposerImageUpload) => mounted.current && uploadActivity.current
+    && imageUploadRef.current === upload && imageUploadDraftScope()?.key === upload.scope.key && !imageUploadDraftBlocked();
+  const beginImageUpload = (files?: File[]) => {
+    if (!mounted.current || !uploadActivity.current || imageUploadRef.current || imageUploadDraftBlocked()) {
+      setImageNotice(uploadScope ? "Image uploads are unavailable while this composer is inactive, read-only, or busy." : "Choose an available workspace and checkout first to upload images.");
+      return;
+    }
+    const scope = imageUploadDraftScope();
+    if (!scope || scope.key !== uploadScope?.key) return;
+    const selection = files ? imageUploadSelection(files) : { files: [] };
+    if (selection.error) { setImageNotice(selection.error); return; }
+    setImageNotice("");
+    const upload = { scope, files: selection.files, seen: new Set<string>() };
+    imageUploadRef.current = upload;
+    setImageUpload(upload);
+    if (!files && imageInput.current) { imageInput.current.value = ""; imageInput.current.click(); }
+  };
+  const imageFilesChosen = (files: File[]) => {
+    const upload = imageUploadRef.current;
+    if (!upload || !uploadCurrent(upload)) { closeImageUpload(); return; }
+    if (!files.length) { closeImageUpload(); return; }
+    const selection = imageUploadSelection(files);
+    if (selection.error) { closeImageUpload(); setImageNotice(selection.error); return; }
+    const next = { ...upload, files: selection.files };
+    imageUploadRef.current = next;
+    setImageUpload(next);
+  };
+  const imagesUploaded = (upload: ComposerImageUpload, receipts: ImageUploadReceipt[]) => {
+    if (!uploadCurrent(upload)) return;
+    appendImageUploadReferences(upload.scope, receipts, upload.seen);
+  };
   const deriveAction = (current: State, text: string) => {
     const currentConversation = current.conversations.find(item => item.id === current.selected);
     const legacyScienceBlocked = store.legacyScienceSendBlocked();
@@ -258,7 +329,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
       : store.compactBlocked() ? "Wait for context compaction to finish."
       : store.executionUnavailable() || (store.modelUnavailable() ? "Waiting for the model catalog…" : "") || (ordinaryBlocked ? "Sending is currently unavailable." : "Send message");
     return pendingInputPrimaryAction({ state: current, chainLocked: locked, text, sendBlocked: !!ordinaryBlocked,
-      sendReason, inactive: !active || flowOpen || !!currentConversation?.replacedBy, composing: composingRef.current || composing });
+      sendReason, inactive: !active || flowOpen || !!imageUpload || !!currentConversation?.replacedBy, composing: composingRef.current || composing });
   };
   const primary = deriveAction(state, draft.text);
   const lid = pendingInputLid(state, pendingSupported);
@@ -267,7 +338,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     // Validate the rendered scope and consent before touching the current store.
     const current = store.snapshot();
     if (!mounted.current || !activity.current || scopeRef.current !== pendingScope || pendingScopeFor(current) !== pendingScope
-      || store.draftKey() !== draftIdentity || composingRef.current) return;
+       || store.draftKey() !== draftIdentity || composingRef.current || imageUploadRef.current) return;
     const text = store.draft().text;
     const action = deriveAction(current, text);
     if (action.disabled) return;
@@ -297,8 +368,22 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     <div className="composer-request-slot" hidden={hasRequests}>
       {questions && <UserQuestionsPanel questions={questions} readOnlyReason={questionsReadOnlyReason} />}
     </div>
-    {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onCompositionStartCapture={() => { composingRef.current = true; setComposing(true); }} onCompositionEndCapture={() => { composingRef.current = false; setComposing(false); }} onSubmit={event => { event.preventDefault(); submit(); }}>
+    {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onCompositionStartCapture={() => { composingRef.current = true; setComposing(true); }} onCompositionEndCapture={() => { composingRef.current = false; setComposing(false); }} onSubmit={event => { event.preventDefault(); submit(); }}
+      onPasteCapture={event => {
+        const files = Array.from(event.clipboardData.files);
+        if (!files.length) return; // Keep ordinary text paste native.
+        event.preventDefault(); event.stopPropagation(); beginImageUpload(files);
+      }}
+      onDragOver={event => { if (Array.from(event.dataTransfer.types).includes("Files")) event.preventDefault(); }}
+      onDropCapture={event => {
+        const files = Array.from(event.dataTransfer.files);
+        if (!files.length && !Array.from(event.dataTransfer.types).includes("Files")) return;
+        event.preventDefault(); event.stopPropagation(); beginImageUpload(files);
+      }}>
       {acknowledgment}
+      <input ref={imageInput} type="file" accept=".png,.jpg,.jpeg,.webp" multiple hidden aria-label="Choose images to upload" onChange={event => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ""; imageFilesChosen(files); }} />
+      {imageNotice && <p className="notice" role="status">{imageNotice}</p>}
+      {!uploadScope && !state.selected && <p className="muted">Choose an available workspace and checkout first to upload images.</p>}
       <ChatInput key={draftIdentity} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input pending-input-primary-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" sendButton={<button type="submit" className="send pending-input-primary" data-mode={primary.mode} disabled={primary.disabled} aria-label={state.sending ? "Sending message" : "Send message"} aria-busy={state.sending} title={primary.reason ?? "Send message"}><Icon name="send" />{state.sending ? <span className="pending-input-send-progress"><span className="pulse" aria-hidden="true" />Sending…</span> : <span>{primary.label}</span>}</button>} />
       <div className="composer-toolbar"><div className="composer-options">
         {profile ? fixed
@@ -306,6 +391,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
           : <button ref={agentTrigger} type="button" className="agent-chip" aria-haspopup="dialog" disabled={state.sending || !active || chainLocked} title={chainLocked ? "Agent settings are fixed while the pending-input chain is active." : profile.label} aria-label={`${state.selected ? "Agent" : "Agent for new conversation"}: ${profile.label}${store.pendingUpgrade() ? " (pending)" : ""}`} onClick={() => { if (!store.pendingInputChainLocked()) setPickerOpen(true); }}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span>{store.pendingUpgrade() && <span className="agent-chip-pending">pending</span>}<FiChevronDown size={12} aria-hidden="true" /></button>
           : <span className="agent-chip fixed" role="status" title={store.conversationProfileLabel(state.selected)}><span className="agent-chip-label">{store.conversationProfileLabel(state.selected)}</span></span>}
         <div className="composer-utilities">
+          <button type="button" className="composer-flows" disabled={!uploadAvailable || !!imageUpload} aria-label="Attach images" title={uploadScope ? "Attach images" : "Choose an available workspace and checkout first to upload images"} onClick={() => beginImageUpload()}><FiPaperclip size={16} aria-hidden="true" /></button>
           <WorkersButton key={state.selected} sessionId={state.selected} active={active && !flowOpen} />
           <button type="button" className="composer-flows" disabled={paired && !onOpenChatFlow} title={paired ? "Open Flows in Chat" : `Flows (${shortcutHint(FLOWS_SHORTCUT)})`} aria-keyshortcuts={`${isMacPlatform() ? "Meta" : "Control"}+p`} aria-expanded={localPage === "flows"} onClick={openFlows}><FiGrid size={14} aria-hidden="true" />Flows</button>
         </div>
@@ -317,6 +403,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     </div>
     </div>
     {active && pickerOpen && <AgentPicker close={() => setPickerOpen(false)} restoreFocus={restoreAgentFocus} />}
+    {imageUpload && imageUpload.files.length > 0 && imageUploadRef.current === imageUpload && <div onKeyDown={event => event.stopPropagation()}><ImageUploadDialog target={imageUpload.scope.target} expectedBindingRevision={imageUpload.scope.bindingRevision} files={imageUpload.files} onUploaded={(receipts: ImageUploadReceipt[]) => imagesUploaded(imageUpload, receipts)} onClose={() => { if (imageUploadRef.current === imageUpload) closeImageUpload(); }} /></div>}
     {active && helpOpen && <ShellDialog title="Sending messages" close={() => setHelpOpen(false)} restoreFocus={restoreHelpFocus}><div className="composer-help-notes">
       {state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}
       {!grok && <AppAdmissionRecoveryPanel active={active} onActionComplete={() => setHelpOpen(false)} />}

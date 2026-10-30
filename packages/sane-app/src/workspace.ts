@@ -1,12 +1,15 @@
-import { constants, lstatSync, fstatSync, type Stats } from "node:fs";
+import { constants, lstatSync, fstatSync, openSync, closeSync, realpathSync, fsyncSync, type Stats } from "node:fs";
 import { open, lstat, realpath, opendir, access, unlink } from "node:fs/promises";
-import { resolve, join, relative, isAbsolute, sep, posix } from "node:path";
+import { resolve, join, relative, isAbsolute, sep, posix, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import type { OperationTiming } from "./operation-timing";
 import type { WorkspaceSearchLeaseProvider, WorkspaceSearchLease } from "./workspace-search-scope";
 import { WorkspaceIgnoreEvaluator, WorkspaceIgnoreError, validateIgnoreSnapshot } from "./workspace-ignore";
 import { admitWorkspaceSearch } from "./workspace-search-admission";
 import { ExclusiveRenameError, loadExclusiveRename } from "./workspace-safe-rename";
+import { loadImageUploadFs, type ImageUploadFs } from "./image-upload-fs";
+import { isImageUploadDirectory } from "../shared/image-upload-contract";
+import { loadImageUploadAclGuard } from "./image-upload-acl";
 import { WORKSPACE_MAX_BYTES, type Workspace, type WorkspaceList, type WorkspacePathsInput, type WorkspacePaths, type WorkspaceFile, type WorkspaceWrite, type WorkspaceCreate, type WorkspaceCopy, type WorkspaceRename, type WorkspaceDelete, type WorkspaceGit, type GitEntry, type GitComparison, type WorkspaceDiff, type DiffReason, type WorkspaceSearchInput, type WorkspaceSearch } from "./workspace-contract";
 import { WORKSPACE_SEARCH_LIMITS as SEARCH, SEARCH_IGNORED_DIRECTORIES, searchPatterns, searchFilter, literalMatcher, searchWholeWord, searchPreview } from "./workspace-search";
 
@@ -88,8 +91,8 @@ export class WorkspaceService {
     if (protectedPaths.some(path => inside(path, root))) fail(403, "workspace-forbidden", "Git administration directory is not accessible");
     return { sessionId, root, data, protectedPaths, dev: info.dev, ino: info.ino, operation, maxFileBytes: WORKSPACE_MAX_BYTES, workspaceId: bindingRevision ?? hash(`${root}\0${info.dev}\0${info.ino}`) };
   }
-  async resolve(sessionId: string): Promise<Workspace> {
-    const { workspaceId, root, maxFileBytes } = await this.bound(sessionId);
+  async resolve(sessionId: string, operation?: WorkspaceOperationOptions): Promise<Workspace> {
+    const { workspaceId, root, maxFileBytes } = await this.bound(sessionId, operation);
     return { sessionId, workspaceId, root, maxFileBytes };
   }
   private async bind(sessionId: string, workspaceId: unknown, operation?: WorkspaceOperationOptions): Promise<Bound> {
@@ -288,6 +291,91 @@ export class WorkspaceService {
       workspaceOperationCheck(operation);
       return { bytes: disk.info.size, version: mediaRevision(disk.info) };
     } finally { await disk.handle.close(); }
+  }
+  /** Narrow image-upload capability. The action MUST be synchronous: all
+   * catalog/policy awaits finish before the final authorization + inode fence.
+   * Directory traversal and creation use pinned descriptors, never path writes.
+   * This grants neither .sane access nor permission to overwrite existing files.
+   * The OS account and administrator are trusted filesystem writers. Descriptor
+   * pins detect relocation, but cannot stop another process with those same
+   * privileges from moving an already-open directory between syscalls. */
+  async imageUploadDirectory<T>(sessionId: string, revision: string, path: string, create: boolean, operation: WorkspaceOperationOptions, assertCurrent: () => void, action: (directory: { fd: number; fs: ImageUploadFs; check: () => void }) => T): Promise<T> {
+    if (!isImageUploadDirectory(path)) fail(400, "invalid-path", "Use an exact repository-relative directory");
+    const bound = await this.bind(sessionId, revision, operation);
+    this.lexical(bound, path, true);
+    const [fs, assertAcl] = await Promise.all([loadImageUploadFs(), loadImageUploadAclGuard()]);
+    const fresh = await this.bind(sessionId, revision, operation);
+    const policy = (b: Bound) => JSON.stringify([...new Set(b.protectedPaths)].sort());
+    if (fresh.root !== bound.root || fresh.data !== bound.data || fresh.dev !== bound.dev || fresh.ino !== bound.ino || policy(fresh) !== policy(bound)) fail(409, "workspace-changed", "Workspace binding or protection changed");
+    this.lexical(fresh, path, true);
+    const pins: { fd: number; path: string; info: Stats }[] = [];
+    const ancestors: { path: string; info: Stats }[] = [];
+    const trustedDirectory = (info: Stats, stickyAncestor = false) => {
+      const owner = process.getuid?.();
+      if (!info.isDirectory() || info.isSymbolicLink() || (info.uid !== owner && info.uid !== 0)
+        || (info.mode & 0o022) !== 0 && !(stickyAncestor && (info.mode & 0o1000) !== 0)) {
+        fail(403, "image-upload-shared-directory", "Image uploads require directories owned by the server account or administrator and not writable by other users");
+      }
+    };
+    // A trusted sticky system ancestor (e.g. /tmp) may be shared, but the
+    // worktree root and every destination component must be non-shared.
+    for (let parent = dirname(bound.root);;) {
+      workspaceOperationCheck(operation); assertCurrent();
+      const info = lstatSync(parent); trustedDirectory(info, true);
+      if (realpathSync(parent) !== parent) fail(403, "path-forbidden", "Upload ancestors must use their canonical paths");
+      ancestors.push({ path: parent, info });
+      const next = dirname(parent); if (next === parent) break; parent = next;
+    }
+    const check = () => {
+      workspaceOperationCheck(operation); assertCurrent();
+      for (const pin of ancestors) {
+        workspaceOperationCheck(operation);
+        const current = lstatSync(pin.path); trustedDirectory(current, true);
+        if (current.dev !== pin.info.dev || current.ino !== pin.info.ino || realpathSync(pin.path) !== pin.path) fail(409, "file-changed", "Upload ancestor changed; choose the destination again");
+        const fd = openSync(pin.path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          const opened = fstatSync(fd);
+          if (opened.dev !== pin.info.dev || opened.ino !== pin.info.ino) fail(409, "file-changed", "Upload ancestor changed; choose the destination again");
+          assertAcl(fd);
+        } finally { closeSync(fd); }
+      }
+      for (const pin of pins) {
+        workspaceOperationCheck(operation);
+        const current = lstatSync(pin.path), opened = fstatSync(pin.fd);
+        trustedDirectory(current); trustedDirectory(opened);
+        assertAcl(pin.fd);
+        if (!current.isDirectory() || current.isSymbolicLink() || !opened.isDirectory() || current.dev !== pin.info.dev || current.ino !== pin.info.ino || opened.dev !== pin.info.dev || opened.ino !== pin.info.ino || realpathSync(pin.path) !== pin.path) fail(409, "file-changed", "Upload directory changed; choose it again");
+      }
+      workspaceOperationCheck(operation); assertCurrent();
+    };
+    try {
+      assertCurrent(); workspaceOperationCheck(operation);
+      const rootFd = openSync(bound.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const rootInfo = fstatSync(rootFd); pins.push({ fd: rootFd, path: bound.root, info: rootInfo });
+      if (rootInfo.dev !== bound.dev || rootInfo.ino !== bound.ino) fail(409, "workspace-changed", "Workspace changed before upload");
+      check();
+      let local = "";
+      for (const part of path ? path.split("/") : []) {
+        check(); const parent = pins[pins.length - 1]!;
+        local = local ? `${local}/${part}` : part;
+        const target = this.lexical(bound, local);
+        let fd: number;
+        try { fd = fs.openAt(parent.fd, part, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+        catch (error) {
+          if (!create || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          check();
+          try { fs.mkdirAt(parent.fd, part, 0o755); fsyncSync(parent.fd); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+          check();
+          fd = fs.openAt(parent.fd, part, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        }
+        const pin = { fd, path: target, info: fstatSync(fd) }; pins.push(pin); check();
+      }
+      check();
+      const result = action({ fd: pins[pins.length - 1]!.fd, fs, check });
+      if (result && typeof (result as any).then === "function") fail(500, "image-upload-action", "Image upload commit must be synchronous");
+      check(); return result;
+    } finally { for (const pin of pins.reverse()) closeSync(pin.fd); }
   }
   async search(sessionId: string, input: WorkspaceSearchInput, signal?: AbortSignal): Promise<WorkspaceSearch> {
     if (!input || typeof input.query !== "string" || !input.query.length || input.query.length > SEARCH.query || /[\0\r\n]/.test(input.query) || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(input.query) || (input.caseSensitive !== undefined && typeof input.caseSensitive !== "boolean") || (input.wholeWord !== undefined && typeof input.wholeWord !== "boolean")) fail(400, "invalid-search", "Use a nonempty single-line literal query of at most 1024 characters and boolean search options");

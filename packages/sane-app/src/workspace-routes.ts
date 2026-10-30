@@ -25,6 +25,7 @@ export interface WorkspaceRoutePorts {
   canCreate(req: Request): boolean;
   canRunGit(req: Request, token: string | undefined): boolean;
   beforeRemoveWorktree(workspaceId: string, worktreeId: string): Promise<void>;
+  withWorktreeRemoval?<T>(workspaceId: string, worktreeId: string, action: () => Promise<T>): Promise<T>;
 }
 
 const aliasPattern = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/alias$/;
@@ -45,7 +46,7 @@ export function matchesWorkspaceRoute(path: string): boolean {
 /** The bridge retains root guards, search lifetime ownership and worktree cleanup. */
 export function createWorkspaceRoute({
   catalog, workspace, worktrees, workspaceCreations, gitOperations, searches,
-  authenticated, terminalToken, assertDomainMutationOpen, canCreate, canRunGit, beforeRemoveWorktree,
+  authenticated, terminalToken, assertDomainMutationOpen, canCreate, canRunGit, beforeRemoveWorktree, withWorktreeRemoval,
 }: WorkspaceRoutePorts): (req: Request, url: URL) => Promise<Response | null> {
   const image = (req: Request, service: WorkspaceOperations, key: string, revision: unknown, path: string) => {
     const token = terminalToken(req);
@@ -105,10 +106,11 @@ export function createWorkspaceRoute({
         if (!operation && worktreeId && req.method === "GET") { const resolved = await worktrees.resolve(key); return json({ ...resolved, catalogWorkspaceId: workspaceId, worktreeId, bindingRevision: resolved.workspaceId }); }
         if (!operation && worktreeId && req.method === "DELETE") {
           const input = await body(req).catch(() => ({}));
-          const result = await catalog.removeWorktree(workspaceId, worktreeId, {
+          const remove = () => catalog.removeWorktree(workspaceId, worktreeId, {
             force: input?.force === true,
             beforeRemove: () => beforeRemoveWorktree(workspaceId, worktreeId),
           });
+          const result = withWorktreeRemoval ? await withWorktreeRemoval(workspaceId, worktreeId, remove) : await remove();
           return json(result);
         }
         if (operation === "list" && req.method === "GET") return json(await worktrees.list(key, revision, filePath));

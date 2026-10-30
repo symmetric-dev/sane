@@ -7,6 +7,7 @@ import { equal, immutable } from "./prepared-input-codec";
 import { validateRequest } from "./pending-input-codec";
 import { uuid, type Session } from "./history";
 import type { PreparedUserInput } from "./user-input-preparation";
+import { body } from "./bridge-http";
 
 export type PendingInputPreflight = { pins: PendingInputPins; validate: () => void };
 /** Internal live capability, never returned through the wire receipt. Only a new
@@ -250,7 +251,7 @@ export async function pendingInputRoute(request: Request, path: string, service:
     if (request.method === "GET" && match[3]) return json(await service.status(id, decodeURIComponent(match[3])));
     if (request.method !== "POST" || match[3]) return json({ error: "Method not allowed" }, 405);
     let input: unknown;
-    try { input = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
+    try { input = await body(request); } catch { return json({ error: "Invalid JSON body" }, 400); }
     if (correlation && input && typeof input === "object") for (const key of ["requestId", "inputRequestId", "itemId"] as const) {
       const value = (input as Record<string, unknown>)[key]; if (uuid(value)) correlation[key] = value;
     }
