@@ -1,4 +1,4 @@
-/** Device-local configuration only. No server discovery, provisioning, or probes. */
+/** Device-local configuration, including any URL token. No server discovery, provisioning, or probes. */
 export type NotebookConfiguration = { version: 1; server: string; root: string; generation: string };
 const PREFIX = "sane.notebook.worktree.v1:";
 const listeners = new Set<() => void>();
@@ -32,15 +32,15 @@ export function normalizeNotebookRoot(input: string) {
 export function normalizeNotebookServer(input: string) {
   const value = input.trim();
   // Validate the raw path before URL's dot-segment normalization can hide traversal.
-  const parts = /^(https?:)\/\/([^/?#]+)(\/[^?#]*)?$/i.exec(value);
-  if (!parts || /[\s\\\u0000-\u001f\u007f]/.test(value)) throw new Error("Enter an HTTP(S) server URL without credentials, query parameters, or a fragment.");
+  const parts = /^(https?:)\/\/([^/?#]+)(\/[^?#]*)?(?:\?[^#]*)?$/i.exec(value);
+  if (!parts || /[\s\\\u0000-\u001f\u007f]/.test(value)) throw new Error("Enter an HTTP(S) server URL without an embedded username, password, or fragment. Query parameters such as access_token are supported.");
   const rawPath = parts[3] ?? "/";
   if (rawPath.includes("//")) throw new Error("Use a server path without empty segments.");
   const path = rawPath.slice(1).replace(/\/$/, "");
   if (path) path.split("/").forEach(safeSegment);
   let url: URL;
   try { url = new URL(value); } catch { throw new Error("Enter a valid HTTP(S) server URL."); }
-  if (url.username || url.password || parts[2]!.includes("@")) throw new Error("Credentials must not be stored here. Sign in through marimo's own login UI.");
+  if (url.username || url.password || parts[2]!.includes("@")) throw new Error("Use a URL without an embedded username or password. Marimo access_token query parameters are supported.");
   if (url.origin === window.location.origin) throw new Error("Use a dedicated marimo origin, not this SANE App origin.");
   if (window.location.protocol === "https:" && url.protocol === "http:") throw new Error("This HTTPS App needs an HTTPS marimo server; browsers block insecure frames.");
   if (!url.pathname.endsWith("/")) url.pathname += "/";
@@ -72,7 +72,9 @@ export function notebookFileMapping(configuration: NotebookConfiguration, path: 
 /** Call only from explicit activation; file paths never become arbitrary navigation URLs. */
 export function notebookFrameUrl(configuration: NotebookConfiguration, path: string) {
   const url = new URL(normalizeNotebookServer(configuration.server));
-  url.search = new URLSearchParams({ file: notebookFileMapping(configuration, path) }).toString();
+  // Preserve the pasted server's authentication and other query parameters;
+  // only the file selection belongs to SANE's current worktree mapping.
+  url.searchParams.set("file", notebookFileMapping(configuration, path));
   return url.href;
 }
 

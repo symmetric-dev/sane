@@ -1,22 +1,22 @@
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { FiDownload, FiImage, FiMaximize2, FiVideo } from "react-icons/fi";
+import { FiChevronLeft, FiChevronRight, FiDownload, FiImage, FiMaximize2, FiVideo } from "react-icons/fi";
 import type { MediaShareItem, MediaShareRecord } from "../shared/media-share-contract";
 import type { MediaShareProjection } from "./media-share-client";
 import { mediaShareContentUrl, mediaShareFilename } from "./media-share-presentation";
 import { ShellDialog } from "./shell-dialog";
 import "./shared-media.css";
 
-function SnapshotImage({ src, name, thumbnail = false }: { src: string; name: string; thumbnail?: boolean }) {
+function SnapshotImage({ src, name, thumbnail = false, retry }: { src: string; name: string; thumbnail?: boolean; retry?: () => void }) {
   const ref = useRef<HTMLImageElement>(null);
   const [failed, setFailed] = useState(false);
-  if (failed) return thumbnail ? <FiImage aria-hidden="true" /> : <p role="status">Image could not be decoded. Try the preview again or download the saved snapshot.</p>;
-  return <img ref={ref} src={src} alt={thumbnail ? "" : `Frozen snapshot of ${name}`} loading="lazy" decoding="async" onError={() => setFailed(true)} onLoad={event => {
+  if (failed) return thumbnail ? <FiImage aria-hidden="true" /> : <p role="status">Image could not be decoded. {retry && <button type="button" onClick={retry}>Retry preview</button>}</p>;
+  return <img ref={ref} src={src} alt={thumbnail ? "" : name} loading="lazy" decoding="async" onError={() => setFailed(true)} onLoad={event => {
     const image = event.currentTarget;
     if (image.decode) void image.decode().catch(() => { if (ref.current === image) setFailed(true); });
   }} />;
 }
 
-function SnapshotVideo({ src, name }: { src: string; name: string }) {
+function SnapshotVideo({ src, name, retry }: { src: string; name: string; retry: () => void }) {
   const ref = useRef<HTMLVideoElement>(null);
   const [failed, setFailed] = useState(false);
   useLayoutEffect(() => {
@@ -30,23 +30,21 @@ function SnapshotVideo({ src, name }: { src: string; name: string }) {
       video.load();
     };
   }, [src]);
-  return failed ? <p role="status">Video could not be played. Try the preview again or download the saved snapshot.</p> : <video ref={ref} src={src} aria-label={`Frozen snapshot of ${name}`} controls playsInline preload="metadata" onError={event => { event.currentTarget.pause(); setFailed(true); }}>Your browser cannot play this MP4. Download the saved snapshot instead.</video>;
+  return failed ? <p role="status">Video could not be played. <button type="button" onClick={retry}>Retry preview</button></p> : <video ref={ref} src={src} aria-label={name} controls playsInline preload="metadata" onError={event => { event.currentTarget.pause(); setFailed(true); }}>Your browser cannot play this MP4. Download the video instead.</video>;
 }
 
 function MediaPreview({ share, item }: { share: MediaShareRecord; item: MediaShareItem }) {
   const [attempt, setAttempt] = useState(0);
   const src = mediaShareContentUrl(share, item), name = mediaShareFilename(item);
-  return <>
-    {item.kind === "video" ? <SnapshotVideo key={attempt} src={src} name={name} /> : <SnapshotImage key={attempt} src={src} name={name} />}
-    <button type="button" className="shared-media-retry" onClick={() => setAttempt(value => value + 1)}>Retry preview</button>
-  </>;
+  const retry = () => setAttempt(value => value + 1);
+  return item.kind === "video" ? <SnapshotVideo key={attempt} src={src} name={name} retry={retry} /> : <SnapshotImage key={attempt} src={src} name={name} retry={retry} />;
 }
 
 /** One reader, with bounded image thumbnails and no video thumbnail requests. */
 function MediaGalleryReader({ share, page, select, active = true, expanded = false, openModal, inactiveMessage = "Preview paused while this transcript is inactive." }: {
   share: MediaShareRecord; page: number; select: (index: number) => void; active?: boolean; expanded?: boolean; openModal?: () => void; inactiveMessage?: string;
 }) {
-  const description = useId(), panel = useId();
+  const panel = useId();
   const root = useRef<HTMLElement>(null), focusSelection = useRef(false);
   useLayoutEffect(() => {
     if (active && focusSelection.current) root.current?.querySelector<HTMLButtonElement>(".shared-media-thumbnails button[aria-pressed=true]")?.focus();
@@ -66,34 +64,31 @@ function MediaGalleryReader({ share, page, select, active = true, expanded = fal
       select(next);
     }
   };
-  return <section ref={root} className={`shared-media-card${expanded ? " shared-media-expanded" : ""}`} aria-label="Shared media gallery" onKeyDown={navigate}>
+  return <section ref={root} className={`shared-media-card shared-media-gallery${count > 1 ? " shared-media-multiple" : ""}${expanded ? " shared-media-expanded" : ""}`} aria-label="Shared media gallery" onKeyDown={navigate}>
     <header>
       <strong title={name}>{name}</strong>
-      <span className="shared-media-count" role="status" aria-live="polite">{page + 1} of {count}</span>
+      {count > 1 && <span className="shared-media-count" role="status" aria-live="polite">{page + 1} of {count}</span>}
       <a href={mediaShareContentUrl(share, item)} download={name}><FiDownload aria-hidden="true" />Download</a>
       {openModal && <button type="button" aria-label="Expand media gallery" title="Expand media gallery" onClick={openModal}><FiMaximize2 aria-hidden="true" /></button>}
     </header>
-    <p id={description} className="shared-media-caption">Frozen snapshot · not the current file</p>
-    <p className="shared-media-path" title={item.path}>{item.path}</p>
-    <div id={panel} className="shared-media-preview" tabIndex={active ? 0 : -1} aria-label={`Preview: ${name}`} aria-describedby={description}>
+    <div id={panel} className="shared-media-preview" tabIndex={active ? 0 : -1} aria-label={`Preview: ${name}`}>
       {active ? <MediaPreview key={item.id} share={share} item={item} /> : <p className="shared-media-caption">{inactiveMessage}</p>}
     </div>
-    <nav className="shared-media-navigation" aria-label="Media navigation">
+    {count > 1 && <nav className="shared-media-navigation" aria-label="Media navigation">
       <div className="shared-media-pagination">
-        <button type="button" disabled={!active || page === 0} onClick={() => select(page - 1)}>Previous</button>
-        <label>Item <select aria-label="Select shared media item" disabled={!active} value={page} onChange={event => select(Number(event.target.value))}>{share.media.map((entry, index) => <option key={entry.id} value={index}>{index + 1}. {mediaShareFilename(entry)}</option>)}</select></label>
-        <button type="button" disabled={!active || page === count - 1} onClick={() => select(page + 1)}>Next</button>
+        <button type="button" aria-label="Previous media item" title="Previous" disabled={!active || page === 0} onClick={() => select(page - 1)}><FiChevronLeft aria-hidden="true" /></button>
+        <button type="button" aria-label="Next media item" title="Next" disabled={!active || page === count - 1} onClick={() => select(page + 1)}><FiChevronRight aria-hidden="true" /></button>
       </div>
       <ol className="shared-media-thumbnails" start={start + 1} aria-label="Nearby media items">
         {share.media.slice(start, start + 5).map((entry, offset) => {
           const index = start + offset, filename = mediaShareFilename(entry);
           return <li key={entry.id}><button type="button" disabled={!active} aria-pressed={index === page} aria-controls={panel} aria-label={`Show item ${index + 1}: ${filename}`} title={filename} onClick={() => select(index)}>
             <span className="shared-media-thumbnail">{entry.kind === "video" ? <FiVideo aria-hidden="true" /> : active ? <SnapshotImage src={mediaShareContentUrl(share, entry)} name={filename} thumbnail /> : <FiImage aria-hidden="true" />}</span>
-            <span className="shared-media-item-name">{index + 1}. {filename}</span>
+            <span className="shared-media-item-name">{filename}</span>
           </button></li>;
         })}
       </ol>
-    </nav>
+    </nav>}
   </section>;
 }
 
@@ -104,7 +99,7 @@ function MediaShareGallery({ share, active }: { share: MediaShareRecord; active:
   const reader = { share, page: selected, select: setPage };
   return <>
     <MediaGalleryReader {...reader} active={active && !expanded} openModal={active ? () => setExpanded(true) : undefined} inactiveMessage={active && expanded ? "Preview open in expanded gallery." : undefined} />
-    {active && expanded && <ShellDialog title="Shared media" subtitle={`Item ${selected + 1} of ${share.media.length}`} className="shared-media-dialog" close={() => setExpanded(false)}><MediaGalleryReader {...reader} expanded /></ShellDialog>}
+    {active && expanded && <ShellDialog title={mediaShareFilename(share.media[selected]!)} subtitle={share.media.length > 1 ? `${selected + 1} of ${share.media.length}` : undefined} className="shared-media-dialog" close={() => setExpanded(false)}><MediaGalleryReader {...reader} expanded /></ShellDialog>}
   </>;
 }
 

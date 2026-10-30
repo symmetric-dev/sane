@@ -114,7 +114,9 @@ before sharing; saved captures live under `<dataDir>/browser-artifacts/`.
 Open a saved `.py` file in **Files** and use **Configure Notebook view** to connect
 an existing, trusted Marimo editor server serving that exact checkout. Configure
 its dedicated server URL and worktree-relative notebook root on each device.
-SANE does not install or start that server; use Marimo's own sign-in UI. An HTTPS
+Paste the full URL, including any `?access_token=…`, to authenticate without a
+separate login tab. The URL and token are saved in this device's browser storage;
+only use a trusted device. SANE does not install or start that server. An HTTPS
 App requires an HTTPS Marimo server, and the server must permit trusted embedding.
 Notebook activation is explicit; opening a notebook may execute Python with that
 server's permissions.

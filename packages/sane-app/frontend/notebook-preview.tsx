@@ -77,10 +77,10 @@ function NotebookConfigurationDialog({ close, model }: { close: () => void; mode
     <form className="notebook-configuration" onSubmit={event => { event.preventDefault(); persist(); }}>
       <p>Connect an existing, trusted marimo editor server serving this exact checkout. SANE does not start or install marimo.</p>
       <p className="notebook-scope"><strong>Worktree</strong><span>{model.controller.workspace?.root ?? "Unavailable"}</span></p>
-      <label>Marimo server URL<input ref={serverInput} type="url" value={server} onChange={event => setServer(event.target.value)} placeholder="https://marimo.example.com/optional/subpath/" required autoComplete="off" spellCheck={false} disabled={!available} /></label>
+      <label>Marimo server URL<input ref={serverInput} type="url" value={server} onChange={event => setServer(event.target.value)} placeholder="https://marimo.example.com/?access_token=…" required autoComplete="off" spellCheck={false} disabled={!available} /></label>
       <label>Notebook root in this worktree<input value={root} onChange={event => setRoot(event.target.value)} placeholder="notebooks/ (or . for worktree root)" autoComplete="off" spellCheck={false} disabled={!available} /></label>
       <p>The server must be rooted at this folder, not a different checkout. For example, with root <code>notebooks/</code>, <code>notebooks/foo.py</code> opens the server's <code>foo.py</code>. This mapping is your assertion; SANE cannot verify the remote filesystem.</p>
-      <p>No passwords, tokens, query parameters, or fragments. Use marimo's own login UI. Keep its authentication and frame protections intact; use a deployment that already permits this trusted App to embed it.</p>
+      <p>Paste the full server URL, including <code>?access_token=…</code> if provided by marimo. SANE includes it when opening notebooks, so no separate login tab is needed with a valid token. The URL, including any token, is saved in this browser on this device; only use a trusted device. The server must allow this App to embed it.</p>
       <p className="notebook-warning">Opening a notebook may execute Python on that server with its permissions. Only connect trusted servers and open trusted files.</p>
       {!available && <p role="alert">The worktree or configuration has changed. Close this dialog and reopen configuration for an available worktree.</p>}
       {(error || model.error) && <p className="notebook-error" role="alert">{error || model.error}</p>}
@@ -178,7 +178,7 @@ export function NotebookFileView({ children, sourceComparison = false, toolbarVi
     <section id={notebookId} className="notebook-preview" aria-label="Notebook view" hidden={!showNotebook}>
       {!launchIdentity ? <div className="notebook-launch">
         <h2>Open in marimo</h2>
-        {unavailable ? <><p role="status">{unavailable}</p>{model.key && <button type="button" onClick={() => setConfigure(model.key)}>Configure Notebook view</button>}</> : <>
+        {unavailable ? <p role="status">{unavailable}</p> : <>
           <p>The native marimo editor opens the server's saved copy of this file. A .py extension does not guarantee a marimo notebook.</p>
           {fileAvailability.oversized && <p role="status">This regular file exceeds Source's size limit. SANE has not inspected its text or verified that it is a marimo notebook. Marimo will read the server's saved contents.</p>}
           <p className="notebook-warning">Opening may execute Python on the configured server with its permissions. Only open trusted notebooks. Selecting a file or saving this configuration does not start execution. Returning to Source keeps the notebook frame open; closing the view may not stop server-side execution.</p>
@@ -188,9 +188,10 @@ export function NotebookFileView({ children, sourceComparison = false, toolbarVi
           <button type="button" disabled={!!launchBlocked} onClick={launch}>{hasUnsavedChanges ? "Open saved version in marimo" : "Open notebook in marimo"}</button>
         </>}
         {active.frameError && <p className="notebook-error" role="alert">Could not open this notebook. Check the mapping and retry.</p>}
+        {model.key && <button type="button" onClick={() => setConfigure(model.key)}>Configure Notebook view</button>}
         <button type="button" onClick={() => setSession(value => ({ ...value, mode: "source" }))}>Back to Source</button>
       </div> : <>
-        <div className="notebook-runtime-note"><span>Native marimo · runs on the configured server. Source edits are not synchronized.{hasUnsavedChanges ? " Unsaved Source edits are not included." : ""} A hidden notebook can keep running.</span><button type="button" onClick={() => setSession({ identity, mode: "notebook" })}>Close notebook</button></div>
+        <div className="notebook-runtime-note"><span>Native marimo · runs on the configured server. Source edits are not synchronized.{hasUnsavedChanges ? " Unsaved Source edits are not included." : ""} A hidden notebook can keep running.</span>{model.key && <button type="button" onClick={() => setConfigure(model.key)}>Configure Notebook view</button>}<button type="button" onClick={() => setSession({ identity, mode: "notebook" })}>Close notebook</button></div>
         <iframe key={`${identity}:${launchIdentity.retry}`} src={launchIdentity.url} title={`Marimo notebook: ${selected}`} className="notebook-frame" referrerPolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-downloads" onError={() => { if (current.current === identity) setSession({ identity, mode: "notebook", frameError: true }); }} />
       </>}
     </section>
