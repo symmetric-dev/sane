@@ -63,7 +63,7 @@ const RETIRED_ROLE_SKILL_NAMES = [
   "sane-research-assistant-role",
 ] as const
 
-export const PLUGIN_SRC_FILES: readonly string[] = ["cli-arguments.ts", "native-caller.ts", "native-opencode.ts", "native-opencode-permissions.ts", "native-claude.ts", "native-claude-hook.ts", "native-claude-mcp.ts", "native-configuration.ts", "native-handoff.ts", "native-worker-contract.ts", "native-worker.ts", "native-share-code-contract.ts", "native-share-code.ts", "native-user-questions-contract.ts", "native-user-questions.ts", "native-browser.ts"]
+export const PLUGIN_SRC_FILES: readonly string[] = ["cli-arguments.ts", "native-caller.ts", "native-opencode.ts", "native-opencode-permissions.ts", "native-claude.ts", "native-claude-hook.ts", "native-claude-mcp.ts", "native-configuration.ts", "native-handoff.ts", "native-worker-contract.ts", "native-worker.ts", "native-share-code-contract.ts", "native-share-code.ts", "native-share-media-contract.ts", "native-share-media.ts", "native-user-questions-contract.ts", "native-user-questions.ts", "native-browser.ts"]
 
 /** Browser-safe parser shared by the App and native transports. Keep its full
  * runtime closure here; it must not import App persistence or service modules. */

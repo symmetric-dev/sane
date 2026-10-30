@@ -1,0 +1,50 @@
+.shared-media-card { min-width: 0; max-width: 100%; overflow: hidden; margin: .65rem 0; border: 1px solid var(--border); border-radius: 8px; background: var(--background); color: var(--foreground); font-size: .8rem; }
+.shared-media-card > header { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .5rem .65rem; border-bottom: 1px solid var(--border); }
+.shared-media-card > header strong { flex: 1 1 10rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shared-media-card button, .shared-media-card select, .shared-media-notice button { font: inherit; cursor: pointer; }
+.shared-media-card button, .shared-media-card select { min-height: 2rem; max-width: 100%; }
+.shared-media-card button:disabled { opacity: .5; cursor: default; }
+.shared-media-card button:focus-visible, .shared-media-card a:focus-visible, .shared-media-card select:focus-visible, .shared-media-preview:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.shared-media-card > header a { display: inline-flex; align-items: center; gap: .3rem; color: inherit; }
+.shared-media-caption, .shared-media-path { margin: .4rem .65rem; font-size: .72rem; color: var(--muted-foreground); }
+.shared-media-path { font-family: var(--font-mono, monospace); overflow-wrap: anywhere; }
+.shared-media-count { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted-foreground); }
+.shared-media-preview { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 0; min-height: 9rem; padding: .5rem; background: var(--muted); }
+.shared-media-preview > img, .shared-media-preview > video { display: block; width: 100%; max-width: 100%; height: min(24rem, 48dvh); object-fit: contain; }
+.shared-media-preview > p { padding: 1rem; overflow-wrap: anywhere; }
+.shared-media-retry { align-self: flex-end; margin-top: .35rem; font-size: .7rem !important; }
+.shared-media-navigation { min-width: 0; padding: .5rem .65rem; border-top: 1px solid var(--border); }
+.shared-media-pagination { display: flex; align-items: center; gap: .5rem; }
+.shared-media-pagination label { display: flex; align-items: center; gap: .3rem; flex: 1; min-width: 0; }
+.shared-media-pagination select { flex: 1; min-width: 0; width: 0; text-overflow: ellipsis; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 4px; }
+.shared-media-thumbnails { display: flex; gap: .4rem; margin: .5rem 0 0; padding: 0; list-style: none; }
+.shared-media-thumbnails li { flex: 1 1 0; min-width: 0; max-width: 8rem; }
+.shared-media-thumbnails button { display: flex; flex-direction: column; align-items: center; gap: .3rem; width: 100%; min-width: 0; padding: .3rem; background: transparent; color: var(--muted-foreground); border: 2px solid transparent; border-radius: 5px; }
+.shared-media-thumbnails button[aria-pressed="true"] { border-color: var(--primary); color: var(--foreground); background: var(--muted); }
+.shared-media-thumbnail { display: flex; align-items: center; justify-content: center; width: 100%; height: 2.75rem; overflow: hidden; }
+.shared-media-thumbnail img { width: 100%; height: 100%; object-fit: contain; }
+.shared-media-thumbnail svg { width: 1.35rem; height: 1.35rem; }
+.shared-media-item-name { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .7rem; }
+.shared-media-pending { padding: .5rem .65rem; }
+.shared-media-notice { font-size: .8rem; overflow-wrap: anywhere; }
+.shell-dialog.shared-media-dialog { box-sizing: border-box; width: 84vw; max-width: 96vw; height: 88dvh; max-height: 96dvh; overflow: hidden; }
+.shared-media-dialog .shell-dialog-content { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; padding: 0; }
+.shared-media-dialog .shell-dialog-content > header { flex-shrink: 0; margin: 0; padding: .8rem 1rem; border-bottom: 1px solid var(--border); }
+.shared-media-dialog .shell-dialog-heading { min-width: 0; }
+.shared-media-dialog .shell-dialog-heading h2 { font-size: 1rem; }
+.shared-media-dialog .shell-dialog-subtitle { margin: .2rem 0 0; font-size: .8rem; color: var(--muted-foreground); }
+.shared-media-expanded { display: flex; flex-direction: column; flex: 1; min-height: 0; margin: 0; border: 0; border-radius: 0; overflow: auto; }
+.shared-media-expanded > :not(.shared-media-preview) { flex-shrink: 0; }
+.shared-media-expanded .shared-media-preview { flex: 1; min-height: 8rem; }
+.shared-media-expanded .shared-media-preview > img, .shared-media-expanded .shared-media-preview > video { flex: 1; min-height: 0; height: 100%; max-height: 60dvh; }
+@media (max-width: 640px) {
+  .shell-dialog.shared-media-dialog { width: 96vw; height: 94dvh; }
+  .shared-media-card button, .shared-media-card select { min-height: 2.75rem; }
+  .shared-media-navigation { padding: .4rem; }
+  .shared-media-pagination, .shared-media-thumbnails { gap: .2rem; }
+}
+@media (max-width: 360px) {
+  .shared-media-pagination { flex-wrap: wrap; }
+  .shared-media-pagination label { order: 1; flex-basis: 100%; }
+  .shared-media-thumbnail { height: 2rem; }
+}

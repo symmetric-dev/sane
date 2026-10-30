@@ -225,6 +225,54 @@ export class WorkspaceService {
     try { const result = await this.fileResult(bound, path, disk); await this.checked(bound, path); return result; }
     finally { await disk.handle.close(); }
   }
+  /** Separate bounded binary capability: never raises the text editor limit or
+   * grants code-share's special .sane access. The caller owns its private sink. */
+  async captureMedia(sessionId: string, workspaceId: string, path: string, maxBytes: number, sink: (chunk: Buffer) => Promise<void>, operation?: WorkspaceOperationOptions): Promise<{ bytes: number; sha256: string }> {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 100 * 1024 * 1024) fail(400, "media-size", "Invalid binary capture limit");
+    const bound = await this.bind(sessionId, workspaceId, operation);
+    const target = await this.checked(bound, path);
+    const policy = (value: Bound) => JSON.stringify([...new Set(value.protectedPaths)].sort());
+    const components = new Map<string, Stats>();
+    let cursor = bound.root;
+    components.set(cursor, await lstat(cursor));
+    for (const part of path.split("/")) { cursor = join(cursor, part); components.set(cursor, await lstat(cursor)); }
+    const fence = async () => {
+      workspaceOperationCheck(operation);
+      const fresh = await this.bind(sessionId, workspaceId, operation);
+      if (fresh.root !== bound.root || fresh.data !== bound.data || fresh.dev !== bound.dev || fresh.ino !== bound.ino || policy(fresh) !== policy(bound)) fail(409, "workspace-changed", "Workspace binding or protection changed during capture");
+      await this.checked(fresh, path);
+      for (const [name, expected] of components) {
+        const current = await lstat(name);
+        if (current.isSymbolicLink() || current.dev !== expected.dev || current.ino !== expected.ino || (name !== target && !current.isDirectory())) fail(409, "file-changed", "Path changed during capture");
+      }
+      workspaceOperationCheck(operation);
+    };
+    await fence();
+    const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const before = await handle.stat(), expected = components.get(target)!;
+      if (!before.isFile()) fail(400, "not-file", "Only regular media files are supported");
+      if (before.nlink !== 1) fail(403, "hardlink", "Hard-linked files are not supported");
+      if (before.dev !== expected.dev || before.ino !== expected.ino) fail(409, "file-changed", "File changed while opening");
+      if (before.size < 1 || before.size > maxBytes) fail(413, "media-size", "Media exceeds its binary capture limit");
+      await fence();
+      const digest = createHash("sha256"), chunk = Buffer.alloc(64 * 1024);
+      let bytes = 0;
+      while (bytes < before.size) {
+        workspaceOperationCheck(operation);
+        const read = await handle.read(chunk, 0, Math.min(chunk.length, before.size - bytes), bytes);
+        if (!read.bytesRead) fail(409, "file-changed", "Media was truncated during capture");
+        workspaceOperationCheck(operation);
+        const data = chunk.subarray(0, read.bytesRead);
+        digest.update(data); await sink(data); bytes += data.length;
+      }
+      await fence();
+      const after = await handle.stat(), current = await lstat(target);
+      for (const value of [after, current]) if (!value.isFile() || value.nlink !== 1 || value.dev !== before.dev || value.ino !== before.ino || value.size !== before.size || value.mtimeMs !== before.mtimeMs || value.ctimeMs !== before.ctimeMs) fail(409, "file-changed", "Media changed during capture");
+      workspaceOperationCheck(operation);
+      return { bytes, sha256: digest.digest("hex") };
+    } finally { await handle.close(); }
+  }
   async search(sessionId: string, input: WorkspaceSearchInput, signal?: AbortSignal): Promise<WorkspaceSearch> {
     if (!input || typeof input.query !== "string" || !input.query.length || input.query.length > SEARCH.query || /[\0\r\n]/.test(input.query) || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(input.query) || (input.caseSensitive !== undefined && typeof input.caseSensitive !== "boolean") || (input.wholeWord !== undefined && typeof input.wholeWord !== "boolean")) fail(400, "invalid-search", "Use a nonempty single-line literal query of at most 1024 characters and boolean search options");
     let include: string[], exclude: string[];

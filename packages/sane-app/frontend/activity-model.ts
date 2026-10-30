@@ -7,13 +7,19 @@ import { active, type Harness, type Message, type Run, type TextPart, type ToolP
 import { dispatchedWorkers } from "./worker-presentation";
 import type { CodeShareRecord } from "../shared/code-share-contract";
 import { isCodeShareTool, sharesForTool } from "./code-share-presentation";
+import type { MediaShareRecord } from "../shared/media-share-contract";
+import { isMediaShareTool, mediaSharesForTool } from "./media-share-presentation";
 
 type ActivityPart = Extract<TextPart, { type: "reasoning" }> | ToolPart;
 export type ActivityEntry = { id: string; messageId: string; index: number; type: "reasoning" | "tool"; name: string; status?: string; error?: boolean };
 export type ActivityDetail = { id: string; source: Message; index: number; part: ActivityPart };
 export type ActivitySegment = { id: string; type: ActivityEntry["type"]; name: string; entries: ActivityEntry[]; status?: string; error?: boolean };
 export type StandardToolClassification = { kind: "activity" } | { kind: "native-subagent"; key: NativeSubagentKey } | { kind: "handoff"; handoffs: HandoffPresentation[] } | { kind: "pending-handoff" } | { kind: "worker"; workers: WorkerRecord[] };
-export type TranscriptToolClassification = StandardToolClassification | { kind: "code-share"; shares: CodeShareRecord[]; underlying?: StandardToolClassification };
+// Keep the code-only discriminant and shares field compatible with existing callers.
+// Both overlays carry at most one underlying tool presentation, even inside execute.
+export type TranscriptToolClassification = StandardToolClassification
+  | { kind: "code-share"; shares: CodeShareRecord[]; underlying?: StandardToolClassification }
+  | { kind: "shared-content"; shares: CodeShareRecord[]; mediaShares: MediaShareRecord[]; underlying?: StandardToolClassification };
 
 export function activityEntryId(source: Message, part: ActivityPart, index: number): string {
   let ordinal = 0;
@@ -48,11 +54,16 @@ export function resolveActivityDetail(entry: ActivityEntry, messagesById: Readon
   }
 }
 
-export function classifyTranscriptTool({ sessionId, source, part, workers, handoffs, nativeRuns, nativeHarness, readOnly, codeShares = [] }: {
-  sessionId: string; source: Message; part: ToolPart; workers: WorkerRecord[]; handoffs: HandoffPresentation[]; nativeRuns: Run[]; nativeHarness: Harness; readOnly?: boolean; codeShares?: readonly CodeShareRecord[];
+export function classifyTranscriptTool({ sessionId, source, part, workers, handoffs, nativeRuns, nativeHarness, readOnly, codeShares = [], mediaShares = [] }: {
+  sessionId: string; source: Message; part: ToolPart; workers: WorkerRecord[]; handoffs: HandoffPresentation[]; nativeRuns: Run[]; nativeHarness: Harness; readOnly?: boolean; codeShares?: readonly CodeShareRecord[]; mediaShares?: readonly MediaShareRecord[];
 }): TranscriptToolClassification {
   const shares = sharesForTool(sessionId, source, part, codeShares);
-  const directShare = isCodeShareTool(part);
+  const media = mediaSharesForTool(sessionId, source, part, mediaShares);
+  const directShare = isCodeShareTool(part), directMedia = isMediaShareTool(part);
+  if (media.length || directMedia) return {
+    kind: "shared-content", shares, mediaShares: media,
+    ...(!directShare && !directMedia ? { underlying: classifyStandardTool() } : part.error ? { underlying: { kind: "activity" as const } } : {}),
+  };
   if (shares.length || directShare) return { kind: "code-share", shares, ...(!directShare ? { underlying: classifyStandardTool() } : part.error ? { underlying: { kind: "activity" as const } } : {}) };
   return classifyStandardTool();
   function classifyStandardTool(): StandardToolClassification {

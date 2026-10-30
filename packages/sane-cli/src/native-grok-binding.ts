@@ -7,13 +7,16 @@ import type { GrokSourceDescriptor } from "../../sane-core/src/contracts.ts"
 import type { NativeCaller } from "./native-caller.ts"
 import { nativeWorkerInput, nativeWorkerOperations } from "./native-worker-contract.ts"
 import { parseCodeShareInput } from "./native-share-code-contract.ts"
+import { parseMediaShareInput } from "./native-share-media-contract.ts"
 import { parsePresentQuestionsInput } from "./native-user-questions-contract.ts"
+import { nativeBrowserToolNames } from "./native-browser.ts"
 
 export const GROK_RUNTIME_HEADER = "x-sane-grok-runtime"
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i
 const text = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(v)
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
 function fail(): never { throw new Error("Grok native tool requires its original live App runtime binding") }
+const knownTools = new Set<string>(["sane_link", "sane_context", "sane_handoff", "sane_handoff_status", "sane_share_code", "sane_share_media", "present_questions_to_user", ...nativeWorkerOperations.map(op => `sane_worker_${op}`), ...nativeBrowserToolNames])
 
 export type GrokRuntimeBindingInput = {
   runId: string; appSessionId: string; nativeSessionId: string; source: GrokSourceDescriptor
@@ -36,7 +39,9 @@ function canonical(value: unknown): string {
 /** The worker transport adds requestId and materializes wait's default. Hash the
  * semantic tool input on both sides, without that derived admission key. */
 export function grokRuntimeInputDigest(toolName: string, input: unknown): string {
-  let value = input
+  // The hook is not a generic signing oracle for arbitrary MCP tools/payloads.
+  if (!knownTools.has(toolName) || !object(input)) fail()
+  let value: unknown = input
   const operation = nativeWorkerOperations.find(op => toolName === `sane_worker_${op}`)
   if (operation && object(value)) {
     const { requestId: _requestId, ...args } = value
@@ -44,6 +49,7 @@ export function grokRuntimeInputDigest(toolName: string, input: unknown): string
   }
   if (toolName === "sane_handoff") value = handoffInput(value)
   if (toolName === "sane_share_code") value = parseCodeShareInput(value)
+  if (toolName === "sane_share_media") value = parseMediaShareInput(value)
   if (toolName === "present_questions_to_user") value = parsePresentQuestionsInput(value)
   return createHash("sha256").update(canonical(value)).digest("hex")
 }
@@ -112,7 +118,7 @@ export function parseGrokRuntimeProof(value: unknown): GrokRuntimeProof {
   }
   if (!object(value) || Object.keys(value).sort().join(",") !== "bindingId,inputDigest,invocationId,signature,toolCallId,toolName,version"
     || value.version !== 1 || typeof value.bindingId !== "string" || !uuid.test(value.bindingId) || typeof value.invocationId !== "string" || !uuid.test(value.invocationId)
-    || !text(value.toolCallId) || !text(value.toolName) || typeof value.inputDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.inputDigest)
+    || !text(value.toolCallId) || !text(value.toolName) || !knownTools.has(value.toolName) || typeof value.inputDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.inputDigest)
     || typeof value.signature !== "string" || !/^[a-f0-9]{64}$/.test(value.signature)) fail()
   return value as unknown as GrokRuntimeProof
 }

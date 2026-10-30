@@ -10,7 +10,7 @@ type PermissionAssertion = { assert?: (input: PermissionInput, options?: { signa
 /** OC 2.0.26 exposes permission.create on its authenticated client, but not
  * permission.assert on its plugin context. create evaluates the same engine;
  * an ask is NOT authorization until the exact request receives a positive reply. */
-async function assertLegacyPermission(client: Client, input: PermissionInput, signal?: AbortSignal): Promise<void> {
+async function assertLegacyPermission(client: Client, input: PermissionInput, signal?: AbortSignal, share: "code" | "media" = "code"): Promise<void> {
   const controller = new AbortController()
   const subscriptionSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
   const id = `per_${randomUUID()}`
@@ -27,7 +27,7 @@ async function assertLegacyPermission(client: Client, input: PermissionInput, si
         return
       }
     }
-    throw new DomainError("UNAVAILABLE", "OpenCode permission approval was interrupted or its event connection closed. No code was shared.")
+    throw new DomainError("UNAVAILABLE", `OpenCode permission approval was interrupted or its event connection closed. No ${share} was shared.`)
   })()
   void monitor.catch(error => { connected.reject(error); replied.reject(error) })
   const timer = setTimeout(() => controller.abort(), 10000)
@@ -39,12 +39,12 @@ async function assertLegacyPermission(client: Client, input: PermissionInput, si
     clearTimeout(timer)
     subscriptionSignal.throwIfAborted()
     const result = await client.permission.create({ ...input, id }, { signal: AbortSignal.any([subscriptionSignal, AbortSignal.timeout(10000)]) })
-    if (result.id !== id) throw new DomainError("UNAVAILABLE", "OpenCode returned a different permission request. No code was shared.")
+    if (result.id !== id) throw new DomainError("UNAVAILABLE", `OpenCode returned a different permission request. No ${share} was shared.`)
     if (result.effect === "allow") return
-    if (result.effect !== "ask") throw new DomainError("UNAVAILABLE", `OpenCode denied ${input.action} permission for this code share.`)
+    if (result.effect !== "ask") throw new DomainError("UNAVAILABLE", `OpenCode denied ${input.action} permission for this ${share} share.`)
     const decision = await replied.promise
     subscriptionSignal.throwIfAborted()
-    if (decision !== "once" && decision !== "always") throw new DomainError("UNAVAILABLE", `OpenCode rejected ${input.action} permission for this code share.`)
+    if (decision !== "once" && decision !== "always") throw new DomainError("UNAVAILABLE", `OpenCode rejected ${input.action} permission for this ${share} share.`)
   } finally {
     clearTimeout(timer)
     controller.abort()
@@ -57,8 +57,17 @@ async function assertLegacyPermission(client: Client, input: PermissionInput, si
 /** Prefer the documented current API. The compatibility client must come from
  * the same process/source/session qualification, never from tool arguments. */
 export async function assertOpenCodeCodeSharePermissions(ctx: { permission: unknown }, tool: OpenCodeToolCaller & { signal?: AbortSignal }, resource: string, legacyClient: Client, kind: "file" | "inline" = "file"): Promise<void> {
+  return assertSharePermissions(ctx, tool, resource, legacyClient, "code", kind)
+}
+
+/** Media always requires both its own action and source-file read approval. */
+export async function assertOpenCodeMediaSharePermissions(ctx: { permission: unknown }, tool: OpenCodeToolCaller & { signal?: AbortSignal }, resource: string, legacyClient: Client): Promise<void> {
+  return assertSharePermissions(ctx, tool, resource, legacyClient, "media", "file")
+}
+
+async function assertSharePermissions(ctx: { permission: unknown }, tool: OpenCodeToolCaller & { signal?: AbortSignal }, resource: string, legacyClient: Client, share: "code" | "media", kind: "file" | "inline"): Promise<void> {
   const permission = ctx.permission as PermissionAssertion | undefined
-  for (const action of kind === "inline" ? ["sane_share_code"] : ["sane_share_code", "read"]) {
+  for (const action of kind === "inline" ? [`sane_share_${share}`] : [`sane_share_${share}`, "read"]) {
     const input: PermissionInput = {
       sessionID: tool.sessionID, agent: tool.agent,
       source: { type: "tool", messageID: tool.messageID, id: tool.id },
@@ -66,6 +75,6 @@ export async function assertOpenCodeCodeSharePermissions(ctx: { permission: unkn
     }
     tool.signal?.throwIfAborted()
     if (typeof permission?.assert === "function") await permission.assert(input, { signal: tool.signal })
-    else await assertLegacyPermission(legacyClient, input, tool.signal)
+    else await assertLegacyPermission(legacyClient, input, tool.signal, share)
   }
 }

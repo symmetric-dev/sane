@@ -126,6 +126,40 @@ Files does not expose that protected directory. The separate managed science API
 and [runtime package](../sane-science/README.md) remain available; a virtual
 environment is not a security sandbox.
 
+## Sharing media in chat
+
+Agents can use `sane_share_media` in App-admitted conversations to show an ordered
+gallery of local PNG, JPEG, WebP, and MP4 files. Always provide an array, including
+for a single file:
+
+```json
+{"media":[{"path":"screenshots/before.png"},{"path":"recordings/demo.mp4"}]}
+```
+
+Paths are relative to the conversation's execution checkout. Protected paths,
+including `.sane`, and files outside that checkout are unavailable. The App saves
+private, frozen copies: changing or deleting the original does not change an
+existing share. Sharing is read-only and does not attach media to an agent prompt.
+Use the gallery selector or Previous/Next to browse and expand a preview for a
+larger view. Videos have playback controls and never autoplay; codec support
+depends on the browser.
+
+This first version accepts static PNG/WebP images and conventional,
+non-fragmented MP4 containers. APNG, animated WebP, fragmented MP4, and unsupported
+MP4 brands are rejected rather than transformed. Format validation checks
+structure and bounds, not complete decoding; malformed or unsupported codecs
+can still produce a preview/playback error.
+
+Limits are 16 items, 10 MiB per image, 100 MiB per video, and 200 MiB per share;
+additional conversation/store budgets apply. HTML, PDF, remote URLs, inline
+content, authored captions, and custom actions are not supported in this version.
+If acknowledgment is unknown, inspect the conversation before sharing again:
+there is no automatic retry, and a new invocation creates a new gallery.
+
+After deploying an update that adds this tool, rebuild/restart the App and update
+installed native integrations so their tool lists and runtime files agree. Old
+native processes do not acquire new tools automatically.
+
 ## Shutdown, recovery, and backups
 
 Stop with Ctrl-C or SIGTERM and let draining finish. OpenCode shutdown stops App

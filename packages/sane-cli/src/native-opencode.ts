@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto"
 import { isAbsolute } from "node:path"
 import type { NativeWorkerInvocation, NativeWorkerOperation } from "./native-worker-contract.ts"
 import type { NativeCodeShareRequest } from "./native-share-code-contract.ts"
+import type { NativeMediaShareRequest } from "./native-share-media-contract.ts"
 import type { NativeUserQuestionsRequest } from "./native-user-questions-contract.ts"
 import { normalizeNativeSource, DomainError, discoverRepository } from "../../sane-core/src/server.ts"
 import type { NativeCaller } from "./native-caller.ts"
@@ -12,7 +13,7 @@ import type { NativeCaller } from "./native-caller.ts"
 type Session = { id: string; parentID?: string; location?: { directory?: string } }
 export interface OpenCodeCallerContext { session: { get(input: { sessionID: string }): Promise<Session> } }
 export interface OpenCodeToolCaller { sessionID: string; messageID: string; id: string; agent: string }
-export { assertOpenCodeCodeSharePermissions } from "./native-opencode-permissions.ts"
+export { assertOpenCodeCodeSharePermissions, assertOpenCodeMediaSharePermissions } from "./native-opencode-permissions.ts"
 
 /** Installed V2 shares execute's context ID with every Code Mode inner call.
  * Hooks establish wrapper provenance; only the registered SANE handler chooses
@@ -27,6 +28,7 @@ export class OpenCodeWorkerInvocations {
     return { toolCallId: tool.id, messageId: tool.messageID, invocationId: randomUUID(), ...(this.activeExecute.has(this.key(tool)) ? { wrapper: "execute" as const } : {}) }
   }
   codeShareCallback(tool: OpenCodeToolCaller): NativeCodeShareRequest["invocation"] { return this.appCallback(tool) }
+  mediaShareCallback(tool: OpenCodeToolCaller): NativeMediaShareRequest["invocation"] { return this.appCallback(tool) }
   userQuestionsCallback(tool: OpenCodeToolCaller): NativeUserQuestionsRequest["invocation"] { return this.appCallback(tool) }
   callback(tool: OpenCodeToolCaller, operation: NativeWorkerOperation): NativeWorkerInvocation {
     return { toolCallId: tool.id, messageId: tool.messageID, opencode: { invocationId: randomUUID(), operation, ...(this.activeExecute.has(this.key(tool)) ? { wrapper: "execute" as const } : {}) } }

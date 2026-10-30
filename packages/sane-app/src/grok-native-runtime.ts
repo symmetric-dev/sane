@@ -9,7 +9,7 @@ export type GrokNativeRuntimeOptions = GrokRuntimeBindingInput & { bindingDirect
 export type GrokNativeRuntimeInstallation = Pick<GrokNativeRuntimeOptions, "bindingDirectory" | "appConnectionFile">;
 const cli = resolve(import.meta.dir, "../../sane-cli/src");
 const runtimeFiles = ["native-grok-mcp.ts", "native-grok-hook.ts", "native-grok-binding.ts", "native-worker.ts", "native-worker-contract.ts",
-  "native-caller.ts", "native-handoff.ts", "native-share-code.ts", "native-share-code-contract.ts", "native-user-questions.ts", "native-user-questions-contract.ts", "native-browser.ts"];
+  "native-caller.ts", "native-handoff.ts", "native-share-code.ts", "native-share-code-contract.ts", "native-share-media.ts", "native-share-media-contract.ts", "native-user-questions.ts", "native-user-questions-contract.ts", "native-browser.ts"];
 const explicitTools = ["sane_worker_complete", "sane_worker_notify", "sane_worker_message_parent", "sane_worker_message"] as const;
 
 function agentDefinition(options: GrokNativeRuntimeInstallation, bindingId: string) {

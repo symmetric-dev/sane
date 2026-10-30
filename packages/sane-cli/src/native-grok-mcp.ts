@@ -8,6 +8,8 @@ import { nativeWorkerDescriptions, nativeWorkerOperations, nativeWorkerSchemas, 
 import { workerNativeCaller } from "./native-worker.ts"
 import { nativeShareCodeDescription, nativeShareCodeSchema } from "./native-share-code-contract.ts"
 import { shareCodeNativeCaller } from "./native-share-code.ts"
+import { nativeShareMediaDescription, nativeShareMediaSchema } from "./native-share-media-contract.ts"
+import { shareMediaNativeCaller } from "./native-share-media.ts"
 import { nativeUserQuestionsDescription, nativeUserQuestionsSchema } from "./native-user-questions-contract.ts"
 import { presentQuestionsNativeCaller } from "./native-user-questions.ts"
 import { browserNativeCaller, nativeBrowserDescriptions, nativeBrowserSchemas, nativeBrowserToolNames } from "./native-browser.ts"
@@ -17,6 +19,7 @@ if (!directory || !bindingId || !appConnectionFile) throw new Error("Explicit Gr
 const tools = [
   { name: "present_questions_to_user", description: nativeUserQuestionsDescription, inputSchema: nativeUserQuestionsSchema },
   { name: "sane_share_code", description: nativeShareCodeDescription, inputSchema: nativeShareCodeSchema },
+  { name: "sane_share_media", description: nativeShareMediaDescription, inputSchema: nativeShareMediaSchema },
   ...nativeWorkerOperations.map(operation => ({ name: `sane_worker_${operation}`, description: nativeWorkerDescriptions[operation], inputSchema: nativeWorkerSchemas[operation] })),
   { name: "sane_handoff", description: `${SANE_MANAGED_ONLY} Queue an asynchronous handoff only when explicitly requested by the user. Reuse requestId and the same payload for admission recovery; never invent a new ID after an unknown acknowledgment. Kickoff is the only enrollment operation.`, inputSchema: nativeHandoffSchema },
   { name: "sane_handoff_status", description: `${SANE_MANAGED_ONLY} Read durable handoff status by requestId.`, inputSchema: nativeHandoffStatusSchema },
@@ -40,6 +43,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     if (operation) result = await workerNativeCaller(bound.caller, operation, bound.input, appConnectionFile, extra.signal)
     else if (browser) result = await browserNativeCaller(bound.caller, browser, bound.input, appConnectionFile, extra.signal)
     else if (name === "sane_share_code") result = await shareCodeNativeCaller(bound.caller, bound.input, appConnectionFile, bound.invocation, extra.signal)
+    else if (name === "sane_share_media") result = await shareMediaNativeCaller(bound.caller, bound.input, appConnectionFile, bound.invocation, extra.signal)
     else if (name === "present_questions_to_user") result = await presentQuestionsNativeCaller(bound.caller, bound.input, appConnectionFile, bound.invocation, extra.signal)
     else if (name === "sane_link") result = linkNativeCaller(bound.caller, bound.input)
     else if (name === "sane_context") {

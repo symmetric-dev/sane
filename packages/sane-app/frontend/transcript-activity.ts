@@ -8,6 +8,7 @@ import { receivedHandoff } from "./handoff-presentation";
 import { ACTIVITY_ANIMATION_MAX_MS } from "./activity-visuals";
 import { classifyTranscriptTool, createActivityEntry, type ActivityEntry } from "./activity-model";
 import type { CodeShareRecord } from "../shared/code-share-contract";
+import type { MediaShareRecord } from "../shared/media-share-contract";
 
 export type { ActivityEntry, ActivityDetail } from "./activity-model";
 export { consecutiveActivitySegments } from "./activity-model";
@@ -19,7 +20,7 @@ export type ActivityPresentation = { plan: ActivityPlan; entrances: Map<string, 
 export const activityPosition = (messageId: string, index: number) => JSON.stringify([messageId, index]);
 
 /** Presentation only: preserve native messages and break at every text part. */
-export function planTranscriptActivities(sessionId: string, messages: Message[], workers: WorkerRecord[], deliveries: WorkerDelivery[] = [], handoffs: HandoffPresentation[] = [], nativeRuns: Run[] = [], nativeHarness: Harness = "claude-code", compactionPositions?: ReadonlyMap<string, readonly CompactionRecord[]>, readOnly: boolean = false, codeShares?: readonly CodeShareRecord[], exchanges: readonly WorkerExchange[] = workerExchanges(workers)): ActivityPlan {
+export function planTranscriptActivities(sessionId: string, messages: Message[], workers: WorkerRecord[], deliveries: WorkerDelivery[] = [], handoffs: HandoffPresentation[] = [], nativeRuns: Run[] = [], nativeHarness: Harness = "claude-code", compactionPositions?: ReadonlyMap<string, readonly CompactionRecord[]>, readOnly: boolean = false, codeShares?: readonly CodeShareRecord[], exchanges: readonly WorkerExchange[] = workerExchanges(workers), mediaShares?: readonly MediaShareRecord[]): ActivityPlan {
   const positions = new Map<string, ActivityGroup | null>();
   const entries: ActivityEntry[] = [];
   const byId = new Map<string, ActivityEntry>();
@@ -51,11 +52,11 @@ export function planTranscriptActivities(sessionId: string, messages: Message[],
       source.parts.forEach((part, index) => {
         if (part.type === "text") return;
         if (part.type === "tool") {
-          const classification = classifyTranscriptTool({ sessionId, source, part, workers, handoffs, nativeRuns, nativeHarness, readOnly, codeShares });
+          const classification = classifyTranscriptTool({ sessionId, source, part, workers, handoffs, nativeRuns, nativeHarness, readOnly, codeShares, mediaShares });
           if (classification.kind !== "activity") {
             // TranscriptTool owns the card position; register only its diagnostic
             // row for inspector lookup, without replacing that position.
-            if (classification.kind === "code-share" && classification.underlying?.kind === "activity") registerGroup([createActivityEntry(source, part, index)], false);
+            if ((classification.kind === "code-share" || classification.kind === "shared-content") && classification.underlying?.kind === "activity") registerGroup([createActivityEntry(source, part, index)], false);
             return;
           }
         }
@@ -67,10 +68,10 @@ export function planTranscriptActivities(sessionId: string, messages: Message[],
     source.parts.forEach((part, index) => {
       if (part.type === "text") { flush(); return; }
       if (part.type === "tool") {
-        const classification = classifyTranscriptTool({ sessionId, source, part, workers, handoffs, nativeRuns, nativeHarness, readOnly, codeShares });
+        const classification = classifyTranscriptTool({ sessionId, source, part, workers, handoffs, nativeRuns, nativeHarness, readOnly, codeShares, mediaShares });
         if (classification.kind !== "activity") {
           flush();
-          if (classification.kind === "code-share" && classification.underlying?.kind === "activity") registerGroup([createActivityEntry(source, part, index)], false);
+          if ((classification.kind === "code-share" || classification.kind === "shared-content") && classification.underlying?.kind === "activity") registerGroup([createActivityEntry(source, part, index)], false);
           return;
         }
       }
@@ -86,10 +87,10 @@ export function planTranscriptActivities(sessionId: string, messages: Message[],
 }
 
 /** Seed loaded history; only later arrivals get a single, consumable entrance. */
-export function useActivityPresentation({ sessionId, messages, workers, deliveries, exchanges, handoffs, loading, animate, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares }: {
-  sessionId: string; messages: Message[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffPresentation[]; loading: boolean; animate: boolean; nativeRuns?: Run[]; nativeHarness?: Harness; compactionPositions?: ReadonlyMap<string, readonly CompactionRecord[]>; readOnly?: boolean; codeShares?: readonly CodeShareRecord[];
+export function useActivityPresentation({ sessionId, messages, workers, deliveries, exchanges, handoffs, loading, animate, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares, mediaShares }: {
+  sessionId: string; messages: Message[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffPresentation[]; loading: boolean; animate: boolean; nativeRuns?: Run[]; nativeHarness?: Harness; compactionPositions?: ReadonlyMap<string, readonly CompactionRecord[]>; readOnly?: boolean; codeShares?: readonly CodeShareRecord[]; mediaShares?: readonly MediaShareRecord[];
 }): ActivityPresentation {
-  const plan = useMemo(() => planTranscriptActivities(sessionId, messages, workers, deliveries, handoffs, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares, exchanges), [sessionId, messages, workers, deliveries, exchanges, handoffs, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares]);
+  const plan = useMemo(() => planTranscriptActivities(sessionId, messages, workers, deliveries, handoffs, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares, exchanges, mediaShares), [sessionId, messages, workers, deliveries, exchanges, handoffs, nativeRuns, nativeHarness, compactionPositions, readOnly, codeShares, mediaShares]);
   const messagesById = useMemo(() => new Map(messages.map(message => [message.id, message])), [messages]);
   const observed = useRef<{ sessionId: string; seen: Set<string>; tail?: string } | null>(null);
   const [entrances, setEntrances] = useState(new Map<string, ActivityEntrance>());

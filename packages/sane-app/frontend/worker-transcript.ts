@@ -21,7 +21,7 @@ export function loadedTranscriptWorkers({ messages, deliveries = [], exchanges, 
     for (const part of source.parts) {
       if (part.type !== "tool") continue;
       const classification = classifyTranscriptTool({ ...input, source, part });
-      const card = classification.kind === "code-share" ? classification.underlying : classification;
+      const card = classification.kind === "code-share" || classification.kind === "shared-content" ? classification.underlying : classification;
       if (card?.kind === "worker") for (const worker of card.workers) loaded.set(worker.id, worker);
     }
   }

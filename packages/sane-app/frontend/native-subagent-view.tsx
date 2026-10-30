@@ -8,6 +8,8 @@ import { useActivityPresentation } from "./transcript-activity";
 import { useNativeSubagents } from "./native-subagent-feature";
 import { useCodeShares } from "./code-share-client";
 import { CodeShareStatus } from "./shared-code-card";
+import { useMediaShares } from "./media-share-client";
+import { MediaShareStatus } from "./shared-media-card";
 import { useStore } from "./store";
 
 export function NativeSubagentView() {
@@ -23,9 +25,10 @@ export function NativeSubagentView() {
   const messages = useMemo(() => snapshot?.messages.map(message => ({ ...message, version: `${snapshot.revision}:${message.version ?? ""}` })) ?? [], [snapshot]);
   const authenticated = useStore(state => state.config?.authenticated === true && state.connected);
   const codeShares = useCodeShares(summary.parentSessionId, { enabled: authenticated, refreshKey: snapshot?.revision, running: summary.status === "running" });
+  const mediaShares = useMediaShares(summary.parentSessionId, { enabled: authenticated, refreshKey: snapshot?.revision, running: summary.status === "running" });
   const transcriptIndex = useTranscriptIndex(messages);
   const runtimeMessages = useMemo(() => projectTranscriptMessages(messages), [messages]);
-  const activities = useActivityPresentation({ sessionId: summary.parentSessionId, messages, workers: [], loading: !snapshot, animate: false, readOnly: true, codeShares: codeShares.shares });
+  const activities = useActivityPresentation({ sessionId: summary.parentSessionId, messages, workers: [], loading: !snapshot, animate: false, readOnly: true, codeShares: codeShares.shares, mediaShares: mediaShares.shares });
   const inspection = useActivityInspection({ scope: JSON.stringify(["native-subagent", summary.parentSessionId, summary.runId, summary.parentToolUseId]), active: !!snapshot, plan: activities.plan });
   const runtime = useExternalStoreRuntime({ messages: runtimeMessages, convertMessage: convertTranscriptMessage, isRunning: false, isSendDisabled: true, onNew: async () => { throw new Error("Native subagent activity is read-only."); } });
   const viewport = useRef<HTMLDivElement>(null), content = useRef<HTMLDivElement>(null), back = useRef<HTMLButtonElement>(null);
@@ -57,7 +60,7 @@ export function NativeSubagentView() {
     return () => { resize.disconnect(); mutations.disconnect(); };
   }, []);
   const pause = () => { following.current = false; capture(); };
-  return <TranscriptContext.Provider value={{ sessionId: summary.parentSessionId, harness: summary.harness ?? "claude-code", messages, ...transcriptIndex, runs: [], workers: [], openWorker: () => {}, activities, activityScope: inspection.scope, inspectActivity: inspection.open, readOnly: true, codeShares }}><section className="native-subagent-view" aria-label="Read-only native subagent activity">
+  return <TranscriptContext.Provider value={{ sessionId: summary.parentSessionId, harness: summary.harness ?? "claude-code", messages, ...transcriptIndex, runs: [], workers: [], openWorker: () => {}, activities, activityScope: inspection.scope, inspectActivity: inspection.open, readOnly: true, codeShares, mediaShares }}><section className="native-subagent-view" aria-label="Read-only native subagent activity">
     <header className="native-subagent-header">
       <nav className="native-subagent-nav" aria-label="Native subagent navigation">
         <button ref={back} type="button" className="text-button" onClick={feature.back}><FiArrowLeft aria-hidden="true" />Back to parent</button>
@@ -82,6 +85,7 @@ export function NativeSubagentView() {
     }}>
       <div ref={content} className="transcript">
         <CodeShareStatus projection={codeShares} />
+        <MediaShareStatus projection={mediaShares} />
         {feature.state.detailError && <p className="notice error" role="alert">Activity refresh unavailable: {feature.state.detailError}{snapshot && " Showing the last coherent recorded snapshot."}<button type="button" className="text-button" disabled={feature.state.detailLoading} onClick={feature.client.retryDetail}>Retry</button></p>}
         {snapshot?.nextCursor && <button type="button" className="text-button" disabled={feature.state.detailLoading} onClick={() => { pause(); feature.client.loadEarlier(); }}>Load earlier activity</button>}
         {feature.state.detailLoading && <p className="muted" role="status">{snapshot ? "Refreshing recorded activity…" : "Loading recorded activity…"}</p>}

@@ -1,12 +1,14 @@
 import { Plugin } from "@opencode/plugin"
 import { resolve } from "node:path"
-import { OpenCodeWorkerInvocations, qualifyOpenCodeCaller, qualifyOpenCodeAppCaller, assertOpenCodeCodeSharePermissions, assertOpenCodeUserQuestionsPermissions, type OpenCodeToolCaller } from "../../../packages/sane-cli/src/native-opencode.ts"
+import { OpenCodeWorkerInvocations, qualifyOpenCodeCaller, qualifyOpenCodeAppCaller, assertOpenCodeCodeSharePermissions, assertOpenCodeMediaSharePermissions, assertOpenCodeUserQuestionsPermissions, type OpenCodeToolCaller } from "../../../packages/sane-cli/src/native-opencode.ts"
 import { linkNativeCaller, nativeCallerContext, nativeShellCaller, nativeLinkSchema } from "../../../packages/sane-cli/src/native-caller.ts"
 import { handoffNativeCaller, nativeHandoffSchema, nativeHandoffStatusSchema } from "../../../packages/sane-cli/src/native-handoff.ts"
 import { nativeWorkerDescriptions, nativeWorkerOperations, nativeWorkerSchemas, SANE_MANAGED_ONLY } from "../../../packages/sane-cli/src/native-worker-contract.ts"
 import { workerNativeCaller } from "../../../packages/sane-cli/src/native-worker.ts"
 import { codeShareInputSnippets, isInlineCodeShareSnippet, nativeShareCodeDescription, nativeShareCodeSchema, parseCodeShareInput } from "../../../packages/sane-cli/src/native-share-code-contract.ts"
 import { shareCodeNativeCaller } from "../../../packages/sane-cli/src/native-share-code.ts"
+import { nativeShareMediaDescription, nativeShareMediaSchema, parseMediaShareInput } from "../../../packages/sane-cli/src/native-share-media-contract.ts"
+import { shareMediaNativeCaller } from "../../../packages/sane-cli/src/native-share-media.ts"
 import { nativeUserQuestionsDescription, nativeUserQuestionsSchema, parsePresentQuestionsInput } from "../../../packages/sane-cli/src/native-user-questions-contract.ts"
 import { presentQuestionsNativeCaller } from "../../../packages/sane-cli/src/native-user-questions.ts"
 import { browserNativeCaller, nativeBrowserDescriptions, nativeBrowserSchemas, nativeBrowserToolNames } from "../../../packages/sane-cli/src/native-browser.ts"
@@ -80,6 +82,23 @@ export const SanePlugin = Plugin.define({
           // Inline content needs share permission, but has no filesystem read.
           if (snippets.some(isInlineCodeShareSnippet)) await assertOpenCodeCodeSharePermissions(ctx, { ...tool, signal }, "inline", client, "inline")
           return { content: JSON.stringify(await shareCodeNativeCaller(caller, args, ctx.options.appConnectionFile as string, invocation, signal)) }
+        },
+      })
+      addSaneTool({
+        name: "share_media",
+        description: nativeShareMediaDescription,
+        input: nativeShareMediaSchema,
+        execute: async (input, tool) => {
+          // One synchronous allocation per inner callback, even under execute.
+          const invocation = workerInvocations.mediaShareCallback(tool)
+          const args = parseMediaShareInput(input)
+          if (typeof registration !== "string" || !registration.startsWith("/")) throw new Error("NATIVE_CONTEXT_UNAVAILABLE: configure an explicit absolute registrationFile plugin option.")
+          const { caller, client } = await qualifyOpenCodeAppCaller(registration, ctx, tool)
+          const signal = (tool as typeof tool & { signal?: AbortSignal }).signal
+          for (const path of new Set(args.media.map(item => resolve(caller.cwd, item.path)))) {
+            await assertOpenCodeMediaSharePermissions(ctx, { ...tool, signal }, path, client)
+          }
+          return { content: JSON.stringify(await shareMediaNativeCaller(caller, args, ctx.options.appConnectionFile as string, invocation, signal)) }
         },
       })
       for (const toolName of nativeBrowserToolNames) addSaneTool({

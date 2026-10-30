@@ -10,6 +10,9 @@ import { body, json, loopback } from "./bridge-http";
 import { withApiCompression } from "./api-compression";
 import { requireNativeBearer, requireStartupReady } from "./bridge-native-auth";
 import { CodeShareStore, CodeShareError } from "./code-share-store";
+import { MediaShareStore, MediaShareError } from "./media-share-store";
+import { MediaShareService } from "./media-share-service";
+import { mediaShareRoute } from "./media-share-routes";
 import { BrowserPairStore, BrowserPairError } from "./browser-pair-store";
 import { createBrowserPairRoute } from "./browser-pair-routes";
 import { sameBrowserPairSession } from "../shared/browser-pair-contract";
@@ -17,7 +20,9 @@ import { ResourcePairStore, ResourcePairError } from "./resource-pair-store";
 import { isPairLinkedSnapshot, isPairTarget, isPairWrite, type PairSession, type PairTarget } from "../shared/resource-pair-contract";
 import { CodeShareService } from "./code-share-service";
 import { denyCodeShareIdentity, matchesCodeShareTool, matchesCodeSharePart, readCodeShareContinuation } from "./code-share-evidence";
-import type { NativeCodeShareRequest } from "../shared/code-share-contract";
+import { denyMediaShareIdentity, matchesMediaShareTool, matchesMediaSharePart, readMediaShareContinuation } from "./media-share-evidence";
+import type { NativeCodeShareRequest, CodeShareRecord } from "../shared/code-share-contract";
+import type { NativeMediaShareRequest } from "../shared/media-share-contract";
 import type { UserQuestionsRecord } from "../shared/user-questions-contract";
 import { UserQuestionsStore, UserQuestionsError } from "./user-questions-store";
 import { UserQuestionsService } from "./user-questions-service";
@@ -2682,6 +2687,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   };
   const qualifiedWorkerInvocations = new WeakMap<NativeWorkerInvocation, { admission: Admission; session: Session; starting: boolean; continuation?: WorkerContinuationAuthorization; grok?: ReturnType<typeof authorizeGrokInvocation> }>();
   const codeShares = new CodeShareStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "code-share-storage"));
+  const mediaShares = new MediaShareStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "media-share-storage"));
   const browserPairs = new BrowserPairStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "browser-pair-storage"));
   const resourcePairs = new ResourcePairStore(options.dataDir, store.manifest.storeId, browserPairs, error => failClosed(error, "resource-pair-storage"));
   // Shared admission fence for both APIs. Removal never requires the linked
@@ -2733,18 +2739,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     check();
     return check;
   }
-  function codeShareSession(request: Pick<NativeCodeShareRequest, "caller">) {
+  function codeShareSession(request: Pick<NativeCodeShareRequest, "caller">, deny: () => never = denyCodeShareIdentity) {
     let source;
-    try { source = normalizeNativeSource(request.caller.source); } catch { return denyCodeShareIdentity(); }
+    try { source = normalizeNativeSource(request.caller.source); } catch { return deny(); }
     const caller = request.caller;
-    if (source.authorityId !== caller.authorityId) return denyCodeShareIdentity();
+    if (source.authorityId !== caller.authorityId) return deny();
     const admission = admissions.getByNative({ harness: source.descriptor.harness, authorityId: source.authorityId, nativeId: caller.nativeId });
     const session = admission && meta.sessions.find(s => s.sessionId === admission.sessionId);
     if (!admission || admission.state !== "ready" || !session || retirementPaused(session.sessionId) || session.hidden || session.attachment
       || session.nativeSessionId !== caller.nativeId || session.authorityId !== caller.authorityId
       || session.harness !== toSessionHarness(source.descriptor.harness)
       || session.cwd !== caller.cwd || admission.binding.executionCheckout !== caller.cwd
-      || canonicalJSON(admission.source) !== canonicalJSON(source)) return denyCodeShareIdentity();
+      || canonicalJSON(admission.source) !== canonicalJSON(source)) return deny();
     return session.sessionId;
   }
   // SANE state belongs to the repository's primary checkout, even when the
@@ -2764,30 +2770,37 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const codeShareFiles: Pick<WorkspaceService, "file"> = {
     file: (key, revision, path) => path.startsWith(".sane/") ? codeShareState.codeShareFile(key, revision, path) : worktrees.file(key, revision, path),
   };
-  const codeShareService = new CodeShareService(codeShares, codeShareFiles, codeShareSession, async (request, old) => {
-    const sessionId = codeShareSession(request), session = meta.sessions.find(s => s.sessionId === sessionId)!;
-    const grok = request.caller.source.harness === "gk" ? authorizeGrokInvocation(request.caller, "sane_share_code", request.input,
+  // Code and media share exactly the same admission and native-turn fences,
+  // while their tool names and parsers remain separate evidence authorities.
+  async function authorizeFileShare(kind: "code" | "media", request: NativeCodeShareRequest | NativeMediaShareRequest,
+    old?: Pick<CodeShareRecord, "sessionId" | "workspaceId" | "worktreeId" | "bindingRevision" | "anchor">) {
+    const deny = kind === "code" ? denyCodeShareIdentity : denyMediaShareIdentity;
+    const matchesTool = kind === "code" ? matchesCodeShareTool : matchesMediaShareTool;
+    const matchesPart = kind === "code" ? matchesCodeSharePart : matchesMediaSharePart;
+    const readContinuation = kind === "code" ? readCodeShareContinuation : readMediaShareContinuation;
+    const sessionId = codeShareSession(request, deny), session = meta.sessions.find(s => s.sessionId === sessionId)!;
+    const grok = request.caller.source.harness === "gk" ? authorizeGrokInvocation(request.caller, kind === "code" ? "sane_share_code" : "sane_share_media", request.input,
       { toolCallId: request.invocation.toolCallId, messageId: request.invocation.messageId, wrapper: request.invocation.wrapper }) : undefined;
     const admission = admissions.get(sessionId)!, binding = admission.binding, admissionPin = JSON.stringify(admission), sessionPin = dispatchSnapshot(session);
     const owner = owners.get(sessionId), protectionPin = JSON.stringify(domainProtectedPaths);
     const available = () => {
       grok?.assertCurrent();
-      if (!startupReady || closing || storageFailed || retainOwner || !ownsStorage() || meta.reconciliationRequired) return denyCodeShareIdentity();
-      if (codeShareSession(request) !== sessionId || JSON.stringify(admissions.get(sessionId)) !== admissionPin || dispatchSnapshot(session) !== sessionPin
-        || meta.sessions.find(s => s.sessionId === sessionId) !== session || branches.pending(sessionId) || branches.replaced(sessionId)) return denyCodeShareIdentity();
+      if (!startupReady || closing || storageFailed || retainOwner || !ownsStorage() || meta.reconciliationRequired) return deny();
+      if (codeShareSession(request, deny) !== sessionId || JSON.stringify(admissions.get(sessionId)) !== admissionPin || dispatchSnapshot(session) !== sessionPin
+        || meta.sessions.find(s => s.sessionId === sessionId) !== session || branches.pending(sessionId) || branches.replaced(sessionId)) return deny();
     };
     available();
     if (old) {
       if (old.sessionId !== sessionId || old.workspaceId !== binding.workspaceId || old.worktreeId !== binding.worktreeId || old.bindingRevision !== binding.bindingRevision
         || grok && old.anchor.runId !== grok.binding.runId
-        || !meta.runs.some(run => run.sessionId === sessionId && run.runId === old.anchor.runId && run.cwd === binding.executionCheckout && run.operation !== "compact")) return denyCodeShareIdentity();
+        || !meta.runs.some(run => run.sessionId === sessionId && run.runId === old.anchor.runId && run.cwd === binding.executionCheckout && run.operation !== "compact")) return deny();
       return { sessionId, runId: old.anchor.runId, workspaceId: old.workspaceId, worktreeId: old.worktreeId, bindingRevision: old.bindingRevision, assertCurrent: available };
     }
     const current = () => {
       available();
       if (owners.get(sessionId) !== owner || owner && (owner.settled || owner.stopRequested || owner.cancelling || owner.run.status !== "running" || owner.run.operation === "compact")
         || !owner && (admitting.has(sessionId) || lifecycleReserved(sessionId)) || coordinator.hasReconciliation(sessionId) || recoveredInputConversations.has(sessionId)
-        || JSON.stringify(domainProtectedPaths) !== protectionPin) return denyCodeShareIdentity();
+        || JSON.stringify(domainProtectedPaths) !== protectionPin) return deny();
     };
     let run = owner?.run;
     let refresh: (() => Promise<void>) | undefined;
@@ -2798,8 +2811,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (request.caller.source.harness === "cc") {
           evidenced = journalEvents(run.runId).some(event => {
             const data = event.data as any;
-            if (event.kind === "hook") return data?.event === "PreToolUse" && isClaudeRootRecord(data.payload) && data.payload?.session_id === request.caller.nativeId && (!request.invocation.messageId || data.payload?.message_id === request.invocation.messageId) && data.payload?.tool_use_id === request.invocation.toolCallId && matchesCodeShareTool(request, data.payload?.tool_name, data.payload?.tool_input);
-            return event.kind === "stdout" && isClaudeRootRecord(data) && data?.type === "assistant" && data.session_id === request.caller.nativeId && (!request.invocation.messageId || data.message?.id === request.invocation.messageId) && Array.isArray(data.message?.content) && data.message.content.some((part: any) => part.type === "tool_use" && part.id === request.invocation.toolCallId && matchesCodeShareTool(request, part.name, part.input));
+            if (event.kind === "hook") return data?.event === "PreToolUse" && isClaudeRootRecord(data.payload) && data.payload?.session_id === request.caller.nativeId && (!request.invocation.messageId || data.payload?.message_id === request.invocation.messageId) && data.payload?.tool_use_id === request.invocation.toolCallId && matchesTool(request, data.payload?.tool_name, data.payload?.tool_input);
+            return event.kind === "stdout" && isClaudeRootRecord(data) && data?.type === "assistant" && data.session_id === request.caller.nativeId && (!request.invocation.messageId || data.message?.id === request.invocation.messageId) && Array.isArray(data.message?.content) && data.message.content.some((part: any) => part.type === "tool_use" && part.id === request.invocation.toolCallId && matchesTool(request, part.name, part.input));
           });
         } else if (request.caller.source.harness === "gk") {
           grok!.assertCurrent();
@@ -2809,7 +2822,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           current();
           const target = snapshot.messages.findLast(message => message.type === "assistant");
           evidenced = !snapshot.boundary && !snapshot.pending && !snapshot.outcome && snapshot.currentInputId === run.nativeCommandId
-            && !!target && target.time.completed === undefined && !!target.content?.some(part => matchesCodeSharePart(request, target.id, part));
+            && !!target && target.time.completed === undefined && !!target.content?.some(part => matchesPart(request, target.id, part));
           if (evidenced) {
             const commandId = run.nativeCommandId;
             refresh = async () => {
@@ -2818,7 +2831,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
               current();
               const assistant = fresh.messages.findLast(message => message.type === "assistant");
               if (fresh.boundary || fresh.pending || fresh.outcome || fresh.currentInputId !== commandId || !assistant || assistant.time.completed !== undefined
-                || !assistant.content?.some(part => matchesCodeSharePart(request, assistant.id, part))) return denyCodeShareIdentity();
+                || !assistant.content?.some(part => matchesPart(request, assistant.id, part))) return deny();
             };
           }
         }
@@ -2830,30 +2843,32 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       current();
       const read = async () => {
         for (let attempt = 0; ; attempt++) {
-          try { return await readCodeShareContinuation(oc, request, current); }
-          catch (error) { if (!(error instanceof CodeShareError) || error.status !== 409 || attempt >= 2) throw error; await Bun.sleep(150); }
+          try { return await readContinuation(oc, request, current); }
+          catch (error) { if (!(error instanceof CodeShareError || error instanceof MediaShareError) || error.status !== 409 || attempt >= 2) throw error; await Bun.sleep(150); }
         }
       };
       const evidence = await read();
       current();
       const matches = meta.runs.filter(candidate => candidate.sessionId === sessionId && candidate.nativeCommandId === evidence.commandId);
-      if (matches.length !== 1) return denyCodeShareIdentity();
+      if (matches.length !== 1) return deny();
       run = matches[0]!;
-      if (run.cwd !== session.cwd || run.operation === "compact" || run.nativePhase !== "accepted" || (owner ? owner.run !== run : run.status !== "completed" || !evidence.afterIdle)) return denyCodeShareIdentity();
-      refresh = async () => { if (JSON.stringify(await read()) !== JSON.stringify(evidence)) return denyCodeShareIdentity(); };
+      if (run.cwd !== session.cwd || run.operation === "compact" || run.nativePhase !== "accepted" || (owner ? owner.run !== run : run.status !== "completed" || !evidence.afterIdle)) return deny();
+      refresh = async () => { if (JSON.stringify(await read()) !== JSON.stringify(evidence)) return deny(); };
     }
-    if (!run) return denyCodeShareIdentity();
+    if (!run) return deny();
     const boundRun = run, runPin = JSON.stringify(run);
     await catalog.binding(binding.workspaceId, binding.worktreeId);
     current();
     const assertCurrent = () => {
       current();
-      if (!meta.runs.includes(boundRun) || JSON.stringify(boundRun) !== runPin) return denyCodeShareIdentity();
+      if (!meta.runs.includes(boundRun) || JSON.stringify(boundRun) !== runPin) return deny();
       catalog.assertBinding(binding.workspaceId, binding.worktreeId, binding.executionCheckout, binding.bindingRevision);
     };
     assertCurrent();
     return { sessionId, runId: run.runId, workspaceId: binding.workspaceId, worktreeId: binding.worktreeId, bindingRevision: binding.bindingRevision, assertCurrent, refresh };
-  });
+  }
+  const codeShareService = new CodeShareService(codeShares, codeShareFiles, codeShareSession, (request, old) => authorizeFileShare("code", request, old));
+  const mediaShareService = new MediaShareService(mediaShares, worktrees, request => codeShareSession(request, denyMediaShareIdentity), (request, old) => authorizeFileShare("media", request, old));
   async function nativeCodeShare(req: Request) {
     const denied = requireNativeBearer(req, handoffToken) ?? requireStartupReady(startupReady);
     if (denied) return denied;
@@ -2863,6 +2878,20 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (error instanceof OpenCodeError) return json({ error: error.message, code: "code-share-native-evidence" }, error.status);
       return json({ error: "Code share authorization or storage unavailable", code: "code-share-unavailable" }, 503);
     }
+  }
+  async function nativeMediaShare(req: Request) {
+    const denied = requireNativeBearer(req, handoffToken) ?? requireStartupReady(startupReady);
+    if (denied) return denied;
+    if (closing || storageFailed) return json({ error: "App execution owner unavailable" }, 503);
+    const task = Promise.withResolvers<void>();
+    attachmentTasks.add(task.promise);
+    try { return json(await grokRequestProof.run(req.headers.get(GROK_RUNTIME_HEADER) ?? undefined, () => mediaShareService.handle(req))); }
+    catch (error) {
+      if (error instanceof MediaShareError || error instanceof WorkspaceError) return json({ error: error.message, code: error.code }, error.status);
+      if (error instanceof OpenCodeError) return json({ error: error.message, code: "media-share-native-evidence" }, error.status);
+      return json({ error: "Media share authorization or storage unavailable", code: "media-share-unavailable" }, 503);
+    }
+    finally { task.resolve(); attachmentTasks.delete(task.promise); }
   }
   const userQuestions = new UserQuestionsStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "user-questions-storage"));
   userQuestions.recover();
@@ -4989,6 +5018,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!meta.sessions.some(session => session.sessionId === sessionId)) return json({ error: "Unknown conversation" }, 404);
         return json({ shares: codeShares.list(sessionId) });
       }
+      const mediaShareMatch = /^\/api\/sessions\/([^/]+)\/media-shares(?:\/|$)/.exec(path);
+      if (mediaShareMatch) {
+        const sessionId = decodeURIComponent(mediaShareMatch[1]!);
+        if (!meta.sessions.some(session => session.sessionId === sessionId)) return json({ error: "Unknown conversation" }, 404);
+        const response = await mediaShareRoute(req, mediaShares);
+        if (response) return response;
+      }
       const userQuestionsMatch = /^\/api\/sessions\/([^/]+)\/user-questions(?:\/([^/]+)\/(answers|submit|dismiss|resume))?$/.exec(path);
       if (userQuestionsMatch && req.method === "GET" && !userQuestionsMatch[2]) {
         const sessionId = userQuestionsMatch[1]!;
@@ -5871,6 +5907,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (error instanceof BrowserPairError || error instanceof ResourcePairError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof SessionRetirementError || error instanceof SessionCatalogError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof UserQuestionsError) return json({ error: error.message, code: error.code }, error.status);
+      if (error instanceof MediaShareError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof ScienceSubmissionStorageError) { failClosed(); return json({ error: error.message, code: "science-submission-unknown" }, 503); }
       if (error instanceof ScienceSubmissionError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof PendingInputStorageError) { failClosed(); return json({ error: error.message, code: "storage-unavailable" }, 503); }
@@ -5927,7 +5964,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (source.descriptor.harness === "gk" && authorizeGrokInvocation(caller, tool, args).session !== session) throw new Error();
       return { sessionId: session.sessionId, harness: sessionHarnessId, authorityId: session.authorityId, nativeSessionId: session.nativeSessionId };
     } catch { throw new BrowserGrantError(403, "browser-session-unverified", "This conversation is not an admitted SANE session"); }
-  })) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/user-questions" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeUserQuestions(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
+  })) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/user-questions" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeUserQuestions(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/code-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeCodeShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/media-shares" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeMediaShare(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) });
   boundListenerStops.push(async () => { await hookServer.stop(true); });
   presentationPoller.start();
   origin = options.publicOrigin ?? `http://${options.host.includes(":") ? `[${options.host}]` : options.host}:${server.port}`;
