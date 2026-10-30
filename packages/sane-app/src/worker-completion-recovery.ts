@@ -1,5 +1,9 @@
 import { explicitWorker, workerResults, workerTerminal, type WorkerRecord } from "./worker-contract";
 
+/** Nonterminal, app-owned diagnostic, not parent guidance or a completion. Its
+ * durable escalation marker deduplicates it once per assignment attempt. */
+export const WORKER_COMPLETION_RECOVERY_SPENT_DIAGNOSTIC = "Assignment still open; recovery reminder already used. A later ordinary turn settled without worker_complete or a legitimate wait/dependency. Inspect the worker and its original reminder; no further automatic reminder or inferred task outcome.";
+
 /** These are live coordinator facts, not facts implied by WorkerState "idle".
  * Every field is required. Gather them again after asynchronous preparation and
  * claim synchronously, before yielding or attempting native dispatch. Include
@@ -31,10 +35,10 @@ export type WorkerCompletionRecoveryReason =
   | "no-successful-settled-run" | "stopped" | "uncertain-execution" | "parent-wait" | "user-wait"
   | "suppressed" | "unfinished-descendants" | "incoming-exchanges" | "outgoing-exchanges"
   | "result-deliveries" | "admission" | "execution" | "not-idle" | "missing-completion"
-  | "recovery-pending" | "reminder-exhausted" | "reminder-not-submitted" | "delivery-unknown" | "escalation-recorded";
+  | "recovery-pending" | "reminder-exhausted" | "reminder-not-submitted" | "delivery-unknown" | "escalation-recorded" | "reminder-spent";
 
 export type WorkerCompletionRecoveryClassification = {
-  status: "ineligible" | "blocked" | "recovery-needed" | "escalation-needed";
+  status: "ineligible" | "blocked" | "recovery-needed" | "escalation-needed" | "attention-needed";
   reasons: WorkerCompletionRecoveryReason[];
 };
 
@@ -80,7 +84,9 @@ export function classifyWorkerCompletionRecovery(worker: WorkerRecord, input: Wo
   // Attention dedupe is not settlement authority. Later exact reminder evidence
   // may truthfully close the assignment even after an uncertainty diagnostic.
   if (run.runId === recovery.delivery.runId) return result("escalation-needed", "reminder-exhausted");
-  if (run.runId !== recovery.triggerRunId) return result("blocked", "recovery-pending");
+  if (run.runId !== recovery.triggerRunId) return recovery.escalation
+    ? result("blocked", "escalation-recorded")
+    : result("attention-needed", "reminder-spent");
   if (recovery.escalation) return result("blocked", "escalation-recorded");
   if (recovery.delivery.state === "not-submitted") return result("escalation-needed", "reminder-not-submitted");
   if (recovery.delivery.state === "acceptance-unknown") return result("escalation-needed", "delivery-unknown");

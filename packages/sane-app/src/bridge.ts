@@ -130,7 +130,7 @@ import type { Handoff, NativeSourceDescriptor } from "sane-core/contracts";
 import { WorkerStorageError, WorkerStore } from "./worker-store";
 import { WorkerService, type WorkerParent } from "./workers";
 import { WorkerCompletionRecoveryCoordinator, WORKER_COMPLETION_REMINDER, type WorkerCompletionRecoveryCandidate } from "./worker-completion-recovery-coordinator";
-import { classifyWorkerCompletionRecovery, workerCompletionRecoveryAttemptKey, type WorkerCompletionRecoveryInput } from "./worker-completion-recovery";
+import { classifyWorkerCompletionRecovery, workerCompletionRecoveryAttemptKey, WORKER_COMPLETION_RECOVERY_SPENT_DIAGNOSTIC, type WorkerCompletionRecoveryInput } from "./worker-completion-recovery";
 import type { ExplicitWorkerOperations } from "./native-workers";
 import { createNativeWorkerHandler, NativeWorkerRequestError, type NativeWorkerCallerResolver } from "./native-workers";
 import { matchesOpenCodeWorkerPart, nativeWorkerInput, projectNativeWorkerReply, type NativeWorkerInvocation } from "../../sane-cli/src/native-worker-contract";
@@ -451,6 +451,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let workspaceCreations: WorkspaceCreationService | undefined;
   let gitOperations: GitOperationsService | undefined;
   let workerCompletionRecovery: WorkerCompletionRecoveryCoordinator | undefined;
+  let workerCompletionRecoveryStarted = false;
   async function abortStartup() {
     closing = true;
     stopGrokForks?.();
@@ -746,10 +747,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // that notification back into its own scheduler. Foreign changes during
       // this bounded pass are reconsidered by lifecycle hints/the 15s backstop.
       if (!pendingInputBridge?.isReconsidering()) notifyPendingInput("capacity");
-      // Explicit admission/ownership/barrier releases are operational events,
-      // not worker-store observation commits. A blocked pass acquires nothing,
-      // so reconsideration cannot wake itself indefinitely.
-      workerCompletionRecovery?.notify();
+      // Generic reservation releases also occur during outbox polling, including
+      // declined claims. Recovery is notified by settled lifecycles and explicit
+      // operations instead, never by this unqualified capacity wake.
     }, onError: failClosed },
   });
   // Read-only projections for existing domain observers; all mutation authority
@@ -2270,6 +2270,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           } };
         synchronousDispatchHook(() => options.activationPreparation?.assertCurrent());
         installOwner(lease, owner);
+        const resumingWorker = workerStore.getBySession(session.sessionId);
+        if (resumingWorker?.error === WORKER_COMPLETION_RECOVERY_SPENT_DIAGNOSTIC) workerStore.update(resumingWorker.id, { error: undefined });
         published = true;
         options.configure?.(); snapshot = dispatchSnapshot(session);
         session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run);
@@ -2388,18 +2390,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // report/exchange continuation across Claude, OpenCode and Grok. Observation
     // remains read-only with respect to native sends; only this settled event
     // makes the original lifecycle a recovery candidate.
+    const settled = lifecycle.done.then(async () => {
+      if (closing || storageFailed) return;
+      // Live-input reports can belong to an ordinary nonworker parent turn.
+      // Its explicit settlement, not the outbox poll, must reconcile their
+      // final journal evidence before waking a blocked worker candidate.
+      await reconcileWorkerSettlementTraffic(session.sessionId);
+      const worker = workerStore.getBySession(session.sessionId);
+      if (worker) {
+        await reconcileCompletionRecoveryDelivery(worker);
+        await workers.refresh(workerStore.get(worker.id)!);
+      }
+      workerCompletionRecovery?.notify();
+    });
+    dispatchTasks.add(settled);
+    void settled.finally(() => dispatchTasks.delete(settled)).catch(error => failClosed(error, "worker-completion-settlement"));
     if (workerStore.hasSession(session.sessionId)) {
-      const settled = lifecycle.done.then(async () => {
-        if (closing || storageFailed) return;
-        const worker = workerStore.getBySession(session.sessionId);
-        if (worker) {
-          await reconcileCompletionRecoveryDelivery(worker);
-          await workers.refresh(workerStore.get(worker.id)!);
-        }
-        workerCompletionRecovery?.notify();
-      });
-      dispatchTasks.add(settled);
-      void settled.finally(() => dispatchTasks.delete(settled)).catch(error => failClosed(error, "worker-completion-settlement"));
       workerCompletionRecovery?.track({ runId: run.runId, source: Object.freeze({ ...dispatchSource(session) }), successfulSettlement: lifecycle.successfulSettlement }, settled);
     }
     void lifecycle.done.finally(() => { dispatchTasks.delete(lifecycle.done); });
@@ -3505,9 +3511,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
   }, () => agentProfiles, maxWorkersPerCheckout);
 
-  async function reconcileWorkerDelivery(d: WorkerDelivery) {
+  async function reconcileWorkerDelivery(d: WorkerDelivery, source: "operational" | "observation" = "observation") {
     const result = await reconcileWorkerDeliveryObservation(d);
-    if (result.state !== d.state && ["delivered", "not-submitted"].includes(result.state)) workerCompletionRecovery?.notify();
+    if (source === "operational" && result.state !== d.state && ["delivered", "not-submitted"].includes(result.state)) workerCompletionRecovery?.notify();
     return result;
   }
   async function reconcileWorkerDeliveryObservation(d: WorkerDelivery) {
@@ -3609,7 +3615,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           workerStore.advanceDelivery(d.id, "not-submitted", error instanceof Error ? error.message : "Live report withheld before native input");
         }
       }
-      if (!storageFailed) await reconcileWorkerDelivery(d);
+      // This dispatcher is driven by the outbox poll. The owning turn's shared
+      // settlement hook reconciles live reports operationally after it finishes.
+      if (!storageFailed) await reconcileWorkerDelivery(d, "observation");
       return;
     }
     const workerParent = workerStore.getBySession(parentSessionId);
@@ -3631,7 +3639,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const prompt = workerReportPrompt(d, workerStore.listForDelivery(d));
       executePrompt(lease, session, run, prompt, true, "worker-report", { workerDeliveryId: d.id,
         reconciliation: { order: "after-release", run: async () => {
-          if (!storageFailed) { await reconcileWorkerDelivery(d); if (workerParent) await workers.refresh(workerStore.get(workerParent.id)!); }
+          if (!storageFailed) { await reconcileWorkerDelivery(d, "operational"); if (workerParent) await workers.refresh(workerStore.get(workerParent.id)!); }
         } },
       });
     } finally { coordinator.releaseAdmission(lease); }
@@ -3688,9 +3696,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       nativeSummary: workerOutput(records) ?? String((records.filter(e => e.kind === "status").at(-1)?.data as { reason?: unknown } | undefined)?.reason ?? run.status),
     });
   }
-  async function reconcileExchange(exchange: import("./worker-contract").WorkerExchange) {
+  async function reconcileExchange(exchange: import("./worker-contract").WorkerExchange, source: "operational" | "observation" = "observation") {
     const result = await reconcileExchangeObservation(exchange);
-    if (result && result.delivery.state !== exchange.delivery.state && ["accepted", "wrapper-completed", "not-submitted"].includes(result.delivery.state)) workerCompletionRecovery?.notify();
+    if (source === "operational" && result && result.delivery.state !== exchange.delivery.state && ["accepted", "wrapper-completed", "not-submitted"].includes(result.delivery.state)) workerCompletionRecovery?.notify();
     return result;
   }
   async function reconcileExchangeObservation(exchange: import("./worker-contract").WorkerExchange) {
@@ -3713,6 +3721,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const problem = run.status === "running" ? "Waiting for correlated native acceptance; exchange will not be resent" : "Run ended without proof of acceptance or non-submission. No automatic resend.";
     if (delivery.state === "acceptance-unknown" && delivery.error === problem) return;
     return workerStore.advanceExchange(exchange.id, "acceptance-unknown", problem);
+  }
+  async function reconcileWorkerSettlementTraffic(sessionId: string) {
+    for (const delivery of workerStore.deliveriesToReconcile()) {
+      if (closing || storageFailed) return;
+      if (delivery.parentSessionId === sessionId && !retirementPaused(sessionId)) await reconcileWorkerDelivery(delivery, "operational");
+    }
+    for (const { exchange } of workerStore.exchangesToReconcile()) {
+      if (closing || storageFailed) return;
+      if (exchange.recipient.sessionId === sessionId && !retirementPaused(sessionId)) await reconcileExchange(exchange, "operational");
+    }
   }
   async function dispatchWorkerExchange(workerId: string, exchange: import("./worker-contract").WorkerExchange) {
     if (retirementPaused(exchange.recipient.sessionId) || retiredId(exchange.sender.sessionId)) return;
@@ -3748,7 +3766,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         reconciliation: { order: "after-release", run: async () => {
           if (storageFailed) return;
           const current = workerStore.get(workerId)?.exchanges?.find(item => item.id === exchange.id);
-          if (current) await reconcileExchange(current);
+          if (current) await reconcileExchange(current, "operational");
           if (recipientWorker) await workers.refresh(workerStore.get(recipientWorker.id)!);
         } },
       });
@@ -3781,6 +3799,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (pending && scope.has(exchange.sender.sessionId)) outgoingExchanges = true;
     }
     const scopeWorkers = [worker, ...descendants], workerIds = new Set(scopeWorkers.map(worker => worker.id));
+    const pendingAppAdmissions = new Set(appAdmissions?.readPending().map(row => row.conversationId) ?? []);
+    // Check durable App admission and all source policy independently of an
+    // installed owner. Only this exact recovery lease may ignore itself.
+    const sourcePolicyBlocked = !!readinessPolicy({ conversationId: worker.sessionId, intent: { kind: "worker-recovery" },
+      phase: own ? "dispatch" : "admission", ...(own ? { lease: own.lease } : {}) });
     const resultDeliveries = scopeWorkers.some(worker => workerResults(worker).some(result => !["wait-consumed", "delivered"].includes(result.notification.state)))
       || workerStore.deliveries().some(delivery => (scope.has(delivery.parentSessionId) || delivery.workerIds.some(id => workerIds.has(id)))
         && (["claimed", "acceptance-unknown"].includes(delivery.state) || delivery.state === "delivered" && active(delivery.parentSessionId, delivery.run.runId)));
@@ -3801,7 +3824,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         unfinishedDescendants: descendants.some(worker => worker.assignment !== "terminal" && !worker.outcome
           || worker.continuation && !["completed", "failed", "interrupted"].includes(worker.continuation.state)),
         incomingExchanges, outgoingExchanges, resultDeliveries,
-        admission: [...scope].some(id => coordinator.hasReconciliation(id) || coordinator.hasAdmission(id) && !(id === worker.sessionId && own && coordinator.holdsAdmission(own.lease, id))
+        admission: sourcePolicyBlocked || [...scope].some(id => pendingAppAdmissions.has(id) || coordinator.hasReconciliation(id)
+          || coordinator.hasAdmission(id) && !(id === worker.sessionId && own && coordinator.holdsAdmission(own.lease, id))
           || !!pendingInputs?.hasChain(id) || admissions.get(id)?.state !== "ready"),
         execution: [...scope].some(id => active(id)),
       },
@@ -3835,7 +3859,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!worker || !isExplicitWorker(worker) || !isCurrent()) return;
     let snapshot = completionRecoverySnapshot(worker, candidate);
     let classification = classifyWorkerCompletionRecovery(worker, snapshot);
-    if (!["recovery-needed", "escalation-needed"].includes(classification.status)) return;
+    if (!["recovery-needed", "escalation-needed", "attention-needed"].includes(classification.status)) return;
     const session = meta.sessions.find(session => session.sessionId === id)!;
     const sourcePin = dispatchSnapshot(session);
     const cwd = await execution(id);
@@ -3843,16 +3867,35 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     assertDispatchSnapshot(id, sourcePin);
     worker = workerStore.getBySession(id)!;
     snapshot = completionRecoverySnapshot(worker, candidate);
-    if (!["recovery-needed", "escalation-needed"].includes(classifyWorkerCompletionRecovery(worker, snapshot).status)) return;
+    if (!["recovery-needed", "escalation-needed", "attention-needed"].includes(classifyWorkerCompletionRecovery(worker, snapshot).status)) return;
     const proof = await candidate.successfulSettlement();
     if (!isCurrent()) return;
     assertDispatchSnapshot(id, sourcePin);
     worker = workerStore.getBySession(id)!;
     snapshot = completionRecoverySnapshot(worker, candidate);
     classification = classifyWorkerCompletionRecovery(worker, snapshot);
-    if (!["recovery-needed", "escalation-needed"].includes(classification.status)) return;
+    if (!["recovery-needed", "escalation-needed", "attention-needed"].includes(classification.status)) return;
     if (!proof.ready) {
       noteCompletionRecovery(worker.id, `Missing completion: exact successful native settlement is not proven (${proof.reason}). Inspect the original run; no automatic task replay.`);
+      return;
+    }
+    const readiness = coordinator.inspectReadiness({ conversationId: id, intent: { kind: "worker-recovery" }, phase: "admission" });
+    if (!readiness.ready) return;
+    // Both terminal failure and nonterminal attention re-read admission/source,
+    // exact worker/attempt/run, and all blockers INSIDE the atomic store writer.
+    const workerId = worker.id, attemptKey = snapshot.attemptKey;
+    const revalidate = (): WorkerCompletionRecoveryInput | undefined => {
+      if (!isCurrent() || dispatchSnapshot(session) !== sourcePin) return;
+      const current = workerStore.get(workerId);
+      if (!current || current.sessionId !== id || workerCompletionRecoveryAttemptKey(current) !== attemptKey) return;
+      const ready = coordinator.inspectReadiness({ conversationId: id, intent: { kind: "worker-recovery" }, phase: "admission" });
+      if (!ready.ready) return;
+      const fresh = completionRecoverySnapshot(current, candidate);
+      return fresh.latestRunId === candidate.runId ? fresh : undefined;
+    };
+    if (classification.status === "attention-needed") {
+      workerStore.claimCompletionRecoveryEscalation(workerId, { expectedRevision: workerStore.revision, snapshot,
+        deliveryId: worker.completionRecovery!.delivery.id, escalationId: crypto.randomUUID(), revalidate });
       return;
     }
     if (classification.status === "escalation-needed") {
@@ -3860,12 +3903,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // Never terminalize a claim merely because delivery is unknown or a
       // different ordinary turn finished. Only this exact reminder can fail.
       if (candidate.runId !== recovery.delivery.runId || !["delivered", "wrapper-completed"].includes(recovery.delivery.state)) return;
-      workerStore.failCompletionRecovery(worker.id, { expectedRevision: workerStore.revision, snapshot, deliveryId: recovery.delivery.id,
+      workerStore.failCompletionRecovery(worker.id, { expectedRevision: workerStore.revision, snapshot, deliveryId: recovery.delivery.id, revalidate,
         summary: "Missing worker completion: the App-owned completion reminder settled successfully, but the worker again neither called worker_complete nor declared a legitimate wait/dependency. The assignment failed its completion protocol; task success was not inferred. Original native reports remain in the run journals." });
       return;
     }
-    const readiness = coordinator.inspectReadiness({ conversationId: id, intent: { kind: "worker-recovery" }, phase: "admission" });
-    if (!readiness.ready || workers.executionCount(cwd, id) >= maxWorkersPerCheckout) return;
+    if (workers.executionCount(cwd, id) >= maxWorkersPerCheckout) return;
     const { run, commandId } = newDispatchRun(session, { cwd });
     const deliveryId = crypto.randomUUID();
     const lease = reserve({ kind: "worker-recovery", requestId: deliveryId }, id);
@@ -3907,7 +3949,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     } finally { coordinator.releaseAdmission(lease); }
   }
   workerCompletionRecovery = new WorkerCompletionRecoveryCoordinator({
-    available: () => startupReady && !closing && !storageFailed && !retainOwner && !meta.reconciliationRequired,
+    available: () => workerCompletionRecoveryStarted && startupReady && !closing && !storageFailed && !retainOwner && !meta.reconciliationRequired,
     reconsider: (candidate, current) => reconsiderWorkerCompletion(candidate, current),
     onError: error => {
       // Readiness/source refusals are scoped and consume no budget before claim.
@@ -3950,8 +3992,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let workerOutboxTask: Promise<void> | undefined;
   async function consumeWorkerReports() {
     for (const w of workers.listForRefresh()) { if (closing || storageFailed) return; await workers.refresh(w); }
-    for (const d of workerStore.deliveriesToReconcile()) { if (closing || storageFailed) return; if (!retirementPaused(d.parentSessionId)) await reconcileWorkerDelivery(d); }
-    for (const exchange of workerStore.exchangesToReconcile()) { if (closing || storageFailed) return; if (!retirementPaused(exchange.exchange.recipient.sessionId)) await reconcileExchange(exchange.exchange); }
+    for (const d of workerStore.deliveriesToReconcile()) { if (closing || storageFailed) return; if (!retirementPaused(d.parentSessionId)) await reconcileWorkerDelivery(d, "observation"); }
+    for (const exchange of workerStore.exchangesToReconcile()) { if (closing || storageFailed) return; if (!retirementPaused(exchange.exchange.recipient.sessionId)) await reconcileExchange(exchange.exchange, "observation"); }
     for (const parent of workerStore.pendingParents()) {
       if (closing || storageFailed) return;
       if (retirementPaused(parent)) continue;
@@ -3963,7 +4005,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       try { await dispatchWorkerExchange(queued.workerId, queued.exchange); } catch (e) { if (storageFailed) throw e; workerStore.noteExchange(queued.exchange.id, "Exchange preparation is unavailable; the message remains queued"); }
     }
   }
-  const workerOutbox = { list: () => workerStore.deliveries(), reconcile: async (id: string) => { const d = workerStore.deliveries().find(d => d.id === id); if (!d) throw new WorkstreamAdapterError(404, "worker-delivery-missing", "Unknown worker delivery"); return reconcileWorkerDelivery(d); } };
+  const workerOutbox = { list: () => workerStore.deliveries(), reconcile: async (id: string) => { const d = workerStore.deliveries().find(d => d.id === id); if (!d) throw new WorkstreamAdapterError(404, "worker-delivery-missing", "Unknown worker delivery"); return reconcileWorkerDelivery(d, "operational"); } };
 
   async function cancelOwner(owner: Owner) {
     requireOwnedOperation(ownedSession(owner), owner, "cancelOwnedRun");
@@ -5887,6 +5929,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (hidden && !session.hidden) pendingInputControls.hide(session.sessionId);
         session.hidden = hidden;
         await persist();
+        if (!hidden && startupReady && !closing && !storageFailed) workerCompletionRecovery?.notify(session.sessionId);
         return json({ ok: true, sessionId: session.sessionId, hidden: session.hidden });
       }
       if (matchesRunEvidenceRoute(req, url)) {
@@ -6181,6 +6224,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const reconciliationWasRequired = !!meta.reconciliationRequired;
           const token = coordinator.beginReconciliation(owner);
           owner.settled = true; releaseOwner(owner);
+          if (!storageFailed) await reconcileWorkerSettlementTraffic(recovering.sessionId);
           const w = workerStore.getBySession(recovering.sessionId);
           if (w && !storageFailed) {
             await reconcileCompletionRecoveryDelivery(w);
@@ -6259,11 +6303,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // Startup is a one-shot operational trigger after ownership classification.
   // Persisted claims are reconciled, never replayed. Durable exact-command or
   // drained-wrapper evidence is distinct from a manufactured live lifecycle.
+  // Settle existing traffic first: the observation-only outbox poll below must
+  // never be the event that starts native missing-completion recovery.
+  for (const delivery of workerStore.deliveriesToReconcile()) {
+    if (closing || storageFailed) break;
+    if (!retirementPaused(delivery.parentSessionId)) await reconcileWorkerDelivery(delivery, "observation");
+  }
+  for (const { exchange } of workerStore.exchangesToReconcile()) {
+    if (closing || storageFailed) break;
+    if (!retirementPaused(exchange.recipient.sessionId)) await reconcileExchange(exchange, "observation");
+  }
   for (const worker of workerStore.list()) if (isExplicitWorker(worker)) {
     await reconcileCompletionRecoveryDelivery(worker);
     await workers.refresh(workerStore.get(worker.id)!);
     trackRecoveredWorkerCompletion(worker.sessionId);
   }
+  workerCompletionRecoveryStarted = true;
   workerCompletionRecovery.notify();
   const handoffPoller = createPoller(() => consumeHandoffs(), { intervalMs: 500, shouldRun: () => !closing && !storageFailed, onError: (error) => failClosed(error, "handoff-consumer") });
   const workerOutboxPoller = createPoller(() => consumeWorkerReports(), { intervalMs: 500, shouldRun: () => !closing && !storageFailed, onError: (error) => failClosed(error, "worker-outbox") });

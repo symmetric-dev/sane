@@ -8,7 +8,7 @@ import type { ConversationRef } from "sane-core/contracts";
 import type { SessionListDelivery, SessionListWorker, WorkerAttention, WorkerCompletion, WorkerCompletionRecovery, WorkerExchange, WorkerOperationReceipt, WorkerProtocolPin, WorkerRecord, WorkerRecords, WorkerDelivery, WorkerWait } from "./worker-contract";
 import { workerResults, workerTerminal } from "./worker-contract";
 import { completionBlockers, continuationActive, sameProtocolPin, validProtocolPin, workerBlocksParentGate, type CompletionBlocker } from "./worker-protocol";
-import { classifyWorkerCompletionRecovery, workerCompletionRecoveryAttemptKey, type WorkerCompletionRecoveryInput } from "./worker-completion-recovery";
+import { classifyWorkerCompletionRecovery, workerCompletionRecoveryAttemptKey, WORKER_COMPLETION_RECOVERY_SPENT_DIAGNOSTIC, type WorkerCompletionRecoveryInput } from "./worker-completion-recovery";
 
 /** Detached scalar selection metadata, never a truncated WorkerRecord. */
 export type WorkerSelection = Pick<WorkerRecord, "id" | "sessionId" | "runId" | "checkout" | "state" | "assignment" | "cancelRequestedAt"> & {
@@ -180,6 +180,12 @@ export class WorkerStore {
   /** Additive v1 migration: original outcome/notification IDs and delivery snapshots stay intact. */
   private normalize(r: WorkerRecords) {
     for (const w of r.workers ?? []) {
+      // Keep the historical one-per-attempt marker, but do not present an idle
+      // diagnostic as current once the worker resumes, waits, or completes.
+      if (w.error === WORKER_COMPLETION_RECOVERY_SPENT_DIAGNOSTIC && (w.state !== "idle" || w.assignment !== "open"
+        || w.completion || w.outcome || w.cancelRequestedAt || w.continuationCancellation
+        || w.wait?.reason === "parent" || w.wait?.reason === "user"
+        || (w.continuation?.runId ?? w.runId) !== w.completionRecovery?.escalation?.runId)) delete w.error;
       if (!w.results?.length && w.outcome && w.notification) w.results = [{ revision: 1, runId: w.outcome.log?.runId ?? w.runId, outcome: w.outcome, notification: w.notification }];
       w.results ??= [];
       if (w.results.length) w.notification = w.results[0]!.notification;
@@ -410,13 +416,18 @@ export class WorkerStore {
   }
   /** Durable attention claim, not a completion or a retryable outbox item.
    * Publish only when this method returns a NEW claim; never republish on reads. */
-  claimCompletionRecoveryEscalation(id: string, input: { expectedRevision: number; snapshot: WorkerCompletionRecoveryInput; deliveryId: string; escalationId: string }): WorkerCompletionRecovery | undefined {
+  claimCompletionRecoveryEscalation(id: string, input: { expectedRevision: number; snapshot: WorkerCompletionRecoveryInput; deliveryId: string; escalationId: string;
+    revalidate?: () => WorkerCompletionRecoveryInput | undefined }): WorkerCompletionRecovery | undefined {
     const current = this.workersById.get(id);
-    if (!current || input.expectedRevision !== this.revision || current.completionRecovery?.delivery.id !== input.deliveryId) return;
-    if (classifyWorkerCompletionRecovery(current, this.completionRecoveryInput(current, input.snapshot)).status !== "escalation-needed") return;
+    if (!current || input.expectedRevision !== this.revision || current.completionRecovery?.delivery.id !== input.deliveryId || current.completionRecovery.escalation) return;
+    const snapshot = input.revalidate ? input.revalidate() : input.snapshot;
+    if (!snapshot || input.expectedRevision !== this.revision) return;
+    const classification = classifyWorkerCompletionRecovery(current, this.completionRecoveryInput(current, snapshot));
+    if (classification.status !== "escalation-needed" && classification.status !== "attention-needed") return;
     const next = structuredClone(this.records), worker = next.workers.find(worker => worker.id === id)!, recovery = worker.completionRecovery!;
     const now = new Date().toISOString();
-    recovery.escalation = { id: input.escalationId, runId: input.snapshot.run!.runId, at: now };
+    recovery.escalation = { id: input.escalationId, runId: snapshot.run!.runId, at: now };
+    if (classification.status === "attention-needed") worker.error = WORKER_COMPLETION_RECOVERY_SPENT_DIAGNOSTIC;
     recovery.updatedAt = worker.updatedAt = now;
     this.commit(next);
     return structuredClone(recovery);
@@ -424,11 +435,16 @@ export class WorkerStore {
   /** App-owned protocol failure, never a worker completion receipt or inferred
    * successful task result. Only the exact successfully settled reminder may
    * close the assignment; unknown/non-submitted reminders remain inspectable. */
-  failCompletionRecovery(id: string, input: { expectedRevision: number; snapshot: WorkerCompletionRecoveryInput; deliveryId: string; summary: string }): WorkerRecord | undefined {
+  failCompletionRecovery(id: string, input: { expectedRevision: number; snapshot: WorkerCompletionRecoveryInput; deliveryId: string; summary: string;
+    revalidate: () => WorkerCompletionRecoveryInput | undefined }): WorkerRecord | undefined {
     const current = this.workersById.get(id), claim = current?.completionRecovery;
     if (!current || !claim || input.expectedRevision !== this.revision || claim.delivery.id !== input.deliveryId
-      || input.snapshot.run?.runId !== claim.delivery.runId || !["delivered", "wrapper-completed"].includes(claim.delivery.state)
-      || classifyWorkerCompletionRecovery(current, this.completionRecoveryInput(current, input.snapshot)).status !== "escalation-needed") return;
+      || !["delivered", "wrapper-completed"].includes(claim.delivery.state)) return;
+    // Fresh external admission/source fences are checked synchronously inside
+    // this atomic writer, alongside durable blockers. Never await this callback.
+    const snapshot = input.revalidate();
+    if (!snapshot || input.expectedRevision !== this.revision || snapshot.run?.runId !== claim.delivery.runId
+      || classifyWorkerCompletionRecovery(current, this.completionRecoveryInput(current, snapshot)).status !== "escalation-needed") return;
     const next = structuredClone(this.records), worker = next.workers.find(worker => worker.id === id)!;
     const at = new Date().toISOString(), runId = claim.delivery.runId, revision = (worker.results?.length ?? 0) + 1;
     const outcome = { status: "failed" as const, at, summary: input.summary, log: { sessionId: worker.sessionId, runId } };
