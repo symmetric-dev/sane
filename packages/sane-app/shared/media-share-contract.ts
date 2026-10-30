@@ -1,4 +1,4 @@
-import { MEDIA_SHARE_LIMITS, parseMediaShareInput, type MediaShareInput } from "../../sane-cli/src/native-share-media-contract"
+import { MEDIA_SHARE_LIMITS, parseMediaShareInput, type StoredMediaShareInput } from "../../sane-cli/src/native-share-media-contract"
 
 export * from "../../sane-cli/src/native-share-media-contract"
 
@@ -21,7 +21,7 @@ export interface MediaShareRecord {
   worktreeId: string
   bindingRevision: string
   createdAt: string
-  input: MediaShareInput
+  input: StoredMediaShareInput
   media: MediaShareItem[]
 }
 

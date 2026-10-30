@@ -18,7 +18,12 @@ export const MEDIA_SHARE_LIMITS = {
 } as const
 
 export interface MediaShareItemInput { path: string }
-export interface MediaShareInput { media: MediaShareItemInput[] }
+export type MediaShareInput =
+  | { type: "gallery"; media: MediaShareItemInput[] }
+  | { type: "row"; media: [MediaShareItemInput, MediaShareItemInput] | [MediaShareItemInput, MediaShareItemInput, MediaShareItemInput] }
+  | { type: "grid"; media: MediaShareItemInput[] }
+/** Existing immutable snapshots predate the layout discriminator. */
+export type StoredMediaShareInput = MediaShareInput | { type?: never; media: MediaShareItemInput[] }
 export interface NativeMediaShareRequest {
   version: 1
   caller: { source: NativeSourceDescriptor; authorityId: string; nativeId: string; cwd: string }
@@ -32,7 +37,7 @@ export interface MediaShareReceipt {
   media: MediaShareItemInput[]
 }
 
-export const nativeShareMediaDescription = "Show local images and MP4 videos in an App chat gallery. Always supply a media array, even for one file; each item contains only a path. Files are read from the conversation's execution checkout and saved as frozen snapshots, not live file links. Protected paths may be unavailable; this tool does not grant additional workspace access. Supported extensions: png, jpg, jpeg, webp, and mp4 (case-insensitive). PNG/WebP must be static; APNG, animated WebP, fragmented MP4, and unsupported MP4 brands are rejected. Video codec playback depends on the browser. Supply 1–16 files in display order; repeated paths are allowed. Limits: 10 MiB per image, 100 MiB per video, 200 MiB total, and 128 KiB of serialized arguments. Images are limited to 40 million pixels and 16,384 pixels per dimension. Only workspace-relative file paths are accepted, never absolute paths, traversal, backslashes, globs, directories, or URLs. No inline content, captions, supplied metadata, actions, or remote URLs in v1. Available only in App-admitted conversations; does not require workstream enrollment."
+export const nativeShareMediaDescription = "Show local images and MP4 videos in App chat. Supply type and media: type gallery shows one of 1–16 files at a time, row shows 2–3 files side by side, and grid shows 1–16 files in a tiled layout. Always supply a media array, even for one file; each item contains only a path. Files are read from the conversation's execution checkout and saved as frozen snapshots, not live file links. Protected paths may be unavailable; this tool does not grant additional workspace access. Supported extensions: png, jpg, jpeg, webp, and mp4 (case-insensitive). PNG/WebP must be static; APNG, animated WebP, fragmented MP4, and unsupported MP4 brands are rejected. Video codec playback depends on the browser. Supply files in display order; repeated paths are allowed. Limits: 10 MiB per image, 100 MiB per video, 200 MiB total, and 128 KiB of serialized arguments. Images are limited to 40 million pixels and 16,384 pixels per dimension. Only workspace-relative file paths are accepted, never absolute paths, traversal, backslashes, globs, directories, or URLs. No inline content, captions, supplied metadata, actions, or remote URLs in v1. Available only in App-admitted conversations; does not require workstream enrollment."
 
 // Use the same expression in JSON Schema and the parser. Colons also exclude
 // URI schemes and drive prefixes; glob syntax is never expanded or accepted.
@@ -40,8 +45,14 @@ const mediaPathPattern = "^(?![\\s\\S]*[\\u0000-\\u001f\\u007f-\\u009f\\\\:*?\\[
 const mediaPath = new RegExp(mediaPathPattern)
 
 export const nativeShareMediaSchema = {
-  type: "object", additionalProperties: false, required: ["media"],
+  type: "object", additionalProperties: false, required: ["type", "media"],
+  oneOf: [
+    { properties: { type: { const: "gallery" } } },
+    { properties: { type: { const: "row" }, media: { minItems: 2, maxItems: 3 } } },
+    { properties: { type: { const: "grid" } } },
+  ],
   properties: {
+    type: { type: "string", enum: ["gallery", "row", "grid"], description: "gallery: one file at a time; row: 2–3 side-by-side files; grid: tiled files." },
     media: {
       type: "array", minItems: 1, maxItems: MEDIA_SHARE_LIMITS.items,
       description: "Ordered local image/MP4 files. Required even for one file; duplicate paths are allowed.",
@@ -71,14 +82,19 @@ function withinLength(value: string, maximum: number): boolean {
 /** Validate only the wire input; filesystem confinement and file decoding belong
  * to the workspace reader. Preserve exact paths, duplicates, and display order. */
 export function parseMediaShareInput(input: unknown): MediaShareInput {
-  const invalid = (): never => { throw new Error("Invalid media share: supply media with 1–16 relative PNG, JPEG, WebP, or MP4 file paths and no other fields. Absolute paths, traversal, backslashes, globs, directories, and URLs are not accepted.") }
-  if (!object(input) || !exact(input, ["media"]) || !Array.isArray(input.media) || input.media.length < 1 || input.media.length > MEDIA_SHARE_LIMITS.items) return invalid()
+  const invalid = (): never => { throw new Error("Invalid media share: supply type (gallery, row, or grid) and media with relative PNG, JPEG, WebP, or MP4 file paths, and no other fields. Row requires 2–3 files; gallery and grid allow 1–16. Absolute paths, traversal, backslashes, globs, directories, and URLs are not accepted.") }
+  if (!object(input) || !(exact(input, ["type", "media"]) || exact(input, ["media"])) || !Array.isArray(input.media) || input.media.length < 1 || input.media.length > MEDIA_SHARE_LIMITS.items) return invalid()
+  // Normalize old callers and persisted inputs without rewriting frozen records.
+  const type = Object.hasOwn(input, "type") ? input.type : "gallery"
+  if (type !== "gallery" && type !== "row" && type !== "grid" || type === "row" && (input.media.length < 2 || input.media.length > 3)) return invalid()
   const media: MediaShareItemInput[] = []
   for (const item of input.media) {
     if (!object(item) || !exact(item, ["path"]) || typeof item.path !== "string" || !withinLength(item.path, MEDIA_SHARE_LIMITS.path) || !mediaPath.test(item.path)) return invalid()
     media.push({ path: item.path })
   }
-  const result = { media }
+  const result: MediaShareInput = type === "row"
+    ? { type, media: media as [MediaShareItemInput, MediaShareItemInput] | [MediaShareItemInput, MediaShareItemInput, MediaShareItemInput] }
+    : { type, media }
   const serialized = JSON.stringify(result)
   if (serialized.length > MEDIA_SHARE_LIMITS.inputBytes || new TextEncoder().encode(serialized).length > MEDIA_SHARE_LIMITS.inputBytes) throw new Error("Media share arguments exceed 128 KiB.")
   return result

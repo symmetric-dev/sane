@@ -130,21 +130,23 @@ environment is not a security sandbox.
 
 ## Sharing media in chat
 
-Agents can use `sane_share_media` in App-admitted conversations to show an ordered
-gallery of local PNG, JPEG, WebP, and MP4 files. Always provide an array, including
-for a single file:
+Agents can use `sane_share_media` in App-admitted conversations to show local PNG,
+JPEG, WebP, and MP4 files. Supply a layout `type` and a media array, including for
+a single file:
 
 ```json
-{"media":[{"path":"screenshots/before.png"},{"path":"recordings/demo.mp4"}]}
+{"type":"gallery","media":[{"path":"screenshots/before.png"},{"path":"recordings/demo.mp4"}]}
 ```
 
 Paths are relative to the conversation's execution checkout. Protected paths,
 including `.sane`, and files outside that checkout are unavailable. The App saves
 private, frozen copies: changing or deleting the original does not change an
 existing share. Sharing is read-only and does not attach media to an agent prompt.
-Use the gallery selector or Previous/Next to browse and expand a preview for a
-larger view. Videos have playback controls and never autoplay; codec support
-depends on the browser.
+Choose `gallery` to browse 1–16 files one at a time, `row` to compare 2–3 files
+side by side, or `grid` for 1–16 tiled previews. Chat cards keep a stable height
+of half the viewport; grids scroll when needed. Each tile can be downloaded or
+expanded into the full gallery. Existing shares without a type remain galleries.
+Videos have playback controls and never autoplay; codec support depends on the browser.
 
 This first version accepts static PNG/WebP images and conventional,
 non-fragmented MP4 containers. APNG, animated WebP, fragmented MP4, and unsupported

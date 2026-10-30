@@ -106,7 +106,7 @@ export class MediaShareStore {
     exact(record, ["version", "id", "sessionId", "native", "anchor", "workspaceId", "worktreeId", "bindingRevision", "createdAt", "input", "media"]);
     exact(record.native, ["harness", "authorityId", "nativeId"]);
     exact(record.anchor, ["runId", "toolCallId", "messageId", "invocationId", "wrapper"]);
-    exact(record.input, ["media"]);
+    exact(record.input, Object.hasOwn(record.input, "type") ? ["type", "media"] : ["media"]);
     if (record.id !== mediaShareId(identity(record)) || record.input.media.length !== record.media.length || record.media.length < 1 || record.media.length > LIMITS.items) throw new Error("Invalid media identity");
     if (record.native.harness !== "oc" ? record.anchor.wrapper !== null || record.anchor.invocationId !== record.anchor.toolCallId : record.anchor.messageId === null || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(record.anchor.invocationId)) throw new Error("Invalid media invocation");
     let total = 0;

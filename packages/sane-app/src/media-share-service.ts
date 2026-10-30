@@ -107,7 +107,7 @@ export class MediaShareService {
     operation.check(); authorization.assertCurrent();
     if (authorization.sessionId !== expectedSessionId) throw new MediaShareError(409, "media-share-binding", "Conversation admission changed");
     if (old) {
-      if (canonicalJSON(old.input) !== canonicalJSON(request.input)) throw new MediaShareError(409, "media-share-conflict", "This invocation already shared different media");
+      if (canonicalJSON(parseMediaShareInput(old.input)) !== canonicalJSON(request.input)) throw new MediaShareError(409, "media-share-conflict", "This invocation already shared different media");
       return old; // Source deletion or checkout loss does not affect recovery.
     }
     if (captures >= LIMITS.concurrentCaptures) throw new MediaShareError(429, "media-share-busy", "Media capture is busy; try again shortly");

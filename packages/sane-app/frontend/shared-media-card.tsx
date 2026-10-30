@@ -83,13 +83,42 @@ function MediaGalleryReader({ share, page, select, active = true, expanded = fal
   </section>;
 }
 
-function MediaShareGallery({ share, active }: { share: MediaShareRecord; active: boolean }) {
+function MediaTilesReader({ share, type, active, openModal, inactiveMessage }: {
+  share: MediaShareRecord; type: "row" | "grid"; active: boolean; openModal?: (index: number) => void; inactiveMessage: string;
+}) {
+  return <section className={`shared-media-card shared-media-tiles shared-media-${type}`} aria-label={`Shared media ${type}`}>
+    <header><strong>Shared media</strong><span className="shared-media-count">{share.media.length} items</span></header>
+    <ol className="shared-media-tile-list" style={type === "row" ? { gridTemplateColumns: `repeat(${share.media.length}, minmax(0, 1fr))` } : undefined}>
+      {share.media.map((item, index) => {
+        const name = mediaShareFilename(item);
+        return <li key={item.id} className="shared-media-tile">
+          <header>
+            <strong title={name}>{name}</strong>
+            <a href={mediaShareContentUrl(share, item)} download={name} aria-label={`Download ${name}`} title={`Download ${name}`}><FiDownload aria-hidden="true" /></a>
+            {openModal && <button type="button" aria-label={`Expand ${name}`} title={`Expand ${name}`} onClick={() => openModal(index)}><FiMaximize2 aria-hidden="true" /></button>}
+          </header>
+          <div className="shared-media-preview" tabIndex={active ? 0 : -1} aria-label={`Preview: ${name}`}>
+            {active ? <MediaPreview share={share} item={item} /> : <p className="shared-media-caption">{inactiveMessage}</p>}
+          </div>
+        </li>;
+      })}
+    </ol>
+  </section>;
+}
+
+function MediaShareLayout({ share, active }: { share: MediaShareRecord; active: boolean }) {
   const [page, setPage] = useState(0), [expanded, setExpanded] = useState(false);
   useLayoutEffect(() => { if (!active) setExpanded(false); }, [active]);
   const selected = Math.min(page, share.media.length - 1);
   const reader = { share, page: selected, select: setPage };
+  const type = share.input.type ?? "gallery";
+  const inlineActive = active && !expanded;
+  const inactiveMessage = active && expanded ? "Preview open in expanded gallery." : "Preview paused while this transcript is inactive.";
+  const openModal = (index: number) => { setPage(index); setExpanded(true); };
   return <>
-    <MediaGalleryReader {...reader} active={active && !expanded} openModal={active ? () => setExpanded(true) : undefined} inactiveMessage={active && expanded ? "Preview open in expanded gallery." : undefined} />
+    {type === "gallery"
+      ? <MediaGalleryReader {...reader} active={inlineActive} openModal={active ? () => openModal(selected) : undefined} inactiveMessage={inactiveMessage} />
+      : <MediaTilesReader share={share} type={type} active={inlineActive} openModal={active ? openModal : undefined} inactiveMessage={inactiveMessage} />}
     {active && expanded && <ShellDialog title={mediaShareFilename(share.media[selected]!)} subtitle={share.media.length > 1 ? `${selected + 1} of ${share.media.length}` : undefined} className="shared-media-dialog" close={() => setExpanded(false)}><MediaGalleryReader {...reader} expanded /></ShellDialog>}
   </>;
 }
@@ -97,7 +126,7 @@ function MediaShareGallery({ share, active }: { share: MediaShareRecord; active:
 export function SharedMediaCard({ share, active = true }: { share: MediaShareRecord; active?: boolean }) {
   // Identity changes unmount all players, reset selection, and close the dialog.
   // Presentation inactivity releases previews and dialogs but retains selection.
-  return <MediaShareGallery key={`${share.sessionId}:${share.id}`} share={share} active={active} />;
+  return <MediaShareLayout key={`${share.sessionId}:${share.id}`} share={share} active={active} />;
 }
 
 export function MediaShareStatus({ projection }: { projection?: MediaShareProjection }) {
