@@ -223,7 +223,7 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     error: pageCurrent ? state.conversationPage!.error : "",
     hasMore: pageCurrent && state.conversationPage!.hasMore,
   } : null;
-  const cachedMembership = useMemo(() => repository.ready ? readWorkstreamMembership(nav.workspaceId) : null, [auth, repository.ready, nav.workspaceId, overview]);
+  const cachedMembership = useMemo(() => repository.ready && !overviewState.uninitialized ? readWorkstreamMembership(nav.workspaceId) : null, [auth, repository.ready, nav.workspaceId, overview, overviewState.uninitialized]);
   // Membership is derived solely from the overview, not the chat polling list.
   const workstreamMap = useMemo(() => overview ? buildWorkstreamMap(overview, []) : cachedMembership ?? new Map<string, WorkstreamMembership>(), [overview, cachedMembership]);
   useEffect(() => {
@@ -231,7 +231,7 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     if (auth === workspaceEpoch() && repository.ready && current.ready && current.navigation.workspaceId === nav.workspaceId && nav.workspaceId && overview && !overviewState.error) saveWorkstreamMembership(nav.workspaceId, workstreamMap);
   }, [auth, repository.ready, nav.workspaceId, overview, overviewState.error, workstreamMap]);
   const membershipLoading = overviewState.loading && !overview && !cachedMembership;
-  const hitMembershipPending = (deferred.workstreamId !== "all" || deferred.phase !== "all") && !overview && !cachedMembership;
+  const hitMembershipPending = (deferred.workstreamId !== "all" || deferred.phase !== "all") && !overview && !cachedMembership && !overviewState.uninitialized;
   const membershipPending = !grouped && !paginated && hitMembershipPending;
   const membershipError = membershipPending ? overviewState.error : "";
   const visible = useMemo<Conversation[]>(() => {

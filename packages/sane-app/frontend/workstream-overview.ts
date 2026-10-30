@@ -2,14 +2,14 @@ import { useMemo, useSyncExternalStore } from "react";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { catalog } from "./catalog";
 import { store } from "./store";
-import { loadWorkstreams, subscribeWorkstreamMutations } from "./workstreams-client";
+import { invalidateWorkstreamRequests, loadWorkstreams, subscribeWorkstreamMutations } from "./workstreams-client";
 import { WorkspaceError } from "./workspace-client";
 import { subscribeWorkspace, workspaceEpoch } from "./workspace-store";
 import { documentHidden, jitteredDelay, subscribeVisibility } from "./visibility";
 import { active } from "./types";
 import { workersFor, workerProjectionInFlight } from "./worker-client";
 
-type OverviewState = { overview: WorkstreamOverview | null; loading: boolean; error: string };
+type OverviewState = { overview: WorkstreamOverview | null; loading: boolean; error: string; uninitialized: boolean };
 type Owner = {
   workspaceId: string; auth: number; key: string; leases: number; disposed: boolean;
   listeners: Set<() => void>; state: OverviewState; serialized: string;
@@ -17,8 +17,8 @@ type Owner = {
   promise?: Promise<WorkstreamOverview>; controller?: AbortController; automatic: boolean; paused: boolean;
   timer?: ReturnType<typeof setTimeout>; unsubscribe: () => void;
 };
-const idle: OverviewState = { overview: null, loading: false, error: "" };
-const initial: OverviewState = { overview: null, loading: true, error: "" };
+const idle: OverviewState = { overview: null, loading: false, error: "", uninitialized: false };
+const initial: OverviewState = { overview: null, loading: true, error: "", uninitialized: false };
 const registry = new Map<string, Owner>();
 const POLL_MS = 1500;
 const shellReady = () => store.snapshot().phase === "ready";
@@ -26,6 +26,8 @@ const automaticPaused = () => documentHidden() || catalog.snapshot().navigation.
 const keyFor = (workspaceId: string) => JSON.stringify([workspaceId, workspaceEpoch()]);
 const current = (owner: Owner) => !owner.disposed && owner.auth === workspaceEpoch() && registry.get(owner.key) === owner;
 const unavailable = () => new WorkspaceError("Workspace changed or unavailable. Choose an available workspace and retry.", 409, "workspace-changed");
+// An unconfigured repository is settled until a mutation or explicit retry.
+const uninitialized = (owner: Owner) => owner.state.uninitialized && owner.resultRevision === owner.revision;
 
 function overviewInFlight(overview: WorkstreamOverview | null) {
   if (!overview) return true;
@@ -41,7 +43,7 @@ function overviewInFlight(overview: WorkstreamOverview | null) {
 }
 
 function publish(owner: Owner, state: OverviewState) {
-  if (owner.state.overview === state.overview && owner.state.loading === state.loading && owner.state.error === state.error) return;
+  if (owner.state.overview === state.overview && owner.state.loading === state.loading && owner.state.error === state.error && owner.state.uninitialized === state.uninitialized) return;
   owner.state = state;
   owner.listeners.forEach(listener => listener());
 }
@@ -59,7 +61,7 @@ function dispose(owner: Owner) {
 
 function schedule(owner: Owner) {
   clearTimeout(owner.timer); owner.timer = undefined;
-  if (!current(owner) || owner.paused || documentHidden() || !owner.listeners.size) return;
+  if (!current(owner) || owner.paused || documentHidden() || !owner.listeners.size || uninitialized(owner)) return;
   owner.inFlight = overviewInFlight(owner.state.overview);
   const delay = owner.inFlight ? POLL_MS : 60_000;
   owner.timer = setTimeout(() => {
@@ -69,7 +71,7 @@ function schedule(owner: Owner) {
 }
 
 function refreshAutomatically(owner: Owner, force: boolean) {
-  if (!current(owner) || owner.paused || documentHidden() || !owner.listeners.size) return;
+  if (!current(owner) || owner.paused || documentHidden() || !owner.listeners.size || uninitialized(owner)) return;
   void refresh(owner, force, true).catch(() => {});
 }
 
@@ -107,7 +109,13 @@ function refresh(owner: Owner, force: boolean, automatic = false): Promise<Works
           if (!valid()) throw error;
           if (revision !== owner.revision) continue;
           owner.settledAt = Date.now();
-          publish(owner, { overview: owner.state.overview, loading: false, error: error instanceof Error ? error.message : "Workstreams are unavailable." });
+          if (error instanceof WorkspaceError && error.status === 409 && error.code === "NOT_INITIALIZED") {
+            owner.serialized = "";
+            owner.resultRevision = revision;
+            publish(owner, { overview: null, loading: false, error: "", uninitialized: true });
+          } else {
+            publish(owner, { overview: owner.state.overview, loading: false, error: error instanceof Error ? error.message : "Workstreams are unavailable.", uninitialized: false });
+          }
           if (valid() && revision !== owner.revision) continue;
           throw error;
         }
@@ -118,7 +126,7 @@ function refresh(owner: Owner, force: boolean, automatic = false): Promise<Works
         const result = owner.state.overview && !changed ? owner.state.overview : overview;
         owner.serialized = serialized;
         owner.resultRevision = revision; owner.settledAt = Date.now();
-        publish(owner, { overview: result, loading: false, error: "" });
+        publish(owner, { overview: result, loading: false, error: "", uninitialized: false });
         if (!valid()) throw unavailable();
         if (revision !== owner.revision) continue;
         return result;
@@ -132,7 +140,7 @@ function refresh(owner: Owner, force: boolean, automatic = false): Promise<Works
     }
   });
   owner.promise = promise;
-  publish(owner, { overview: owner.state.overview, loading: !owner.state.overview, error: owner.state.error });
+  publish(owner, { overview: owner.state.overview, loading: !owner.state.overview, error: owner.state.error, uninitialized: false });
   return promise;
 }
 
@@ -185,6 +193,7 @@ function acquire(workspaceId: string) {
 }
 
 export async function refreshWorkstreamOverview(workspaceId: string, options?: { force?: boolean }): Promise<WorkstreamOverview> {
+  if (options?.force) invalidateWorkstreamRequests(workspaceId);
   const lease = acquire(workspaceId);
   try {
     let force = options?.force ?? false;

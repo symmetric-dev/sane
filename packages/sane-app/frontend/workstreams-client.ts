@@ -1,12 +1,16 @@
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { sameAssignment } from "./assignment-semantics";
-import { coalescedFetch } from "./request-coalescing";
+import { coalescedFetch, invalidateCoalescedRequests } from "./request-coalescing";
 import { WorkspaceError } from "./workspace-client";
 import { workspaceEpoch, workspaceFailure } from "./workspace-store";
 
 type WorkstreamMutation = { workspaceId: string; operation: string };
 const mutationListeners = new Set<(mutation: WorkstreamMutation) => void>();
 const mutationOperations = new Set(["", "init", "manage", "default-checkout", "associate", "phase/assign", "phase/end", "provide", "complete"]);
+export function invalidateWorkstreamRequests(workspaceId: string) {
+  invalidateCoalescedRequests(url => /^\/api\/workstreams(?:\/|\?|$)/.test(url)
+    && new URLSearchParams(url.split("?")[1]).get("workspaceId") === workspaceId);
+}
 export function subscribeWorkstreamMutations(listener: (mutation: WorkstreamMutation) => void): () => void {
   mutationListeners.add(listener);
   return () => { mutationListeners.delete(listener); };
@@ -24,6 +28,7 @@ export async function workstreamRequest<T>(workspaceId: string, operation: strin
     throw error;
   }
   if (input !== undefined && mutationOperations.has(operation)) {
+    invalidateWorkstreamRequests(workspaceId);
     for (const listener of mutationListeners) {
       if (auth !== workspaceEpoch()) break;
       try { listener({ workspaceId, operation }); } catch {}
