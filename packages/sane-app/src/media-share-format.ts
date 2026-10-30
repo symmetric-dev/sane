@@ -1,11 +1,12 @@
 import type { FileHandle } from "node:fs/promises";
 import { extname } from "node:path";
 import { MEDIA_SHARE_LIMITS as LIMITS, type MediaShareMimeType } from "../shared/media-share-contract";
+import { IMAGE_PREVIEW_MIME_TYPES, type ImagePreviewMimeType } from "../shared/image-preview-contract";
 
 /** Deliberately conservative v1 allowlist; no decoder, subprocess or transcode. */
 export function mediaFormat(path: string): { kind: "image" | "video"; mimeType: MediaShareMimeType; maxBytes: number } {
   const extension = extname(path).toLowerCase();
-  const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".mp4": "video/mp4" } as const;
+  const mime = { ...IMAGE_PREVIEW_MIME_TYPES, ".mp4": "video/mp4" } as const;
   if (!Object.hasOwn(mime, extension)) throw new Error("Only PNG, JPEG, WebP and MP4 files are supported");
   const mimeType = mime[extension as keyof typeof mime], kind = mimeType === "video/mp4" ? "video" : "image";
   return { kind, mimeType, maxBytes: kind === "image" ? LIMITS.imageBytes : LIMITS.videoBytes };
@@ -279,6 +280,14 @@ async function mp4(read: (at: number, bytes: number) => Promise<Buffer>, size: n
   }
   requireFormat(video); check();
 }
+/** Validate the exact captured bytes, never a later read of a mutable path. */
+export function validateImageBytes(bytes: Buffer, mimeType: ImagePreviewMimeType): void {
+  requireFormat(bytes.length > 0 && bytes.length <= LIMITS.imageBytes);
+  if (mimeType === "image/png") png(bytes);
+  else if (mimeType === "image/jpeg") jpeg(bytes);
+  else webp(bytes);
+}
+
 export async function validateMedia(handle: FileHandle, size: number, path: string, check: () => void): Promise<ReturnType<typeof mediaFormat>> {
   const format = mediaFormat(path); requireFormat(size > 0 && size <= format.maxBytes);
   const read = async (at: number, length: number) => {
@@ -290,9 +299,7 @@ export async function validateMedia(handle: FileHandle, size: number, path: stri
   if (format.kind === "video") await mp4(read, size, check);
   else {
     const bytes = await read(0, size);
-    if (format.mimeType === "image/png") png(bytes);
-    else if (format.mimeType === "image/jpeg") jpeg(bytes);
-    else webp(bytes);
+    validateImageBytes(bytes, format.mimeType as ImagePreviewMimeType);
   }
   check(); return format;
 }

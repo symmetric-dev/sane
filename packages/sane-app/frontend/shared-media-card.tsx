@@ -4,17 +4,8 @@ import type { MediaShareItem, MediaShareRecord } from "../shared/media-share-con
 import type { MediaShareProjection } from "./media-share-client";
 import { mediaShareContentUrl, mediaShareFilename } from "./media-share-presentation";
 import { ShellDialog } from "./shell-dialog";
+import { SnapshotImage } from "./snapshot-image";
 import "./shared-media.css";
-
-function SnapshotImage({ src, name, thumbnail = false, retry }: { src: string; name: string; thumbnail?: boolean; retry?: () => void }) {
-  const ref = useRef<HTMLImageElement>(null);
-  const [failed, setFailed] = useState(false);
-  if (failed) return thumbnail ? <FiImage aria-hidden="true" /> : <p role="status">Image could not be decoded. {retry && <button type="button" onClick={retry}>Retry preview</button>}</p>;
-  return <img ref={ref} src={src} alt={thumbnail ? "" : name} loading="lazy" decoding="async" onError={() => setFailed(true)} onLoad={event => {
-    const image = event.currentTarget;
-    if (image.decode) void image.decode().catch(() => { if (ref.current === image) setFailed(true); });
-  }} />;
-}
 
 function SnapshotVideo({ src, name, retry }: { src: string; name: string; retry: () => void }) {
   const ref = useRef<HTMLVideoElement>(null);

@@ -2,13 +2,17 @@ import type { WorkspaceList, WorkspaceFile, WorkspaceGit, WorkspaceDiff, GitComp
 import type { WorktreeResolution } from "../src/catalog-contract";
 import { coalescedFetch } from "./request-coalescing";
 import { invalidateWorkspaceGit } from "./git-invalidation";
+import { imagePreviewMimeType } from "../shared/image-preview-contract";
 
 export class WorkspaceError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
 }
-async function request<T>(conversationId: string, route = "", init: RequestInit = {}): Promise<T> {
+function workspaceUrl(conversationId: string, route: string) {
   const [workspaceId, worktreeId] = JSON.parse(conversationId) as [string, string];
-  const response = await coalescedFetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/worktrees/${encodeURIComponent(worktreeId)}${route}`, {
+  return `/api/workspaces/${encodeURIComponent(workspaceId)}/worktrees/${encodeURIComponent(worktreeId)}${route}`;
+}
+async function request<T>(conversationId: string, route = "", init: RequestInit = {}): Promise<T> {
+  const response = await coalescedFetch(workspaceUrl(conversationId, route), {
     credentials: "same-origin", cache: "no-store", ...init,
     headers: { "Content-Type": "application/json", ...init.headers }, signal: init.signal ?? AbortSignal.timeout(25000),
   });
@@ -47,6 +51,15 @@ export const workspaceClient = {
   search: (id: string, input: WorkspaceSearchInput, signal: AbortSignal) => request<WorkspaceSearch>(id, "/search", { method: "POST", body: JSON.stringify(input), signal }),
   paths: (id: string, input: WorkspacePathsInput, signal: AbortSignal) => request<WorkspacePaths>(id, "/paths", { method: "POST", body: JSON.stringify(input), signal }),
   file: (id: string, workspaceId: string, path: string) => request<WorkspaceFile>(id, `/file?${query(workspaceId, path)}`),
+  image: async (id: string, workspaceId: string, path: string, signal: AbortSignal): Promise<Blob> => {
+    const response = await fetch(workspaceUrl(id, `/image?${query(workspaceId, path)}`), { credentials: "same-origin", cache: "no-store", signal });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new WorkspaceError(body.error || `Image preview failed (${response.status}).`, response.status, body.code);
+    }
+    if (response.headers.get("content-type") !== imagePreviewMimeType(path)) throw new Error("Unsupported image response.");
+    return response.blob();
+  },
   save: (id: string, workspaceId: string, path: string, text: string, expectedRevision: string) => mutation(id, workspaceId, [path], () => request<WorkspaceFile>(id, "/file", { method: "PUT", body: JSON.stringify({ workspaceId, path, text, expectedRevision }) })),
   create: (id: string, workspaceId: string, path: string) => mutation(id, workspaceId, [path], () => request<WorkspaceFile>(id, "/file", { method: "POST", body: JSON.stringify({ workspaceId, path }) })),
   copy: (id: string, workspaceId: string, path: string, destination: string, expectedRevision: string) => mutation(id, workspaceId, [destination], () => request<WorkspaceFile>(id, "/copy", { method: "POST", body: JSON.stringify({ workspaceId, path, destination, expectedRevision }) })),

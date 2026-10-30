@@ -4,6 +4,10 @@
  * Base: /api/sessions/:id/workspace
  * GET base -> Workspace; GET /list?path= -> WorkspaceList;
  * GET /file?path= -> WorkspaceFile; PUT /file (WorkspaceWrite) -> WorkspaceFile;
+ * GET /image?path= -> validated PNG/JPEG/WebP bytes (also on worktree base).
+ * Image previews are read-only saved contents, private/no-store, up to 10 MiB,
+ * 40 million pixels and 16,384 pixels per dimension; PNG/WebP must be static.
+ * This separate binary read does not raise the text or file-mutation limits.
  * POST /file (WorkspaceCreate) -> WorkspaceFile; POST /copy (WorkspaceCopy) -> WorkspaceFile;
  * POST /rename (WorkspaceRename) -> WorkspaceFile at destination (also on worktree base);
  * DELETE /file (WorkspaceDelete) -> { workspaceId, path };

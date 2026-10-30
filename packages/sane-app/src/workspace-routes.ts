@@ -1,11 +1,12 @@
 import type { CatalogService } from "./catalog";
 import type { GitOperationsService } from "./git-operations";
 import type { WorkspaceCreationService } from "./workspace-creation";
-import { workspaceError, type WorkspaceService } from "./workspace";
+import { WorkspaceError, workspaceError, type WorkspaceService } from "./workspace";
+import { workspaceImageResponse } from "./workspace-image";
 import { body, json } from "./bridge-http";
 
 type WorkspaceOperations = Pick<WorkspaceService,
-  "resolve" | "list" | "file" | "write" | "search" | "paths" | "copy" | "rename" | "create" | "delete" | "status" | "diff"
+  "resolve" | "list" | "file" | "write" | "search" | "paths" | "copy" | "rename" | "create" | "delete" | "status" | "diff" | "captureMedia"
 >;
 
 export interface WorkspaceRoutePorts {
@@ -28,8 +29,8 @@ export interface WorkspaceRoutePorts {
 
 const aliasPattern = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/alias$/;
 const gitOperationsPattern = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/git-operations$/;
-const catalogPattern = /^\/api\/workspaces\/([^/]+)(?:\/worktrees\/([^/]+)(?:\/(list|file|copy|rename|git|diff|search|paths))?)?$/;
-const workspacePattern = /^\/api\/sessions\/([^/]+)\/workspace(?:\/(list|file|copy|rename|git|diff|search|paths))?$/;
+const catalogPattern = /^\/api\/workspaces\/([^/]+)(?:\/worktrees\/([^/]+)(?:\/(list|file|image|copy|rename|git|diff|search|paths))?)?$/;
+const workspacePattern = /^\/api\/sessions\/([^/]+)\/workspace(?:\/(list|file|image|copy|rename|git|diff|search|paths))?$/;
 
 export function matchesWorkspaceRoute(path: string): boolean {
   return path === "/api/navigation"
@@ -46,6 +47,12 @@ export function createWorkspaceRoute({
   catalog, workspace, worktrees, workspaceCreations, gitOperations, searches,
   authenticated, terminalToken, assertDomainMutationOpen, canCreate, canRunGit, beforeRemoveWorktree,
 }: WorkspaceRoutePorts): (req: Request, url: URL) => Promise<Response | null> {
+  const image = (req: Request, service: WorkspaceOperations, key: string, revision: unknown, path: string) => {
+    const token = terminalToken(req);
+    return workspaceImageResponse(req, service, key, revision, path, () => {
+      if (!token || !authenticated(req) || terminalToken(req) !== token) throw new WorkspaceError(401, "authentication-required", "Authentication revoked");
+    });
+  };
   return async (req, url) => {
     const path = url.pathname;
     if (path === "/api/navigation") {
@@ -105,6 +112,7 @@ export function createWorkspaceRoute({
           return json(result);
         }
         if (operation === "list" && req.method === "GET") return json(await worktrees.list(key, revision, filePath));
+        if (operation === "image" && req.method === "GET") return await image(req, worktrees, key, revision, filePath);
         if (operation === "file" && req.method === "GET") return json(await worktrees.file(key, revision, filePath));
         if (operation === "file" && req.method === "PUT") { const input = await body(req); return json(await worktrees.write(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId })); }
         if (operation === "search" && req.method === "POST") {
@@ -138,6 +146,7 @@ export function createWorkspaceRoute({
         const operation = workspaceMatch[2], workspaceId = url.searchParams.get("workspaceId"), filePath = url.searchParams.get("path") ?? "";
         if (!operation && req.method === "GET") return json(await workspace.resolve(sessionId));
         if (operation === "list" && req.method === "GET") return json(await workspace.list(sessionId, workspaceId, filePath));
+        if (operation === "image" && req.method === "GET") return await image(req, workspace, sessionId, workspaceId, filePath);
         if (operation === "file" && req.method === "GET") return json(await workspace.file(sessionId, workspaceId, filePath));
         if (operation === "file" && req.method === "PUT") return json(await workspace.write(sessionId, await body(req)));
         if (operation === "search" && req.method === "POST") {

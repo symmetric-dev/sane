@@ -413,6 +413,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     }
   }
   return { conversationId, view, scope, workspace, root, buffer, selected, error: scopeError || error, resolving: !revoked && resolving, diffEditor,
+    fileReadVersion: openAttempt,
     opening: !!scope && opening === selectionKey, diffLoading: !!scope && diffLoading === selectionKey,
     comparison: scope && diff?.key === selectionKey ? diff.value : null,
     localCompare: !!scope && localCompare === selectionKey, closeCompare: () => setLocalCompare(null),
