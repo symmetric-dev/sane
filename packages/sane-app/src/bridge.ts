@@ -9,6 +9,7 @@ import { BridgeAuth, validateBridgeAuthOptions } from "./bridge-auth";
 import { body, json, loopback } from "./bridge-http";
 import { withApiCompression } from "./api-compression";
 import { requireNativeBearer, requireStartupReady } from "./bridge-native-auth";
+import { matchesNativeCallerCwd } from "./native-caller-cwd";
 import { CodeShareStore, CodeShareError } from "./code-share-store";
 import { MediaShareStore, MediaShareError } from "./media-share-store";
 import { MediaShareService } from "./media-share-service";
@@ -2764,7 +2765,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!admission || admission.state !== "ready" || !session || retirementPaused(session.sessionId) || session.hidden || session.attachment
       || session.nativeSessionId !== caller.nativeId || session.authorityId !== caller.authorityId
       || session.harness !== toSessionHarness(source.descriptor.harness)
-      || session.cwd !== caller.cwd || admission.binding.executionCheckout !== caller.cwd
+      || session.cwd !== admission.binding.executionCheckout || !matchesNativeCallerCwd(source.descriptor.harness, session.cwd, caller.cwd)
       || canonicalJSON(admission.source) !== canonicalJSON(source)) return deny();
     return session.sessionId;
   }
@@ -2910,8 +2911,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   const userQuestions = new UserQuestionsStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "user-questions-storage"));
   userQuestions.recover();
-  const userQuestionsService = new UserQuestionsService(userQuestions, codeShareSession, async (request, old) => {
-    const sessionId = codeShareSession(request), session = meta.sessions.find(s => s.sessionId === sessionId)!;
+  const userQuestionsSession = (request: Pick<NativeCodeShareRequest, "caller">) => codeShareSession(request, denyUserQuestionsIdentity);
+  const userQuestionsService = new UserQuestionsService(userQuestions, userQuestionsSession, async (request, old) => {
+    const sessionId = userQuestionsSession(request), session = meta.sessions.find(s => s.sessionId === sessionId)!;
     if (session.agentKind === "worker") return denyUserQuestionsIdentity();
     const grok = request.caller.source.harness === "gk" ? authorizeGrokInvocation(request.caller, "present_questions_to_user", request.input,
       { toolCallId: request.invocation.toolCallId, messageId: request.invocation.messageId, wrapper: request.invocation.wrapper }) : undefined;
@@ -2920,7 +2922,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const available = () => {
       grok?.assertCurrent();
       if (!startupReady || closing || storageFailed || retainOwner || !ownsStorage() || meta.reconciliationRequired) return denyUserQuestionsIdentity();
-      if (codeShareSession(request) !== sessionId || JSON.stringify(admissions.get(sessionId)) !== admissionPin
+      if (userQuestionsSession(request) !== sessionId || JSON.stringify(admissions.get(sessionId)) !== admissionPin
         || dispatchSnapshot(session) !== sessionPin || meta.sessions.find(s => s.sessionId === sessionId) !== session
         || branches.pending(sessionId) || branches.replaced(sessionId)) return denyUserQuestionsIdentity();
     };

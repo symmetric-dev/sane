@@ -1,8 +1,9 @@
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { FiChevronLeft, FiChevronRight, FiDownload, FiImage, FiMaximize2, FiVideo } from "react-icons/fi";
+import { FiChevronLeft, FiChevronRight, FiImage, FiMaximize2, FiVideo } from "react-icons/fi";
 import type { MediaShareItem, MediaShareRecord } from "../shared/media-share-contract";
 import type { MediaShareProjection } from "./media-share-client";
 import { mediaShareContentUrl, mediaShareFilename } from "./media-share-presentation";
+import { MediaSaveButton } from "./media-save-button";
 import { ShellDialog } from "./shell-dialog";
 import { SnapshotImage } from "./snapshot-image";
 import "./shared-media.css";
@@ -21,7 +22,7 @@ function SnapshotVideo({ src, name, retry }: { src: string; name: string; retry:
       video.load();
     };
   }, [src]);
-  return failed ? <p role="status">Video could not be played. <button type="button" onClick={retry}>Retry preview</button></p> : <video ref={ref} src={src} aria-label={name} controls playsInline preload="metadata" onError={event => { event.currentTarget.pause(); setFailed(true); }}>Your browser cannot play this MP4. Download the video instead.</video>;
+  return failed ? <p role="status">Video could not be played. <button type="button" onClick={retry}>Retry preview</button></p> : <video ref={ref} src={src} aria-label={name} controls playsInline preload="metadata" onError={event => { event.currentTarget.pause(); setFailed(true); }}>Your browser cannot play this MP4. Use Save / Share to save the video instead.</video>;
 }
 
 function MediaPreview({ share, item }: { share: MediaShareRecord; item: MediaShareItem }) {
@@ -32,8 +33,8 @@ function MediaPreview({ share, item }: { share: MediaShareRecord; item: MediaSha
 }
 
 /** One reader, with bounded image thumbnails and no video thumbnail requests. */
-function MediaGalleryReader({ share, page, select, active = true, expanded = false, openModal, inactiveMessage = "Preview paused while this transcript is inactive." }: {
-  share: MediaShareRecord; page: number; select: (index: number) => void; active?: boolean; expanded?: boolean; openModal?: () => void; inactiveMessage?: string;
+function MediaGalleryReader({ share, page, select, active = true, expanded = false, openModal, closeModal, inactiveMessage = "Preview paused while this transcript is inactive." }: {
+  share: MediaShareRecord; page: number; select: (index: number) => void; active?: boolean; expanded?: boolean; openModal?: () => void; closeModal?: () => void; inactiveMessage?: string;
 }) {
   const panel = useId();
   const root = useRef<HTMLElement>(null), focusSelection = useRef(false);
@@ -59,8 +60,9 @@ function MediaGalleryReader({ share, page, select, active = true, expanded = fal
     <header>
       <strong title={name}>{name}</strong>
       {count > 1 && <span className="shared-media-count" role="status" aria-live="polite">{page + 1} of {count}</span>}
-      <a href={mediaShareContentUrl(share, item)} download={name}><FiDownload aria-hidden="true" />Download</a>
+      <MediaSaveButton key={item.id} share={share} item={item} />
       {openModal && <button type="button" aria-label="Expand media gallery" title="Expand media gallery" onClick={openModal}><FiMaximize2 aria-hidden="true" /></button>}
+      {closeModal && <button type="button" className="icon-button" aria-label="Close media gallery" title="Close media gallery" onClick={closeModal}>×</button>}
     </header>
     <div id={panel} className="shared-media-preview" tabIndex={active ? 0 : -1} aria-label={`Preview: ${name}`}>
       {active ? <MediaPreview key={item.id} share={share} item={item} /> : <p className="shared-media-caption">{inactiveMessage}</p>}
@@ -94,7 +96,7 @@ function MediaTilesReader({ share, type, active, openModal, inactiveMessage }: {
         return <li key={item.id} className="shared-media-tile">
           <header>
             <strong title={name}>{name}</strong>
-            <a href={mediaShareContentUrl(share, item)} download={name} aria-label={`Download ${name}`} title={`Download ${name}`}><FiDownload aria-hidden="true" /></a>
+            <MediaSaveButton share={share} item={item} iconOnly />
             {openModal && <button type="button" aria-label={`Expand ${name}`} title={`Expand ${name}`} onClick={() => openModal(index)}><FiMaximize2 aria-hidden="true" /></button>}
           </header>
           <div className="shared-media-preview" tabIndex={active ? 0 : -1} aria-label={`Preview: ${name}`}>
@@ -119,7 +121,7 @@ function MediaShareLayout({ share, active }: { share: MediaShareRecord; active: 
     {type === "gallery"
       ? <MediaGalleryReader {...reader} active={inlineActive} openModal={active ? () => openModal(selected) : undefined} inactiveMessage={inactiveMessage} />
       : <MediaTilesReader share={share} type={type} active={inlineActive} openModal={active ? openModal : undefined} inactiveMessage={inactiveMessage} />}
-    {active && expanded && <ShellDialog title={mediaShareFilename(share.media[selected]!)} subtitle={share.media.length > 1 ? `${selected + 1} of ${share.media.length}` : undefined} className="shared-media-dialog" close={() => setExpanded(false)}><MediaGalleryReader {...reader} expanded /></ShellDialog>}
+    {active && expanded && <ShellDialog title={mediaShareFilename(share.media[selected]!)} className="shared-media-dialog" bare close={() => setExpanded(false)}><MediaGalleryReader {...reader} expanded closeModal={() => setExpanded(false)} /></ShellDialog>}
   </>;
 }
 
