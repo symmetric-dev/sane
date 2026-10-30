@@ -7,7 +7,7 @@ import { WorkspaceError, type WorkspaceService } from "./workspace";
 let previews = 0;
 
 /** A bounded, validated disk read, not a durable chat share or a live path URL. */
-export async function workspaceImageResponse(req: Request, workspace: Pick<WorkspaceService, "captureMedia">, key: string, revision: unknown, path: string, assertAuthorized: () => void): Promise<Response> {
+export async function workspaceImageResponse(req: Request, workspace: Pick<WorkspaceService, "captureMedia" | "mediaVersion">, key: string, revision: unknown, path: string, assertAuthorized: () => void): Promise<Response> {
   const mimeType = imagePreviewMimeType(path);
   if (!mimeType) throw new WorkspaceError(415, "image-format", "Only PNG, JPEG and WebP images can be previewed");
   if (typeof revision !== "string" || !revision) throw new WorkspaceError(400, "workspace-required", "Resolve the workspace first");
@@ -22,6 +22,21 @@ export async function workspaceImageResponse(req: Request, workspace: Pick<Works
   previews++;
   try {
     check();
+    const headers = (version: string, bytes: number) => ({
+      "content-type": mimeType,
+      "content-length": String(bytes),
+      "content-disposition": `inline; filename="preview.${mimeType === "image/jpeg" ? "jpg" : mimeType === "image/png" ? "png" : "webp"}"`,
+      "cache-control": "private, no-store, no-transform",
+      "x-content-type-options": "nosniff",
+      "cross-origin-resource-policy": "same-origin",
+      "x-sane-image-version": version,
+    });
+    // HEAD checks access and file identity only; cached bytes were validated on GET.
+    if (req.method === "HEAD") {
+      const info = await workspace.mediaVersion(key, revision, path, LIMITS.imageBytes, { signal: req.signal, deadline });
+      check();
+      return new Response(null, { headers: headers(info.version, info.bytes) });
+    }
     const chunks: Buffer[] = [];
     const captured = await workspace.captureMedia(key, revision, path, LIMITS.imageBytes, async chunk => {
       check();
@@ -33,14 +48,7 @@ export async function workspaceImageResponse(req: Request, workspace: Pick<Works
     try { validateImageBytes(bytes, mimeType); }
     catch { throw new WorkspaceError(415, "image-format", "Invalid or unsupported image. Use a static PNG, JPEG or WebP within the image size and dimension limits."); }
     check();
-    return new Response(bytes, { headers: {
-      "content-type": mimeType,
-      "content-length": String(bytes.length),
-      "content-disposition": `inline; filename="preview.${mimeType === "image/jpeg" ? "jpg" : mimeType === "image/png" ? "png" : "webp"}"`,
-      "cache-control": "private, no-store, no-transform",
-      "x-content-type-options": "nosniff",
-      "cross-origin-resource-policy": "same-origin",
-    } });
+    return new Response(bytes, { headers: headers(captured.version, bytes.length) });
   } catch (error) {
     check();
     if (error instanceof WorkspaceError && error.code === "media-size") throw new WorkspaceError(413, "image-size", "Images must be nonempty and no larger than 10 MiB");

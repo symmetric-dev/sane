@@ -21,6 +21,17 @@ async function request<T>(conversationId: string, route = "", init: RequestInit 
   return body as T;
 }
 const query = (workspaceId: string, path?: string) => new URLSearchParams({ workspaceId, ...(path !== undefined ? { path } : {}) });
+async function imageResponse(id: string, workspaceId: string, path: string, signal: AbortSignal, method: "GET" | "HEAD") {
+  const response = await fetch(workspaceUrl(id, `/image?${query(workspaceId, path)}`), { method, credentials: "same-origin", cache: "no-store", signal });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new WorkspaceError(body.error || `Image preview failed (${response.status}).`, response.status, body.code);
+  }
+  if (response.headers.get("content-type") !== imagePreviewMimeType(path)) throw new Error("Unsupported image response.");
+  const version = response.headers.get("x-sane-image-version");
+  if (!version || !/^[a-f0-9]{64}$/.test(version)) throw new Error("Missing image version. Reload the App to reconnect.");
+  return { response, version };
+}
 type WorkspaceMutation = { scopeId: string; workspaceId: string; paths: readonly string[] };
 const mutationListeners = new Set<(mutation: WorkspaceMutation) => void>();
 /** Metadata owners observe committed writes, including .gitignore content saves. */
@@ -51,15 +62,11 @@ export const workspaceClient = {
   search: (id: string, input: WorkspaceSearchInput, signal: AbortSignal) => request<WorkspaceSearch>(id, "/search", { method: "POST", body: JSON.stringify(input), signal }),
   paths: (id: string, input: WorkspacePathsInput, signal: AbortSignal) => request<WorkspacePaths>(id, "/paths", { method: "POST", body: JSON.stringify(input), signal }),
   file: (id: string, workspaceId: string, path: string) => request<WorkspaceFile>(id, `/file?${query(workspaceId, path)}`),
-  image: async (id: string, workspaceId: string, path: string, signal: AbortSignal): Promise<Blob> => {
-    const response = await fetch(workspaceUrl(id, `/image?${query(workspaceId, path)}`), { credentials: "same-origin", cache: "no-store", signal });
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      throw new WorkspaceError(body.error || `Image preview failed (${response.status}).`, response.status, body.code);
-    }
-    if (response.headers.get("content-type") !== imagePreviewMimeType(path)) throw new Error("Unsupported image response.");
-    return response.blob();
+  image: async (id: string, workspaceId: string, path: string, signal: AbortSignal): Promise<{ blob: Blob; version: string }> => {
+    const { response, version } = await imageResponse(id, workspaceId, path, signal, "GET");
+    return { blob: await response.blob(), version };
   },
+  imageVersion: async (id: string, workspaceId: string, path: string, signal: AbortSignal): Promise<string> => (await imageResponse(id, workspaceId, path, signal, "HEAD")).version,
   save: (id: string, workspaceId: string, path: string, text: string, expectedRevision: string) => mutation(id, workspaceId, [path], () => request<WorkspaceFile>(id, "/file", { method: "PUT", body: JSON.stringify({ workspaceId, path, text, expectedRevision }) })),
   create: (id: string, workspaceId: string, path: string) => mutation(id, workspaceId, [path], () => request<WorkspaceFile>(id, "/file", { method: "POST", body: JSON.stringify({ workspaceId, path }) })),
   copy: (id: string, workspaceId: string, path: string, destination: string, expectedRevision: string) => mutation(id, workspaceId, [destination], () => request<WorkspaceFile>(id, "/copy", { method: "POST", body: JSON.stringify({ workspaceId, path, destination, expectedRevision }) })),

@@ -6,7 +6,7 @@ import { workspaceImageResponse } from "./workspace-image";
 import { body, json } from "./bridge-http";
 
 type WorkspaceOperations = Pick<WorkspaceService,
-  "resolve" | "list" | "file" | "write" | "search" | "paths" | "copy" | "rename" | "create" | "delete" | "status" | "diff" | "captureMedia"
+  "resolve" | "list" | "file" | "write" | "search" | "paths" | "copy" | "rename" | "create" | "delete" | "status" | "diff" | "captureMedia" | "mediaVersion"
 >;
 
 export interface WorkspaceRoutePorts {
@@ -112,7 +112,7 @@ export function createWorkspaceRoute({
           return json(result);
         }
         if (operation === "list" && req.method === "GET") return json(await worktrees.list(key, revision, filePath));
-        if (operation === "image" && req.method === "GET") return await image(req, worktrees, key, revision, filePath);
+        if (operation === "image" && ["GET", "HEAD"].includes(req.method)) return await image(req, worktrees, key, revision, filePath);
         if (operation === "file" && req.method === "GET") return json(await worktrees.file(key, revision, filePath));
         if (operation === "file" && req.method === "PUT") { const input = await body(req); return json(await worktrees.write(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId })); }
         if (operation === "search" && req.method === "POST") {
@@ -146,7 +146,7 @@ export function createWorkspaceRoute({
         const operation = workspaceMatch[2], workspaceId = url.searchParams.get("workspaceId"), filePath = url.searchParams.get("path") ?? "";
         if (!operation && req.method === "GET") return json(await workspace.resolve(sessionId));
         if (operation === "list" && req.method === "GET") return json(await workspace.list(sessionId, workspaceId, filePath));
-        if (operation === "image" && req.method === "GET") return await image(req, workspace, sessionId, workspaceId, filePath);
+        if (operation === "image" && ["GET", "HEAD"].includes(req.method)) return await image(req, workspace, sessionId, workspaceId, filePath);
         if (operation === "file" && req.method === "GET") return json(await workspace.file(sessionId, workspaceId, filePath));
         if (operation === "file" && req.method === "PUT") return json(await workspace.write(sessionId, await body(req)));
         if (operation === "search" && req.method === "POST") {

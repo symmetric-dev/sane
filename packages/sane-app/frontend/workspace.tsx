@@ -13,6 +13,7 @@ import { gitReadRevision } from "./git-invalidation";
 import { NotebookConfigureAction, NotebookFileView, NotebookToolbarSlot } from "./notebook-preview";
 import { imagePreviewMimeType } from "../shared/image-preview-contract";
 import { WorkspaceImagePreview } from "./workspace-image-preview";
+import { workspaceImageCache } from "./workspace-image-cache";
 import "./workspace.css";
 export { WorkspaceProvider } from "./workspace-controller";
 export { WorkspaceSidebar } from "./workspace-tree";
@@ -53,7 +54,7 @@ export function WorkspaceHeader({ notebookControls = true }: { notebookControls?
         <button disabled={buffer.saving || !dirty(buffer) || !buffer.file.editable || buffer.missing} onClick={() => { void saveBuffer(scope.id, scope.workspace, buffer); setActionsOpen(false); }}>{buffer.saving ? "Saving…" : "Save"}</button>
         <button disabled={buffer.checking || buffer.saving} onClick={() => { void controller.compareDisk(); setActionsOpen(false); }}>Compare disk</button>
         <button disabled={buffer.checking || buffer.saving || buffer.missing} onClick={() => { if (window.confirm(`Reload ${buffer.path} from disk? Unsaved edits will be discarded.`)) { void controller.compareDisk(true); setActionsOpen(false); } }}>Reload</button></>}
-        {image && <><button onClick={() => { controller.retrySelection(); setActionsOpen(false); }}>Reload image</button>{!buffer.file.revision && <span className="workspace-file-meta">File actions require a file no larger than 256 KiB.</span>}</>}
+        {image && <><button onClick={() => { workspaceImageCache.invalidate(scope.id, scope.workspace.workspaceId, [selected]); controller.retrySelection(); setActionsOpen(false); }}>Reload image</button>{!buffer.file.revision && <span className="workspace-file-meta">File actions require a file no larger than 256 KiB.</span>}</>}
         <button type="button" disabled={operations?.busy || buffer.checking || buffer.saving || buffer.missing || !buffer.file.revision} onClick={() => openOperation("rename", selected)}>Rename file</button>
         <button type="button" disabled={operations?.busy || buffer.checking || buffer.saving || buffer.missing || !buffer.file.revision} onClick={() => openOperation("copy", selected)}>Copy file</button>
         <button type="button" className="workspace-delete" disabled={operations?.busy || buffer.checking || buffer.saving || buffer.missing || !buffer.file.revision} onClick={() => openOperation("delete", selected)}>Delete file</button>

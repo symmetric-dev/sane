@@ -15,6 +15,8 @@ export class WorkspaceError extends Error {
 }
 function fail(status: number, code: string, message: string): never { throw new WorkspaceError(status, code, message); }
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+// Opaque metadata validator, not a content digest. ctime detects restored mtimes.
+const mediaRevision = (info: Stats) => hash(JSON.stringify([info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs, info.mode]));
 const inside = (root: string, path: string) => { const rel = relative(root, path); return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`); };
 const MAX_ENTRIES = 2000, MAX_GIT_OUTPUT = 4 * 1024 * 1024;
 // Shared across worktree and legacy-session service instances for the same
@@ -227,7 +229,7 @@ export class WorkspaceService {
   }
   /** Separate bounded binary capability: never raises the text editor limit or
    * grants code-share's special .sane access. The caller owns its private sink. */
-  async captureMedia(sessionId: string, workspaceId: string, path: string, maxBytes: number, sink: (chunk: Buffer) => Promise<void>, operation?: WorkspaceOperationOptions): Promise<{ bytes: number; sha256: string }> {
+  async captureMedia(sessionId: string, workspaceId: string, path: string, maxBytes: number, sink: (chunk: Buffer) => Promise<void>, operation?: WorkspaceOperationOptions): Promise<{ bytes: number; sha256: string; version: string }> {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 100 * 1024 * 1024) fail(400, "media-size", "Invalid binary capture limit");
     const bound = await this.bind(sessionId, workspaceId, operation);
     const target = await this.checked(bound, path);
@@ -270,8 +272,22 @@ export class WorkspaceService {
       const after = await handle.stat(), current = await lstat(target);
       for (const value of [after, current]) if (!value.isFile() || value.nlink !== 1 || value.dev !== before.dev || value.ino !== before.ino || value.size !== before.size || value.mtimeMs !== before.mtimeMs || value.ctimeMs !== before.ctimeMs) fail(409, "file-changed", "Media changed during capture");
       workspaceOperationCheck(operation);
-      return { bytes, sha256: digest.digest("hex") };
+      return { bytes, sha256: digest.digest("hex"), version: mediaRevision(before) };
     } finally { await handle.close(); }
+  }
+  /** Metadata-only image freshness check. Uses the ordinary protected-path,
+   * descriptor and workspace fences without reading or validating image bytes. */
+  async mediaVersion(sessionId: string, workspaceId: string, path: string, maxBytes: number, operation?: WorkspaceOperationOptions): Promise<{ bytes: number; version: string }> {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 100 * 1024 * 1024) fail(400, "media-size", "Invalid binary capture limit");
+    const bound = await this.bind(sessionId, workspaceId, operation), disk = await this.disk(bound, path, false, 0);
+    try {
+      if (disk.info.size < 1 || disk.info.size > maxBytes) fail(413, "media-size", "Media exceeds its binary capture limit");
+      await this.checked(bound, path);
+      const current = await lstat(disk.target), after = await disk.handle.stat();
+      for (const info of [current, after]) if (!info.isFile() || info.nlink !== 1 || mediaRevision(info) !== mediaRevision(disk.info)) fail(409, "file-changed", "Media changed during its version check");
+      workspaceOperationCheck(operation);
+      return { bytes: disk.info.size, version: mediaRevision(disk.info) };
+    } finally { await disk.handle.close(); }
   }
   async search(sessionId: string, input: WorkspaceSearchInput, signal?: AbortSignal): Promise<WorkspaceSearch> {
     if (!input || typeof input.query !== "string" || !input.query.length || input.query.length > SEARCH.query || /[\0\r\n]/.test(input.query) || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(input.query) || (input.caseSensitive !== undefined && typeof input.caseSensitive !== "boolean") || (input.wholeWord !== undefined && typeof input.wholeWord !== "boolean")) fail(400, "invalid-search", "Use a nonempty single-line literal query of at most 1024 characters and boolean search options");

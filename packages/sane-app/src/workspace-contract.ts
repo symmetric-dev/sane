@@ -8,6 +8,8 @@
  * Image previews are read-only saved contents, private/no-store, up to 10 MiB,
  * 40 million pixels and 16,384 pixels per dimension; PNG/WebP must be static.
  * This separate binary read does not raise the text or file-mutation limits.
+ * GET /image includes x-sane-image-version, an opaque metadata validator.
+ * HEAD /image returns that version without reading/validating image contents.
  * POST /file (WorkspaceCreate) -> WorkspaceFile; POST /copy (WorkspaceCopy) -> WorkspaceFile;
  * POST /rename (WorkspaceRename) -> WorkspaceFile at destination (also on worktree base);
  * DELETE /file (WorkspaceDelete) -> { workspaceId, path };
