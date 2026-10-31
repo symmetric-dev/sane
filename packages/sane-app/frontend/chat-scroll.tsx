@@ -96,8 +96,22 @@ export function ChatScroll({ children, footer, beforeViewport, resetKey, replace
       programmedTop.current = root.scrollTop; transcriptTop.current = root.scrollTop;
       policy.current.position(root.scrollTop); captureAnchor();
     };
+    const questionPage = (event: Event) => {
+      const editor = (event as CustomEvent<HTMLElement>).detail;
+      if (!activity.current || replaced.current || !(editor instanceof HTMLElement) || !root.contains(editor)) return;
+      // A sticky toolbar can be visible while the old question's start is far
+      // above it. Reveal the new question without moving that toolbar or letting
+      // follow-latest restore the previous question's scroll position.
+      target.cancel(); targetedPause.current = true; targeting.current = false;
+      policy.current.pause(); setFollowing(false); anchor.current = null;
+      const delta = editor.getBoundingClientRect().top - root.getBoundingClientRect().top;
+      if (delta < 0) root.scrollTop += delta;
+      programmedTop.current = root.scrollTop; transcriptTop.current = root.scrollTop;
+      policy.current.position(root.scrollTop); captureAnchor();
+    };
     root.addEventListener("session-search-jump", jump);
-    return () => root.removeEventListener("session-search-jump", jump);
+    root.addEventListener("questionnaire-page-jump", questionPage);
+    return () => { root.removeEventListener("session-search-jump", jump); root.removeEventListener("questionnaire-page-jump", questionPage); };
   }, []);
   useLayoutEffect(() => {
     const schedule = () => { restore(); scheduleRestore(); };

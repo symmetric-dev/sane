@@ -1,14 +1,30 @@
-import { useLayoutEffect, useRef, useState, type ReactNode, type TextareaHTMLAttributes } from "react";
-import { FiArrowLeft, FiArrowRight, FiCheck, FiHelpCircle } from "react-icons/fi";
+import { useEffect, useLayoutEffect, useRef, useState, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
+import { createPortal } from "react-dom";
+import { FiArrowLeft, FiArrowRight, FiCheck, FiHelpCircle, FiInfo, FiRefreshCw, FiRotateCcw, FiX } from "react-icons/fi";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { USER_QUESTIONS_LIMITS, type UserQuestion, type UserQuestionAnswer, type UserQuestionsRecord } from "../shared/user-questions-contract";
-import type { Message } from "./types";
+import type { Message, ToolPart } from "./types";
 import type { UserQuestionsController, UserQuestionsDraft } from "./user-questions-client";
 import { ChatFileLink } from "./chat-file-link";
-import { FilterDropdown } from "./filter-dropdown";
-import { ComposerRequest, RequestActions, RequestBody, RequestButton, RequestChoices, RequestDisclosure, RequestTextarea } from "./composer-request";
+import { RequestChoices, RequestInput, RequestTextarea } from "./composer-request";
+import { ChatButton, ChatCard, ChatCardBody, ChatCardHeader, ChatDialog, ChatDialogBody, ChatDialogFooter, ChatDisclosure, ChatIconButton, ChatNotice, ChatOverflowMenu, type ChatButtonProps, type ChatButtonVariant, type ChatMenuItem } from "./chat-ui";
+import { questionsNeedAttention, questionsStatus } from "./user-questions-presentation";
 import "./user-questions.css";
+
+export { questionsForMessage } from "./user-questions-presentation";
+
+// Preserve specialized answer controls, while all surrounding presentation uses
+// the same controls, disclosures, spacing and surfaces as other transcript cards.
+function RequestButton({ variant = "secondary", ...props }: Omit<ChatButtonProps, "variant"> & { variant?: ChatButtonVariant | "quiet" }) {
+  return <ChatButton {...props} variant={variant === "quiet" ? "ghost" : variant} />;
+}
+function RequestDisclosure({ label, children }: { label: ReactNode; children: ReactNode }) {
+  return <ChatDisclosure title={label}>{children}</ChatDisclosure>;
+}
+function RequestBody({ children }: { children: ReactNode }) {
+  return <ChatCardBody>{children}</ChatCardBody>;
+}
 
 /** External links are HTTP(S) only; local links use the existing confined Files reader. */
 function safeUrl(value?: string): string | undefined {
@@ -48,50 +64,43 @@ function AnswerTextarea({ value, change, ...props }: Omit<TextareaHTMLAttributes
     }} />;
 }
 
-/** Match durable anchors, not tool names, output text, or executable wrapper arguments. */
-export function questionsForMessage(sessionId: string, source: Message, forms: readonly UserQuestionsDraft[]) {
-  return forms.filter(({ form }) => {
-    if (form.sessionId !== sessionId || source.runId !== "native-import" && source.runId !== form.anchor.runId) return false;
-    if (form.anchor.messageId && source.id !== form.anchor.messageId && !source.nativeIds?.includes(form.anchor.messageId)) return false;
-    return source.parts.some(part => part.type === "tool" && (part.toolCallId ?? part.id) === form.anchor.toolCallId);
-  });
-}
-
-export function UserQuestionsReference({ questions, source, sessionId }: { questions?: UserQuestionsController; source: Message; sessionId: string }) {
-  if (!questions) return null;
-  return <>{questionsForMessage(sessionId, source, questions.forms).map(({ form }) => <aside className="user-questions-reference" key={form.id}>
-    <span>Questions · {form.input.title}</span><span className="muted">{form.status}</span>
-    <button type="button" className="text-button" onClick={() => { questions.open(form.id); requestAnimationFrame(() => { const panel = document.getElementById(`user-questions-${form.id}`); if (!panel || panel.closest("[hidden]")) return; panel.scrollIntoView({ block: "nearest" }); panel.querySelector<HTMLButtonElement>(".composer-request-heading")?.focus({ preventScroll: true }); }); }}>View questions</button>
-  </aside>)}</>;
+/** Single-line custom answers retain the same IME and code-point safeguards. */
+function AnswerInput({ value, change, ...props }: Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange"> & { value: string; change: (value: string) => void }) {
+  const composing = useRef(false);
+  const [composition, setComposition] = useState<string | null>(null);
+  return <RequestInput {...props} type="text" value={composition ?? value}
+    onCompositionStart={event => { composing.current = true; setComposition(event.currentTarget.value); }}
+    onCompositionEnd={event => {
+      composing.current = false;
+      setComposition(null);
+      change(answerText(event.currentTarget.value));
+    }}
+    onChange={event => {
+      if (composing.current) setComposition(event.currentTarget.value);
+      else change(answerText(event.currentTarget.value));
+    }} />;
 }
 
 function AnswerEditor({ question, answer, change, disabled, name }: { question: UserQuestion; answer: UserQuestionAnswer; change: (answer: UserQuestionAnswer) => void; disabled: boolean; name: string }) {
   const options = question.options ?? [];
   if (!options.length) return <div className="request-field">
-    <label className="request-field-label" htmlFor={name}>Your answer <span className="request-field-hint">· optional</span></label>
+    <label className="sr-only" htmlFor={name}>Your answer</label>
+    <span id={`${name}-state`} className="sr-only">{answer === null ? "Unanswered" : answer === "" ? "Empty answer" : "Answer entered"}</span>
     <AnswerTextarea id={name} aria-describedby={`${name}-state`} rows={3} maxLength={USER_QUESTIONS_LIMITS.answerText * 2} value={typeof answer === "string" ? answer : ""} placeholder="Write an answer…" disabled={disabled} change={change} />
-    <div className="user-questions-answer-meta">
-      <span id={`${name}-state`} className="request-field-hint">{answer === null ? "Unanswered" : answer === "" ? "Empty answer" : "Answer entered"}</span>
-      <RequestButton variant="quiet" disabled={disabled} onClick={() => change(answer === null ? "" : null)}>{answer === null ? "Use empty answer" : "Leave unanswered"}</RequestButton>
-    </div>
   </div>;
   const selection: { selected: string[]; other?: string } = answer !== null && typeof answer === "object" ? answer : { selected: [] };
-  const hasOther = selection.other !== undefined;
   return <div className="request-field">
-    <span className="request-field-hint">{question.multiple ? "Choose any that apply" : "Choose one answer"} · optional</span>
     <RequestChoices label={question.question} multiple={question.multiple} disabled={disabled}
-      options={[...options.map((label, index) => ({ value: `option-${index}`, label })), ...(question.allow_other ? [{ value: "other", label: "Write another answer" }] : [])]}
-      values={[...options.flatMap((option, index) => selection.selected.includes(option) ? [`option-${index}`] : []), ...(hasOther ? ["other"] : [])]}
+      options={options.map((label, index) => ({ value: `option-${index}`, label }))}
+      values={options.flatMap((option, index) => selection.selected.includes(option) ? [`option-${index}`] : [])}
       choose={value => {
-        if (value === "other") { change(hasOther ? choiceAnswer(selection.selected) : choiceAnswer(question.multiple ? selection.selected : [], "")); return; }
         const option = options[Number(value.slice(7))];
         if (option === undefined) return;
         const selected = selection.selected.includes(option);
         if (question.multiple) change(choiceAnswer(selected ? selection.selected.filter(item => item !== option) : [...selection.selected, option], selection.other));
         else change(selected ? null : { selected: [option] });
       }} />
-    {hasOther && <label className="request-field"><span className="request-field-label">Your other answer</span><AnswerTextarea rows={2} maxLength={USER_QUESTIONS_LIMITS.answerText * 2} value={selection.other ?? ""} disabled={disabled} placeholder="Tell us what you have in mind…" change={value => change(choiceAnswer(question.multiple ? selection.selected : [], value))} /></label>}
-    {answer !== null && <div className="user-questions-answer-meta"><RequestButton variant="quiet" disabled={disabled} onClick={() => change(null)}>Leave unanswered</RequestButton></div>}
+    {question.allow_other && <div className="request-field user-questions-other"><label className="sr-only" htmlFor={`${name}-other`}>Write another answer</label><AnswerInput id={`${name}-other`} maxLength={USER_QUESTIONS_LIMITS.answerText * 2} value={selection.other ?? ""} disabled={disabled} placeholder="Write another answer…" change={value => change(choiceAnswer(value !== "" && !question.multiple ? [] : selection.selected, value === "" ? undefined : value))} /></div>}
   </div>;
 }
 
@@ -120,12 +129,16 @@ function AnswerValue({ answer }: { answer: UserQuestionAnswer }) {
 
 function AnswerRecord({ form, answers }: { form: UserQuestionsRecord; answers: readonly UserQuestionAnswer[] }) {
   return <ol className="user-questions-answer-record">{form.input.pages.map((question, index) => <li key={index}>
-    <strong>{question.question}</strong><AnswerValue answer={answers[index] ?? null} />
+    <h4 className="user-questions-title">{question.question}</h4><AnswerValue answer={answers[index] ?? null} />
   </li>)}</ol>;
 }
 
+function QuestionToolDetails({ tool }: { tool: ToolPart }) {
+  return <><h3>{tool.name}</h3><h4>Input</h4><pre className="user-questions-tool-detail">{JSON.stringify(tool.input, null, 2)}</pre><h4>{tool.error ? "Error" : "Output"}</h4><pre className="user-questions-tool-detail">{typeof tool.output === "string" ? tool.output : JSON.stringify(tool.output, null, 2) ?? "No output recorded"}</pre></>;
+}
+
 function QuestionsConflict({ questions, draft }: { questions: UserQuestionsController; draft: UserQuestionsDraft }) {
-  return <div className="request-inline-notice">
+  return <ChatNotice tone="warning" className="user-questions-conflict">
     <p>A newer server version is available. Your local answers are kept and won’t be retried automatically.</p>
     <RequestDisclosure label={`Server answers · revision ${draft.form.revision}`}>
       <AnswerRecord form={draft.form} answers={draft.form.submission?.answers ?? draft.form.answers} />
@@ -134,120 +147,168 @@ function QuestionsConflict({ questions, draft }: { questions: UserQuestionsContr
     <p>Copy any local answers you want to keep before reloading.</p>
     <RequestButton variant="danger" disabled={!!draft.operation || !questions.editable} onClick={() => questions.reload(draft.form.id)}>Discard local answers and reload</RequestButton>
     <RequestButton variant="quiet" onClick={questions.retry}>Refresh server version</RequestButton>
-  </div>;
+  </ChatNotice>;
 }
 
 function QuestionsFeedback({ questions, draft, readOnlyReason }: { questions: UserQuestionsController; draft: UserQuestionsDraft; readOnlyReason?: string }) {
   const { form, operation } = draft;
   return <>
-    {!questions.editable && <p className="request-message">{readOnlyReason || "Read-only until the connection is available and questions have refreshed."}</p>}
-    {draft.error && <p className="request-message request-error" role="alert">{draft.error}</p>}
+    {!questions.editable && <ChatNotice>{readOnlyReason || "Read-only until the connection is available and questions have refreshed."}</ChatNotice>}
+    {draft.error && <ChatNotice tone="danger" role="alert">{draft.error}</ChatNotice>}
     {draft.error && draft.dirty && !operation && !draft.conflict && form.status === "presented" && <RequestButton disabled={!questions.editable} onClick={() => void questions.mutate(form.id, "answers")}>Save draft again</RequestButton>}
     {draft.conflict && <QuestionsConflict questions={questions} draft={draft} />}
-    {form.status !== "presented" && (draft.dirty || operation?.answers) && !draft.conflict && <div className="request-inline-notice">
+    {form.status !== "presented" && (draft.dirty || operation?.answers) && !draft.conflict && <ChatNotice tone="warning">
       <p>Your local answers are kept separately from this {form.status === "submitted" ? "submission" : "dismissed record"}. Copy any you want to keep.{operation && " The original request still needs confirmation."}</p>
       <RequestDisclosure label="View local answers"><AnswerRecord form={form} answers={draft.answers} /></RequestDisclosure>
-    </div>}
+    </ChatNotice>}
     {operation?.uncertain && <RequestButton disabled={!questions.editable} onClick={() => void questions.reconcile(form.id)}>Reconcile original request</RequestButton>}
   </>;
 }
 
-/** Only authoritative terminal form states replace the editor, never a pending browser operation. */
-function QuestionsOutcome({ questions, draft, readOnlyReason }: { questions: UserQuestionsController; draft: UserQuestionsDraft; readOnlyReason?: string }) {
-  const { form } = draft;
-  const blocked = !questions.editable || !!draft.operation || draft.conflict;
-  return <>
-    <RequestBody>
-      <DeliveryStatus form={form} />
-      <QuestionsFeedback questions={questions} draft={draft} readOnlyReason={readOnlyReason} />
-      {form.status === "submitted" && form.submission && <RequestDisclosure label="View submitted answers"><AnswerRecord form={form} answers={form.submission.answers} /></RequestDisclosure>}
-      {form.delivery?.reason && <RequestDisclosure label="Delivery details"><p className="user-questions-delivery-detail">{form.delivery.reason}</p></RequestDisclosure>}
-    </RequestBody>
-    <RequestActions hint="Chat is still available below.">
-      {form.status === "submitted" && form.delivery?.state === "paused" && <RequestButton variant="primary" disabled={blocked} onClick={() => void questions.mutate(form.id, "resume")}>Resume delivery</RequestButton>}
-    </RequestActions>
-  </>;
-}
-
-function QuestionsEditor({ questions, draft, readOnlyReason }: { questions: UserQuestionsController; draft: UserQuestionsDraft; readOnlyReason?: string }) {
-  const [page, setPage] = useState(0);
-  const [confirmDismiss, setConfirmDismiss] = useState(false);
+function QuestionsEditor({ questions, draft, page }: { questions: UserQuestionsController; draft: UserQuestionsDraft; page: number }) {
   const pageField = useRef<HTMLFieldSetElement>(null);
-  const focusPage = useRef(false);
+  const previousPage = useRef(page);
   const { form, answers, operation } = draft;
   const pageIndex = Math.min(page, form.input.pages.length - 1);
   const question = form.input.pages[pageIndex];
-  const final = pageIndex === form.input.pages.length - 1;
-  const busy = !!operation && !operation.uncertain;
+  const progressId = `question-${form.id}-progress`;
   const readOnly = !questions.editable || form.status !== "presented";
   const disabled = readOnly || !!operation && operation.kind !== "answers";
-  const blocked = !questions.editable || !!operation || draft.conflict;
   useLayoutEffect(() => {
-    if (!focusPage.current) return;
-    focusPage.current = false;
+    if (previousPage.current === pageIndex || pageField.current?.dataset.questionPage !== String(pageIndex)) return;
+    previousPage.current = pageIndex;
+    const content = pageField.current?.closest<HTMLElement>(".user-questions-content");
+    if (content) content.scrollTop = 0;
+    const card = pageField.current?.closest<HTMLElement>(".user-questions-card");
+    if (card) card.closest(".viewport")?.dispatchEvent(new CustomEvent("questionnaire-page-jump", { detail: card }));
     pageField.current?.focus({ preventScroll: true });
   }, [pageIndex]);
-  const goToPage = (index: number) => {
-    focusPage.current = true;
-    setPage(Math.max(0, Math.min(index, form.input.pages.length - 1)));
-  };
-  return <>
-    <RequestBody resetKey={pageIndex}>
-    <QuestionsFeedback questions={questions} draft={draft} readOnlyReason={readOnlyReason} />
-    {question && <fieldset ref={pageField} tabIndex={-1} className="user-questions-page">
-      <legend><span className="user-questions-step" role="status">Question {pageIndex + 1} of {form.input.pages.length}</span><strong>{question.question}</strong></legend>
-      {question.context && <div className="prose user-questions-context"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ a: ({ href, children }) => <QuestionLink href={href} form={form}>{children}</QuestionLink>, img: ({ alt }) => <span className="muted">[Image: {alt || "omitted"}]</span> }}>{question.context}</ReactMarkdown></div>}
-      {!!question.references?.length && <RequestDisclosure key={`${pageIndex}-references`} label={`References · ${question.references.length}`}><ul className="user-questions-references">{question.references.map((reference, index) => <li key={index}><QuestionLink href={reference} form={form}>{reference}</QuestionLink></li>)}</ul><p className="request-field-hint">Opens current files in the original worktree. Line numbers are informational.</p></RequestDisclosure>}
-      <AnswerEditor key={pageIndex} question={question} answer={answers[pageIndex] ?? null} disabled={disabled} name={`question-${form.id}-${pageIndex}`} change={answer => questions.edit(form.id, pageIndex, answer)} />
+  return <RequestBody>
+    {question && <fieldset ref={pageField} data-question-page={pageIndex} tabIndex={-1} className="user-questions-page" aria-labelledby={`question-${form.id}-${pageIndex}-title`} aria-describedby={progressId}>
+      <h4 id={`question-${form.id}-${pageIndex}-title`} className="user-questions-title">{question.question}</h4>
+      {question.context && (
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: The bounded context region needs keyboard focus for scrolling.
+        <section key={pageIndex} className="prose user-questions-context" aria-label="Question context" tabIndex={0}><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ a: ({ href, children }) => <QuestionLink href={href} form={form}>{children}</QuestionLink>, img: ({ alt }) => <span className="muted">[Image: {alt || "omitted"}]</span> }}>{question.context}</ReactMarkdown></section>
+      )}
+      <AnswerEditor key={`answers-${pageIndex}`} question={question} answer={answers[pageIndex] ?? null} disabled={disabled} name={`question-${form.id}-${pageIndex}`} change={answer => questions.edit(form.id, pageIndex, answer)} />
     </fieldset>}
-    </RequestBody>
-    {confirmDismiss && form.status === "presented" ? <RequestActions hint="Dismiss without sending any answers?">
-      <RequestButton onClick={() => setConfirmDismiss(false)}>Keep answering</RequestButton>
-      <RequestButton variant="danger" disabled={blocked} onClick={() => { setConfirmDismiss(false); void questions.mutate(form.id, "dismiss"); }}>Dismiss questions</RequestButton>
-    </RequestActions> : <RequestActions hint="Optional · sent only when you submit. Chat is still available below.">
-      {form.status === "presented" && <RequestButton variant="quiet" disabled={blocked} onClick={() => setConfirmDismiss(true)}>Dismiss</RequestButton>}
-      <RequestButton variant="quiet" disabled={pageIndex <= 0} onClick={() => goToPage(pageIndex - 1)}><FiArrowLeft aria-hidden="true" />Back</RequestButton>
-      {!final ? <RequestButton onClick={() => goToPage(pageIndex + 1)}>Next<FiArrowRight aria-hidden="true" /></RequestButton> : form.status === "presented" && <RequestButton variant="primary" disabled={blocked} onClick={() => void questions.mutate(form.id, "submit")}><FiCheck aria-hidden="true" />{operation?.kind === "submit" && busy ? "Submitting…" : "Submit answers"}</RequestButton>}
-    </RequestActions>}
+    </RequestBody>;
+}
+
+/** Terminal records stay compact; recovery never hides behind the answers modal. */
+export function UserQuestionsCard({ questions, draft, readOnlyReason, tool, active = true }: {
+  questions: UserQuestionsController; draft: UserQuestionsDraft; readOnlyReason?: string; tool?: ToolPart; active?: boolean;
+}) {
+  const { form } = draft;
+  const presented = form.status === "presented";
+  const expanded = presented && questions.selected?.form.id === form.id && questions.expanded;
+  const blocked = !questions.editable || !!draft.operation || draft.conflict;
+  const [page, setPage] = useState(0);
+  const pageIndex = Math.min(page, form.input.pages.length - 1);
+  const final = pageIndex === form.input.pages.length - 1;
+  const submitting = draft.operation?.kind === "submit" && !draft.operation.uncertain;
+  const [view, setView] = useState<"answers" | "details" | "tool" | "dismiss" | null>(null);
+  useEffect(() => { if (!active) setView(null); }, [active]);
+  const trigger = useRef<HTMLButtonElement | null>(null), primary = useRef<HTMLButtonElement>(null);
+  const focused = useRef(false), previouslyExpanded = useRef(expanded);
+  useLayoutEffect(() => {
+    if (active && previouslyExpanded.current && !expanded && focused.current) { primary.current?.focus({ preventScroll: true }); focused.current = false; }
+    previouslyExpanded.current = expanded;
+  }, [expanded, active]);
+  const show = (next: NonNullable<typeof view>, button: HTMLButtonElement) => { trigger.current = button; setView(next); };
+  const items: ChatMenuItem[] = [
+    { id: "details", label: "Details", icon: <FiInfo />, opensDialog: true, onSelect: button => show("details", button) },
+    { id: "refresh", label: questions.loading ? "Refreshing…" : "Refresh", icon: <FiRefreshCw />, disabled: questions.loading, busy: questions.loading, onSelect: questions.retry },
+  ];
+  if (expanded) {
+    const answer = draft.answers[pageIndex] ?? null;
+    const canEdit = questions.editable && (!draft.operation || draft.operation.kind === "answers");
+    items.unshift({ id: "clear", label: "Clear current answer", icon: <FiRotateCcw />, disabled: !canEdit || answer === null, onSelect: () => questions.edit(form.id, pageIndex, null) });
+    // Keep the explicit-empty-text distinction available without another row.
+    if (!form.input.pages[pageIndex]?.options?.length && answer === null) items.splice(1, 0, { id: "empty", label: "Use empty answer", disabled: !canEdit, onSelect: () => questions.edit(form.id, pageIndex, "") });
+  }
+  if (tool) items.push({ id: "tool", label: "Tool details", icon: <FiInfo />, opensDialog: true, onSelect: button => show("tool", button) });
+  if (presented) items.push({ id: "separator", separator: true }, { id: "dismiss", label: "Dismiss questions", icon: <FiX />, danger: true, disabled: blocked, opensDialog: true, onSelect: button => show("dismiss", button) });
+  const count = form.input.pages.length;
+  const status = questionsStatus(draft);
+  const subtitle = presented ? `${expanded ? `Question ${pageIndex + 1} of ${count}` : `${count} question${count === 1 ? "" : "s"}`} · ${status}` : form.status === "submitted" ? `Submitted · ${status}` : status === "Dismissed" ? status : `Dismissed · ${status}`;
+  const references = expanded ? form.input.pages[pageIndex]?.references : undefined;
+  const hasReferences = (references?.length ?? 0) > 0;
+  const Glyph = form.status === "submitted" ? FiCheck : FiX;
+  const needsFeedback = !!draft.error || draft.conflict || !!draft.operation?.uncertain
+    || !presented && (draft.dirty || !!draft.operation?.answers) || presented && expanded && !questions.editable;
+  return <><ChatCard id={`user-questions-${form.id}`} tabIndex={-1} density="compact" className={`user-questions-card${hasReferences ? " has-references" : ""}`} aria-label={`Questionnaire: ${form.input.title}`} data-expanded={expanded} data-send-kind="questions" data-send-id={form.id}>
+    <ChatCardHeader className="user-questions-header" icon={presented ? undefined : <Glyph size={28} />} title={<span title={form.input.title}>{form.input.title}</span>} description={<span id={`question-${form.id}-progress`} title={subtitle} role="status">{subtitle}</span>}
+      actions={<>
+        {presented && <ChatIconButton className="user-questions-collapse" aria-label={expanded ? "Collapse questionnaire" : "Expand questionnaire"} aria-expanded={expanded} aria-controls={`user-questions-${form.id}-editor`} onClick={() => expanded ? questions.toggle() : questions.open(form.id)}><FiHelpCircle /></ChatIconButton>}
+        {expanded && <>
+          <ChatIconButton aria-label="Previous question" disabled={pageIndex === 0} onClick={() => setPage(pageIndex - 1)}><FiArrowLeft /></ChatIconButton>
+          <ChatIconButton aria-label="Next question" disabled={final} onClick={() => setPage(pageIndex + 1)}><FiArrowRight /></ChatIconButton>
+        </>}
+        <ChatButton ref={primary} className={expanded ? "user-questions-submit" : undefined} variant={expanded ? "primary" : "ghost"} disabled={expanded && (!final || blocked)} busy={expanded && submitting} title={expanded && !final ? "Review the remaining questions before submitting" : undefined} aria-label={expanded ? submitting ? "Submitting answers" : "Submit answers" : undefined} aria-expanded={presented && !expanded ? false : undefined} aria-controls={presented && !expanded ? `user-questions-${form.id}-editor` : undefined} aria-haspopup={presented ? undefined : "dialog"} onClick={event => expanded ? void questions.mutate(form.id, "submit") : presented ? questions.open(form.id) : show("answers", event.currentTarget)}>{expanded ? "Submit" : presented ? questions.editable ? "Answer" : "View questions" : form.status === "submitted" ? "View answers" : "View questions"}</ChatButton>
+        <ChatOverflowMenu label="Questionnaire actions" attention={draft.conflict || !!draft.error || !!draft.operation?.uncertain || !!tool?.error || form.delivery?.state === "paused"} items={items} />
+      </>} />
+    <div className="user-questions-content">
+    {needsFeedback && <ChatCardBody className="user-questions-feedback"><QuestionsFeedback questions={questions} draft={draft} readOnlyReason={readOnlyReason} /></ChatCardBody>}
+    {tool?.error && <ChatNotice tone="warning" role="alert">The question tool reported an error. The saved questionnaire is retained; inspect Tool details before retrying.</ChatNotice>}
+    {form.status === "submitted" && (form.delivery?.state === "paused" || form.delivery?.state === "unknown" || !form.delivery) && <ChatCardBody className="user-questions-feedback"><ChatNotice tone="warning"><DeliveryStatus form={form} />{form.delivery?.reason && <p className="user-questions-delivery-detail">{form.delivery.reason}</p>}{form.delivery?.state === "paused" && <ChatButton variant="primary" disabled={blocked} onClick={() => void questions.mutate(form.id, "resume")}>Resume delivery</ChatButton>}</ChatNotice></ChatCardBody>}
+    {presented && <div id={`user-questions-${form.id}-editor`} hidden={!expanded} onFocusCapture={() => { focused.current = true; }} onBlurCapture={event => { if (event.relatedTarget instanceof Node) focused.current = event.currentTarget.contains(event.relatedTarget); }}>
+      <QuestionsEditor key={`${questions.scopeKey}:${form.id}`} questions={questions} draft={draft} page={pageIndex} />
+    </div>}
+    </div>
+    {active && view && createPortal(<ChatDialog title={view === "dismiss" ? "Dismiss questions?" : view === "tool" ? "Question tool details" : view === "details" ? "Questionnaire details" : form.status === "submitted" ? "Submitted answers" : "Questions"} subtitle={form.input.title} size="wide" close={() => setView(null)} restoreFocus={() => trigger.current}>
+      <ChatDialogBody>
+        {view === "dismiss" ? <p>No answers will be sent. Your normal chat remains available.</p> : view === "tool" && tool ? <QuestionToolDetails tool={tool} /> : view === "answers" ? <><DeliveryStatus form={form} /><AnswerRecord form={form} answers={form.submission?.answers ?? form.answers} /></> : <>
+          <DeliveryStatus form={form} />
+          <dl className="facts">{[["Questionnaire ID", form.id], ["Form state", form.status], ["Revision", String(form.revision)], ["Delivery state", form.delivery?.state ?? "Not submitted"], ["Delivery diagnostic", form.delivery?.reason ?? "None"], ["Delivery run", form.delivery?.runId ?? "Unavailable"], ["Original run", form.anchor.runId], ["Original tool call", form.anchor.toolCallId], ["Created", new Date(form.createdAt).toLocaleString()]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+        </>}
+      </ChatDialogBody>
+      {view === "dismiss" && <ChatDialogFooter><ChatButton onClick={() => setView(null)}>Keep answering</ChatButton><ChatButton variant="danger" disabled={blocked || !presented} onClick={() => { setView(null); void questions.mutate(form.id, "dismiss"); }}>Dismiss questions</ChatButton></ChatDialogFooter>}
+    </ChatDialog>, document.body)}
+  </ChatCard>
+    {hasReferences && references && <footer className="user-questions-references-footer" onFocusCapture={() => { focused.current = true; }} onBlurCapture={event => { if (event.relatedTarget instanceof Node) focused.current = event.currentTarget.contains(event.relatedTarget); }}>
+      <ChatDisclosure key={`${form.id}:${pageIndex}-references`} className="user-questions-references-disclosure" headingLevel={5} title={`References · ${references.length}`}>
+        <ul className="user-questions-references">{references.map(reference => <li key={reference}><QuestionLink href={reference} form={form}>{reference}</QuestionLink></li>)}</ul>
+      </ChatDisclosure>
+    </footer>}
   </>;
 }
 
-function questionsStatus(draft: UserQuestionsDraft) {
-  if (draft.conflict) return "Version conflict";
-  if (draft.operation?.uncertain) return "Unconfirmed";
-  if (draft.operation) return draft.operation.kind === "answers" ? "Saving…" : "Updating…";
-  if (draft.dirty) return draft.form.status === "presented" ? "Unsaved" : "Local answers retained";
-  if (draft.error) return "Needs attention";
-  if (draft.form.status === "presented") return "Draft saved";
-  if (draft.form.status === "dismissed") return "Dismissed";
-  switch (draft.form.delivery?.state) {
-    case "accepted": return "Delivered";
-    case "wrapper-completed": return "Delivered to Grok";
-    case "pending": return "Waiting to send";
-    case "claimed": return "Sending…";
-    case "paused": return "Delivery paused";
-    case "unknown": return "Delivery unconfirmed";
-    default: return "Answers saved";
-  }
+export function UserQuestionsActivity({ questions, close, disabled = false }: { questions: UserQuestionsController; close: () => void; disabled?: boolean }) {
+  const attention = questions.forms.filter(questionsNeedAttention);
+  const pending = questions.forms.filter(draft => draft.form.status === "presented");
+  const candidates = [...attention, ...pending.filter(draft => !attention.includes(draft))];
+  if (!candidates.length) return null;
+  return <section className="user-questions-activity" aria-label="Questionnaires"><h3>Questionnaires</h3><ul>{candidates.map(draft => <li key={draft.form.id}><span><strong>{draft.form.input.title}</strong><span className="muted">{draft.form.status === "presented" ? `Awaiting answers · ${questionsStatus(draft)}` : `${draft.form.status === "submitted" ? "Submitted" : "Dismissed"} · ${questionsStatus(draft)}`}</span></span><ChatButton variant="ghost" icon={<FiArrowRight />} disabled={disabled} onClick={() => { close(); questions.open(draft.form.id); }}>Go to questions</ChatButton></li>)}</ul></section>;
 }
 
-export function UserQuestionsPanel({ questions, readOnlyReason }: { questions: UserQuestionsController; readOnlyReason?: string }) {
-  const draft = questions.selected;
-  if (!draft) return questions.error ? <ComposerRequest id="user-questions-unavailable" icon={<FiHelpCircle size={16} />} label="Assistant questions" title="Questions unavailable"><RequestBody><p className="request-message request-error" role="alert">{questions.error} <RequestButton variant="quiet" onClick={questions.retry}>Retry questions</RequestButton></p></RequestBody></ComposerRequest> : null;
-  const id = `user-questions-${draft.form.id}`;
-  const waiting = questions.forms.find(item => item.form.status === "presented" && item.form.id !== draft.form.id);
-  const status = waiting ? "New questions waiting" : questions.error ? "Refresh needed" : questionsStatus(draft);
-  const submitted = draft.form.status === "submitted";
-  const RequestIcon = submitted ? draft.form.delivery?.state === "accepted" || draft.form.delivery?.state === "wrapper-completed" ? FiCheck : FiArrowRight : FiHelpCircle;
-  return <ComposerRequest id={id} className={draft.form.status !== "presented" ? "user-questions-outcome" : ""} icon={<RequestIcon size={16} />} label={submitted ? "Answer delivery" : "Assistant questions"} title={draft.form.input.title} status={status} expanded={questions.expanded} toggle={questions.toggle}
-    tools={<>
-      {questions.forms.length > 1 && <FilterDropdown label="Question sets" value={draft.form.id} onChange={questions.open} options={questions.forms.map(({ form }) => ({ value: form.id, label: `${form.input.title} · ${form.status === "presented" ? "Awaiting answers" : form.status}` }))} />}
-      {questions.canClose && <RequestButton variant="quiet" onClick={questions.close}>Back to chat</RequestButton>}
-    </>}>
-      {waiting && <p className="request-message user-questions-new"><RequestButton variant="quiet" onClick={() => questions.open(waiting.form.id)}>New questions awaiting answers<FiArrowRight aria-hidden="true" /></RequestButton></p>}
-      {questions.error && <p className="request-message request-error user-questions-new" role="alert">{questions.error} <RequestButton variant="quiet" onClick={questions.retry}>Retry questions</RequestButton></p>}
-      {draft.form.status === "presented"
-        ? <QuestionsEditor key={`${questions.scopeKey}:${draft.form.id}`} questions={questions} draft={draft} readOnlyReason={readOnlyReason} />
-        : <QuestionsOutcome key={`${questions.scopeKey}:${draft.form.id}`} questions={questions} draft={draft} readOnlyReason={readOnlyReason} />}
-  </ComposerRequest>;
+/** Compact transcript projection only; the delivered prompt is left untouched. */
+export function UserQuestionsResponse({ questions, draft, message, active = true, disabled = false }: {
+  questions: UserQuestionsController; draft: UserQuestionsDraft; message: Message; active?: boolean; disabled?: boolean;
+}) {
+  const { form } = draft;
+  const [original, setOriginal] = useState(false);
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => { if (!active) setOriginal(false); }, [active]);
+  const raw = message.parts.filter(part => part.type === "text").map(part => part.text).join("\n\n");
+  const status = `Submitted answers · ${questionsStatus(draft)}`;
+  return <ChatCard density="compact" className="user-questions-card user-questions-response" aria-label={`Submitted questionnaire answers: ${form.input.title}`}>
+    <ChatCardHeader className="user-questions-header" icon={<FiCheck size={28} />} title={<span title={form.input.title}>{form.input.title}</span>} description={<span title={status}>{status}</span>}
+      actions={<>
+        <ChatButton variant="ghost" disabled={disabled} onClick={() => questions.open(form.id)}>Go to questions</ChatButton>
+        <ChatOverflowMenu label="Submitted answer actions" items={[{ id: "original", label: "View original message", icon: <FiInfo />, opensDialog: true, onSelect: button => { trigger.current = button; setOriginal(true); } }]} />
+      </>} />
+    {active && original && createPortal(<ChatDialog title="Original answer message" subtitle={form.input.title} size="wide" close={() => setOriginal(false)} restoreFocus={() => trigger.current}><ChatDialogBody><pre className="user-questions-tool-detail">{raw || "No text recorded"}</pre></ChatDialogBody></ChatDialog>, document.body)}
+  </ChatCard>;
+}
+
+export function UserQuestionsStatus({ questions }: { questions: UserQuestionsController }) {
+  return questions.error ? <ChatNotice className="user-questions-status" tone="warning" role="alert" actions={<ChatButton onClick={questions.retry}>Retry questions</ChatButton>}>Questionnaire refresh unavailable: {questions.error}</ChatNotice> : null;
+}
+
+export function PendingUserQuestions({ questions, running, tool }: { questions: UserQuestionsController; running: boolean; tool: ToolPart }) {
+  return <ChatNotice className="user-questions-status" tone={tool.error || questions.error ? "warning" : "neutral"} role="status" actions={<ChatButton disabled={questions.loading} onClick={questions.retry}>Refresh questions</ChatButton>}>
+    {questions.error ? "Questionnaire persistence is unconfirmed because questions could not be refreshed." : questions.loading || running ? "Waiting for the saved questionnaire…" : "No saved questionnaire is available for this call."}
+    <ChatDisclosure title={tool.error ? "Tool error" : "Tool details"}><QuestionToolDetails tool={tool} /></ChatDisclosure>
+  </ChatNotice>;
 }

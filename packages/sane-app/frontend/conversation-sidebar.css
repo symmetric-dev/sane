@@ -53,7 +53,7 @@
 
 .history-list .worktree-group-toggle,
 .history-list .worktree-group-select,
-.history-list .worktree-group-new {
+.history-list .worktree-group-settings {
   border:1px solid transparent;
   transform:none;
 }
@@ -71,7 +71,7 @@
 }
 
 .history-list .worktree-group-toggle:hover:not(:disabled),
-.history-list .worktree-group-new:hover:not(:disabled) {
+.history-list .worktree-group-settings:hover:not(:disabled) {
   background:var(--history-hover);
   color:var(--foreground);
 }
@@ -133,7 +133,7 @@
   background:var(--background);
 }
 
-.history-list .worktree-group-new {
+.history-list .worktree-group-settings {
   display:inline-flex;
   align-items:center;
   justify-content:center;

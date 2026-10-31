@@ -5,7 +5,7 @@ import { useWorkspace } from "./workspace-controller";
 import { useEffect, useRef, useState } from "react";
 import { FiArrowDown, FiArrowUp, FiChevronDown } from "react-icons/fi";
 import { ShellDialog } from "./shell-dialog";
-import { FileOperationDialog, type FileOperation } from "./workspace-file-actions";
+import { AddFileToChat, FileOperationDialog, type FileOperation } from "./workspace-file-actions";
 import { WorkspaceSearchPanel, useWorkspaceSearchContext } from "./workspace-search";
 import { useWorkspaceFileOperations } from "./workspace-file-shortcuts";
 import { GitDiffPreview } from "./git-review";
@@ -48,6 +48,7 @@ export function WorkspaceHeader({ notebookControls = true }: { notebookControls?
       {textDiff && <><button aria-label="Previous change" title="Previous change" onClick={() => { if (controller.diffEditor.current) goToPreviousChunk(controller.diffEditor.current); setActionsOpen(false); }}><FiArrowUp size={12} aria-hidden="true" /> Previous change</button><button aria-label="Next change" title="Next change" onClick={() => { if (controller.diffEditor.current) goToNextChunk(controller.diffEditor.current); setActionsOpen(false); }}><FiArrowDown size={12} aria-hidden="true" /> Next change</button></>}
       {view === "code" && scope && <button type="button" disabled={operations?.busy} onClick={() => openOperation("create", "")}>New file</button>}
       {view === "code" && scope && <NotebookConfigureAction />}
+      {view === "code" && selected && <AddFileToChat close={() => setActionsOpen(false)} />}
       {view === "code" && buffer && scope && <>
         {!image && <><span className="workspace-file-meta">{buffer.file.eol.toUpperCase()}{buffer.file.bom ? " · BOM" : ""}</span>
         {localCompare && <button onClick={() => { controller.closeCompare(); setActionsOpen(false); }}>Back to editor</button>}

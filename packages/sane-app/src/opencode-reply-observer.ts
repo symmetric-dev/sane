@@ -9,10 +9,11 @@ export const OC_REPLY_QUALIFICATION_CHECKS = [
   "synthetic-parent-continuation", "synthetic-only-no-attention", "control-notice-before-final-step",
 ] as const;
 /** Operator-owned runtime evidence, NOT a version/server.info capability guess.
- * Each check must reference a successful captured runtime verification. */
+ * Each check must reference a successful captured runtime verification.
+ * SDK upgrades invalidate prior-client qualification; never carry it forward. */
 export type OpenCodeReplyQualification = {
   authorityId: string;
-  clientVersion: "2.0.18";
+  clientVersion: "2.2.4";
   nativeVersion: string;
   verifiedAt: string;
   evidenceRef: string;
@@ -159,7 +160,7 @@ export class OpenCodeReplyObserver {
   /** Call before start, using externally reviewed runtime evidence. No env magic. */
   qualify(descriptor: OpenCodeReplyQualification): void {
     if (this.lifetime) throw new Error("Close the observer before changing qualification");
-    if (!descriptor || descriptor.authorityId !== this.options.authorityId || descriptor.clientVersion !== "2.0.18"
+    if (!descriptor || descriptor.authorityId !== this.options.authorityId || descriptor.clientVersion !== "2.2.4"
       || !text(descriptor.nativeVersion) || !text(descriptor.evidenceRef) || !text(descriptor.verifiedAt)
       || !Number.isFinite(Date.parse(descriptor.verifiedAt))
       || OC_REPLY_QUALIFICATION_CHECKS.some(k => descriptor.checks?.[k]?.passed !== true || !text(descriptor.checks[k].evidenceRef))) throw new TypeError("OpenCode reply qualification requires evidenced runtime checks");

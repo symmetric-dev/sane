@@ -46,7 +46,7 @@ function rebaseContext(context: SidebarContext, workspaceId: string | null, work
 }
 
 /** Mount once in the shell; pass the same model to desktop and drawer sidebars. */
-export function useConversationSidebarModel(state: State, mode: ConversationSidebarMode, selectedId: string | null = state.selected) {
+export function useConversationSidebarModel(state: State, requestedMode: ConversationSidebarMode, selectedId: string | null = state.selected) {
   const workerDiscovery = useWorkerDiscovery();
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const auth = workspaceEpoch();
@@ -89,11 +89,12 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     setContext(next);
   }, [savedContext]);
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const mode = selectorOpen ? "chat" : requestedMode;
   const selectorOpenRef = useRef(false);
   const [selectionError, setSelectionError] = useState("");
   const setOpen = useCallback((open: boolean) => { selectorOpenRef.current = open; setSelectorOpen(open); if (open) setSelectionError(""); }, []);
   const isOpen = useCallback(() => selectorOpenRef.current, []);
-  const sidebarActive = nav.view === "chat" || nav.view === "history" || nav.view === "terminal" || nav.view === "browser";
+  const sidebarActive = selectorOpen || nav.view === "chat" || nav.view === "history" || nav.view === "terminal" || nav.view === "browser";
   const workspace = repository.workspaces.find(w => w.workspaceId === nav.workspaceId);
   const overviewState = useWorkstreamOverviewState(nav.workspaceId, workspace?.kind === "repository" && (sidebarActive || selectorOpen || !!context.workstreamId));
   const { overview } = overviewState;

@@ -1,20 +1,22 @@
 import type { HandoffPresentation } from "../src/handoff-contract";
 import type { NativeSubagentKey } from "../src/native-subagent-contract";
-import type { WorkerRecord } from "../src/worker-contract";
+import type { WorkerExchange, WorkerRecord } from "../src/worker-contract";
 import { isHandoffTool, sentHandoffs } from "./handoff-presentation";
 import { nativeSubagentKey } from "./native-subagent-presentation";
 import { active, type Harness, type Message, type Run, type TextPart, type ToolPart } from "./types";
-import { dispatchedWorkers } from "./worker-presentation";
+import { dispatchedWorkers, sentWorkerExchanges, workerExchanges } from "./worker-presentation";
 import type { CodeShareRecord } from "../shared/code-share-contract";
 import { isCodeShareTool, sharesForTool } from "./code-share-presentation";
 import type { MediaShareRecord } from "../shared/media-share-contract";
 import { isMediaShareTool, mediaSharesForTool } from "./media-share-presentation";
+import type { UserQuestionsDraft } from "./user-questions-client";
+import { isUserQuestionsTool, questionsForTool } from "./user-questions-presentation";
 
 type ActivityPart = Extract<TextPart, { type: "reasoning" }> | ToolPart;
 export type ActivityEntry = { id: string; messageId: string; index: number; type: "reasoning" | "tool"; name: string; status?: string; error?: boolean };
 export type ActivityDetail = { id: string; source: Message; index: number; part: ActivityPart };
 export type ActivitySegment = { id: string; type: ActivityEntry["type"]; name: string; entries: ActivityEntry[]; status?: string; error?: boolean };
-export type StandardToolClassification = { kind: "activity" } | { kind: "native-subagent"; key: NativeSubagentKey } | { kind: "handoff"; handoffs: HandoffPresentation[] } | { kind: "pending-handoff" } | { kind: "worker"; workers: WorkerRecord[] };
+export type StandardToolClassification = { kind: "activity" } | { kind: "native-subagent"; key: NativeSubagentKey } | { kind: "handoff"; handoffs: HandoffPresentation[] } | { kind: "pending-handoff" } | { kind: "worker"; workers: WorkerRecord[] } | { kind: "worker-exchange"; exchanges: WorkerExchange[] } | { kind: "user-questions"; drafts: UserQuestionsDraft[] };
 // Keep the code-only discriminant and shares field compatible with existing callers.
 // Both overlays carry at most one underlying tool presentation, even inside execute.
 export type TranscriptToolClassification = StandardToolClassification
@@ -54,8 +56,8 @@ export function resolveActivityDetail(entry: ActivityEntry, messagesById: Readon
   }
 }
 
-export function classifyTranscriptTool({ sessionId, source, part, workers, handoffs, nativeRuns, nativeHarness, readOnly, codeShares = [], mediaShares = [] }: {
-  sessionId: string; source: Message; part: ToolPart; workers: WorkerRecord[]; handoffs: HandoffPresentation[]; nativeRuns: Run[]; nativeHarness: Harness; readOnly?: boolean; codeShares?: readonly CodeShareRecord[]; mediaShares?: readonly MediaShareRecord[];
+export function classifyTranscriptTool({ sessionId, source, part, workers, handoffs, nativeRuns, nativeHarness, readOnly, codeShares = [], mediaShares = [], exchanges = workerExchanges(workers), questionnaires }: {
+  sessionId: string; source: Message; part: ToolPart; workers: WorkerRecord[]; handoffs: HandoffPresentation[]; nativeRuns: Run[]; nativeHarness: Harness; readOnly?: boolean; codeShares?: readonly CodeShareRecord[]; mediaShares?: readonly MediaShareRecord[]; exchanges?: readonly WorkerExchange[]; questionnaires?: readonly UserQuestionsDraft[];
 }): TranscriptToolClassification {
   const shares = sharesForTool(sessionId, source, part, codeShares);
   const media = mediaSharesForTool(sessionId, source, part, mediaShares);
@@ -67,6 +69,8 @@ export function classifyTranscriptTool({ sessionId, source, part, workers, hando
   if (shares.length || directShare) return { kind: "code-share", shares, ...(!directShare ? { underlying: classifyStandardTool() } : part.error ? { underlying: { kind: "activity" as const } } : {}) };
   return classifyStandardTool();
   function classifyStandardTool(): StandardToolClassification {
+    const drafts = questionsForTool(sessionId, source, part, questionnaires ?? []);
+    if (drafts.length || questionnaires !== undefined && isUserQuestionsTool(part)) return { kind: "user-questions", drafts };
     if (readOnly) return { kind: "activity" };
     const key = nativeSubagentKey(sessionId, source, part, nativeRuns, nativeHarness);
     if (key) return { kind: "native-subagent", key };
@@ -75,6 +79,8 @@ export function classifyTranscriptTool({ sessionId, source, part, workers, hando
     if (isHandoffTool(part)) return { kind: "pending-handoff" };
     const dispatched = dispatchedWorkers(sessionId, source, part, workers);
     if (dispatched.length) return { kind: "worker", workers: dispatched };
+    const sentExchanges = sentWorkerExchanges(sessionId, source, part, exchanges);
+    if (sentExchanges.length) return { kind: "worker-exchange", exchanges: sentExchanges };
     return { kind: "activity" };
   }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { FiChevronDown, FiGrid, FiInfo, FiPaperclip } from "react-icons/fi";
+import { FiGrid, FiLoader, FiPaperclip, FiUser } from "react-icons/fi";
 import { useRegisterCommand, isMacPlatform } from "./application-commands";
 import { FLOWS_SHORTCUT, shortcutHint } from "./shortcut-definitions";
 import { TerminalProvider, TerminalHeader, TerminalView } from "./terminal";
@@ -8,7 +8,6 @@ import { AgentAvatar } from "./agent-visuals";
 import { AgentPicker } from "./agent-picker";
 import { ChatInput } from "./chat-input";
 import { Icon } from "./nav";
-import { ShellDialog } from "./shell-dialog";
 import { store, useStore, type State } from "./store";
 import { WorkersButton } from "./worker-ui";
 import { ChatWorkstreamActions } from "./workstream-actions";
@@ -16,10 +15,11 @@ import { DocumentReviewComposer } from "./document-review";
 import type { DocumentReviewController, DocumentReviewStart } from "./document-review-model";
 import { catalog } from "./catalog";
 import { compactCommand } from "./compaction";
-import { chatStatuses, chatStatusSummary, type ChatStatusContext } from "./chat-status";
+import { chatStatuses, type ChatStatusContext } from "./chat-status";
 import { ComposerStatus } from "./composer-status";
 import { Interactions } from "./interactions";
-import { UserQuestionsPanel } from "./user-questions";
+import { UserQuestionsActivity } from "./user-questions";
+import { userQuestionsActivityStatus } from "./user-questions-presentation";
 import type { UserQuestionsController } from "./user-questions-client";
 import { RequestToggle } from "./composer-request";
 import { pendingInteractions } from "./interaction-presentation";
@@ -71,7 +71,7 @@ function RetainedInputDetails({ state, disabled, operate }: { state: State; disa
 export type ChatFlowPresentation = "local" | "documents";
 
 /** Kept mounted with Thread: only the draft identity may replace the DOM input. */
-export function ChatComposer({ state, active = true, paired = false, onOpenChatFlow, flowPresentation = null, onFlowPresentationChange, navigation, ack, onAckChange, send, sendDisabled, parentId, review, statusContext, statusActions, questions, questionsReadOnlyReason }: {
+export function ChatComposer({ state, active = true, paired = false, onOpenChatFlow, flowPresentation = null, onFlowPresentationChange, navigation, ack, onAckChange, send, sendDisabled, parentId, review, statusContext, statusActions, questions }: {
   state: State;
   active?: boolean;
   paired?: boolean;
@@ -88,9 +88,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   statusContext?: ChatStatusContext;
   statusActions?: ReactNode;
   questions?: UserQuestionsController;
-  questionsReadOnlyReason?: string;
 }) {
-  const [helpOpen, setHelpOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [composing, setComposing] = useState(false);
   const composingRef = useRef(false);
@@ -99,7 +97,6 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const agentTrigger = useRef<HTMLButtonElement>(null);
-  const helpTrigger = useRef<HTMLButtonElement>(null);
   const normalComposer = useRef<HTMLFormElement>(null);
   const flowComposer = useRef<HTMLDivElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -212,8 +209,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   // target because ShellDialog falls back to its old trigger for a null target.
   const activity = useRef(active); activity.current = active && !flowOpen;
   const restoreAgentFocus = () => activity.current ? agentTrigger.current : document.body;
-  const restoreHelpFocus = () => activity.current ? helpTrigger.current : document.body;
-  useEffect(() => { if (!active || flowOpen) { setHelpOpen(false); setPickerOpen(false); } }, [active, flowOpen]);
+  useEffect(() => { if (!active || flowOpen) setPickerOpen(false); }, [active, flowOpen]);
   useEffect(() => {
     if (active && wasFlowOpen.current && !flowOpen) normalComposer.current?.querySelector("textarea")?.focus({ preventScroll: true });
     else if (active && hadRequests.current && !hasRequests && reviewFlow && review?.flow?.path) flowComposer.current?.querySelector<HTMLTextAreaElement>("textarea:not(:disabled)")?.focus({ preventScroll: true });
@@ -228,9 +224,12 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   const profile = store.effectiveProfile();
   // New conversations pick freely; a Base may upgrade once; an assistant is fixed.
   const fixed = !!state.selected && (grok && !store.grokProfileUpgradesSupported() || store.conversationKind() === "assistant" || !!parentId);
-  const infoError = state.submissionError || (capabilities.catalogRequiredForSend ? state.modelsError : "");
   const statuses = chatStatuses(state, statusContext ?? { workspaceReady: true });
-  const infoText = infoError || chatStatusSummary(statuses)?.text;
+  const questionsStatus = questions ? userQuestionsActivityStatus(questions) : undefined;
+  if (questionsStatus) statuses.push(questionsStatus);
+  // Upload feedback uses the shared toolbar status, never an extra row above the
+  // input. Connection failures and pending conversation requests remain primary.
+  if (imageNotice) statuses.push({ id: "image-upload", text: "Image upload needs attention", detail: imageNotice, priority: 86 });
   const reviewBlocked = !active || hasRequests || chainLocked || !capabilities.prompt || !store.captureSendSupported() || sendDisabled || (needsAck && ack !== state.selected);
   const uploadScope = imageUploadDraftScope();
   const uploadAvailable = active && !flowOpen && !sendDisabled && !imageUploadDraftBlocked() && !!uploadScope;
@@ -352,22 +351,14 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     {grokNotice && <p className="notice" role="status">{grokNotice}</p>}
     {conversation?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {conversation.attachment.error}</p>}
     <div className="composer-surface">
-    <ComposerStatus key={flowScope} statuses={statuses} active={active} actions={statusActions} receiptDetails={grok ? undefined : close => <AppAdmissionRecoveryPanel active={active} onActionComplete={close} />}
-      queue={lid ? { lid, details: pendingSupported
-        ? <PendingInputDetails state={state} active={active && !flowOpen && !conversation?.replacedBy} busy={pendingBusy} operate={operatePending} />
-        : <RetainedInputDetails state={state} disabled={!active || flowOpen || !!conversation?.replacedBy || pendingBusy || state.actionBusy || state.sending || state.loading || !!state.pendingInputLoading} operate={operatePending} /> } : undefined}
-      restoreFocus={() => !flowOpen ? normalComposer.current?.querySelector("textarea") ?? document.body : document.body} />
     <div ref={flowComposer} className="composer-flow-slot" hidden={hasRequests} style={{ display: hasRequests ? "none" : "contents" }}>
       {localPage === "flows" && active && !hasRequests && <ChatWorkstreamActions key={flowScope} conversation={conversation} active={active} close={closeLocalFlow} onDocuments={review ? openDocuments : undefined} onTerminal={() => showLocalFlow("terminal")} onGit={() => { const gitTarget = captureGitTarget(); if (gitTarget) showLocalFlow("git", gitTarget); }} />}
       {localPage === "terminal" && active && !hasRequests && <TerminalProvider view="terminal"><section className="workstream-status-composer terminal-composer" aria-label="Terminal flow"><header className="workstream-status-heading"><TerminalHeader /><FlowNavigation back={() => showLocalFlow("flows")} exit={closeLocalFlow} /></header><TerminalView exit={closeLocalFlow} /></section></TerminalProvider>}
       {localPage === "git" && localFlow?.gitTarget && active && !hasRequests && <GitFlow target={localFlow.gitTarget} back={() => showLocalFlow("flows")} exit={closeLocalFlow} />}
       {!conversation?.replacedBy && reviewFlow && review && <DocumentReviewComposer review={review} active={active && !hasRequests} disabled={reviewBlocked} back={() => showLocalFlow("flows")} navigation={navigation} acknowledgment={acknowledgment} exitToChatRequest={questionsReveal} />}
     </div>
-    <div className="composer-frame" hidden={flowOpen && !hasRequests}>
-    {hasRequests && <Interactions key={flowScope} state={state} active={active && !helpOpen && !pickerOpen} navigation={navigation} showNotice={false} />}
-    <div className="composer-request-slot" hidden={hasRequests}>
-      {questions && <UserQuestionsPanel questions={questions} readOnlyReason={questionsReadOnlyReason} />}
-    </div>
+    <div className="composer-frame">
+    {hasRequests && <Interactions key={flowScope} state={state} active={active && !pickerOpen} navigation={navigation} showNotice={false} />}
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onCompositionStartCapture={() => { composingRef.current = true; setComposing(true); }} onCompositionEndCapture={() => { composingRef.current = false; setComposing(false); }} onSubmit={event => { event.preventDefault(); submit(); }}
       onPasteCapture={event => {
         const files = Array.from(event.clipboardData.files);
@@ -382,32 +373,29 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
       }}>
       {acknowledgment}
       <input ref={imageInput} type="file" accept=".png,.jpg,.jpeg,.webp" multiple hidden aria-label="Choose images to upload" onChange={event => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ""; imageFilesChosen(files); }} />
-      {imageNotice && <p className="notice" role="status">{imageNotice}</p>}
-      {!uploadScope && !state.selected && <p className="muted">Choose an available workspace and checkout first to upload images.</p>}
-      <ChatInput key={draftIdentity} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input pending-input-primary-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" sendButton={<button type="submit" className="send pending-input-primary" data-mode={primary.mode} disabled={primary.disabled} aria-label={state.sending ? "Sending message" : "Send message"} aria-busy={state.sending} title={primary.reason ?? "Send message"}><Icon name="send" />{state.sending ? <span className="pending-input-send-progress"><span className="pulse" aria-hidden="true" />Sending…</span> : <span>{primary.label}</span>}</button>} />
-      <div className="composer-toolbar"><div className="composer-options">
+      <ChatInput key={draftIdentity} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input pending-input-primary-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" sendButton={<button type="submit" className="send pending-input-primary" data-mode={primary.mode} disabled={primary.disabled} aria-label={state.sending ? "Sending message" : "Send message"} aria-busy={state.sending} title={primary.reason ?? "Send message"}>{state.sending ? <FiLoader className="composer-send-spinner" size={18} aria-hidden="true" /> : <Icon name="send" />}</button>} />
+    </form> : null}
+      <div className="composer-toolbar composer-unified-toolbar"><div className="composer-options" hidden={flowOpen || !!conversation?.replacedBy}>
         {profile ? fixed
-          ? <span className="agent-chip fixed" role="status" title={profile.label}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span></span>
-          : <button ref={agentTrigger} type="button" className="agent-chip" aria-haspopup="dialog" disabled={state.sending || !active || chainLocked} title={chainLocked ? "Agent settings are fixed while the pending-input chain is active." : profile.label} aria-label={`${state.selected ? "Agent" : "Agent for new conversation"}: ${profile.label}${store.pendingUpgrade() ? " (pending)" : ""}`} onClick={() => { if (!store.pendingInputChainLocked()) setPickerOpen(true); }}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span>{store.pendingUpgrade() && <span className="agent-chip-pending">pending</span>}<FiChevronDown size={12} aria-hidden="true" /></button>
-          : <span className="agent-chip fixed" role="status" title={store.conversationProfileLabel(state.selected)}><span className="agent-chip-label">{store.conversationProfileLabel(state.selected)}</span></span>}
+          ? <span className="agent-chip fixed" role="status" aria-label={profile.label} title={profile.label}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span></span>
+          : <button ref={agentTrigger} type="button" className="agent-chip" aria-haspopup="dialog" disabled={state.sending || !active || chainLocked} title={chainLocked ? "Agent settings are fixed while the pending-input chain is active." : profile.label} aria-label={`${state.selected ? "Agent" : "Agent for new conversation"}: ${profile.label}${store.pendingUpgrade() ? " (pending)" : ""}`} onClick={() => { if (!store.pendingInputChainLocked()) setPickerOpen(true); }}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span>{store.pendingUpgrade() && <span className="agent-chip-pending">pending</span>}</button>
+          : <span className="agent-chip fixed" role="status" aria-label={store.conversationProfileLabel(state.selected)} title={store.conversationProfileLabel(state.selected)}><FiUser size={20} aria-hidden="true" /><span className="agent-chip-label">{store.conversationProfileLabel(state.selected)}</span></span>}
         <div className="composer-utilities">
           <button type="button" className="composer-flows" disabled={!uploadAvailable || !!imageUpload} aria-label="Attach images" title={uploadScope ? "Attach images" : "Choose an available workspace and checkout first to upload images"} onClick={() => beginImageUpload()}><FiPaperclip size={16} aria-hidden="true" /></button>
           <WorkersButton key={state.selected} sessionId={state.selected} active={active && !flowOpen} />
-          <button type="button" className="composer-flows" disabled={paired && !onOpenChatFlow} title={paired ? "Open Flows in Chat" : `Flows (${shortcutHint(FLOWS_SHORTCUT)})`} aria-keyshortcuts={`${isMacPlatform() ? "Meta" : "Control"}+p`} aria-expanded={localPage === "flows"} onClick={openFlows}><FiGrid size={14} aria-hidden="true" />Flows</button>
+          <button type="button" className="composer-flows" disabled={paired && !onOpenChatFlow} aria-label={paired ? "Open Flows in Chat" : "Flows"} title={paired ? "Open Flows in Chat" : `Flows (${shortcutHint(FLOWS_SHORTCUT)})`} aria-keyshortcuts={`${isMacPlatform() ? "Meta" : "Control"}+p`} aria-expanded={localPage === "flows"} onClick={openFlows}><FiGrid size={16} aria-hidden="true" /><span className="composer-utility-label">Flows</span></button>
         </div>
-      </div><div className="composer-actions">
-        <button ref={helpTrigger} type="button" className={`composer-help${infoError ? " has-issue" : ""}`} disabled={!active} aria-label={infoText ? `Sending messages and receipts: ${infoText}` : "Sending messages and message receipts"} title="Sending messages and message receipts" onClick={() => setHelpOpen(true)}><FiInfo size={14} aria-hidden="true" />{infoError ? <span className="composer-help-dot" aria-hidden="true" /> : null}</button>
-        {navigation}
-      </div></div>
-    </form> : navigation ? <footer className="composer-toolbar composer-navigation-only"><div className="composer-actions">{navigation}</div></footer> : null}
+      </div>
+      <ComposerStatus key={flowScope} statuses={statuses} active={active} actions={statusActions} activityDetails={questions ? close => <UserQuestionsActivity questions={questions} close={close} disabled={!active || state.sending || state.loading} /> : undefined} receiptDetails={grok ? undefined : close => <AppAdmissionRecoveryPanel active={active} onActionComplete={close} />}
+        queue={lid ? { lid, details: pendingSupported
+          ? <PendingInputDetails state={state} active={active && !flowOpen && !conversation?.replacedBy} busy={pendingBusy} operate={operatePending} />
+          : <RetainedInputDetails state={state} disabled={!active || flowOpen || !!conversation?.replacedBy || pendingBusy || state.actionBusy || state.sending || state.loading || !!state.pendingInputLoading} operate={operatePending} /> } : undefined}
+        restoreFocus={() => !flowOpen ? normalComposer.current?.querySelector("textarea") ?? document.body : document.body} />
+      {!flowOpen && navigation && <div className="composer-actions">{navigation}</div>}
+      </div>
     </div>
     </div>
     {active && pickerOpen && <AgentPicker close={() => setPickerOpen(false)} restoreFocus={restoreAgentFocus} />}
     {imageUpload && imageUpload.files.length > 0 && imageUploadRef.current === imageUpload && <div onKeyDown={event => event.stopPropagation()}><ImageUploadDialog target={imageUpload.scope.target} expectedBindingRevision={imageUpload.scope.bindingRevision} files={imageUpload.files} onUploaded={(receipts: ImageUploadReceipt[]) => imagesUploaded(imageUpload, receipts)} onClose={() => { if (imageUploadRef.current === imageUpload) closeImageUpload(); }} /></div>}
-    {active && helpOpen && <ShellDialog title="Sending messages" close={() => setHelpOpen(false)} restoreFocus={restoreHelpFocus}><div className="composer-help-notes">
-      {state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}
-      {!grok && <AppAdmissionRecoveryPanel active={active} onActionComplete={() => setHelpOpen(false)} />}
-      <p className="muted">Background progress and connection details appear in the activity row above the composer.</p><p className="muted">Enter inserts a newline · Ctrl/Cmd+Enter uses the visible primary action. Other conversations can run concurrently.</p><p className="muted">Type @ for paths in the execution directory. Arrow keys choose; Enter inserts text, not an attachment. Escape dismisses.</p><p className="muted">Concurrent conversations in this checkout share files; their edits can overlap.</p>{needsAck && <p className="muted">External assistant activity cannot be detected here. Stop it in its native harness before sending to this same conversation.</p>}
-    </div></ShellDialog>}
   </>;
 }

@@ -1,0 +1,5 @@
+.chat-menu-trigger.has-issue,.chat-menu-trigger.has-issue:hover { color:var(--chat-ui-danger); }
+.chat-overflow-menu { position:fixed; inset:auto; z-index:100; box-sizing:border-box; margin:0; padding:var(--chat-ui-space-1); overflow:auto; overscroll-behavior:contain; border:1px solid var(--chat-ui-border); border-radius:var(--chat-ui-control-radius); background:var(--chat-ui-surface); color:var(--chat-ui-foreground); box-shadow:0 6px 24px var(--shadow-panel-subtle); font:var(--chat-ui-font-size)/var(--chat-ui-line-height) var(--font-sans,sans-serif); }
+.chat-overflow-menu[data-open="false"] { display:none; }
+.chat-overflow-menu .chat-button { width:100%; justify-content:flex-start; text-align:start; border:0; }
+.chat-overflow-menu hr { margin:var(--chat-ui-space-2) var(--chat-ui-space-1); border:0; border-top:1px solid var(--chat-ui-border); }

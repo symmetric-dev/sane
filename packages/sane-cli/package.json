@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@opencode/client": "2.0.18",
+    "@opencode/client": "2.2.4",
     "@modelcontextprotocol/sdk": "^1.25.0",
     "sane-core": "workspace:*"
   },

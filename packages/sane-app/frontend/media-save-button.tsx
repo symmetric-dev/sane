@@ -2,16 +2,18 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { FiAlertCircle, FiShare2 } from "react-icons/fi";
 import type { MediaShareItem, MediaShareRecord } from "../shared/media-share-contract";
 import { mediaShareFilename } from "./media-share-presentation";
-import { saveSharedMedia } from "./media-share-save";
+import { saveSharedMedia, saveSharedMediaCollection } from "./media-share-save";
+import { ChatButton } from "./chat-ui";
 
-export function MediaSaveButton({ share, item, iconOnly = false }: { share: MediaShareRecord; item: MediaShareItem; iconOnly?: boolean }) {
+export function MediaSaveButton({ share, item, label: shareLabel = "Share" }: { share: MediaShareRecord; item?: MediaShareItem; label?: string }) {
   const [status, setStatus] = useState<"idle" | "busy" | "ready" | "error">("idle");
   const [message, setMessage] = useState("");
   const controller = useRef<AbortController | null>(null);
-  const prepared = useRef<File | undefined>(undefined);
+  const prepared = useRef<File[] | undefined>(undefined);
   useLayoutEffect(() => () => { controller.current?.abort(); prepared.current = undefined; }, []);
-  const name = mediaShareFilename(item);
-  const label = status === "busy" ? "Preparing…" : status === "ready" ? "Share file" : status === "error" ? "Retry save" : "Save / Share";
+  const first = share.media[0];
+  const name = item ? mediaShareFilename(item) : share.media.length === 1 && first ? mediaShareFilename(first) : `all ${share.media.length} media files`;
+  const label = status === "busy" ? "Preparing…" : status === "ready" ? `${shareLabel} now` : status === "error" ? "Retry" : shareLabel;
   const description = `${label}: ${name}${message ? `. ${message}` : ""}`;
   const save = async () => {
     if (controller.current) return;
@@ -20,11 +22,13 @@ export function MediaSaveButton({ share, item, iconOnly = false }: { share: Medi
     setStatus("busy");
     setMessage("");
     try {
-      const file = await saveSharedMedia(share, item, request.signal, prepared.current);
+      const files = item
+        ? await saveSharedMedia(share, item, request.signal, prepared.current?.[0]).then(file => file ? [file] : undefined)
+        : await saveSharedMediaCollection(share, request.signal, prepared.current);
       if (request.signal.aborted) return;
-      prepared.current = file;
-      setStatus(file ? "ready" : "idle");
-      setMessage(file ? "File ready. Tap again to open the share sheet." : "");
+      prepared.current = files;
+      setStatus(files ? "ready" : "idle");
+      setMessage(files ? `Files ready. Tap ${shareLabel} again to open the share sheet.` : "");
     } catch (error) {
       if (request.signal.aborted) return;
       if (error instanceof Error && error.name === "AbortError") {
@@ -38,10 +42,9 @@ export function MediaSaveButton({ share, item, iconOnly = false }: { share: Medi
       if (controller.current === request) controller.current = null;
     }
   };
+  const icon = status === "error" ? <FiAlertCircle /> : <FiShare2 />;
   return <>
-    <button type="button" className="shared-media-save" aria-label={description} title={description} disabled={status === "busy"} onClick={save}>
-      {status === "error" ? <FiAlertCircle aria-hidden="true" /> : <FiShare2 aria-hidden="true" />}{(!iconOnly || status === "ready" || status === "error") && label}
-    </button>
+    <ChatButton variant="ghost" className="shared-media-save" aria-label={description} title={description} busy={status === "busy"} icon={icon} onClick={save}>{label}</ChatButton>
     <span className="sr-only" role="status">{message}</span>
   </>;
 }

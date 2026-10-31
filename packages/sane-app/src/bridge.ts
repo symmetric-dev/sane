@@ -45,6 +45,7 @@ import { projectClaudeFollowups } from "./claude-followup-projection";
 import { explicitGrokExecutable, resolveAppConfig } from "./app-config";
 import { AssetBuildError, buildAssets, validateAssets } from "./asset-build";
 import { createAssetRoute } from "./asset-routes";
+import { createFrontendDev } from "./frontend-dev";
 import { createAgentProfileRoute } from "./agent-profile-routes";
 import { acquireInstallation, acquireData, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
 import { claudeSourceRoot } from "./claude-source";
@@ -175,7 +176,7 @@ import { HarnessOperationError, dispatchHarness, dispatchOwnedOperation, require
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export { hookEvents };
-export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; nativeRuntime?: NativeRuntimeSelection; /** Saved absolute Grok executable. Omitted unless explicit; never a PATH name. */ grokExecutable?: string; grokHomeRoot?: string; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; initializeAppAdmissions?: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; contextDelivery?: "startup" | "canonical"; agentModelConfig?: string; /** Internal deterministic fixture dependency; never parsed from CLI/config/HTTP. */ pendingInputWakeClock?: PendingInputWakeClock; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
+export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; nativeRuntime?: NativeRuntimeSelection; /** Saved absolute Grok executable. Omitted unless explicit; never a PATH name. */ grokExecutable?: string; grokHomeRoot?: string; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; initializeAppAdmissions?: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; dev?: boolean; contextDelivery?: "startup" | "canonical"; agentModelConfig?: string; /** Internal deterministic fixture dependency; never parsed from CLI/config/HTTP. */ pendingInputWakeClock?: PendingInputWakeClock; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
 type BridgeMessageIntent = SubmissionMessageIntent;
 type SubmissionPublicationFactory = (owner: Owner) => OwnedSubmissionPublication;
 type OriginalSubmission = { original: OriginalAppAdmission; envelope: AppAdmissionEnvelope; binding: AppAdmissionConversationBinding };
@@ -187,7 +188,7 @@ export function runtimeOptions(resolved: ReturnType<typeof resolveAppConfig>): O
   const grokExecutable = explicitGrokExecutable(c);
   return { host: c.server.host, port: c.server.port, cwd: c.defaultExecutionCwd, dataDir: c.dataDir,
     claudeBin: c.native.claude.executable, allowRemote: c.server.allowRemote, publicOrigin: c.server.publicOrigin ?? undefined,
-    maxConcurrentRuns: c.maxConcurrentRuns, maxWorkersPerCheckout: c.maxWorkersPerCheckout, reconcileInterrupted: operational.reconcileInterrupted, initializeAppAdmissions: operational.initializeAppAdmissions, noBuild: operational.noBuild, contextDelivery: c.contextDelivery, agentModelConfig: c.agentModelConfig,
+    maxConcurrentRuns: c.maxConcurrentRuns, maxWorkersPerCheckout: c.maxWorkersPerCheckout, reconcileInterrupted: operational.reconcileInterrupted, initializeAppAdmissions: operational.initializeAppAdmissions, noBuild: operational.noBuild, dev: operational.dev, contextDelivery: c.contextDelivery, agentModelConfig: c.agentModelConfig,
     ...(c.nativeRuntime ? { nativeRuntime: c.nativeRuntime } : {}),
     ...(grokExecutable ? { grokExecutable } : {}),
     ...(c.native.grok ? { grokHomeRoot: c.native.grok.homeRoot } : {}),
@@ -199,6 +200,7 @@ export function startupSummary(o: Options): string {
     `  Native mode: Claude executable ${o.claudeBin}; configured managed OpenCode registration`,
     `  SANE context delivery: shared user messages`,
     `  Listener: ${o.host}:${o.port}; public origin: ${o.publicOrigin ?? "listener origin"}`,
+    ...(o.dev ? ["  Frontend development: rebuild on save; refresh browser to update (backend stays running)"] : []),
     "  Workstreams: explicit per-workspace inspect/init; no implicit project initialization",
   ].join("\n");
 }
@@ -236,10 +238,12 @@ async function drainWorkspaceSearches(drain: Promise<void>): Promise<boolean> {
   } finally { if (timeout !== undefined) clearTimeout(timeout); }
 }
 export async function start(options: Options) {
+  if (options.dev && options.noBuild) throw new Error("--dev cannot be combined with --no-build");
   const paths = validateOwnershipPaths(options.packageDir ?? root, options.dataDir);
   const installation = acquireInstallation(paths, { phase: "starting", reconcileInterrupted: options.reconcileInterrupted });
   let data: OwnershipHandle | undefined;
   let bridge: Awaited<ReturnType<typeof startOwned>> | undefined;
+  let frontendDev: ReturnType<typeof createFrontendDev> | undefined;
   // Failed drain requires ownership even when BOTH durable retained-state
   // writes fail. Latch before either write; handle.retain() alone only guards
   // release after a successful write. No later cleanup attempt may unlatch it.
@@ -295,11 +299,14 @@ export async function start(options: Options) {
     const assertOriginalAppRoot = () => guardOriginalAppRoot(() => { assertStorageOwnership(); originalAppAdmissionRoot.assertCurrent(); });
     installation.update("build");
     let assets: ReturnType<typeof validateAssets> | undefined;
-    if (!options.noBuild) { try { assets = validateAssets({ packageDir: paths.packageDir }); } catch (error) { if (!(error instanceof AssetBuildError)) throw error; } }
+    if (options.dev) {
+      frontendDev = createFrontendDev(paths.packageDir, installation);
+      assets = await frontendDev.start();
+    } else if (!options.noBuild) { try { assets = validateAssets({ packageDir: paths.packageDir }); } catch (error) { if (!(error instanceof AssetBuildError)) throw error; } }
     assets ??= options.noBuild ? validateAssets({ packageDir: paths.packageDir }) : await buildAssets({ packageDir: paths.packageDir, ownership: installation });
     installation.update("starting");
     bridge = await startOwned(options, assets.assetsDir, paths.packageDir, retain, () => storageOwnershipHeld && !retentionRequired,
-      assertOriginalAppRoot, originalAppAdmissionRoot);
+      assertOriginalAppRoot, originalAppAdmissionRoot, frontendDev?.route);
     // The await itself is a final startup gap, even if inner classification had
     // no recovered work. Verify the ORIGINAL cap before publishing serving.
     assertOriginalAppRoot();
@@ -312,7 +319,7 @@ export async function start(options: Options) {
     let closing: Promise<void> | undefined;
     return { origin: running.origin, port: running.port, workers: running.workers, workerOutbox: running.workerOutbox, preparedInput: running.preparedInput, pendingInputs: running.pendingInputs, pendingInputConsumer: running.pendingInputConsumer, pendingInputWake: running.pendingInputWake, close() {
       return closing ??= (async () => {
-        try { publishOwnership("draining"); await running.close(); }
+        try { await frontendDev?.close(); publishOwnership("draining"); await running.close(); }
         catch (error) {
           if (retentionRequired) { try { await running.abortStartup(); } catch { /* Already latched. */ } }
           else { try { retain(); } catch { /* Preserve the original shutdown error. */ } }
@@ -322,6 +329,7 @@ export async function start(options: Options) {
       })();
     } };
   } catch (error) {
+    await frontendDev?.close();
     // Publication of the serving ownership records can fail after startOwned
     // returns. Use the same bounded listener-first abort as inner startup errors,
     // not normal shutdown (which may reject before reaching listener teardown).
@@ -330,7 +338,7 @@ export async function start(options: Options) {
   }
 }
 async function startOwned(options: Options, assetsDir: string, packageDir: string, retainOwnership: () => void, ownsStorage: () => boolean,
-  assertOriginalAppRoot: () => void, originalAppAdmissionRoot: OriginalAppAdmissionRootProof) {
+  assertOriginalAppRoot: () => void, originalAppAdmissionRoot: OriginalAppAdmissionRootProof, developmentAssetRoute?: ReturnType<typeof createAssetRoute>) {
   // Keep the cap private, outside Options/config/serialization. Existing storage
   // assertions use the OUTER guarded proof, so even the earliest calls retain
   // both ownership handles without touching uninitialized inner failure state.
@@ -4745,7 +4753,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       });
     };
   }
-  const assetRoute = createAssetRoute({ assetsDir, assetManifest });
+  const assetRoute = developmentAssetRoute ?? createAssetRoute({ assetsDir, assetManifest });
   const agentProfileRoute = createAgentProfileRoute({ readProfiles: () => agentProfiles, commitProfiles: commitAgents });
   const browserPairRoute = createBrowserPairRoute({ storeId: store.manifest.storeId, browserPairs, catalog,
     findSession: id => meta.sessions.find(session => session.sessionId === id), sessionHarness: pairSessionHarness, nativeSource,

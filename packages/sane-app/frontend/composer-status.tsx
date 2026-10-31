@@ -9,10 +9,34 @@ type StatusEvent = ChatStatus & { sequence: number; time: number };
 type StatusLog = { signature: string; current: ChatStatus[]; events: StatusEvent[]; sequence: number };
 const sameStatus = (left: ChatStatus, right: ChatStatus) => left.id === right.id && left.text === right.text && left.detail === right.detail && left.busy === right.busy && left.action === right.action;
 const briefLoading = new Set(["conversation", "workspace", "history-page", "history-refresh", "handoffs", "workers", "native-subagents", "action", "models", "availability"]);
-type StatusLid = { text: string; busy: boolean; queueBadge?: string | null; queueDescription: string; queueState?: PendingInputLid["state"]; transient: boolean; immediate: boolean };
+type StatusLid = { text: string; label: string; busy: boolean; queueDescription: string; transient: boolean; immediate: boolean };
+
+/** Compact presentation only: exact wording and recovery actions stay in details. */
+function compactStatus(status: ChatStatus | undefined, queue?: PendingInputLid): string {
+  if (queue) {
+    if (queue.state === "unconfirmed" || queue.state === "reconciliation") return "Needs attention";
+    if (queue.state === "paused") return "Paused";
+    if (queue.state === "running") return "Working";
+    if (queue.text === "Checking queue…") return "Loading";
+    return queue.text === "Queued" ? "Queued" : "Waiting";
+  }
+  if (!status) return "";
+  if (status.id === "connection") return "Reconnecting";
+  if (status.id === "sending") return "Sending";
+  if (status.action === "verify-completion" || /error|failed|interrupted|unavailable|unknown|unconfirmed|verification|attention|uncertain|not in|rejected|reconciliation/i.test(`${status.id} ${status.text}`)) return "Needs attention";
+  if (status.id === "user-questions") return "Questions";
+  if (status.id === "input-request") return status.busy ? "Sending" : "Waiting";
+  if (status.id === "followup-queue" || status.id === "native-queue" || /queued/i.test(status.text)) return "Queued";
+  if (/stopping/i.test(status.text)) return "Stopping";
+  if ((briefLoading.has(status.id) && status.id !== "availability" && status.busy) || status.id === "history-refresh" || status.id === "run" && status.text === "Checking run status…") return "Loading";
+  if (/waiting|awaiting|unfinished|\bidle\b/i.test(status.text) || status.id === "app-admission") return "Waiting";
+  if (status.id === "run" || status.id === "compact-request") return "Working";
+  if (status.id === "worker-protocol") return status.busy ? "Working" : "Done";
+  return "Needs attention";
+}
 
 function useStatusLid(candidate: StatusLid | undefined, active: boolean) {
-  const key = JSON.stringify([active, candidate?.text, candidate?.busy, candidate?.transient, candidate?.immediate]);
+  const key = JSON.stringify([active, candidate?.text, candidate?.label, candidate?.busy, candidate?.transient, candidate?.immediate]);
   const pending = useRef({ key, since: Date.now() });
   if (pending.current.key !== key) pending.current = { key, since: Date.now() };
   const [shown, setShown] = useState<{ key: string; value: StatusLid; since: number }>();
@@ -54,7 +78,7 @@ function ActivityTiming({ status }: { status: ChatStatus }) {
 
 /** The highest-priority active state occupies the lid. Details retain a bounded,
  * conversation-scoped history without creating synthetic chat messages. */
-export function ComposerStatus({ statuses, active, actions, restoreFocus, queue, receiptDetails, detailsRequest = 0 }: { statuses: ChatStatus[]; active: boolean; actions?: ReactNode; restoreFocus: () => HTMLElement | null; queue?: { lid: PendingInputLid; details: ReactNode }; receiptDetails?: (close: () => void) => ReactNode; detailsRequest?: number }) {
+export function ComposerStatus({ statuses, active, actions, restoreFocus, queue, receiptDetails, activityDetails, detailsRequest = 0 }: { statuses: ChatStatus[]; active: boolean; actions?: ReactNode; restoreFocus: () => HTMLElement | null; queue?: { lid: PendingInputLid; details: ReactNode }; receiptDetails?: (close: () => void) => ReactNode; activityDetails?: (close: () => void) => ReactNode; detailsRequest?: number }) {
   const [open, setOpen] = useState(false);
   const [verification, setVerification] = useState<{ confirm: () => Promise<void>; sessionId: string }>();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -77,17 +101,16 @@ export function ComposerStatus({ statuses, active, actions, restoreFocus, queue,
   // Only ordinary execution wording may yield to the queue state. Connection,
   // source, permission, error and reconciliation summaries remain primary.
   const queuePrimary = !!queue && (!summary || (summary.priority ?? (summary.id === "availability" ? 80 : 60)) < 80
-    && (summary.id === "pending-input" || (summary.id === "run" && !!summary.busy) || (summary.id === "availability" && !!summary.busy)));
+    && (summary.id === "pending-input" || (summary.id === "run" && !!summary.busy && summary.text !== "Stopping run…" && summary.text !== "Checking run status…") || (summary.id === "availability" && !!summary.busy)));
   const lidText = queuePrimary ? queue!.lid.text : summary?.text;
   const queueDescription = queue?.lid.waitingLabel ?? "";
-  const queueBadge = queue?.lid.waitingLabel;
   const lidBusy = queuePrimary ? queue!.lid.state === "running" || queue!.lid.state === "checking" : summary?.busy;
   const transient = queuePrimary ? queue!.lid.text === "Checking queue…" : !!summary?.busy && !summary.action
     && summary.id !== "sending" && summary.id !== "input-request" && summary.id !== "connection"
     && (briefLoading.has(summary.id) || /^(Loading|Checking|Refreshing|Preparing|Updating)\b/.test(summary.text));
   const immediate = !transient && (queuePrimary ? queue!.lid.state === "unconfirmed" || queue!.lid.state === "reconciliation" || queue!.lid.state === "paused"
     : !!summary && (summary.id === "sending" || summary.id === "run" && summary.text === "Starting assistant…" || summary.id === "input-request" || summary.id === "connection" || summary.id === "worker-protocol" || !!summary.action || !summary.busy));
-  const lid = useStatusLid(lidText ? { text: lidText, busy: !!lidBusy, queueBadge, queueDescription, queueState: queue?.lid.state, transient, immediate } : undefined, active);
+  const lid = useStatusLid(lidText ? { text: lidText, label: compactStatus(summary, queuePrimary ? queue!.lid : undefined), busy: !!lidBusy, queueDescription, transient, immediate } : undefined, active);
   const combinedText = [lid?.text, lid?.queueDescription].filter(Boolean).join(" · ");
   const recent = [...currentLog.events].reverse().filter(event => !statuses.some(status => sameStatus(status, event)));
   useEffect(() => {
@@ -104,19 +127,17 @@ export function ComposerStatus({ statuses, active, actions, restoreFocus, queue,
     } else if (status.action === "reconnect") store.reconnect();
     else void store.loadModels(store.harness());
   };
-  const verifyStatus = statuses.find(status => status.action === "verify-completion");
   const confirming = verification && verification.sessionId === store.snapshot().selected;
 
   return <>
     <div className="composer-status-slot">
-    {lid && <div className="composer-status-lid">
-      <span className={lid.busy ? "pulse" : "composer-status-dot"} aria-hidden="true" />
-      <span className="composer-status-text" role="status" aria-live="polite" aria-atomic="true" aria-label={combinedText} title={combinedText}>{lid.text}</span>
-      {lid.queueBadge && <span className="pending-input-status-badge" data-state={lid.queueState} title={lid.queueDescription} aria-hidden="true">{lid.queueBadge}</span>}
+    <div className="composer-status-lid" data-attention={lid?.label === "Needs attention" || undefined}>
+      <span className="composer-status-summary" role="status" aria-live="polite" aria-atomic="true">
+        {lid && <><span className={lid.busy ? "pulse" : "composer-status-dot"} aria-hidden="true" /><span className="composer-status-text">{lid.label}</span></>}
+      </span>
+      <button ref={trigger} type="button" className="composer-status-info" disabled={!active} aria-label={combinedText ? `Show activity details: ${combinedText}` : "Show activity details and message receipts"} aria-haspopup="dialog" aria-expanded={open} title="Activity details and message receipts" onClick={() => { requestedFromComposer.current = false; setOpen(true); }}><FiInfo size={16} aria-hidden="true" /></button>
       {actions}
-      {verifyStatus && <button type="button" className="text-button" disabled={!active || store.snapshot().actionBusy} onClick={() => retry(verifyStatus)}>Verify completion</button>}
-      <button ref={trigger} type="button" className="composer-status-info" disabled={!active} aria-label={queue ? `Show activity and queue details: ${combinedText}` : "Show activity details"} aria-haspopup="dialog" aria-expanded={open} title={queue ? "Activity and queue details" : "Activity details"} onClick={() => { requestedFromComposer.current = false; setOpen(true); }}><FiInfo size={15} aria-hidden="true" /></button>
-    </div>}
+    </div>
     </div>
     {active && open && <ShellDialog title="Conversation activity" close={() => { setOpen(false); setVerification(undefined); }} restoreFocus={restore}>
       <div className="composer-status-details">
@@ -129,11 +150,13 @@ export function ComposerStatus({ statuses, active, actions, restoreFocus, queue,
         <section aria-label="Activity">
         {queue && <h3>Activity</h3>}
         <h3>Current status</h3>
+        {queue && <p>{queue.lid.text}{queue.lid.waitingLabel ? ` · ${queue.lid.waitingLabel}` : ""}</p>}
         {statuses.length ? <ul>{[...statuses].reverse().map(status => <li key={status.id}><strong>{status.text}</strong>{status.detail && <p>{status.detail}</p>}<ActivityTiming status={status} />{status.action && <button type="button" className="text-button" disabled={status.action === "models" && (store.snapshot().modelsLoading || !store.capabilities().listModels) || status.action === "verify-completion" && store.snapshot().actionBusy} onClick={() => retry(status)}>{status.action === "reconnect" ? "Reconnect" : status.action === "verify-completion" ? "Verify completion" : "Retry model catalog"}</button>}</li>)}</ul> : <p className="muted">No background activity.</p>}
         {actions && <div className="composer-status-actions">{actions}</div>}
         {!!recent.length && <><h3>Recent updates</h3><ol>{recent.map(event => <li key={event.sequence}><time dateTime={new Date(event.time).toISOString()}>{new Date(event.time).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</time><div><strong>{event.text}</strong>{event.detail && <p>{event.detail}</p>}</div></li>)}</ol></>}
         </section>
         {queue?.details}
+        {activityDetails?.(() => { setOpen(false); setVerification(undefined); })}
         {receiptDetails?.(() => { setOpen(false); setVerification(undefined); })}
       </div>
     </ShellDialog>}

@@ -1,0 +1,33 @@
+/* Opt-in chat presentation tokens. Existing feature styles do not consume these. */
+:root {
+  --chat-ui-surface:var(--card);
+  --chat-ui-surface-muted:var(--muted);
+  --chat-ui-foreground:var(--foreground);
+  --chat-ui-muted:var(--muted-foreground);
+  --chat-ui-border:var(--border);
+  --chat-ui-accent:var(--accent);
+  --chat-ui-primary:var(--primary);
+  --chat-ui-primary-foreground:var(--primary-foreground);
+  --chat-ui-focus:var(--focus-ring);
+  --chat-ui-success:var(--success);
+  --chat-ui-warning:var(--warning);
+  --chat-ui-warning-surface:var(--warning-background);
+  --chat-ui-danger:var(--error);
+  --chat-ui-danger-surface:var(--error-background);
+  --chat-ui-radius:10px;
+  --chat-ui-control-radius:7px;
+  --chat-ui-space-1:4px;
+  --chat-ui-space-2:8px;
+  --chat-ui-space-3:12px;
+  --chat-ui-space-4:16px;
+  --chat-ui-font-size:12px;
+  --chat-ui-title-size:13px;
+  --chat-ui-meta-size:11px;
+  --chat-ui-line-height:1.55;
+  --chat-ui-control-height:32px;
+  --chat-ui-focus-width:2px;
+}
+
+@media (max-width:640px) {
+  :root { --chat-ui-control-height:44px; }
+}

@@ -20,7 +20,7 @@ export function loadedTranscriptWorkers({ messages, deliveries = [], exchanges, 
       || receivedHandoff(source, input.sessionId, input.handoffs))) continue;
     for (const part of source.parts) {
       if (part.type !== "tool") continue;
-      const classification = classifyTranscriptTool({ ...input, source, part });
+      const classification = classifyTranscriptTool({ ...input, source, part, exchanges: receivedExchanges });
       const card = classification.kind === "code-share" || classification.kind === "shared-content" ? classification.underlying : classification;
       if (card?.kind === "worker") for (const worker of card.workers) loaded.set(worker.id, worker);
     }

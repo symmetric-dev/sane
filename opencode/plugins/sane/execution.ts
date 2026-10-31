@@ -41,11 +41,12 @@ function executionPermissions(authored: readonly OperationPermission[]): Operati
   ]
 }
 
-/** Exact runtime baseline + authored policy + browser restriction. Only duplicate
- * native browser denies may follow; missing baseline or arbitrary suffixes fail. */
+/** Exact runtime baseline + authored policy + browser restriction. Only native
+ * browser/tool-skill denies may follow; global policy or arbitrary suffixes fail. */
 export function executionPermissionsMatch(actual: readonly OperationPermission[], expected: readonly OperationPermission[]) {
   const rendered = executionPermissions(expected)
-  return prefix(actual, rendered) && actual.slice(rendered.length).every(rule => rule.action === "browser" && rule.resource === "*" && rule.effect === "deny")
+  return prefix(actual, rendered) && actual.slice(rendered.length).every(rule => rule.effect === "deny"
+    && (rule.action === "browser" && rule.resource === "*" || rule.action === "skill" && rule.resource === "browser"))
 }
 
 function validate(input: Configuration, directory: string) {
@@ -119,18 +120,17 @@ export async function registerExecutionOperations(ctx: Context) {
   // registrations run before it, regardless of the configured plugin order.
   // Register at the configure boundary (after location activation), so canonical
   // agents are created after global config has been applied to ordinary agents.
-  // Restore IDs immediately for native session selection. Re-register once at
+  // Restore IDs immediately for native session selection. Re-register at EVERY
   // configure or prompt admission, after native post plugins, BEFORE inventory.
+  // A plugin/config reload can register those post transforms again without
+  // unloading this instance; a cached "promoted" flag then preserves stale order.
   // Never repair policy from the late context hook: inventory is already captured.
   let agents = supported ? await ctx.agent.transform(defineAgents) : undefined
-  let agentsPromoted = false
   let installingAgents: Promise<void> | undefined
   const ensureAgents = async () => {
-    if (agentsPromoted) return
     if (!installingAgents) installingAgents = (async () => {
       await agents?.dispose()
       agents = await ctx.agent.transform(defineAgents)
-      agentsPromoted = true
     })().finally(() => { installingAgents = undefined })
     await installingAgents
   }

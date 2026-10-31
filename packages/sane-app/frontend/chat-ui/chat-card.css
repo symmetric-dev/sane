@@ -1,0 +1,166 @@
+.chat-card {
+  --chat-card-padding:var(--chat-ui-space-4);
+  box-sizing:border-box;
+  display:flex;
+  flex-direction:column;
+  min-width:0;
+  max-width:100%;
+  border:1px solid var(--chat-ui-border);
+  border-radius:var(--chat-ui-radius);
+  background:var(--chat-ui-surface);
+  color:var(--chat-ui-foreground);
+  font-size:var(--chat-ui-font-size);
+  line-height:var(--chat-ui-line-height);
+  overflow-wrap:anywhere;
+}
+
+.chat-card-compact {
+  --chat-card-padding:var(--chat-ui-space-3);
+}
+
+.chat-card-header,
+.shell-dialog .chat-card-header {
+  box-sizing:border-box;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:flex-start;
+  justify-content:normal;
+  gap:var(--chat-ui-space-3);
+  min-width:0;
+  margin:0;
+  padding:var(--chat-card-padding, var(--chat-ui-space-4));
+  border-bottom:1px solid var(--chat-ui-border);
+}
+
+.chat-card-header-icon {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex:none;
+  color:var(--chat-ui-muted);
+  line-height:var(--chat-ui-line-height);
+}
+
+.chat-card-header-content {
+  flex:1 1 12rem;
+  min-width:0;
+  max-width:100%;
+}
+
+.chat-card-header-title {
+  margin:0;
+  color:inherit;
+  font-family:inherit;
+  font-size:var(--chat-ui-title-size);
+  font-weight:600;
+  line-height:var(--chat-ui-line-height);
+  overflow-wrap:anywhere;
+}
+
+.chat-card-header-description {
+  margin-top:var(--chat-ui-space-1);
+  color:var(--chat-ui-muted);
+  font-size:var(--chat-ui-font-size);
+  line-height:var(--chat-ui-line-height);
+  overflow-wrap:anywhere;
+}
+
+.chat-card-header-metadata {
+  margin-top:var(--chat-ui-space-1);
+}
+
+.chat-card-header-actions {
+  display:flex;
+  flex:0 1 auto;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:var(--chat-ui-space-2);
+  min-width:0;
+  max-width:100%;
+  margin-inline-start:auto;
+}
+
+.chat-card-body {
+  box-sizing:border-box;
+  min-width:0;
+  padding:var(--chat-card-padding, var(--chat-ui-space-4));
+  overflow-wrap:anywhere;
+}
+
+.chat-card-body-flush {
+  padding:0;
+}
+
+.chat-card-footer {
+  box-sizing:border-box;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:var(--chat-ui-space-2);
+  min-width:0;
+  padding:var(--chat-card-padding, var(--chat-ui-space-4));
+  border-top:1px solid var(--chat-ui-border);
+}
+
+.chat-receipt {
+  box-sizing:border-box;
+  display:flex;
+  flex-direction:column;
+  gap:var(--chat-ui-space-2);
+  min-width:0;
+  max-width:100%;
+  color:var(--chat-ui-foreground);
+  font-size:var(--chat-ui-font-size);
+  line-height:var(--chat-ui-line-height);
+  overflow-wrap:anywhere;
+}
+
+.chat-metadata {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:var(--chat-ui-space-1) var(--chat-ui-space-2);
+  min-width:0;
+  max-width:100%;
+  color:var(--chat-ui-muted);
+  font-size:var(--chat-ui-meta-size);
+  line-height:var(--chat-ui-line-height);
+  overflow-wrap:anywhere;
+}
+
+.chat-card-header-actions > *,
+.chat-card-footer > *,
+.chat-metadata > * {
+  min-width:0;
+  max-width:100%;
+}
+
+:where(.chat-card, .chat-card-header, .chat-card-body, .chat-card-footer, .chat-receipt, .chat-metadata):focus-visible {
+  outline:var(--chat-ui-focus-width) solid var(--chat-ui-focus);
+  outline-offset:var(--chat-ui-focus-width);
+}
+
+/* Author flex rules must not override the native hidden attribute. */
+:where(.chat-card, .chat-card-header, .chat-card-header-icon, .chat-card-header-content, .chat-card-header-title, .chat-card-header-description, .chat-card-header-actions, .chat-card-body, .chat-card-footer, .chat-receipt, .chat-metadata)[hidden] {
+  /* biome-ignore lint/complexity/noImportantStyles: Hidden content must stay hidden regardless of layout overrides. */
+  display:none !important;
+}
+
+@media (max-width:640px) {
+  .chat-card-header-actions {
+    flex-basis:100%;
+    margin-inline-start:0;
+  }
+}
+
+@media (forced-colors:active) {
+  .chat-card,
+  .chat-card-header,
+  .chat-card-footer {
+    border-color:CanvasText;
+  }
+
+  :where(.chat-card, .chat-card-header, .chat-card-body, .chat-card-footer, .chat-receipt, .chat-metadata):focus-visible {
+    outline-color:Highlight;
+  }
+}

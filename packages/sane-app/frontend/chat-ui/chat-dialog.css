@@ -1,0 +1,179 @@
+/* Opt-in only: legacy ShellDialog instances keep their existing presentation. */
+.shell-dialog.chat-dialog {
+  --chat-dialog-width: 520px;
+  --chat-dialog-gutter: var(--chat-ui-space-4);
+  --chat-dialog-viewport-height: 100vh;
+  --chat-dialog-available-height: calc(var(--chat-dialog-viewport-height) - var(--chat-dialog-gutter) * 2 - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+  position: fixed;
+  inset: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  margin: auto;
+  width: var(--chat-dialog-width);
+  min-width: 0;
+  max-width: calc(100vw - var(--chat-dialog-gutter) * 2 - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  max-height: var(--chat-dialog-available-height);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--chat-ui-border);
+  border-radius: var(--chat-ui-radius);
+  background: var(--chat-ui-surface);
+  color: var(--chat-ui-foreground);
+  font-size: var(--chat-ui-font-size);
+  line-height: var(--chat-ui-line-height);
+}
+
+.shell-dialog.chat-dialog.chat-dialog--compact { --chat-dialog-width: 360px; }
+.shell-dialog.chat-dialog.chat-dialog--wide { --chat-dialog-width: 800px; }
+
+@supports (height: 100dvh) {
+  .shell-dialog.chat-dialog { --chat-dialog-viewport-height: 100dvh; }
+}
+
+.shell-dialog.chat-dialog > .shell-dialog-content {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  /* Match the dialog's inner height, accounting for its two border pixels. */
+  max-height: calc(var(--chat-dialog-available-height) - 2px);
+  padding: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.shell-dialog.chat-dialog > .shell-dialog-content > header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--chat-ui-space-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--chat-ui-space-3) var(--chat-ui-space-4);
+  border-bottom: 1px solid var(--chat-ui-border);
+}
+
+.shell-dialog.chat-dialog > .shell-dialog-content > header .shell-dialog-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.shell-dialog.chat-dialog > .shell-dialog-content > header h2 {
+  min-width: 0;
+  margin: 0;
+  color: var(--chat-ui-foreground);
+  font-size: var(--chat-ui-title-size);
+  line-height: var(--chat-ui-line-height);
+}
+
+.shell-dialog.chat-dialog > .shell-dialog-content > header .shell-dialog-subtitle {
+  margin: var(--chat-ui-space-1) 0 0;
+  color: var(--chat-ui-muted);
+  font-size: var(--chat-ui-font-size);
+  line-height: var(--chat-ui-line-height);
+}
+
+/* The close control is supplied by ShellDialog, not by the chat controls API. */
+.shell-dialog.chat-dialog > .shell-dialog-content > header > .icon-button {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: var(--chat-ui-control-height);
+  min-width: var(--chat-ui-control-height);
+  height: var(--chat-ui-control-height);
+  min-height: var(--chat-ui-control-height);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--chat-ui-control-radius);
+  background: transparent;
+  color: var(--chat-ui-muted);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.shell-dialog.chat-dialog > .shell-dialog-content > header > .icon-button:hover:not(:disabled) {
+  background: var(--chat-ui-accent);
+  color: var(--chat-ui-foreground);
+}
+
+.shell-dialog.chat-dialog > .shell-dialog-content > header > .icon-button:focus-visible {
+  outline: var(--chat-ui-focus-width) solid var(--chat-ui-focus);
+  outline-offset: 2px;
+}
+
+.shell-dialog.chat-dialog > .shell-dialog-content > header > .icon-button:disabled {
+  cursor: default;
+  opacity: .5;
+}
+
+.shell-dialog.chat-dialog .chat-dialog-body {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--chat-ui-space-4);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.shell-dialog.chat-dialog .chat-dialog-footer {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--chat-ui-space-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--chat-ui-space-3) var(--chat-ui-space-4);
+  border-top: 1px solid var(--chat-ui-border);
+  background: var(--chat-ui-surface-muted);
+}
+
+.shell-dialog.chat-dialog[hidden],
+.shell-dialog.chat-dialog .chat-dialog-body[hidden],
+.shell-dialog.chat-dialog .chat-dialog-footer[hidden] {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .shell-dialog.chat-dialog { --chat-dialog-gutter: var(--chat-ui-space-2); }
+}
+
+@media (forced-colors: active) {
+  .shell-dialog.chat-dialog {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    box-shadow: none;
+  }
+
+  .shell-dialog.chat-dialog::backdrop { backdrop-filter: none; }
+
+  .shell-dialog.chat-dialog > .shell-dialog-content > header,
+  .shell-dialog.chat-dialog .chat-dialog-footer {
+    border-color: CanvasText;
+    background: Canvas;
+  }
+
+  .shell-dialog.chat-dialog > .shell-dialog-content > header h2 { color: CanvasText; }
+  .shell-dialog.chat-dialog > .shell-dialog-content > header .shell-dialog-subtitle { color: GrayText; }
+
+  .shell-dialog.chat-dialog > .shell-dialog-content > header > .icon-button {
+    border-color: ButtonText;
+    background: ButtonFace;
+    color: ButtonText;
+  }
+
+  .shell-dialog.chat-dialog > .shell-dialog-content > header > .icon-button:hover:not(:disabled) {
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .shell-dialog.chat-dialog > .shell-dialog-content > header > .icon-button:focus-visible { outline-color: Highlight; }
+  .shell-dialog.chat-dialog > .shell-dialog-content > header > .icon-button:disabled { color: GrayText; opacity: 1; }
+}

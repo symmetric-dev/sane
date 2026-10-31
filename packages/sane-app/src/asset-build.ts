@@ -5,10 +5,11 @@ import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:z
 import { acquireInstallation, assertInstallationOwnership, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
 
 const recipe = { version: 3, target: "browser", format: "esm", naming: "app.[ext]", minify: true, define: { "process.env.NODE_ENV": '"production"' }, compression: { gzip: 9, brotli: 9 } } as const;
+const developmentRecipe = { ...recipe, minify: false, define: { "process.env.NODE_ENV": '"development"' }, sourcemap: "external", compression: null } as const;
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 export class AssetBuildError extends Error {}
 type Manifest = { format: "sane-app-assets"; version: 1; generation: string; fingerprint: string; inputs: Record<string, string>; outputs: Record<string, string> };
-export type AssetBuildOptions = { packageDir: string; outdir?: string; ownership?: OwnershipHandle; reconcileInterrupted?: boolean };
+export type AssetBuildOptions = { packageDir: string; outdir?: string; ownership?: OwnershipHandle; reconcileInterrupted?: boolean; development?: boolean };
 
 function regular(path: string): void {
   const s = lstatSync(path);
@@ -30,7 +31,7 @@ function workspaceRoot(pkg: string): string {
  * This includes dirty transitive local imports, CSS/url assets and future import edges.
  * Runtime/config/store/output trees and external dependencies are never traversed.
  */
-function inputs(pkg: string, outdir: string): Record<string, string> {
+function inputs(pkg: string, outdir: string, development = false): Record<string, string> {
   const root = workspaceRoot(pkg), result: Record<string, string> = {};
   const excluded = new Set(["node_modules", ".git", ".runtime", ".data", "dist", "coverage", ".sane"]);
   const walk = (dir: string) => {
@@ -48,7 +49,7 @@ function inputs(pkg: string, outdir: string): Record<string, string> {
   for (const name of ["bun.lock", "bun.lockb", "package.json", "tsconfig.json"]) {
     const path = join(root, name); if (existsSync(path)) { regular(path); result[name] = hash(readFileSync(path)); }
   }
-  result["$recipe"] = hash(JSON.stringify(recipe));
+  result["$recipe"] = hash(JSON.stringify(development ? developmentRecipe : recipe));
   result["$bun"] = hash(Bun.version);
   return Object.fromEntries(Object.entries(result).sort(([a], [b]) => a.localeCompare(b)));
 }
@@ -75,16 +76,17 @@ function outputHashes(dir: string): Record<string, string> {
 /** Only public build path: acquires ownership, or verifies a genuinely issued retained handle. */
 export async function buildAssets(options: AssetBuildOptions): Promise<{ assetsDir: string; manifest: Manifest }> {
   const { pkg, outdir } = paths(options);
+  const selectedRecipe = options.development ? developmentRecipe : recipe;
   const own = options.ownership ?? acquireInstallation(validateOwnershipPaths(pkg), { phase: "build", reconcileInterrupted: options.reconcileInterrupted });
   let stage: string | undefined;
   try {
     assertInstallationOwnership(own, pkg);
-    const before = inputs(pkg, outdir), generation = randomUUID();
+    const before = inputs(pkg, outdir, options.development), generation = randomUUID();
     mkdirSync(outdir, { recursive: true, mode: 0o700 });
     stage = join(outdir, `.stage-${generation}`); mkdirSync(stage, { mode: 0o700 });
-    const result = await Bun.build({ entrypoints: [join(pkg, "frontend/main.tsx")], outdir: stage, target: recipe.target, format: recipe.format, naming: recipe.naming, minify: recipe.minify, define: recipe.define });
+    const result = await Bun.build({ entrypoints: [join(pkg, "frontend/main.tsx")], outdir: stage, target: selectedRecipe.target, format: selectedRecipe.format, naming: selectedRecipe.naming, minify: selectedRecipe.minify, define: selectedRecipe.define, ...(options.development ? { sourcemap: developmentRecipe.sourcemap } : {}) });
     if (!result.success) throw new AssetBuildError(`Asset compilation failed: ${result.logs.map(String).join("\n")}`);
-    const worker = await Bun.build({ entrypoints: [join(pkg, "frontend/push-worker.ts")], outdir: stage, target: "browser", format: "iife", naming: "push-worker.[ext]", minify: recipe.minify });
+    const worker = await Bun.build({ entrypoints: [join(pkg, "frontend/push-worker.ts")], outdir: stage, target: "browser", format: "iife", naming: "push-worker.[ext]", minify: selectedRecipe.minify });
     if (!worker.success) throw new AssetBuildError(`Push worker compilation failed: ${worker.logs.map(String).join("\n")}`);
     // Publish install metadata/icons with the same immutable, validated generation.
     const pwaDir = join(pkg, "public", "pwa");
@@ -99,7 +101,7 @@ export async function buildAssets(options: AssetBuildOptions): Promise<{ assetsD
     const buildFingerprint = fingerprint(before);
     const template = join(pkg, "public", "index.html"); regular(template);
     writeFileSync(join(stage, "index.html"), readFileSync(template, "utf8").replaceAll("__SANE_ASSET_FINGERPRINT__", buildFingerprint), { flag: "wx", mode: 0o600 });
-    for (const name of Object.keys(outputHashes(stage))) {
+    for (const name of selectedRecipe.compression ? Object.keys(outputHashes(stage)) : []) {
       if (!/\.(?:js|css|html|json|webmanifest|svg)$/.test(name)) continue;
       const bytes = readFileSync(join(stage, name));
       writeFileSync(join(stage, `${name}.gz`), gzipSync(bytes, { level: recipe.compression.gzip }), { flag: "wx", mode: 0o600 });
@@ -108,7 +110,7 @@ export async function buildAssets(options: AssetBuildOptions): Promise<{ assetsD
     const outputs = outputHashes(stage);
     if (!outputs["app.js"]) throw new AssetBuildError("Build did not produce app.js");
     if (!outputs["push-worker.js"]) throw new AssetBuildError("Build did not produce push-worker.js");
-    if (fingerprint(inputs(pkg, outdir)) !== fingerprint(before)) throw new AssetBuildError("Build inputs changed during compilation");
+    if (fingerprint(inputs(pkg, outdir, options.development)) !== fingerprint(before)) throw new AssetBuildError("Build inputs changed during compilation");
     const manifest: Manifest = { format: "sane-app-assets", version: 1, generation, fingerprint: buildFingerprint, inputs: before, outputs };
     writeFileSync(join(stage, "manifest.json"), JSON.stringify(manifest), { flag: "wx", mode: 0o600 });
     assertInstallationOwnership(own, pkg); safeDirectory(outdir);

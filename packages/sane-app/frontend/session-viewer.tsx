@@ -7,7 +7,7 @@ import { active, type Message, type Run } from "./types";
 import { ChatMessage, renderActivityInspectorBody, TranscriptContext, useTranscriptIndex } from "./thread";
 import { ActivityInspector, useActivityInspection } from "./activity-inspector";
 import { convertTranscriptMessage, projectTranscriptMessages } from "./transcript-runtime";
-import { ShellDialog } from "./shell-dialog";
+import { ChatButton, ChatDialog, ChatDialogBody, ChatNotice } from "./chat-ui";
 import { WorkerCard, WorkerSection } from "./worker-ui";
 import { closeWorker, workerReference, openWorkerSession, publishWorkers, useWorkers, useWorkerViewer, useWorkerOpening, workerClient, workerInFlight, workerProjectionInFlight } from "./worker-client";
 import { useActivityPresentation } from "./transcript-activity";
@@ -24,6 +24,7 @@ import { getHarnessDescriptor } from "../shared/conversation/harness-capabilitie
 import { claudeReplyPresentation } from "./claude-reply-presentation";
 import { pollWhileVisible } from "./visibility";
 import { grokRuns, grokSessionView } from "./grok-presentation";
+import { workerExchanges } from "./worker-presentation";
 
 function Viewer({ root }: { root: WorkerRecord }) {
   const [trail, setTrail] = useState([root]);
@@ -34,6 +35,7 @@ function Viewer({ root }: { root: WorkerRecord }) {
   const handoffs = useHandoffs(selected.sessionId);
   const parent = useWorkers(selected.parent.sessionId);
   const worker = parent.workers.find(w => w.id === selected.id) ?? selected;
+  const exchanges = useMemo(() => workerExchanges([...projection.workers, worker]), [projection.workers, worker]);
   useEffect(() => {
     const map = new Map<string, Run>();
     let inFlight = workerInFlight(selected);
@@ -109,22 +111,22 @@ function Viewer({ root }: { root: WorkerRecord }) {
   const mediaShares = useMediaShares(selected.sessionId, { enabled: authenticated, refreshKey: messages, running: runs.some(run => active(run.status)) });
   const compactions = view.sessionId === selected.sessionId ? view.compactions : [];
   const positions = useMemo(() => compactionPositions(compactions, messages), [compactions, messages]);
-  const activities = useActivityPresentation({ sessionId: selected.sessionId, messages, workers: projection.workers, deliveries: projection.deliveries, handoffs: handoffs.handoffs, loading: view.loading || view.sessionId !== selected.sessionId, animate: !view.error, nativeRuns: runs, nativeHarness: selected.launch.harness, compactionPositions: positions, codeShares: codeShares.shares, mediaShares: mediaShares.shares });
+  const activities = useActivityPresentation({ sessionId: selected.sessionId, messages, workers: projection.workers, deliveries: projection.deliveries, exchanges, handoffs: handoffs.handoffs, loading: view.loading || view.sessionId !== selected.sessionId, animate: !view.error, nativeRuns: runs, nativeHarness: selected.launch.harness, compactionPositions: positions, codeShares: codeShares.shares, mediaShares: mediaShares.shares });
   const inspection = useActivityInspection({ scope: JSON.stringify(["worker-viewer", root.id, selected.sessionId, selected.launch.harness]), active: view.sessionId === selected.sessionId, plan: activities.plan });
   const open = (w: WorkerRecord) => setTrail(t => t.at(-1)?.id === w.id ? t : [...t, w]);
   const runtime = useExternalStoreRuntime({ messages: runtimeMessages, convertMessage: convertTranscriptMessage, isRunning: runs.some(r => active(r.status)), isSendDisabled: true, onNew: async () => {} });
-  return <ShellDialog title="Worker conversation · read-only" close={closeWorker}><nav className="worker-actions" aria-label="Worker breadcrumbs"><button type="button" onClick={closeWorker}>Close worker viewer</button>{trail.map((w, i) => <button key={w.id} type="button" aria-current={i === trail.length - 1 ? "page" : undefined} onClick={() => setTrail(t => t.slice(0, i + 1))}>{w.input.worker}</button>)}{trail.length === 1 && workerReference(root.parent.sessionId) && <button type="button" onClick={() => void openWorkerSession(root.parent.sessionId)}>Show worker parent</button>}</nav>
+  return <ChatDialog title="Worker conversation · read-only" size="wide" close={closeWorker}><ChatDialogBody><nav className="worker-actions" aria-label="Worker breadcrumbs"><ChatButton variant="ghost" onClick={closeWorker}>Close worker viewer</ChatButton>{trail.map((w, i) => <ChatButton key={w.id} variant="ghost" aria-current={i === trail.length - 1 ? "page" : undefined} onClick={() => setTrail(t => t.slice(0, i + 1))}>{w.input.worker}</ChatButton>)}{trail.length === 1 && workerReference(root.parent.sessionId) && <ChatButton variant="ghost" onClick={() => void openWorkerSession(root.parent.sessionId)}>Show worker parent</ChatButton>}</nav>
     <WorkerCard worker={worker} workers={projection.workers} runs={runs} open={open} />
-    {waiting > 0 && <p className="notice" role="status">Waiting on {waiting} permission/question request(s). This viewer cannot answer worker prompts.</p>}
-    {view.loading && <p role="status">Loading worker transcript…</p>}{view.error && <p className="notice error" role="alert">{view.error}</p>}
+    {waiting > 0 && <ChatNotice role="status">Waiting on {waiting} permission/question request(s). This viewer cannot answer worker prompts.</ChatNotice>}
+    {view.loading && <p role="status">Loading worker transcript…</p>}{view.error && <ChatNotice tone="warning" role="alert">{view.error}</ChatNotice>}
     <CodeShareStatus projection={codeShares} />
     <MediaShareStatus projection={mediaShares} />
-    <TranscriptContext.Provider value={{ sessionId: selected.sessionId, harness: worker.launch.harness, messages, ...transcriptIndex, runs, workers: projection.workers, deliveries: projection.deliveries, handoffs, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, openWorker: open, codeShares, mediaShares }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="worker-transcript"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /><CompactionMarkers records={positions.get("")} />{compactions.some(record => record.lifecycle === "running") && <p className="working" role="status">{view.error ? "Compaction state unavailable; waiting for worker evidence to reconnect." : "Compacting context…"}</p>}</ThreadPrimitive.Root></AssistantRuntimeProvider><ActivityInspector inspection={inspection} renderBody={renderActivityInspectorBody} /></TranscriptContext.Provider>
+    <TranscriptContext.Provider value={{ sessionId: selected.sessionId, harness: worker.launch.harness, messages, ...transcriptIndex, runs, workers: projection.workers, deliveries: projection.deliveries, exchanges, handoffs, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, openWorker: open, codeShares, mediaShares }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="worker-transcript"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /><CompactionMarkers records={positions.get("")} />{compactions.some(record => record.lifecycle === "running") && <p className="working" role="status">{view.error ? "Compaction state unavailable; waiting for worker evidence to reconnect." : "Compacting context…"}</p>}</ThreadPrimitive.Root></AssistantRuntimeProvider><ActivityInspector inspection={inspection} renderBody={renderActivityInspectorBody} /></TranscriptContext.Provider>
     <WorkerSection sessionId={selected.sessionId} open={open} />
-  </ShellDialog>;
+  </ChatDialogBody></ChatDialog>;
 }
 export function WorkerViewerHost() {
   const worker = useWorkerViewer(), opening = useWorkerOpening();
-  if (opening.sessionId) return <ShellDialog title="Open worker · read-only" close={closeWorker}>{opening.loading ? <p role="status">Loading worker from its parent conversation…</p> : <><p className="notice error" role="alert">{opening.error}</p><button type="button" onClick={() => void openWorkerSession(opening.sessionId)}>Retry</button></>}</ShellDialog>;
+  if (opening.sessionId) return <ChatDialog title="Open worker · read-only" close={closeWorker}><ChatDialogBody>{opening.loading ? <p role="status">Loading worker from its parent conversation…</p> : <ChatNotice tone="warning" role="alert" actions={<ChatButton onClick={() => void openWorkerSession(opening.sessionId)}>Retry</ChatButton>}>{opening.error}</ChatNotice>}</ChatDialogBody></ChatDialog>;
   return worker ? <Viewer key={worker.id} root={worker} /> : null;
 }

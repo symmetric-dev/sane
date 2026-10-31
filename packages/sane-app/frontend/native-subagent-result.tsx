@@ -1,5 +1,6 @@
 import type { Message } from "./types";
 import { NativeSubagentCard, useNativeSubagents } from "./native-subagent-feature";
+import { ChatCard, ChatCardBody, ChatCardHeader, ChatDisclosure, ChatStatus } from "./chat-ui";
 
 /** Only native metadata identifies a result. User-authored XML is ordinary text. */
 export function NativeSubagentResult({ source }: { source: Message }) {
@@ -15,9 +16,9 @@ export function NativeSubagentResult({ source }: { source: Message }) {
   const report = wrapped?.[1] ?? raw;
   const status = result.state === "completed" ? "completed" : result.state === "failed" ? "failed" : result.state === "interrupted" ? "interrupted" : "unknown";
   if (summary) return <NativeSubagentCard summary={{ ...summary, status, returnedReport: report }} recorded />;
-  return <section className="native-subagent-card" aria-label="Native subagent result">
-    <header><div className="native-subagent-card-heading"><h3>{result.agent ?? "Subagent response"}</h3><span className="native-subagent-badge">Native</span></div><span className={`worker-status ${status}`} role="status">{status === "unknown" ? "unconfirmed" : status}</span></header>
-    <details className="native-subagent-disclosure"><summary>Returned report</summary><pre>{report}</pre></details>
-    <p className="muted">{feature?.state.loading ? "Loading associated child history…" : "Associated delegation is not available in the loaded history."}</p>
-  </section>;
+  return <ChatCard density="compact" className="native-subagent-card" aria-label="Native subagent result">
+    <ChatCardHeader title={result.agent ?? "Subagent response"} headingLevel={3} metadata={<><ChatStatus>Native</ChatStatus><ChatStatus tone={status === "failed" ? "danger" : status === "unknown" ? "warning" : status === "completed" ? "success" : "neutral"} role="status">{status === "unknown" ? "unconfirmed" : status}</ChatStatus></>} />
+    <ChatDisclosure className="native-subagent-card-disclosure" title="Returned report"><pre>{report}</pre></ChatDisclosure>
+    <ChatCardBody><p className="muted">{feature?.state.loading ? "Loading associated child history…" : "Associated delegation is not available in the loaded history."}</p></ChatCardBody>
+  </ChatCard>;
 }

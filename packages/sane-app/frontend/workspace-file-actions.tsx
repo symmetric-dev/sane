@@ -1,14 +1,73 @@
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { ShellDialog } from "./shell-dialog";
 import { useWorkspace } from "./workspace-controller";
-import { dirty } from "./workspace-store";
+import { dirty, workspaceEpoch } from "./workspace-store";
 import { WorkspaceError } from "./workspace-client";
+import { catalog, worktreeScope } from "./catalog";
+import { store } from "./store";
+import { executionPrefix, pathInsertion, safeRelativePath } from "./chat-path-token";
+import { executionRelativePath } from "./workspace-path-matcher";
 
 export type FileOperation = "create" | "copy" | "delete" | "rename";
 const titles = { create: "New file", copy: "Copy file", delete: "Delete file", rename: "Rename file" };
 export function copyDestination(path: string) {
   const slash = path.lastIndexOf("/"), dot = path.lastIndexOf(".");
   return dot > slash + 1 ? `${path.slice(0, dot)}-copy${path.slice(dot)}` : `${path}-copy`;
+}
+
+function fileChatReference(controller: ReturnType<typeof useWorkspace>) {
+  const { scope, buffer, selected, root } = controller;
+  const state = store.snapshot(), repository = catalog.snapshot();
+  const navigation = repository.navigation;
+  const conversation = state.conversations.find(item => item.id === state.selected);
+  if (!scope || scope.auth !== workspaceEpoch() || !scope.reader.current() || !buffer || buffer.path !== selected
+    || controller.view !== "code" || navigation.view !== "code" || !navigation.workspaceId || !navigation.worktreeId
+    || scope.id !== worktreeScope(navigation.workspaceId, navigation.worktreeId) || root?.selected !== selected
+    || buffer.missing || buffer.error || root?.mutations.has(selected) || !selected || !safeRelativePath(selected)) {
+    return "Open an available file before adding a reference.";
+  }
+  if (state.phase !== "ready" || !state.config?.authenticated || !repository.ready || state.loading || state.sending || state.actionBusy) {
+    return "Wait for Chat to finish loading or sending before adding a reference.";
+  }
+  if (state.selected && (!conversation || conversation.replacedBy || conversation.association !== "resolved")) {
+    return "Choose an available conversation before adding a reference.";
+  }
+  const workspaceId = state.selected ? conversation?.workspaceId : repository.navigation.workspaceId;
+  const worktreeId = state.selected ? conversation?.worktreeId : repository.navigation.worktreeId;
+  const worktree = repository.workspaces.find(item => item.workspaceId === workspaceId)?.worktrees.find(item => item.worktreeId === worktreeId);
+  if (!workspaceId || !worktreeId || scope.id !== worktreeScope(workspaceId, worktreeId) || worktree?.state !== "available"
+    || worktree.bindingRevision !== scope.workspace.bindingRevision || worktree.root !== scope.workspace.root) {
+    return "Choose a chat in this worktree before adding a reference.";
+  }
+  const cwd = state.selected ? conversation!.cwd : store.draft().cwd || worktree.root;
+  const prefix = executionPrefix(worktree.root, cwd);
+  if (prefix === undefined) return "Choose a chat execution directory inside this worktree before adding a reference.";
+  // A file outside a nested execution directory needs its absolute path. This
+  // is plain prompt text, just like @ autocomplete, not a contents attachment.
+  const path = executionRelativePath(selected, prefix) ?? `${worktree.root.replace(/\/$/, "")}/${selected}`;
+  return { text: pathInsertion(path, false, false), selected: state.selected,
+    key: JSON.stringify([store.draftKey(), state.config.storeId, workspaceEpoch(), worktree.bindingRevision, cwd]) };
+}
+
+/** Explicit file selection bypasses recursive discovery and its ignore policy. */
+export function AddFileToChat({ close }: { close: () => void }) {
+  const controller = useWorkspace();
+  useSyncExternalStore(store.subscribe, store.snapshot);
+  useSyncExternalStore(catalog.subscribe, catalog.snapshot);
+  const target = fileChatReference(controller);
+  return <>
+    <button type="button" disabled={typeof target === "string"}
+      title={typeof target === "string" ? target : "Add this file's path to the chat draft. File contents and unsaved edits are not attached; nothing is sent."}
+      onClick={() => {
+        const current = fileChatReference(controller);
+        if (typeof target === "string" || typeof current === "string" || current.key !== target.key || current.text !== target.text) return;
+        const text = store.draft().text;
+        store.setDraft({ text: text + (text && !/\s$/.test(text) ? "\n" : "") + current.text + " " }, current.selected);
+        close();
+        controller.navigateView("chat");
+      }}>Add to chat</button>
+    {typeof target === "string" && <p className="muted">{target}</p>}
+  </>;
 }
 
 export function FileOperationDialog({ operation, source, close, initialDestination, expectedRevision, restoreFocus }: { operation: FileOperation; source: string; close: () => void; initialDestination?: string; expectedRevision?: string; restoreFocus?: () => HTMLElement | null }) {

@@ -8,8 +8,11 @@
     "sane": "./bin/sane.ts"
   },
   "scripts": {
+    "prepare": "lefthook install",
+    "lint": "biome lint",
     "start": "bun run start:app",
     "start:app": "bun packages/sane-app/start.ts",
+    "dev:app": "bun packages/sane-app/start.ts --dev",
     "setup:app": "bun packages/sane-app/setup.ts",
     "test:unit": "bun scripts/check-offline.ts",
     "test:integration:workstreams": "bun test packages/sane-app/tests/native-handoff.test.ts packages/sane-app/tests/native-recovery.test.ts",
@@ -21,8 +24,10 @@
     "build:app": "bun run --cwd packages/sane-app build"
   },
   "devDependencies": {
-    "@opencode/plugin": "^2.0.8",
+    "@biomejs/biome": "^2.6.4",
+    "@opencode/plugin": "2.2.4",
     "@types/bun": "^1.3.6",
+    "lefthook": "^2.2.2",
     "typescript": "^5"
   }
 }

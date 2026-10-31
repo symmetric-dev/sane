@@ -72,8 +72,9 @@ const integer = (v: unknown): v is number => typeof v === "number" && Number.isS
 const time = (v: unknown): v is number => typeof v === "number" && v >= 0 && Number.isFinite(new Date(v).getTime());
 function requireShape(ok: unknown): asserts ok { if (!ok) throw new TypeError("Unsupported or incomplete OpenCode durable reply log"); }
 
-// Installed @opencode/client 2.0.18 SessionEventDurable versions. Live deltas
-// and session.idle are deliberately absent: neither is the durable boundary.
+// Durable event versions accepted by this reducer; SDK upgrades alone do not
+// qualify new events. Unknown versions fail closed. Live deltas and session.idle
+// are deliberately absent: neither is the durable boundary.
 const versions: Record<string, number> = {
   "session.created": 1, "session.agent.selected": 1, "session.model.selected": 1,
   "session.moved": 1, "session.renamed": 1, "session.metadata.updated": 1,

@@ -74,7 +74,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   const invocation = resolve(context.invocationCwd), packageDir = resolve(context.packageDir);
   const flags = new Map<string, string | boolean | null>();
   const valued: Record<string, string> = { "--config": "config", "--cwd": "cwd", "--data-dir": "data", "--host": "host", "--port": "port", "--public-origin": "origin", "--claude-bin": "executable", "--claude-profile": "profile", "--opencode-registration": "registration", "--max-concurrent-runs": "concurrency", "--context-delivery": "contextDelivery" };
-   const switches: Record<string, [string, boolean | null]> = { "--allow-remote": ["remote", true], "--no-allow-remote": ["remote", false], "--clear-public-origin": ["origin", null], "--no-build": ["noBuild", true], "--reconcile-interrupted": ["reconcile", true], "--initialize-app-admissions": ["initializeAppAdmissions", true], "--help": ["help", true] };
+   const switches: Record<string, [string, boolean | null]> = { "--allow-remote": ["remote", true], "--no-allow-remote": ["remote", false], "--clear-public-origin": ["origin", null], "--no-build": ["noBuild", true], "--dev": ["dev", true], "--reconcile-interrupted": ["reconcile", true], "--initialize-app-admissions": ["initializeAppAdmissions", true], "--help": ["help", true] };
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]!; let key: string, value: string | boolean | null;
     if (Object.hasOwn(switches, flag)) [key, value] = switches[flag]!;
@@ -84,6 +84,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
     if (["port", "concurrency"].includes(key!) && !/^\d+$/.test(String(value!))) invalid(`Invalid ${flag}`);
     flags.set(key!, value!);
   }
+  if (flags.has("dev") && flags.has("noBuild")) invalid("--dev cannot be combined with --no-build");
   const configPath = flags.has("config") ? resolve(invocation, flags.get("config") as string) : join(packageDir, ".config.json");
   let raw: Record<string, any> = {}, configExists = false;
   try { raw = parseConfigJson(readFileSync(configPath, "utf8")); configExists = true; }
@@ -137,7 +138,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
   const sources = { claude: sourceCapability({ version: 1, harness: "cc", kind: "local-profile", profileRoot: config.native.claude.profileRoot }), opencode: sourceCapability({ version: 1, harness: "oc", kind: "local-registration", registrationFile: config.native.opencode.registrationFile }) };
   if (sources.claude.authority?.descriptor.harness === "cc") config.native.claude.profileRoot = sources.claude.authority.descriptor.profileRoot;
   if (sources.opencode.authority?.descriptor.harness === "oc") config.native.opencode.registrationFile = sources.opencode.authority.descriptor.registrationFile;
-  return { config, configPath, configExists, sources, operational: { noBuild: flags.has("noBuild"), reconcileInterrupted: flags.has("reconcile"), initializeAppAdmissions: flags.has("initializeAppAdmissions"), help: flags.has("help") } };
+  return { config, configPath, configExists, sources, operational: { noBuild: flags.has("noBuild"), dev: flags.has("dev"), reconcileInterrupted: flags.has("reconcile"), initializeAppAdmissions: flags.has("initializeAppAdmissions"), help: flags.has("help") } };
 }
 export function sourceCapability(descriptor: NativeSourceDescriptor | GrokSourceDescriptor): SourceCapability {
   if (descriptor.harness === "gk") {

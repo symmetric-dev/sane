@@ -1,4 +1,5 @@
 import type { WorkerExchange } from "../src/worker-contract";
+import { FiPause, FiSquare, FiX } from "react-icons/fi";
 import { knownWorker, workersFor } from "./worker-client";
 import { store, type State } from "./store";
 import "./pending-input.css";
@@ -38,9 +39,11 @@ export function pendingInputStopAction({ chainLocked, appRunning, cancelRun, nat
   const waiting = store.snapshot().pendingInputs?.snapshot.items.filter(item => item.state === "waiting") ?? [];
   const guidanceHeld = chainLocked && waiting.some(item => matchesParentGuidance(guidance, item));
   if (guidanceHeld && !stopRun) return null;
+  const label = chainLocked ? stopRun ? "Stop run and pause waiting" : "Pause waiting messages" : nativeQueueWaiting ? "Cancel queued message" : "Stop run";
+  const StopIcon = chainLocked && !stopRun ? FiPause : nativeQueueWaiting && !chainLocked ? FiX : FiSquare;
   return <button type="button" className="text-button composer-status-stop" disabled={disabled || guidanceHeld}
-    title={guidanceHeld ? "Pause would hold parent guidance. Parent guidance is not a user queue item." : chainLocked ? "Pauses waiting messages in the current server chain; does not remove claimed work or confirm native interruption. Unconfirmed admissions may not yet belong to that chain." : undefined}
-    onClick={guidanceHeld ? undefined : cancel}>{chainLocked ? stopRun ? "Stop run and pause waiting" : "Pause waiting messages" : nativeQueueWaiting ? "Cancel queued message" : "Stop run"}</button>;
+    aria-label={label} title={guidanceHeld ? "Pause would hold parent guidance. Parent guidance is not a user queue item." : chainLocked ? `${label}. Pauses waiting messages in the current server chain; does not remove claimed work or confirm native interruption. Unconfirmed admissions may not yet belong to that chain.` : label}
+    onClick={guidanceHeld ? undefined : cancel}><StopIcon size={16} aria-hidden="true" /><span className="composer-status-action-label">{label}</span></button>;
 }
 
 export function pendingInputOperationsFor(state: State) {

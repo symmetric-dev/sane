@@ -72,6 +72,7 @@ export const PLUGIN_APP_SHARED_FILES: readonly string[] = ["user-questions-contr
 export const PLUGIN_CORE_SRC_FILES: readonly string[] = ["agent-catalog.ts", "artifact-lock.ts", "bootstrap-registry.ts", "bootstrap-validation.ts", "confined-lifecycle-filesystem.ts", "context-markdown.ts", "contracts.ts", "document-catalog.ts", "errors.ts", "execution-report-validation.ts", "handoff.ts", "job-policy.ts", "lifecycle-filesystem.ts", "lifecycle.ts", "markdown-document-validation.ts", "native-source-contract.ts", "native-source.ts", "planning-document-validation.ts", "provision.ts", "repository.ts", "repository-reader.ts", "repository-reader-worker.ts", "sane-context.ts", "sane-framework.ts", "sane-worker-procedures.ts", "schema.ts", "schema-upgrade.ts", "server.ts", "slots.ts", "validation.ts", "workstream-type.ts"]
 
 export const PLUGIN_FILENAMES = [
+  "grok-imagine/index.ts",
   "sane/index.ts",
   "sane/execution.ts",
   "sane/execution-rpc.ts",
@@ -93,7 +94,7 @@ export const PLUGIN_DEST_IMPORT_PREFIX = "./runtime/packages/sane-cli/src/"
  * without touching any other keys.
  */
 export const OPENCODE_PLUGIN_DEPENDENCY = "@opencode/plugin"
-export const OPENCODE_PLUGIN_VERSION = "^2.0.8"
+export const OPENCODE_PLUGIN_VERSION = "2.2.4"
 export const OPENCODE_CONFIG_PACKAGE_FILENAME = "package.json"
 
 export function rewritePluginImports(content: string): string {
@@ -206,6 +207,10 @@ function installationEntries(
       destination: join(homeDirectory, ".claude", "skills", skillName, "SKILL.md"),
     })),
     ],
+    {
+      source: join(sourceRoot, "opencode", "plugins", "grok-imagine", "index.ts"),
+      destination: join(homeDirectory, ".config", "opencode", "plugins", "grok-imagine", "index.ts"),
+    },
     {
       rewriteImports: true,
       source: join(sourceRoot, "opencode", "plugins", "sane", "index.ts"),
@@ -600,7 +605,7 @@ async function loadConfigPackageEntry(
   const destination = join(homeDirectory, ".config", "opencode", OPENCODE_CONFIG_PACKAGE_FILENAME)
   const source = `generated:${OPENCODE_PLUGIN_DEPENDENCY}`
   const version = await resolvePluginDependencyVersion(sourceRoot)
-  const requiredDependencies = { [OPENCODE_PLUGIN_DEPENDENCY]: version, "@opencode/client": "2.0.18", "@modelcontextprotocol/sdk": "^1.25.0" }
+  const requiredDependencies = { [OPENCODE_PLUGIN_DEPENDENCY]: version, "@opencode/client": "2.2.4", "@modelcontextprotocol/sdk": "^1.25.0" }
   await validateDestinationParent(destination)
   const stat = await lstatOrUndefined(destination)
   if (stat && !stat.isFile()) {

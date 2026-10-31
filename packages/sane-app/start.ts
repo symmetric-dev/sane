@@ -14,6 +14,7 @@ Run bun run setup:app first to save config and initialize fresh App state.
   --opencode-registration PATH  Managed-local OpenCode registration file
   --max-concurrent-runs N    1–256 (default: 24)
   --no-build                Validate and serve the existing asset generation
+  --dev                     Rebuild frontend on save; refresh the browser to update
   --context-delivery MODE   Legacy alias: canonical (default) or startup; both use shared user messages
   --reconcile-interrupted   Explicitly reclaim proven-dead ownership
   --initialize-app-admissions Explicit one-time receipt setup in the selected App data directory; then start

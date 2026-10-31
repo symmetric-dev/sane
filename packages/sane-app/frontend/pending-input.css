@@ -30,36 +30,33 @@
 .pending-input-queue-help { max-width: 260px; font-size: 11px; overflow-wrap: anywhere; }
 .pending-input-error { color: var(--error); }
 
-/* The labeled primary action stays inside ChatInput, with matching clearance.
-   These selectors never change other Send buttons or the reserved status slot. */
+/* Keep the icon-only primary action inside ChatInput with matching clearance. */
 .chat-input-with-send:has(> .pending-input-primary-input) {
-  --pending-input-primary-width: min(8rem, 40%);
+  --pending-input-primary-width: 36px;
+  --pending-input-primary-inset: 8px;
+  min-height: calc(var(--pending-input-primary-width) + 2 * var(--pending-input-primary-inset));
 }
 .chat-input-with-send > textarea.pending-input-primary-input {
-  padding-right: calc(var(--pending-input-primary-width) + 32px);
+  padding-right: calc(var(--pending-input-primary-width) + 2 * var(--pending-input-primary-inset));
 }
 .chat-input-with-send > .send.pending-input-primary {
   display: grid;
   width: var(--pending-input-primary-width);
-  min-width: min(5.5rem, 40%);
-  max-width: min(8rem, 40%);
-  height: 36px;
-  padding: 4px 6px;
-  border-radius: 10px;
-  font-size: 11px;
-  line-height: 13px;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: center;
+  min-width: var(--pending-input-primary-width);
+  max-width: var(--pending-input-primary-width);
+  height: var(--pending-input-primary-width);
+  top: var(--pending-input-primary-inset);
+  right: var(--pending-input-primary-inset);
+  bottom: auto;
+  padding: 0;
+  border-radius: 14px;
 }
-.chat-input-with-send > .send.pending-input-primary > svg { display: none; }
 .chat-input-with-send > .send.pending-input-primary[aria-busy="true"] { opacity: .8; }
-.pending-input-send-progress { display: inline-flex; align-items: center; gap: 6px; }
-.pending-input-send-progress .pulse { background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
-.composer-status-lid > .pending-input-status-badge {
-  flex-shrink: 0;
-  font-size: 10px;
-  white-space: nowrap;
+.composer-send-spinner { animation: composer-send-spin 1s linear infinite; }
+@keyframes composer-send-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .composer-send-spinner { animation: none; } }
+@media (pointer: coarse) {
+  .chat-input-with-send:has(> .pending-input-primary-input) { --pending-input-primary-width: 40px; }
 }
 .composer-status-details .pending-input-details { font-size: 12px; }
 .composer-status-details .pending-input-list > li {

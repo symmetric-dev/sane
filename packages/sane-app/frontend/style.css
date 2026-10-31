@@ -1042,35 +1042,33 @@ h3 {
   border-color:var(--composer-focus-border);
   box-shadow:0 8px 28px var(--shadow-composer-focus);
 }
-.composer-surface { display:flex; flex-direction:column; min-width:0; min-height:0; }
+.composer-surface { display:flex; flex-direction:column; min-width:0; min-height:0; container:composer / inline-size; }
 .composer-surface > .composer { flex-shrink:0; }
-/* Reserve activity space even while idle or waiting for the loading delay. */
-.composer-status-slot { height:34px; flex-shrink:0; min-width:0; }
+.composer-status-slot { display:flex; min-width:0; margin-left:auto; }
 .composer-status-lid {
   display:flex;
   align-items:center;
-  flex-shrink:0;
-  gap:8px;
-  height:100%;
+  gap:4px;
   min-width:0;
-  padding:0 13px;
-  border:1px solid var(--border);
-  border-bottom:0;
-  border-radius:22px 22px 0 0;
-  background:var(--card);
   color:var(--muted-foreground);
-  font-size:12px;
+  font-size:11px;
 }
+.composer-status-summary { display:flex; align-items:center; gap:6px; min-width:0; }
+.composer-status-lid[data-attention="true"] .composer-status-summary { color:var(--error); }
+.composer-status-lid[data-attention="true"] .composer-status-dot { background:currentColor; }
 .composer-status-lid .pulse { flex-shrink:0; animation:pulse 1.6s ease-in-out infinite; }
 .composer-status-dot { width:6px; height:6px; border-radius:50%; background:var(--muted-foreground); flex-shrink:0; }
 .composer-status-text { flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.composer-status-info { display:grid; place-items:center; flex-shrink:0; width:26px; height:26px; padding:0; border-radius:7px; color:inherit; background:transparent; }
+.composer-status-info,.composer-status-lid .composer-status-stop { display:grid; place-items:center; flex-shrink:0; width:32px; height:36px; padding:0; border-radius:7px; color:inherit; background:transparent; }
 .composer-status-info:hover:not(:disabled) { background:var(--muted); color:var(--foreground); }
 .composer-status-info:focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; }
-.composer-status-stop { flex-shrink:0; white-space:nowrap; font-size:11px; }
-.composer-surface:has(> .composer-status-slot > .composer-status-lid) > :is(.composer,.composer-frame,.document-review-composer,.workstream-status-composer,.interaction-composer),
-.composer-surface:has(> .composer-status-slot > .composer-status-lid) > .composer-flow-slot > :is(.document-review-composer,.workstream-status-composer) { border-top-left-radius:0; border-top-right-radius:0; }
-.composer-surface:focus-within > .composer-status-slot > .composer-status-lid { border-color:var(--composer-focus-border); }
+.composer-status-stop { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; white-space:nowrap; font-size:11px; }
+.composer-status-lid .composer-status-action-label { display:none; }
+.composer-status-lid .composer-status-stop:hover:not(:disabled) { background:var(--muted); color:var(--foreground); }
+.composer-status-lid .composer-status-stop:focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; }
+@media (pointer: coarse) {
+  .composer-status-info,.composer-status-lid .composer-status-stop { width:40px; height:40px; }
+}
 .composer-status-details { max-height:60dvh; overflow:auto; overscroll-behavior:contain; }
 .composer-status-details h3 { margin:16px 0 10px; font-size:12px; }
 .composer-status-details ul,.composer-status-details ol { list-style:none; padding:0; margin:0; }
@@ -1462,7 +1460,6 @@ h3 {
   .composer {
     border-radius:19px;
   }
-  .composer-status-lid { border-radius:19px 19px 0 0; padding-inline:10px; }
   .composer-input {
     font-size:16px;
     padding:16px 17px 8px;
@@ -1857,41 +1854,6 @@ h3 {
   gap:4px;
   flex-shrink:0;
 }
-.composer-help {
-  display:grid;
-  place-items:center;
-  position:relative;
-  width:32px;
-  height:32px;
-  border-radius:8px;
-  color:var(--muted-foreground);
-  flex-shrink:0;
-}
-.composer-help:hover {
-  background:var(--muted);
-  color:var(--foreground);
-}
-.composer-help.has-issue {
-  color:var(--error);
-}
-.composer-help-dot {
-  position:absolute;
-  top:6px;
-  right:6px;
-  width:6px;
-  height:6px;
-  border-radius:50%;
-  background:var(--error);
-}
-.composer-help-notes {
-  display:flex;
-  flex-direction:column;
-  gap:10px;
-}
-.composer-help-notes p {
-  margin:0;
-}
-
 /* === filter === */
 .filter-switch {
   display:flex;

@@ -56,7 +56,9 @@ import { claudeReplyPresentation } from "./claude-reply-presentation";
 import { ChatFileLink } from "./chat-file-link";
 import { pendingInputStopAction } from "./pending-input-ui";
 import { useUserQuestions, type UserQuestionsController } from "./user-questions-client";
-import { UserQuestionsReference } from "./user-questions";
+import { PendingUserQuestions, UserQuestionsCard, UserQuestionsResponse, UserQuestionsStatus } from "./user-questions";
+import { isUserQuestionsTool, questionsForMessage, submittedQuestionsForMessage } from "./user-questions-presentation";
+import { goToSend } from "./send-navigation";
 
 export { convertMessage } from "./transcript-runtime";
 
@@ -81,7 +83,7 @@ function Markdown({ text }: { text: string }) {
   return useMemo(() => <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href, title }) => <ChatFileLink href={href} title={title} sessionId={sessionId}>{children}</ChatFileLink>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>, [text, sessionId]);
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; presentationActive?: boolean; codeShares?: CodeShareProjection; mediaShares?: MediaShareProjection; userQuestions?: UserQuestionsController };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; presentationActive?: boolean; codeShares?: CodeShareProjection; mediaShares?: MediaShareProjection; userQuestions?: UserQuestionsController; userQuestionsReadOnlyReason?: string };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 export function useTranscriptIndex(messages: Message[]) {
   return useMemo(() => {
@@ -110,7 +112,7 @@ function TranscriptActivityRow({ group }: { group: ActivityGroup }) {
 const renderHandoffMessage = (text: string) => <Markdown text={text} />;
 function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   const context = useContext(TranscriptContext)!;
-  const classification = classifyTranscriptTool({ sessionId: context.sessionId, source, part, workers: context.workers, handoffs: context.handoffs?.handoffs ?? [], nativeRuns: context.runs, nativeHarness: context.harness, readOnly: context.readOnly, codeShares: context.codeShares?.shares, mediaShares: context.mediaShares?.shares });
+  const classification = classifyTranscriptTool({ sessionId: context.sessionId, source, part, workers: context.workers, handoffs: context.handoffs?.handoffs ?? [], nativeRuns: context.runs, nativeHarness: context.harness, readOnly: context.readOnly, codeShares: context.codeShares?.shares, mediaShares: context.mediaShares?.shares, exchanges: context.exchanges, questionnaires: context.userQuestions?.forms });
   if (classification.kind === "code-share" || classification.kind === "shared-content") return <>
     {classification.shares.map(share => <SharedCodeCard key={share.id} share={share} />)}
     {!!classification.shares.length && part.error && isCodeShareTool(part) && <p className="notice error" role="alert">The code sharing tool reported an error. The saved snapshot is retained; inspect the tool diagnostics below.</p>}
@@ -125,6 +127,10 @@ function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
 function TranscriptToolContent({ part, source, classification }: { part: ToolPart; source: Message; classification: StandardToolClassification }) {
   const context = useContext(TranscriptContext)!;
   const native = useNativeSubagents();
+  const questions = context.userQuestions;
+  if (classification.kind === "user-questions" && questions) return classification.drafts.length
+    ? classification.drafts.map(draft => <UserQuestionsCard key={draft.form.id} questions={questions} draft={draft} readOnlyReason={context.userQuestionsReadOnlyReason} tool={part} active={context.presentationActive ?? true} />)
+    : <PendingUserQuestions questions={questions} running={active(source.status)} tool={part} />;
   if (classification.kind === "native-subagent") {
     const key = classification.key;
     const summary = native?.summaries.get(nativeSubagentId(key));
@@ -135,6 +141,7 @@ function TranscriptToolContent({ part, source, classification }: { part: ToolPar
   // Open worker already contains the assignment. Keep raw tool evidence in run
   // diagnostics rather than duplicating the instructions in the parent thread.
   if (classification.kind === "worker") return <>{classification.workers.map(worker => <WorkerCard key={worker.id} worker={worker} workers={context.workers} runs={context.runs} open={context.openWorker} sendAnchor />)}{part.error && <p className="notice error" role="alert">Worker tool reported an error. Open run details for the recorded evidence.</p>}</>;
+  if (classification.kind === "worker-exchange") return <>{classification.exchanges.map(exchange => <WorkerExchangeMessage key={exchange.id} exchange={exchange} recipient={context.workers.find(worker => worker.sessionId === exchange.recipient.sessionId)} tool={part} renderMessage={renderHandoffMessage} />)}</>;
   const entry = createActivityEntry(source, part, source.parts.indexOf(part));
   return <TranscriptActivityRow group={{ id: entry.id, entries: [entry] }} />;
 }
@@ -146,8 +153,7 @@ export function ChatMessage() {
   if (gap && state) return <HistoryGap state={state} island={gap} />;
   const island = state?.transcript?.islands.find(island => island.messages.some(message => message.id === id));
   const first = island?.messages[0]?.id === id, last = island?.messages.at(-1)?.id === id;
-  const source = context.messagesById?.get(id) ?? context.messages.find(message => message.id === id);
-  return <>{first && state && island && state.transcript?.islands[0] === island && <HistoryEdge state={state} island={island} direction="older" />}<CompactionMarkers records={context.compactionPositions?.get(id)} /><div data-transcript-message={id} tabIndex={-1}><ChatMessageBody />{source && <UserQuestionsReference questions={context.userQuestions} source={source} sessionId={context.sessionId} />}</div>{last && state && island && state.transcript?.islands.at(-1) === island && <HistoryEdge state={state} island={island} direction="newer" />}</>;
+  return <>{first && state && island && state.transcript?.islands[0] === island && <HistoryEdge state={state} island={island} direction="older" />}<CompactionMarkers records={context.compactionPositions?.get(id)} /><div data-transcript-message={id} tabIndex={-1}><ChatMessageBody /></div>{last && state && island && state.transcript?.islands.at(-1) === island && <HistoryEdge state={state} island={island} direction="newer" />}</>;
 }
 function ChatMessageBody() {
   const message = useAuiState(s => s.message);
@@ -160,7 +166,7 @@ function ChatMessageBody() {
    const showSystemLabel = !isUser && source?.role === "system";
   const next = context.messages[sourceIndex + 1];
   const continued = source?.role === "assistant" && next?.role === "assistant";
-   const hasSharedContent = (source: Message) => source.parts.some(part => part.type === "tool" && (isCodeShareTool(part) || isMediaShareTool(part) || sharesForTool(context.sessionId, source, part, context.codeShares?.shares ?? []).length > 0 || mediaSharesForTool(context.sessionId, source, part, context.mediaShares?.shares ?? []).length > 0));
+   const hasSharedContent = (source: Message) => questionsForMessage(context.sessionId, source, context.userQuestions?.forms ?? []).length > 0 || source.parts.some(part => part.type === "tool" && (isCodeShareTool(part) || isMediaShareTool(part) || !!context.userQuestions && isUserQuestionsTool(part) || sharesForTool(context.sessionId, source, part, context.codeShares?.shares ?? []).length > 0 || mediaSharesForTool(context.sessionId, source, part, context.mediaShares?.shares ?? []).length > 0));
    const activity = !!source && isActivityMessage(source) && !hasSharedContent(source);
    const activityContinued = continued && activity && isActivityMessage(next) && !hasSharedContent(next) && !next.parts.every((_, index) => context.activities?.plan.positions.get(activityPosition(next.id, index)) === null);
   const plain = (source?.parts ?? message.content).filter(p => p.type === "text").map(p => p.text).join("\n\n");
@@ -174,9 +180,12 @@ function ChatMessageBody() {
   const exchanges = context.exchanges ?? workerExchanges(context.workers);
   const exchange = !context.readOnly && source && receivedWorkerExchange(source, context.sessionId, exchanges);
   const delivery = !context.readOnly && source && workerReportDelivery(source, context.deliveries ?? [], exchanges);
+  const questions = context.userQuestions;
+  const questionResponse = !context.readOnly && source && questions && submittedQuestionsForMessage(context.sessionId, source, questions.forms);
+  if (questionResponse && questions && source) return <MessagePrimitive.Root className="message user-questions-response-message"><UserQuestionsResponse questions={questions} draft={questionResponse} message={source} active={context.presentationActive ?? true} disabled={context.pageState?.sending || context.presentationActive === false} />{source.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}</MessagePrimitive.Root>;
   if (harness === "opencode" && source?.role === "system" && source.nativeSubagentResult) return <MessagePrimitive.Root className="message native-subagent-result-message"><NativeSubagentResult source={source} /></MessagePrimitive.Root>;
   if (harness === "opencode" && source?.role === "system" && source.nativeShellResult) return <MessagePrimitive.Root className="message native-shell-result-message"><NativeShellResult source={source} /></MessagePrimitive.Root>;
-  if (exchange) return <MessagePrimitive.Root className="message worker-exchange-message"><WorkerExchangeMessage exchange={exchange} renderMessage={renderHandoffMessage} />{source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}</MessagePrimitive.Root>;
+  if (exchange) return <MessagePrimitive.Root className="message worker-exchange-message"><WorkerExchangeMessage exchange={exchange} recipient={context.workers.find(worker => worker.sessionId === exchange.recipient.sessionId)} renderMessage={renderHandoffMessage} />{source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}</MessagePrimitive.Root>;
   if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} /></MessagePrimitive.Root>;
   const handoff = !context.readOnly && source && receivedHandoff(source, context.sessionId, context.handoffs?.handoffs ?? []);
   if (handoff) return <MessagePrimitive.Root className="message handoff-received-message"><HandoffCard presentation={handoff} direction="received" stale={context.handoffs?.error} renderMessage={renderHandoffMessage} />{source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}</MessagePrimitive.Root>;
@@ -299,7 +308,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
      }
      return positions;
     }, [state.transcript, state.transcriptPaged, state.compactions, messages, state.nativeHistory]);
-  const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, exchanges, handoffs: handoffs.handoffs, loading: state.loading, animate: isActive && state.connected && !state.actionBusy, nativeRuns: state.runs, nativeHarness: harness, compactionPositions: positions, codeShares: codeShares.shares, mediaShares: mediaShares.shares });
+   const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, exchanges, handoffs: handoffs.handoffs, loading: state.loading, animate: isActive && state.connected && !state.actionBusy, nativeRuns: state.runs, nativeHarness: harness, compactionPositions: positions, codeShares: codeShares.shares, mediaShares: mediaShares.shares, questionnaires: userQuestions.forms });
   const loadedNativeSubagents = useMemo(() => new Set(messages.flatMap(source => source.parts.flatMap(part => {
     const key = part.type === "tool" ? nativeSubagentKey(state.selected, source, part, state.runs, harness) : null;
     return key ? [nativeSubagentId(key)] : [];
@@ -322,6 +331,12 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const documentFlow = reviewPresented ? review.flow : null;
   const readingDocument = !hasRequests && !!documentFlow?.path;
   const presentationActive = isActive && transcriptVisible && !readingDocument;
+  const questionsJump = useRef<object | undefined>(undefined);
+  useEffect(() => {
+    const reveal = userQuestions.revealRequest, form = userQuestions.selected?.form;
+    if (!reveal || questionsJump.current === reveal || !form || !presentationActive || hasRequests || state.sending || state.loading || state.phase !== "ready") return;
+    if (goToSend({ kind: "questions", id: form.id, sessionId: form.sessionId, anchor: form.anchor })) questionsJump.current = reveal;
+  }, [userQuestions.revealRequest, userQuestions.selected, presentationActive, hasRequests, state.sending, state.loading, state.phase]);
   useEffect(() => {
     if (paired || !isActive) return;
     if (flowPresentation === "documents" && !review.flow) changeFlowPresentation(null);
@@ -354,6 +369,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const safety = <>
     <CodeShareStatus projection={codeShares} />
     <MediaShareStatus projection={mediaShares} />
+    <UserQuestionsStatus questions={userQuestions} />
     {state.transcriptError && <p className="notice error" role="alert">{state.transcriptError}<button type="button" className="text-button" onClick={() => store.reconnect()}>Retry history</button></p>}
     {state.transcript && (state.compactions ?? []).some(record => !state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind !== "unplaced")) && <section aria-label="Compaction lifecycle without a transcript position"><CompactionMarkers records={(state.compactions ?? []).filter(record => !state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind !== "unplaced"))} /></section>}
     <CompactionMarkers records={readingDocument ? state.transcript ? state.compactions?.filter(record => state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind === "tail")) : state.transcriptPaged ? undefined : state.compactions : undefined} />
@@ -362,13 +378,13 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const statusActions = pendingInputStopAction({ chainLocked, appRunning: grok ? state.grokView?.active === true : appRunning, cancelRun: capabilities.cancelRun === true, nativeQueueWaiting,
     disabled: !isActive || state.actionBusy || state.sending || (chainLocked ? state.phase !== "ready" || state.config?.authenticated !== true : !state.connected),
     cancel: () => void store.cancel() });
-  const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} paired={paired} onOpenChatFlow={onOpenChatFlow} flowPresentation={flowPresentation} onFlowPresentationChange={changeFlowPresentation} questions={userQuestions} questionsReadOnlyReason={questionsReadOnlyReason} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={paired ? undefined : review} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
+  const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} paired={paired} onOpenChatFlow={onOpenChatFlow} flowPresentation={flowPresentation} onFlowPresentationChange={changeFlowPresentation} questions={userQuestions} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={paired ? undefined : review} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
   const transcriptHeader = <>
     <SessionSearch root={searchRoot} active={presentationActive} state={state} />
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
   </>;
-   return <LoadedWorkerRefreshProvider sessionId={state.selected} scope={workerRefreshScope} enabled={isActive && state.connected} workers={loadedWorkers}><TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, exchanges, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, presentationActive, codeShares, mediaShares, userQuestions, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${paired ? " is-browser-paired" : ""}${documentFlow && !hasRequests ? " is-document-review" : ""}`}>
+   return <LoadedWorkerRefreshProvider sessionId={state.selected} scope={workerRefreshScope} enabled={isActive && state.connected} workers={loadedWorkers}><TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, exchanges, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, presentationActive, codeShares, mediaShares, userQuestions, userQuestionsReadOnlyReason: questionsReadOnlyReason, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${paired ? " is-browser-paired" : ""}${documentFlow && !hasRequests ? " is-document-review" : ""}`}>
     <ChatScroll active={isActive} transcriptTarget={transcriptTarget} transcriptVisible={transcriptVisible} beforeViewport={transcriptHeader} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} history={{ key: state.transcript?.islands[0]?.key ?? "", canLoad: !!state.transcript?.islands[0]?.coverage.olderCursor && !state.pageBusy && !state.pageErrors?.[`${state.transcript.islands[0].key}:older`], load: () => { const island = state.transcript?.islands[0]; if (island) void store.loadTranscriptPage({ island: island.key, direction: "older" }); } }} sendNavigation={{ sessionId: state.selected, loading: state.loading, connected: state.connected, connectionError: state.connectionError, workerError: projection.error, workerLoading: state.workerLoading, handoffLoading: handoffs.loading, handoffError: handoffs.error }} replacement={readingDocument ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
       <div className="transcript" ref={searchRoot}>
         <NativeSubagentDiscovery loaded={loadedNativeSubagents} />

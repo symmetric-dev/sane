@@ -80,7 +80,17 @@ Use `--no-allow-remote` or `--clear-public-origin` to override saved values.
 
 Launch builds a versioned asset generation. `--no-build` serves only a generation
 that still matches its source/build inputs; missing or stale assets require a
-rebuild. A running server does not adopt rebuilt assets or changed backend code.
+rebuild. A normally launched server does not adopt rebuilt assets or changed
+backend code.
+
+For frontend development, stop the running App and use `bun run dev:app` (or
+`bun run start:app --dev`) with the same launch options. It watches UI sources,
+shared/workspace source modules, and public assets. After `[frontend] Ready`,
+refresh the browser to load changes. Failed rebuilds leave the last successful
+UI available. Development builds are unminified, include source maps, and are
+kept separate from production assets; normal authentication/origin checks still
+apply. The backend and active runs stay running; backend code or dependency
+changes still require a restart. `--dev` cannot be combined with `--no-build`.
 
 ## Projects and execution targets
 

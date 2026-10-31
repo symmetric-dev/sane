@@ -2,6 +2,7 @@ import { useCallback, useId, useLayoutEffect, useRef, useState } from "react";
 import { FiChevronLeft, FiChevronRight } from "react-icons/fi";
 import type { CodeShareSnapshot } from "../shared/code-share-contract";
 import { codeShareSnippetPresentation } from "./code-share-presentation";
+import { ChatIconButton } from "./chat-ui";
 
 type Entry = { index: number; title: string; tooltip: string };
 
@@ -83,7 +84,7 @@ export function SharedCodeNavigation({ snippets, page, select, viewId }: { snipp
   };
   useLayoutEffect(() => { if (focusSelected.current) { focusSelected.current = false; focusTab(); } }, [page]);
   return <nav className="shared-code-pagination" aria-label="Code snippet navigation">
-    <button type="button" className="shared-code-page-button shared-code-previous" aria-label="Previous snippet" title="Previous snippet" disabled={page === 0} onClick={() => choose(page - 1)}><FiChevronLeft aria-hidden="true" /></button>
+    <ChatIconButton className="shared-code-page-button shared-code-previous" aria-label="Previous snippet" disabled={page === 0} onClick={() => choose(page - 1)}><FiChevronLeft /></ChatIconButton>
     {start > 0 && <SnippetOverflow key={`before-${start}`} entries={entries.slice(0, start)} side="before" select={choose} />}
     <div ref={tabs} className="shared-code-tabs" role="tablist" aria-label="Code snippets" onKeyDown={event => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -91,7 +92,7 @@ export function SharedCodeNavigation({ snippets, page, select, viewId }: { snipp
       choose(event.key === "Home" ? 0 : event.key === "End" ? count - 1 : (page + (event.key === "ArrowRight" ? 1 : count - 1)) % count);
     }}>{entries.slice(start, end).map(entry => <button key={entry.index} type="button" className="shared-code-tab" role="tab" id={`${viewId}-tab-${entry.index}`} aria-selected={page === entry.index} aria-posinset={entry.index + 1} aria-setsize={count} aria-controls={`${viewId}-panel`} aria-label={entry.tooltip} tabIndex={page === entry.index ? 0 : -1} title={entry.tooltip} onClick={() => choose(entry.index)}><span>{entry.title}</span></button>)}</div>
     {end < count && <SnippetOverflow key={`after-${end}`} entries={entries.slice(end)} side="after" select={choose} />}
-    <button type="button" className="shared-code-page-button shared-code-next" aria-label="Next snippet" title="Next snippet" disabled={page === count - 1} onClick={() => choose(page + 1)}><FiChevronRight aria-hidden="true" /></button>
+    <ChatIconButton className="shared-code-page-button shared-code-next" aria-label="Next snippet" disabled={page === count - 1} onClick={() => choose(page + 1)}><FiChevronRight /></ChatIconButton>
     <span className="shared-code-count" role="status" aria-live="polite" aria-atomic="true"><span className="sr-only">Snippet </span>{page + 1}<span aria-hidden="true">/</span><span className="sr-only"> of </span>{count}</span>
   </nav>;
 }

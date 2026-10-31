@@ -6,11 +6,12 @@ import { json } from "./bridge-http";
 export type AssetRoutePorts = Readonly<{
   assetsDir: string;
   assetManifest: ReturnType<typeof validateAssets>["manifest"];
+  development?: boolean;
 }>;
 
 /** Non-API fallback after the bridge's browser boundary and API routing. The
  * captured manifest is the one validated by the existing startup path. */
-export function createAssetRoute({ assetsDir, assetManifest }: AssetRoutePorts) {
+export function createAssetRoute({ assetsDir, assetManifest, development = false }: AssetRoutePorts) {
   return async function assetRoute(req: Request, url: URL): Promise<Response | null> {
     const path = url.pathname;
     if (path.startsWith("/api/")) return null;
@@ -47,7 +48,7 @@ export function createAssetRoute({ assetsDir, assetManifest }: AssetRoutePorts) 
     try { if (!(await stat(file)).isFile()) return json({ error: "Not found" }, 404); }
     catch { return json({ error: "Not found" }, 404); }
     const asset = Bun.file(file);
-    const immutable = assetName !== "index.html" && assetName !== "push-worker.js" && url.searchParams.get("v") === assetManifest.fingerprint;
+    const immutable = !development && assetName !== "index.html" && assetName !== "push-worker.js" && url.searchParams.get("v") === assetManifest.fingerprint;
     return new Response(req.method === "HEAD" ? null : asset, { headers: {
       "content-type": Bun.file(join(assetsDir, assetName)).type, "content-length": String(asset.size),
       "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-store", "x-content-type-options": "nosniff", vary: "Accept-Encoding",

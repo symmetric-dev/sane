@@ -10,7 +10,7 @@ import { SharedCodeNavigation } from "./shared-code-navigation";
 import { editorLanguage } from "./editor-languages";
 import { resolvedEditorTheme } from "./workspace-theme";
 import { themeSettings } from "./theme-settings";
-import { ShellDialog } from "./shell-dialog";
+import { ChatButton, ChatCard, ChatCardBody, ChatCardFooter, ChatCardHeader, ChatDialog, ChatDialogBody, ChatIconButton, ChatNotice } from "./chat-ui";
 import "./shared-code.css";
 
 class CommentWidget extends WidgetType {
@@ -90,27 +90,26 @@ function CodeShareReader({ snippets, page, select, wrap, toggleWrap, openModal, 
   const description = useId(), viewId = useId(), snippet = snippets[page];
   const { title, path, startLine, endLine, inline } = codeShareSnippetPresentation(snippet);
   const [copied, setCopied] = useState<{ snippet: CodeShareSnapshot; message: string } | null>(null);
-  return <section className={`shared-code-card${expanded ? " shared-code-expanded" : ""}`} aria-label={`Shared code: ${title}`}>
-    <header>
-      <strong title={title}>{title}</strong>
-      {path && title !== path && <span className="shared-code-source-path" title={path}>{path}</span>}
-      <span>L{startLine}–{endLine}</span><span>{snippet.language}</span>
-      <button type="button" aria-pressed={wrap} onClick={toggleWrap}>Wrap</button>
-      <button type="button" onClick={async () => {
+  return <ChatCard density="compact" className={`shared-code-card${expanded ? " shared-code-expanded" : ""}`} aria-label={`Shared code: ${title}`}>
+    <ChatCardHeader title={<span title={title}>{title}</span>}
+      metadata={<>{path && title !== path && <span className="shared-code-source-path" title={path}>{path}</span>}<span>L{startLine}–{endLine}</span><span>{snippet.language}</span></>}
+      actions={<>
+      <ChatButton variant="ghost" aria-pressed={wrap} onClick={toggleWrap}>Wrap</ChatButton>
+      <ChatButton variant="ghost" onClick={async () => {
         try { await navigator.clipboard.writeText(snippet.code); setCopied({ snippet, message: "Copied" }); }
         catch { setCopied({ snippet, message: "Copy unavailable" }); }
-      }}>Copy code</button>
-    </header>
+      }}>Copy code</ChatButton>
+      {openModal && <ChatIconButton aria-label="Open in modal" onClick={openModal}><FiMaximize2 /></ChatIconButton>}
+    </>} />
     <p id={description} className="shared-code-caption">{inline ? "Suggested code · not saved to a file" : "Frozen snapshot · not the current file"}{snippet.input.highlights?.length ? inline ? " · Highlighted lines and annotations refer to snippet line numbers." : " · Highlighted lines and annotations refer to original line numbers." : ""}</p>
     <span className="shared-code-feedback" role="status">{copied?.snippet === snippet ? copied.message : ""}</span>
-    <div className="shared-code-panel" role="tabpanel" id={`${viewId}-panel`} aria-labelledby={`${viewId}-tab-${page}`}>
+    <ChatCardBody flush className="shared-code-panel" role="tabpanel" id={`${viewId}-panel`} aria-labelledby={`${viewId}-tab-${page}`}>
       <CodeSnippetView key={page} snippet={snippet} wrap={wrap} description={description} />
-    </div>
-    <footer className="shared-code-controls">
+    </ChatCardBody>
+    <ChatCardFooter className="shared-code-controls">
       <SharedCodeNavigation snippets={snippets} page={page} select={select} viewId={viewId} />
-      {openModal && <button type="button" className="shared-code-open" aria-label="Open in modal" title="Open in modal" onClick={openModal}><FiMaximize2 aria-hidden="true" /></button>}
-    </footer>
-  </section>;
+    </ChatCardFooter>
+  </ChatCard>;
 }
 
 export function SharedCodeCard({ share }: { share: CodeShareRecord }) {
@@ -123,18 +122,18 @@ export function SharedCodeCard({ share }: { share: CodeShareRecord }) {
   };
   return <>
     <CodeShareReader {...reader} openModal={() => setExpanded(true)} />
-    {expanded && <ShellDialog title="Shared code" subtitle={`Snippet ${selected + 1} of ${snippets.length}`} className="shared-code-dialog" close={() => setExpanded(false)}>
-      <CodeShareReader {...reader} expanded />
-    </ShellDialog>}
+    {expanded && <ChatDialog title="Shared code" subtitle={`Snippet ${selected + 1} of ${snippets.length}`} size="wide" className="shared-code-dialog" close={() => setExpanded(false)}>
+      <ChatDialogBody><CodeShareReader {...reader} expanded /></ChatDialogBody>
+    </ChatDialog>}
   </>;
 }
 
 export function CodeShareStatus({ projection }: { projection?: CodeShareProjection }) {
-  return projection?.error ? <p className="shared-code-notice" role="alert">Shared code refresh unavailable: {projection.error} <button type="button" onClick={projection.retry}>Retry shared code</button></p> : null;
+  return projection?.error ? <ChatNotice className="shared-code-notice" tone="warning" role="alert" actions={<ChatButton onClick={projection.retry}>Retry shared code</ChatButton>}>Shared code refresh unavailable: {projection.error}</ChatNotice> : null;
 }
 export function PendingCodeShare({ projection, running, failed }: { projection?: CodeShareProjection; running: boolean; failed?: boolean }) {
   const status = failed
     ? projection?.loading ? "Code sharing reported an error. Checking for a saved snapshot…" : "Code sharing failed; no saved snapshot is available."
     : projection?.error ? "Shared code snapshot unavailable." : projection?.loading || running ? "Waiting for the saved code snapshot…" : "No saved code snapshot is available for this call.";
-  return <section className="shared-code-card shared-code-pending" aria-label="Shared code snapshot"><p role="status">{status}</p><button type="button" onClick={projection?.retry} disabled={!projection || projection.loading}>Retry snapshot</button></section>;
+  return <ChatNotice className="shared-code-pending" aria-label="Shared code snapshot" role="status" tone={failed || projection?.error ? "warning" : "neutral"} actions={<ChatButton onClick={projection?.retry} disabled={!projection || projection.loading}>Retry snapshot</ChatButton>}>{status}</ChatNotice>;
 }

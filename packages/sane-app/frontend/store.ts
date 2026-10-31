@@ -1455,7 +1455,7 @@ export class ChatStore {
     } finally { this.pageRequests.delete(controller); if (current()) this.update({ pageBusy: "" }); }
   };
   /** Explicit Go-to-send loads its target page; caller cancellation aborts it. */
-  loadSendTarget = async (target: { kind: "worker" | "handoff"; id: string; sessionId: string }, signal: AbortSignal): Promise<"loaded" | "missing" | "legacy"> => {
+  loadSendTarget = async (target: import("./send-navigation").SendTarget, signal: AbortSignal): Promise<"loaded" | "missing" | "legacy"> => {
     if (!this.paged) return "legacy";
     const selection = this.selectionEpoch, auth = this.authEpoch;
     let fence = this.pageFence;
@@ -1468,7 +1468,19 @@ export class ChatStore {
       let readSerial = this.publicationSerial;
       for (let attempt = 0; attempt < 2; attempt++) {
         readSerial = this.publicationSerial;
-        try { page = await this.client.transcriptPage!(target.sessionId, { targetKind: target.kind, targetId: target.id }, controller.signal); break; }
+        try {
+          const query = target.kind === "questions"
+            ? { ...(target.anchor.messageId ? { targetMessageId: target.anchor.messageId } : { targetRunId: target.anchor.runId }), toolCallId: target.anchor.toolCallId }
+            : { targetKind: target.kind, targetId: target.id };
+          try { page = await this.client.transcriptPage!(target.sessionId, query, controller.signal); }
+          catch (error) {
+            // Imported native history can retain the exact tool call without an
+            // App run ID. Match that durable call, never questionnaire prose.
+            if (target.kind !== "questions" || target.anchor.messageId || target.anchor.runId === "native-import" || !(error instanceof ApiError) || error.status !== 404 || !current()) throw error;
+            page = await this.client.transcriptPage!(target.sessionId, { targetRunId: "native-import", toolCallId: target.anchor.toolCallId }, controller.signal);
+          }
+          break;
+        }
         catch (error) {
           if (!current()) throw error;
           if (error instanceof ApiError && error.status === 404) return "missing";

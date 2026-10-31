@@ -5,14 +5,14 @@ import { AgentAvatar } from "./agent-visuals";
 import { formatTitle } from "./conversation-filter";
 import { ConversationFilterDialog } from "./conversation-filter-dialog";
 import { ConversationMenu, PhaseBadge, StatusIcon, WorkstreamIcon } from "./conversation-row";
-import { Icon } from "./nav";
 import { workerReference as knownWorker } from "./worker-client";
 import { notificationStore } from "./notifications";
 import type { ConversationSidebarMode, ConversationSidebarModel } from "./conversation-sidebar-model";
 import { conversationSidebarBinding, conversationSidebarGroups, type WorktreeBucket } from "./conversation-sidebar-buckets";
 import { CHAT_WORKTREE_SHORTCUTS, shortcutHint } from "./shortcut-definitions";
 import type { Conversation } from "./types";
-import { worktreeDisplay } from "./catalog-selector";
+import { useCatalogSelector, worktreeDisplay } from "./catalog-selector";
+import { WorktreeMenu } from "./worktree-menu";
 import "./conversation-sidebar.css";
 
 export { useConversationSidebarModel } from "./conversation-sidebar-model";
@@ -34,7 +34,8 @@ export type ConversationSidebarProps = {
 
 /** The shell renders its selector before this component. History selection is preview-only. */
 export function ConversationSidebar({ state, model, mode, selectedId, onChoose, onPreview, onHistory, onConnect, canConnect }: ConversationSidebarProps) {
-  return <ConversationSidebarList state={state} model={model} mode={mode} selectedId={selectedId} onSelect={mode === "history" ? onPreview : onChoose} onHistory={onHistory} onConnect={onConnect} canConnect={canConnect} />;
+  const selecting = useCatalogSelector()?.open;
+  return <ConversationSidebarList state={state} model={model} mode={selecting ? "chat" : mode} selectedId={selecting ? state.selected : selectedId} onSelect={mode === "history" && !selecting ? onPreview : onChoose} onHistory={onHistory} onConnect={onConnect} canConnect={canConnect} />;
 }
 
 /** Shared list presentation also supports legacy callers without another data hook. */
@@ -44,6 +45,8 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
   onConnect?: (id: string) => void;
   canConnect?: (conversation: Conversation) => boolean;
 }) {
+  const selector = useCatalogSelector();
+  const select = (id: string) => { selector?.close(); onSelect(id); };
   const { repository, nav, filter, setFilter, workspaceSelection, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, messageHitsLoading, messageHitsError, page, workerCounts, scoped, activeFilterCount, grouped, isWorktreeExpanded, setWorktreeExpanded } = model;
   // Dialog visibility is presentation-local: opening the drawer must not create two modal dialogs.
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -70,6 +73,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
     if (!history && bucket.available && bucket.workspaceId && bucket.worktreeId) {
       setWorktreeExpanded(bucket.key, true);
       workspaceSelection.selectWorktree(bucket.worktreeId, bucket.workspaceId);
+      selector?.close();
       return;
     }
     toggleBucket(bucket.key, currentExpanded);
@@ -79,7 +83,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
     if (!bucket.available || !bucket.worktreeId) return;
     setWorktreeExpanded(bucket.key, true);
     if (bucket.workspaceId) workspaceSelection.selectWorktree(bucket.worktreeId, bucket.workspaceId);
-    onSelect("");
+    select("");
   };
 
   let renderedBuckets = 0;
@@ -98,7 +102,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
     const showConnect = !history && !!onConnect && !c.replacedBy && !c.worker && c.agentKind !== "worker" && !knownWorker(c.id);
     const connectDisabled = state.sending || state.actionBusy || canConnect?.(c) === false;
     return <div className="history-row conversation-sidebar-row" key={c.id}>
-      <button type="button" className={selected ? "selected" : ""} aria-current={selected ? "page" : undefined} disabled={!history && state.sending} onClick={() => onSelect(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}>
+      <button type="button" className={selected ? "selected" : ""} aria-current={selected ? "page" : undefined} disabled={!history && state.sending} onClick={() => select(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}>
         <span className="history-line conversation-sidebar-heading">
           {profile && <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span>}
           <span className="history-title">{formatTitle(c.title, basename(c.cwd))}</span>
@@ -129,7 +133,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
     {dialogOpen && <ConversationFilterDialog value={filter} onChange={setFilter} defaults={model.defaults} workspaces={repository.workspaces} navigation={nav} overview={overview} resultCount={grouped ? model.directoryReady ? bucketGroups.reduce((total, group) => total + group.buckets.reduce((sum, bucket) => sum + (bucket.total ?? 0), 0), 0) : undefined : visible.length} partialResults={!grouped && !!page} onClose={() => setDialogOpen(false)} />}
     {!!hits.length && <div className="history-hits" aria-label="Message matches"><p className="muted">Message matches · best effort</p>{hits.slice(0, 3).map((hit, index) => {
       const conversation = state.conversations.find(c => c.id === hit.sessionId);
-      return <button key={`${hit.sessionId}:${hit.runId ?? "title"}:${index}`} type="button" className="history-hit" disabled={!history && state.sending} onClick={() => onSelect(hit.sessionId)} title={conversation?.title ? `${conversation.title}\n${conversation.cwd}` : conversation?.cwd || hit.sessionId}><span>{formatTitle(conversation?.title, basename(conversation?.cwd))}</span>{conversation && <small className="muted">{locationLabel(conversation)}</small>}<small className="muted"> {hit.snippet}</small></button>;
+      return <button key={`${hit.sessionId}:${hit.runId ?? "title"}:${index}`} type="button" className="history-hit" disabled={!history && state.sending} onClick={() => select(hit.sessionId)} title={conversation?.title ? `${conversation.title}\n${conversation.cwd}` : conversation?.cwd || hit.sessionId}><span>{formatTitle(conversation?.title, basename(conversation?.cwd))}</span>{conversation && <small className="muted">{locationLabel(conversation)}</small>}<small className="muted"> {hit.snippet}</small></button>;
     })}</div>}
     {messageHitsLoading && <p className="muted conversation-sidebar-search-status" role="status">Searching messages…</p>}
     {messageHitsError && <p className="muted conversation-sidebar-search-status" role="status">{messageHitsError}</p>}
@@ -176,18 +180,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
                 {hasUnread && <span className="conversation-sidebar-unread" title="Unread update in worktree"><FiBell size={12} aria-hidden="true" /><span className="sr-only">Unread update</span></span>}
                 <span className="worktree-group-count" title={count === undefined ? "Conversation total unavailable" : !grouped && page ? "Loaded conversations" : "Matching conversations"} aria-label={count === undefined ? "Conversation total unavailable" : `${count} ${!grouped && page ? "loaded " : ""}${count === 1 ? "conversation" : "conversations"}`}>{count ?? "…"}</span>
               </button>
-              {!history && bucket.available && bucket.worktreeId && (
-                <button
-                  type="button"
-                  className="worktree-group-new"
-                  disabled={state.sending}
-                  aria-label={`New conversation in ${bucket.label}`}
-                  title={`New conversation in ${bucket.label}`}
-                  onClick={() => newInBucket(bucket)}
-                >
-                  <Icon name="plus" />
-                </button>
-              )}
+              {!history && bucket.workspaceId && bucket.worktreeId && <WorktreeMenu workspaceId={bucket.workspaceId} worktreeId={bucket.worktreeId} label={bucket.label} disabled={state.sending || state.actionBusy || workspaceSelection.blocked} onNew={() => newInBucket(bucket)} />}
             </div>
             {expanded && <div className="worktree-group-items" aria-busy={groupLoading || !!groupPage?.loadingMore}>
               {bucket.conversations.map(conversation => renderConversation(conversation))}

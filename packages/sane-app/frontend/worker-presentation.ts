@@ -23,6 +23,20 @@ export function receivedWorkerExchange(message: Message, sessionId: string, exch
     && (exchange.delivery.commandId === message.id || !!exchange.delivery.runId && exchange.delivery.runId === message.runId));
 }
 
+/** Match the durable caller identity written by workerInvocationKey, including
+ * native imports and wrapper tools. Never infer a send from message text/output. */
+export function sentWorkerExchanges(sessionId: string, source: Message, tool: ToolPart, exchanges: readonly WorkerExchange[]): WorkerExchange[] {
+  return exchanges.filter(exchange => {
+    if (exchange.sender.sessionId !== sessionId) return false;
+    let caller: unknown;
+    try { caller = JSON.parse(exchange.invocationKey); } catch { return false; }
+    if (!Array.isArray(caller) || caller.length !== 4 || typeof caller[0] !== "string" || typeof caller[1] !== "string") return false;
+    const [runId, toolCallId, messageId] = caller;
+    if (toolCallId !== (tool.toolCallId ?? tool.id) || source.runId !== "native-import" && runId !== source.runId) return false;
+    return messageId === null || typeof messageId === "string" && (messageId === source.id || source.nativeIds?.includes(messageId) === true);
+  });
+}
+
 export function dispatchedWorkers(sessionId: string, message: Message, tool: ToolPart, workers: WorkerRecord[]): WorkerRecord[] {
   if (!tool.toolCallId) return [];
   return workers.filter(w => w.parent.sessionId === sessionId && w.parent.toolCallId === tool.toolCallId && (message.runId === "native-import" || w.parent.runId === message.runId));
@@ -54,5 +68,27 @@ export function exchangeSenderLabel(exchange: WorkerExchange): string {
 }
 
 export function exchangeRecipientLabel(exchange: WorkerExchange): string {
-  return exchange.direction === "parent-to-child" ? "worker" : "parent";
+  return exchange.direction === "parent-to-child" ? "Worker" : "Parent";
+}
+
+/** Keep Worker on the left so arrow direction alone distinguishes the sender. */
+export function exchangeRouteLabel(exchange: Pick<WorkerExchange, "direction">): string {
+  return exchange.direction === "parent-to-child" ? "Worker ← Parent" : "Worker → Parent";
+}
+
+const exchangeDeliveryLabels = { queued: "Queued", claimed: "Sending", "acceptance-unknown": "Acceptance unconfirmed", accepted: "Accepted", "wrapper-completed": "Delivered", "not-submitted": "Not sent" };
+const closedExchangeRecipient = "Recipient assignment is no longer open; the exchange remains queued";
+
+/** A terminal recipient's parked queue entry is historical non-delivery, not an
+ * upcoming send. Closing alone is temporary; never relabel it as finished. */
+export function exchangeDeliveryPresentation(exchange: WorkerExchange, recipient?: Pick<WorkerRecord, "assignment">): {
+  label: string; tone: "neutral" | "warning" | "danger"; notice: string | undefined; parked: boolean;
+} {
+  const parked = recipient?.assignment === "terminal" && exchange.delivery.state === "queued" && exchange.delivery.error === closedExchangeRecipient;
+  return {
+    label: parked ? "Not delivered" : exchangeDeliveryLabels[exchange.delivery.state],
+    tone: parked || exchange.delivery.state === "acceptance-unknown" ? "warning" : exchange.delivery.state === "not-submitted" ? "danger" : "neutral",
+    notice: parked ? "Not delivered — worker finished before delivery" : exchange.delivery.error,
+    parked,
+  };
 }

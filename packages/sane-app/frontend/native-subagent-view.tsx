@@ -11,6 +11,7 @@ import { CodeShareStatus } from "./shared-code-card";
 import { useMediaShares } from "./media-share-client";
 import { MediaShareStatus } from "./shared-media-card";
 import { useStore } from "./store";
+import { ChatButton, ChatDisclosure, ChatNotice, ChatStatus } from "./chat-ui";
 
 export function NativeSubagentView() {
   const feature = useNativeSubagents()!;
@@ -63,17 +64,17 @@ export function NativeSubagentView() {
   return <TranscriptContext.Provider value={{ sessionId: summary.parentSessionId, harness: summary.harness ?? "claude-code", messages, ...transcriptIndex, runs: [], workers: [], openWorker: () => {}, activities, activityScope: inspection.scope, inspectActivity: inspection.open, readOnly: true, codeShares, mediaShares }}><section className="native-subagent-view" aria-label="Read-only native subagent activity">
     <header className="native-subagent-header">
       <nav className="native-subagent-nav" aria-label="Native subagent navigation">
-        <button ref={back} type="button" className="text-button" onClick={feature.back}><FiArrowLeft aria-hidden="true" />Back to parent</button>
-        <div className="native-subagent-nav-heading"><h2>{name}</h2><span className="native-subagent-badge">Native</span><span className="native-subagent-badge">Read-only</span></div>
-        <div className="native-subagent-nav-summary"><span className={`status ${summary.status}`} role="status">{summary.status === "unknown" ? "unconfirmed" : summary.status}</span><span aria-hidden="true">·</span><span className="native-subagent-count" aria-label={countLabel} title={countLabel}>{feature.summaryKnown ? `${summary.toolCallCount} call${summary.toolCallCount === 1 ? "" : "s"}` : "Calls unavailable"}</span></div>
-        <button type="button" className="worker-action" aria-label={detailsLabel} title={detailsLabel} aria-expanded={detailsOpen} aria-controls={detailsId} onClick={() => setDetailsOpen(open => !open)}>Details{attention && <span className="native-subagent-attention" aria-hidden="true" />}</button>
-        {summary.harness === "opencode" && <button type="button" className="worker-action" disabled={feature.state.detailLoading} onClick={feature.client.retryDetail}>{summary.nativeSessionId ? "Refresh history" : "Retry history"}</button>}
+        <ChatButton ref={back} variant="ghost" icon={<FiArrowLeft />} onClick={feature.back}>Back to parent</ChatButton>
+        <div className="native-subagent-nav-heading"><h2>{name}</h2><ChatStatus>Native</ChatStatus><ChatStatus>Read-only</ChatStatus></div>
+        <div className="native-subagent-nav-summary"><ChatStatus tone={summary.status === "failed" ? "danger" : summary.status === "unknown" ? "warning" : summary.status === "completed" ? "success" : "neutral"} busy={summary.status === "running"} role="status">{summary.status === "unknown" ? "unconfirmed" : summary.status}</ChatStatus><span aria-hidden="true">·</span><span className="native-subagent-count" aria-label={countLabel} title={countLabel}>{feature.summaryKnown ? `${summary.toolCallCount} call${summary.toolCallCount === 1 ? "" : "s"}` : "Calls unavailable"}</span></div>
+        <ChatButton variant="ghost" aria-label={detailsLabel} title={detailsLabel} aria-expanded={detailsOpen} aria-controls={detailsId} onClick={() => setDetailsOpen(open => !open)}>Details{attention && <span className="native-subagent-attention" aria-hidden="true" />}</ChatButton>
+        {summary.harness === "opencode" && <ChatButton variant="ghost" disabled={feature.state.detailLoading} onClick={feature.client.retryDetail}>{summary.nativeSessionId ? "Refresh history" : "Retry history"}</ChatButton>}
       </nav>
       <div className="native-subagent-disclosure" id={detailsId} hidden={!detailsOpen}>
         <h4>Assignment</h4><p className="native-subagent-full-assignment">{summary.assignment || "No assignment recorded."}</p>
         <p className="muted">Recorded activity only, not a complete native session history. Counts reflect recorded child tool calls, not a native run total.{!feature.summaryKnown && " Recorded tool count unavailable."}</p>
         {summary.status === "unknown" && <p className="muted">Status is unconfirmed by recorded native evidence.</p>}
-        {!!summary.warnings?.length && <div className="run-warning"><h4>Recorded evidence warnings</h4>{summary.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</div>}
+        {!!summary.warnings?.length && <ChatNotice tone="warning" title="Recorded evidence warnings">{summary.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</ChatNotice>}
       </div>
     </header>
     <div ref={viewport} className="viewport native-subagent-viewport" style={{ overflowAnchor: "none" }} tabIndex={0} aria-label="Native subagent messages" onWheel={event => { if (event.deltaY < 0) pause(); }} onTouchStart={pause} onPointerDown={pause} onKeyDownCapture={event => { if (["ArrowUp", "PageUp", "Home", "Enter", " "].includes(event.key)) pause(); }} onClickCapture={pause} onScroll={event => {
@@ -86,15 +87,15 @@ export function NativeSubagentView() {
       <div ref={content} className="transcript">
         <CodeShareStatus projection={codeShares} />
         <MediaShareStatus projection={mediaShares} />
-        {feature.state.detailError && <p className="notice error" role="alert">Activity refresh unavailable: {feature.state.detailError}{snapshot && " Showing the last coherent recorded snapshot."}<button type="button" className="text-button" disabled={feature.state.detailLoading} onClick={feature.client.retryDetail}>Retry</button></p>}
-        {snapshot?.nextCursor && <button type="button" className="text-button" disabled={feature.state.detailLoading} onClick={() => { pause(); feature.client.loadEarlier(); }}>Load earlier activity</button>}
+        {feature.state.detailError && <ChatNotice tone="warning" role="alert" actions={<ChatButton disabled={feature.state.detailLoading} onClick={feature.client.retryDetail}>Retry</ChatButton>}>Activity refresh unavailable: {feature.state.detailError}{snapshot && " Showing the last coherent recorded snapshot."}</ChatNotice>}
+        {snapshot?.nextCursor && <ChatButton variant="ghost" disabled={feature.state.detailLoading} onClick={() => { pause(); feature.client.loadEarlier(); }}>Load earlier activity</ChatButton>}
         {feature.state.detailLoading && <p className="muted" role="status">{snapshot ? "Refreshing recorded activity…" : "Loading recorded activity…"}</p>}
         {!messages.length && snapshot && <p className="muted">No child messages have been recorded.{summary.returnedReport && " The returned report does not imply recorded child activity."}</p>}
         {summary.recovery && <p className="muted" role="status">{summary.recovery.state === "exhausted" ? "Automatic child-link recovery stopped after six attempts. Use Retry history to try again." : "Recovering the native child link automatically…"}</p>}
         <AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="native-subagent-thread"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /></ThreadPrimitive.Root></AssistantRuntimeProvider>
-        {summary.returnedReport && <details className="native-subagent-returned-report"><summary>Returned report</summary><pre>{summary.returnedReport}</pre></details>}
+        {summary.returnedReport && <ChatDisclosure className="native-subagent-returned-report" title="Returned report"><pre>{summary.returnedReport}</pre></ChatDisclosure>}
       </div>
     </div>
-    <footer className="native-subagent-footer"><button type="button" className="text-button" onClick={() => { following.current = true; anchor.current = null; if (viewport.current) { viewport.current.scrollTop = viewport.current.scrollHeight; programmedTop.current = viewport.current.scrollTop; } }}>Latest activity</button></footer>
+    <footer className="native-subagent-footer"><ChatButton variant="ghost" onClick={() => { following.current = true; anchor.current = null; if (viewport.current) { viewport.current.scrollTop = viewport.current.scrollHeight; programmedTop.current = viewport.current.scrollTop; } }}>Latest activity</ChatButton></footer>
   </section><ActivityInspector inspection={inspection} renderBody={renderActivityInspectorBody} /></TranscriptContext.Provider>;
 }

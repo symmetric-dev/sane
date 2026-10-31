@@ -1,8 +1,10 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { catalog } from "./catalog";
 import { store } from "./store";
+import type { UserQuestionsRecord } from "../shared/user-questions-contract";
 
-export type SendTarget = { kind: "worker" | "handoff"; id: string; sessionId: string };
+export type SendTarget = { kind: "worker" | "handoff"; id: string; sessionId: string }
+  | { kind: "questions"; id: string; sessionId: string; anchor: UserQuestionsRecord["anchor"] };
 type Jump = SendTarget & { serial: number };
 export type SendNavigationState = {
   sessionId: string; active: boolean; loading: boolean; connected: boolean; connectionError: string;
@@ -88,9 +90,10 @@ export function useSendNavigation(viewport: RefObject<HTMLDivElement | null>, st
   useLayoutEffect(() => {
     if (!jump || pending.current !== jump || !state.active || state.sessionId !== jump.sessionId) return;
     if (loaded?.serial !== jump.serial) return;
-    if (loaded.outcome === "missing") { finish(jump, "Original send unavailable"); return; }
-    if (loaded.outcome === "error") { finish(jump, "Could not load original send. Try again."); return; }
-    if (state.connectionError) { finish(jump, "Could not load original send. Try again."); return; }
+    const label = jump.kind === "questions" ? "Questionnaire" : "Original send";
+    if (loaded.outcome === "missing") { finish(jump, `${label} unavailable`); return; }
+    if (loaded.outcome === "error") { finish(jump, `Could not load ${label.toLowerCase()}. Try again.`); return; }
+    if (state.connectionError) { finish(jump, `Could not load ${label.toLowerCase()}. Try again.`); return; }
     if (state.loading || !state.connected || jump.kind === "worker" && state.workerLoading) return;
     const root = viewport.current;
     if (!root) return;
@@ -105,13 +108,13 @@ export function useSendNavigation(viewport: RefObject<HTMLDivElement | null>, st
       let card = [...root.querySelectorAll<HTMLElement>("[data-send-kind][data-send-id]")].find(element => element.dataset.sendKind === jump.kind && element.dataset.sendId === jump.id);
       let statusError: string | undefined;
       if (!card) {
-        const error = jump.kind === "handoff" ? state.handoffError : state.workerError;
-        if (loaded.outcome === "loaded") {
+        const error = jump.kind === "handoff" ? state.handoffError : jump.kind === "worker" ? state.workerError : undefined;
+        if (loaded.outcome === "loaded" && jump.kind !== "questions") {
           const messageId = store.snapshot().transcript?.target?.messageId;
           card = [...root.querySelectorAll<HTMLElement>("[data-transcript-message]")].find(element => element.dataset.transcriptMessage === messageId);
           if (error) statusError = "Original send status unavailable. Try again.";
         }
-        if (!card) { finish(jump, error || loaded.outcome === "loaded" ? "Could not show original send. Try again." : "Original send unavailable"); return; }
+        if (!card) { finish(jump, error || loaded.outcome === "loaded" ? `Could not show ${label.toLowerCase()}. Try again.` : `${label} unavailable`); return; }
       }
       current.current.pause();
       highlightCleanup.current();

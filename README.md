@@ -24,6 +24,16 @@ updates, and recovery, use the [operator guide](packages/sane-app/HUMAN-OPERATOR
 
 ## Development
 
+For frontend development, stop any running App from this checkout, then run:
+
+```sh
+bun run dev:app
+```
+
+Save UI changes, wait for `[frontend] Ready`, then refresh the browser. This keeps
+the backend and active runs running; backend changes still require a restart.
+Normal launch options such as `--config PATH` also work with `dev:app`.
+
 - [App](packages/sane-app/README.md) — frontend, server, and integration entry points.
 - [Core](packages/sane-core/README.md) — repository-domain interfaces.
 - [Science](packages/sane-science/README.md) — Python environment and notebook interfaces.

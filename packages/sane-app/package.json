@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "bun start.ts",
+    "dev": "bun start.ts --dev",
     "setup": "bun setup.ts",
     "build": "bun build.ts",
     "typecheck": "tsc --noEmit"
@@ -26,7 +27,7 @@
     "@headless-tree/core": "1.7.0",
     "@headless-tree/react": "1.7.0",
     "@lezer/highlight": "1.2.4",
-    "@opencode/client": "2.0.18",
+    "@opencode/client": "2.2.4",
     "@xterm/addon-fit": "0.10.0",
     "@xterm/addon-serialize": "0.13.0",
     "@xterm/headless": "5.5.0",

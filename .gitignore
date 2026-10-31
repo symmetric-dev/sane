@@ -14,3 +14,4 @@ packages/sane-app/.data-fresh/
 
 # Local user-context experiment captures; keep curated implementation reports.
 /reports/user-context-*/
+/.opencode/grok-imagine/

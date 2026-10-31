@@ -23,7 +23,7 @@ import { NewConversationShortcut } from "./new-conversation-shortcut";
 import { ConversationHeading } from "./conversation-heading";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { Facts, LoadedTranscriptDiagnostics, NativeHistoryDetails, NativeUsage, RunDetails, Thread, Usage } from "./thread";
-import { ContextualNavigation, Drawer, FilesModeControl, Icon, SidebarToggleCommand, ViewNavigationCommands, viewGroup } from "./nav";
+import { ContextualNavigation, Drawer, FilesModeControl, Icon, ViewNavigationCommands, viewGroup } from "./nav";
 import { harnessName } from "./types";
 import { ApplicationCommandProvider } from "./application-commands";
 import { WorkspaceSearchFeature } from "./workspace-search";
@@ -363,11 +363,10 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   return <NativeSubagentContext.Provider value={nativeSubagentNavigation}><ApplicationCommandProvider><NotebookToolbarProvider><WorkspaceProvider view={view} navigate={navigate}><ChatFileNavigationProvider navigate={navigate} pairedSessionId={pair.sessionId}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}><BrowserProvider workspaceId={browserWorkspaceId}>
     <PushNavigation state={state} inbox={inbox} hydrationReady={hydrationReady} openNotification={openNotification} />
     <ViewNavigationCommands onNavigate={navigateView} />
-    <SidebarToggleCommand onToggle={toggleSidebar} />
     <NewConversationShortcut isSelectionOpen={selectorIsOpen} onNew={() => { pair.clear(); nativeSubagents.back(); setArtifact(null); choose(""); }} />
     {view === "chat" && <ChatWorktreeShortcuts model={sidebarModel} onChoose={id => { nativeSubagents.back(); choose(id); }} />}
     <ChatFlowLayoutProvider scope={view === "chat" && !nativeSubagents.active ? { sessionId: state.selected, nativeSessionId: nativeParent?.nativeSessionId, harness: nativeParent?.harness, workspaceId, worktreeId } : null}>
-    <WorkspaceShell view={view} sidebar={sidebar} navigation={navigation} paired={paired} resourceSidebar={previewSidebar}
+    <WorkspaceShell view={view} sidebar={sidebar} workspaceSidebar={conversationSidebar} navigation={navigation} paired={paired} resourceSidebar={previewSidebar}
       desktopSidebar={previewSidebar ? <PreviewPairSidebar label={resourceLabel} paired={paired} pane={pairPane} setPane={setSidebarPane} resources={resources} actions={pairActions}
         history={<><BrowserPairToolbar state={state} pane={pairPane} setPane={changePairPane} unpair={unpair} unpairBusy={pair.unlinkBusy} exitPair={exitPair} linkedSessions={null} openContext={() => setDrawer("context")} /><div className="browser-pair-transcript" ref={setDesktopTranscript} /></>} /> : undefined}
       onOpenNotification={openNotification}
@@ -456,7 +455,7 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
   const filesHidden = !filesVisible || paired && compactPair && pairPane !== "preview";
   useLayoutEffect(() => {
     const surface = chatSurface.current;
-    const main = surface?.parentElement;
+    const main = surface?.closest<HTMLElement>(".main");
     if (!paired || !surface || !main) return;
     // Only the compact transcript reserves overlay space. The preview remains
     // full-height beneath the existing, never-reparented composer.
@@ -471,6 +470,7 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
     const observer = new ResizeObserver(measure);
     // Header/toolbar wrapping also changes the space available to tall requests.
     for (const element of main.children) observer.observe(element);
+    for (const element of surface.parentElement?.children ?? []) observer.observe(element);
     measure();
     return () => {
       observer.disconnect();

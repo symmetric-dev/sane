@@ -147,7 +147,9 @@
 .browser-pair>.main { position:relative; }
 /* Overlay the stable Thread owner, not a footer row: preview content continues
    behind it. Transparent padding and wrappers must not intercept iframe input. */
-.browser-pair>.main>.chat-surface {
+.workspace-active-view { display:contents; }
+.workspace-active-view[hidden] { display:none; }
+.browser-pair>.main>.workspace-active-view>.chat-surface {
   position:absolute;
   z-index:2;
   inset:auto 0 0;
@@ -166,7 +168,7 @@
 .browser-pair .composer-status-slot:empty { display:none; }
 .browser-pair :is(.composer-frame,.composer-status-lid,.composer-surface>.composer,.composer-flow-slot>*,.thread-safety>*,.thread-composer>.notice) { pointer-events:auto; }
 /* Native top-layer dialogs still inherit from their composer owner. */
-.browser-pair>.main>.chat-surface dialog,.browser-pair>.main>.chat-surface dialog::backdrop { pointer-events:auto; }
+.browser-pair>.main>.workspace-active-view>.chat-surface dialog,.browser-pair>.main>.workspace-active-view>.chat-surface dialog::backdrop { pointer-events:auto; }
 .browser-pair-toolbar { display:flex; flex-wrap:wrap; align-items:center; flex-shrink:0; gap:4px 16px; padding:6px 12px; border-bottom:1px solid var(--border); background:var(--background); }
 .browser-pair-sidebar>.browser-pair-toolbar { align-items:stretch; flex-direction:column; }
 .browser-pair-sidebar .browser-pair-title-row { flex:0 0 auto; }
@@ -285,6 +287,29 @@
 .composer-actions { margin-left:auto; }
 .composer-navigation-only { display:flex; justify-content:flex-end; padding:12px 0; }
 
+/* One toolbar at every width, including narrow desktop split panes. */
+.composer-toolbar.composer-unified-toolbar { flex-direction:row; flex-wrap:nowrap; align-items:center; gap:8px; }
+.composer-unified-toolbar > .composer-options { flex:0 1 auto; flex-wrap:nowrap; gap:4px; }
+.composer-unified-toolbar > .composer-options[hidden] { display:none; }
+.composer-unified-toolbar .composer-utilities { gap:4px; }
+.composer-unified-toolbar .composer-options .agent-chip { max-width:200px; min-width:32px; min-height:36px; padding:4px 8px; justify-content:center; flex-shrink:1; }
+.composer-unified-toolbar .agent-chip > svg,.composer-unified-toolbar .agent-chip > .agent-avatar { flex-shrink:0; }
+.composer-unified-toolbar .composer-utilities > button { min-width:32px; min-height:36px; justify-content:center; }
+.composer-unified-toolbar > .composer-actions { flex-shrink:0; margin-left:0; width:auto; }
+@container composer (max-width:700px) {
+  .composer-unified-toolbar .agent-chip-label,.composer-unified-toolbar .composer-utility-label { display:none; }
+  .composer-unified-toolbar .composer-options .agent-chip { flex-shrink:0; gap:2px; padding:4px; }
+  .composer-unified-toolbar .agent-chip-pending { width:6px; height:6px; padding:0; border-radius:50%; font-size:0; }
+}
+@container composer (max-width:380px) {
+  .composer-toolbar.composer-unified-toolbar { gap:4px; padding-inline:6px; }
+  .composer-unified-toolbar .composer-options,.composer-unified-toolbar .composer-utilities { gap:2px; }
+  .composer-unified-toolbar .composer-status-lid { gap:0; }
+}
+@media (pointer:coarse) {
+  .composer-unified-toolbar .composer-utilities > button,.composer-unified-toolbar .composer-options .agent-chip { min-width:40px; min-height:40px; }
+}
+
 @media(max-width:1000px) {
   .sidebar { width:260px; }
   .topbar>.harness-badge { display:none; }
@@ -294,7 +319,7 @@
   .sidebar { display:none; }
   /* Pairing uses the same sidebar width and compact breakpoint as every view. */
   .browser-pair .browser-pair-inline { padding-bottom:var(--browser-pair-composer-height, 0px); }
-  .browser-pair>.main>.browser-pair-toolbar { max-height:35%; overflow:auto; }
+  .browser-pair>.main>.workspace-active-view>.browser-pair-toolbar { max-height:35%; overflow:auto; }
   .browser-pair-pane-toggle { display:flex; flex-basis:100%; gap:4px; }
   .browser-pair-pane-toggle>button { flex:1; min-height:36px; padding:6px 12px; border:1px solid var(--border); border-radius:7px; font-size:12px; }
   .browser-pair-pane-toggle>button[aria-pressed="true"] { background:var(--accent); color:var(--primary); border-color:var(--primary); }
