@@ -1,7 +1,7 @@
 import type { Event, Run, Session } from "./history";
 import { normalizeMessage, type NativeMessage, type OpenCodeAdapter } from "./opencode";
 import { OpenCodeObservationService } from "./opencode-observation-service";
-import { nativeSubagentRevision, projectNativeSubagents, type OpenCodeSubagentEvidence } from "./native-subagent-projection";
+import { NativeSubagentSummaryCache, nativeSubagentRevision, type OpenCodeSubagentEvidence } from "./native-subagent-projection";
 
 /** Optional read-only native observation, persisted separately from parent messages. */
 export class OpenCodeSubagentRecorder {
@@ -10,6 +10,7 @@ export class OpenCodeSubagentRecorder {
   private readonly checked = new Map<string, { time: number; delay: number }>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly pending = new Map<string, () => void>();
+  private readonly summaries = new NativeSubagentSummaryCache();
   private stopped = false;
   constructor(private readonly oc: OpenCodeAdapter, private readonly events: (runId: string) => readonly Event[],
     private readonly emit: (run: Run, kind: Event["kind"], data: unknown) => Promise<void>, private readonly closing: () => boolean,
@@ -20,18 +21,14 @@ export class OpenCodeSubagentRecorder {
   /** Routine callers respect final captures and backoff; force is user initiated. */
   refresh(session: Session, run: Run, toolId?: string, force = false) {
     if (this.stopped || this.closing() || !this.catalogVisible(session) || !this.appendEligible(run) || session.harness !== "opencode" || !session.nativeSessionId) return;
-    for (const child of projectNativeSubagents(session, run, this.events(run.runId))) {
+    for (const child of this.summaries.get(session, run, this.events(run.runId))) {
       const { parentToolUseId, nativeSessionId } = child.summary;
       if (toolId && toolId !== parentToolUseId) continue;
       const key = JSON.stringify([run.runId, session.nativeSessionId, session.cwd, session.authorityId, parentToolUseId, nativeSessionId]);
       if (!nativeSessionId && !force && child.summary.recovery?.state === "exhausted") continue;
       // Only a successful native history capture seals a child. Parent tool
       // completion alone cannot prove that its final history was retained.
-      const last = this.events(run.runId).findLast(event => {
-        if (event.kind !== "native-subagent") return false;
-        const data = event.data as OpenCodeSubagentEvidence;
-        return data?.parentNativeSessionId === session.nativeSessionId && data.parentToolUseId === parentToolUseId && data.nativeSessionId === nativeSessionId;
-      })?.data as OpenCodeSubagentEvidence | undefined;
+      const last = child.lastEvidence;
       if (!force && last?.messageIds && !last.warning && ["completed", "failed", "interrupted"].includes(last.status ?? "")) {
         clearTimeout(this.timers.get(key)); this.timers.delete(key);
         continue;
@@ -40,7 +37,7 @@ export class OpenCodeSubagentRecorder {
       const pinned = { ...session };
       const current = () => !this.stopped && !this.closing() && this.catalogVisible(session) && this.appendEligible(run) && session.harness === pinned.harness && session.nativeSessionId === pinned.nativeSessionId && session.cwd === pinned.cwd && session.authorityId === pinned.authorityId;
       const retry = () => {
-        if (current() && projectNativeSubagents(session, run, this.events(run.runId)).some(child => child.summary.parentToolUseId === parentToolUseId && child.summary.nativeSessionId === nativeSessionId)) {
+        if (current() && this.summaries.get(session, run, this.events(run.runId)).some(child => child.summary.parentToolUseId === parentToolUseId && child.summary.nativeSessionId === nativeSessionId)) {
           this.refresh(session, run, parentToolUseId, force);
         }
       };
@@ -66,7 +63,7 @@ export class OpenCodeSubagentRecorder {
       }).finally(() => {
         this.flights.delete(key);
         if (current()) {
-          const latest = projectNativeSubagents(session, run, this.events(run.runId)).find(child => child.summary.parentToolUseId === parentToolUseId);
+          const latest = this.summaries.get(session, run, this.events(run.runId)).find(child => child.summary.parentToolUseId === parentToolUseId);
           const delay = !latest?.summary.nativeSessionId ? Math.min(2000 * 2 ** Math.max(0, (latest?.summary.recovery?.attempts ?? 1) - 1), 30000)
             : latest.summary.status === "running" ? 2000 : Math.min((checked?.delay ?? 2000) * 2, 30000);
           this.checked.set(key, { time: Date.now(), delay });
@@ -95,7 +92,7 @@ export class OpenCodeSubagentRecorder {
   }
   resume(session: Session, run: Run) {
     if (!this.catalogVisible(session) || !this.appendEligible(run)) return;
-    for (const child of projectNativeSubagents(session, run, this.events(run.runId))) {
+    for (const child of this.summaries.get(session, run, this.events(run.runId))) {
       if (!child.summary.nativeSessionId || ["running", "unknown"].includes(child.summary.status)) this.refresh(session, run, child.summary.parentToolUseId);
     }
   }
@@ -121,7 +118,7 @@ export class OpenCodeSubagentRecorder {
 
   private async capture(parent: Session, run: Run, parentToolUseId: string, nativeSessionId: string, current: () => boolean) {
     const base = { parentNativeSessionId: parent.nativeSessionId!, parentToolUseId, nativeSessionId };
-    const previous = this.events(run.runId).filter(event => event.kind === "native-subagent").flatMap(event => {
+    const previous = this.events(run.runId).filter(event => event.kind === "native-subagent" && event.runId === run.runId && event.sessionId === parent.sessionId).flatMap(event => {
       const data = event.data as OpenCodeSubagentEvidence;
       return data?.parentNativeSessionId === base.parentNativeSessionId && data.parentToolUseId === parentToolUseId && data.nativeSessionId === nativeSessionId ? [data] : [];
     });

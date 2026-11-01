@@ -1,19 +1,20 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Event, Run, Session } from "./history";
 import { NATIVE_SUBAGENT_MAX_MESSAGES, NATIVE_SUBAGENT_PAGE_BYTES, type NativeSubagentList, type NativeSubagentPage } from "./native-subagent-contract";
-import { nativeSubagentRevision, projectNativeSubagents } from "./native-subagent-projection";
+import { NativeSubagentSummaryCache, nativeSubagentProjectionIdentity, nativeSubagentRevision, projectNativeSubagents } from "./native-subagent-projection";
 
 export class NativeSubagentError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); }
 }
 type Projection = ReturnType<typeof projectNativeSubagents>;
 type Cursor = { scope: string[]; revision: string; offset: number };
-type CachedRun = { events: readonly Event[]; length: number; last?: Event; signature: string; children: Projection };
+type CachedRun = { events: readonly Event[]; length: number; last?: Event; signature: string; children: Map<string, Projection[number]> };
 const inputError = () => new NativeSubagentError(400, "native-subagent-input", "Invalid native subagent selector or cursor");
 
 export class NativeSubagentService {
   private readonly secret = randomBytes(32);
   private readonly cache = new Map<string, CachedRun>();
+  private readonly summaries = new NativeSubagentSummaryCache();
   private readonly lists = new Map<string, { subagents: NativeSubagentList["subagents"]; revision: string }>();
   constructor(private readonly sessions: () => readonly Session[], private readonly runs: () => readonly Run[], private readonly events: (runId: string) => readonly Event[]) {}
 
@@ -22,14 +23,25 @@ export class NativeSubagentService {
     if (!session) throw new NativeSubagentError(404, "native-subagent-missing", "Unknown session");
     return session;
   }
-  private projection(session: Session, run: Run): Projection {
+  private recordedRun(session: Session, run: Run): CachedRun {
     const events = this.events(run.runId);
-    const signature = JSON.stringify([session.harness, session.nativeSessionId, run.status]);
-    const previous = this.cache.get(run.runId);
-    if (previous && previous.events === events && previous.length === events.length && previous.last === events.at(-1) && previous.signature === signature) return previous.children;
-    const children = projectNativeSubagents(session, run, events);
-    this.cache.set(run.runId, { events, length: events.length, last: events.at(-1), signature, children });
-    return children;
+    const signature = nativeSubagentProjectionIdentity(session, run);
+    let cached = this.cache.get(run.runId);
+    if (!cached || cached.events !== events || cached.length !== events.length || cached.last !== events.at(-1) || cached.signature !== signature) {
+      cached = { events, length: events.length, last: events.at(-1), signature, children: new Map() };
+      this.cache.set(run.runId, cached);
+    }
+    return cached;
+  }
+  private projection(session: Session, run: Run, toolId: string): Projection[number] | undefined {
+    const cached = this.recordedRun(session, run);
+    // Detail reads pay for only their selected child, never its siblings.
+    if (!cached.children.has(toolId)) {
+      const child = projectNativeSubagents(session, run, cached.events, toolId).find(child => child.summary.parentToolUseId === toolId);
+      // Arbitrary missing selectors must not grow a negative-result cache.
+      if (child) cached.children.set(toolId, child);
+    }
+    return cached.children.get(toolId);
   }
   private parameters(params: URLSearchParams) {
     if ([...params.keys()].some(key => key !== "limit" && key !== "cursor") || params.getAll("limit").length > 1 || params.getAll("cursor").length > 1) throw inputError();
@@ -60,7 +72,7 @@ export class NativeSubagentService {
   list(parentSessionId: string, params: URLSearchParams): NativeSubagentList {
     const session = this.session(parentSessionId);
     const { limit, cursor } = this.parameters(params);
-    const projections = this.runs().filter(run => run.sessionId === parentSessionId).map(run => this.projection(session, run));
+    const projections = this.runs().filter(run => run.sessionId === parentSessionId).map(run => this.summaries.get(session, run, this.recordedRun(session, run).events));
     const summaries = projections.flat().reverse().map(child => child.summary);
     // List cursors track only their ordered summaries, not streaming child history.
     const revision = nativeSubagentRevision([parentSessionId, summaries]);
@@ -89,7 +101,7 @@ export class NativeSubagentService {
   page(parentSessionId: string, runId: string, parentToolUseId: string, params: URLSearchParams): NativeSubagentPage {
     const session = this.session(parentSessionId);
     const run = this.runs().find(run => run.runId === runId && run.sessionId === parentSessionId);
-    const child = run && this.projection(session, run).find(child => child.summary.parentToolUseId === parentToolUseId);
+    const child = run && this.projection(session, run, parentToolUseId);
     if (!child) throw new NativeSubagentError(404, "native-subagent-missing", "Unknown native subagent");
     const { limit, cursor } = this.parameters(params);
     const scope = ["detail", parentSessionId, runId, parentToolUseId];

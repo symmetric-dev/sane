@@ -9,6 +9,8 @@ import { synchronousDispatchHook } from "./dispatch-evidence";
 // HTTP shapes from https://opencode.ai/v2/openapi.json and the V2 client guide.
 // Discovery connects to a registered service; this adapter never manages its process.
 type Connection = { base: string; headers: Record<string, string> };
+type BoundedJsonResponse = { maxBytes: number; signal?: AbortSignal };
+const nativeCompactionResponseBytes = 16 * 1024 * 1024;
 /** Read-only, endpoint-bound generation. No process management or message GETs. */
 export type OpenCodeReplyTransport = {
   info: OpenCodeClient["server"]["info"];
@@ -111,7 +113,7 @@ export class OpenCodeCommandProtocolError extends OpenCodeError {
 function strictInbox(data: unknown, sessionId: string, commandId: string): NativeInput | undefined {
   if (!Array.isArray(data) || data.some(value => !value || typeof value !== "object" || Array.isArray(value)
     || !nativeMessageId(value.id) || value.sessionID !== sessionId
-    || !["user", "synthetic", "compaction"].includes(value.type)
+    || !["user", "synthetic", "compaction", "move"].includes(value.type)
     || !["queue", "steer"].includes(value.delivery)
     || !value.time || typeof value.time !== "object" || Array.isArray(value.time) || !Number.isFinite(value.time.created)))
     throw new OpenCodeCommandProtocolError("Malformed native inbox entry; cancellation and execution remain unconfirmed");
@@ -310,16 +312,31 @@ export class OpenCodeAdapter {
     const connection = await this.endpoint();
     return this.requestEncodedAt<T>(connection, path, method, encoded, beforeSend, timeoutMs);
   }
+  /** Exact-message observation only. Reuse discovery and its own credentials,
+   * while bounding bytes from the stream rather than an already-loaded JSON DTO. */
+  private async boundedJSON<T>(path: string, options: BoundedJsonResponse): Promise<T> {
+    if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1) throw new OpenCodeError("Invalid native observation response budget", 400);
+    if (options.signal?.aborted) throw new OpenCodeUnavailableError("Native observation cancelled; state remains unconfirmed");
+    const connection = await this.endpoint();
+    return this.requestEncodedAt<T>(connection, path, "GET", undefined, undefined, 10000, options);
+  }
   /** No discovery or await before the synchronous gate and its one fetch. */
-  private async requestEncodedAt<T>(connection: Connection, path: string, method: string, encoded: string | undefined, beforeSend?: (body: string | undefined) => void, timeoutMs = 10000): Promise<T> {
+  private async requestEncodedAt<T>(connection: Connection, path: string, method: string, encoded: string | undefined, beforeSend?: (body: string | undefined) => void, timeoutMs = 10000, bounded?: BoundedJsonResponse): Promise<T> {
     const wireBody = encoded;
     // Reject thenable hooks as well as synchronous failures before HTTP dispatch.
     synchronousDispatchHook(() => beforeSend?.(wireBody));
+    const controller = bounded ? new AbortController() : undefined;
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const signal = controller ? AbortSignal.any([timeout, controller.signal, ...(bounded?.signal ? [bounded.signal] : [])]) : timeout;
     let response: Response;
-    try { response = await fetch(connection.base + path, { method, headers: connection.headers, ...(wireBody === undefined ? {} : { body: wireBody }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" }); }
+    try { response = await fetch(connection.base + path, { method, headers: connection.headers, ...(wireBody === undefined ? {} : { body: wireBody }), signal, redirect: "error" }); }
     catch { this.invalidate(connection); throw new OpenCodeUnavailableError("OpenCode connection unavailable; execution state remains unconfirmed"); }
     // Refresh on the next request only. In particular, never replay mutations.
     if (!response.ok) {
+      if (bounded) {
+        controller!.abort();
+        try { await response.body?.cancel(); } catch { /* Transport already aborted. */ }
+      }
       const auth = response.status === 401 || response.status === 403;
       if (auth || response.status >= 500) this.invalidate(connection);
       const Failure = auth || response.status >= 500 || response.status === 408 || response.status === 429 ? OpenCodeUnavailableError : OpenCodeError;
@@ -330,12 +347,47 @@ export class OpenCodeAdapter {
       throw new Failure(auth ? this.explicit ? "OpenCode authentication rejected; configure OPENCODE_TOKEN for the explicit URL" : "OpenCode managed authentication rejected; discovery will refresh on the next request" : `OpenCode API returned HTTP ${response.status}${diagnostic}`, response.status);
     }
     if (response.status === 204) return undefined as T;
+    if (bounded) return this.readBoundedJSON<T>(connection, response, bounded.maxBytes, controller!, signal);
     // Headers do not prove that the body arrived. A failed read is unavailable
     // observation (or an uncertain mutation), not successfully observed bad JSON.
     let body: string;
     try { body = await response.text(); }
     catch { this.invalidate(connection); throw new OpenCodeUnavailableError("OpenCode response body unavailable; execution state remains unconfirmed"); }
     try { return JSON.parse(body) as T; } catch { this.invalidate(connection); throw new OpenCodeError("OpenCode returned an invalid JSON response"); }
+  }
+  private async readBoundedJSON<T>(connection: Connection, response: Response, maxBytes: number, controller: AbortController, signal: AbortSignal): Promise<T> {
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let complete = false;
+    try {
+      if (!response.body) throw new OpenCodeError("OpenCode returned an empty observation response");
+      reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let bytes = 0;
+      while (true) {
+        if (signal.aborted) throw new OpenCodeUnavailableError("Native observation cancelled or timed out; state remains unconfirmed");
+        const chunk = await reader.read();
+        if (chunk.done) { complete = true; break; }
+        bytes += chunk.value.byteLength;
+        if (bytes > maxBytes) {
+          controller.abort();
+          throw new OpenCodeError("Native compaction response exceeds 16 MiB observation budget; state remains unconfirmed");
+        }
+        chunks.push(chunk.value);
+      }
+      if (signal.aborted) throw new OpenCodeUnavailableError("Native observation cancelled or timed out; state remains unconfirmed");
+      try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, bytes))) as T; }
+      catch { this.invalidate(connection); throw new OpenCodeError("OpenCode returned an invalid JSON response"); }
+    } catch (error) {
+      if (error instanceof OpenCodeError) throw error;
+      this.invalidate(connection);
+      throw new OpenCodeUnavailableError("OpenCode response body unavailable; execution state remains unconfirmed");
+    } finally {
+      if (!complete) {
+        controller.abort();
+        try { await reader?.cancel(); } catch { /* Aborted transport already owns cancellation. */ }
+      }
+      reader?.releaseLock();
+    }
   }
   path(id: string) { return `/api/session/${encodeURIComponent(id)}`; }
   async connection(cwd: string) {
@@ -684,28 +736,37 @@ export class OpenCodeAdapter {
    * session outcome, idle heuristic, or resend. Activity is reported separately
    * from ownership of this input; pending disappearance is never success. */
   async compactionSnapshot(id: string, admittedId: string, cwd?: string): Promise<NativeCompactionObservation> {
-    if (!nativeMessageId(admittedId)) throw new OpenCodeError("Invalid admitted compaction identity", 400);
-    const messages: NativeMessage[] = []; let cursor: string | undefined;
-    const deadline = Date.now() + 15000;
-    for (let page = 0; page < 100; page++) {
-      if (Date.now() > deadline) throw new OpenCodeError("Compaction observation exceeded its page budget; state remains unconfirmed");
-      const result = await this.request<Page>(this.path(id) + `/message?limit=100&${cursor ? `cursor=${encodeURIComponent(cursor)}` : "order=desc"}`);
-      if (!Array.isArray(result.data) || !result.cursor) throw new OpenCodeError("Unsupported native compaction history response");
-      messages.push(...result.data);
-      if (JSON.stringify(messages).length > 16 * 1024 * 1024) throw new OpenCodeError("Compaction history exceeds 16 MiB observation budget");
-      if (result.data.some(m => m.id === admittedId)) break;
-      cursor = result.cursor.next ?? undefined;
-      if (!cursor) break;
-      if (page === 99) throw new OpenCodeError("Compaction observation exceeded its page budget; state remains unconfirmed");
+    if (!/^ses[a-zA-Z0-9_-]+$/.test(id) || !nativeMessageId(admittedId)) throw new OpenCodeError("Invalid admitted compaction identity", 400);
+    const messages: NativeMessage[] = [];
+    try {
+      const result = await this.boundedJSON<unknown>(this.path(id) + `/message/${encodeURIComponent(admittedId)}`, { maxBytes: nativeCompactionResponseBytes });
+      if (!result || typeof result !== "object" || Array.isArray(result) || !Object.hasOwn(result, "data")) throw new OpenCodeError("Unsupported native compaction message envelope; state remains unconfirmed");
+      const message = (result as { data: unknown }).data;
+      // A missing exact message is not rejection, even after it leaves the inbox.
+      if (message != null) {
+        if (typeof message !== "object" || Array.isArray(message)) throw new OpenCodeError("Unsupported native compaction message response; state remains unconfirmed");
+        const value = message as Record<string, unknown>;
+        if (value.id !== admittedId || value.type !== "compaction" || value.sessionID !== undefined && value.sessionID !== id) throw new OpenCodeError("Exact native message is not this session's admitted compaction; state remains unconfirmed");
+        if (!value.time || typeof value.time !== "object" || Array.isArray(value.time)
+          || value.status !== undefined && (typeof value.status !== "string" || !["requested", "running", "completed", "failed", "skipped"].includes(value.status))
+          || value.summary !== undefined && typeof value.summary !== "string"
+          || value.reason !== undefined && typeof value.reason !== "string") throw new OpenCodeError("Malformed native compaction message; state remains unconfirmed");
+        messages.push(message as NativeMessage);
+      }
+    } catch (error) {
+      if (!(error instanceof OpenCodeError) || error.status !== 404) throw error;
+      // Separate inbox/history reads have no atomic visibility guarantee. Never
+      // infer success or resend from a 404, nor fall back to unrelated history.
     }
     const [session, active, inbox] = await Promise.all([
       this.session(id), this.request<{ data: Record<string, { type: string }> }>("/api/session/active"),
-      this.request<{ data: { id: string; sessionID?: string; type?: string }[] }>(this.path(id) + "/inbox"),
+      this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox"),
     ]);
-    if (!session?.time || !active.data || !Array.isArray(inbox.data)) throw new OpenCodeError("Unsupported native compaction activity response");
+    if (!session?.time || !active?.data || typeof active.data !== "object" || Array.isArray(active.data)
+      || Object.values(active.data).some(value => !value || typeof value !== "object" || Array.isArray(value) || typeof value.type !== "string")) throw new OpenCodeError("Unsupported native compaction activity response");
     if (session.id !== id || cwd !== undefined && session.location?.directory !== cwd) throw new OpenCodeSourceMismatchError("Native compaction session identity or directory changed; state remains unconfirmed");
-    const input = inbox.data.find(m => m.id === admittedId);
-    if (input && (input.type !== "compaction" || input.sessionID !== id)) throw new OpenCodeError("Exact admitted input is not this session's compaction; state remains unconfirmed");
+    const input = strictInbox(inbox?.data, id, admittedId);
+    if (input && input.type !== "compaction") throw new OpenCodeError("Exact admitted input is not this session's compaction; state remains unconfirmed");
     const exact = compactionSnapshot(messages, admittedId);
     return { ...exact, pending: !!input, active: !!active.data[id], observed: !!input || exact.messages.length > 0 };
   }
