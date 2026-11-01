@@ -1,4 +1,5 @@
 .message-actions { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
+.message-timestamp { margin-left:auto; color:var(--muted-foreground); font-size:12px; white-space:nowrap; }
 .branch-action { display:inline-flex; align-items:center; gap:5px; font-size:12px; }
 .message-actions > .copy,.message-actions > .branch-action { display:inline-flex; align-items:center; gap:5px; padding:4px 6px; border-radius:5px; font-size:12px; color:var(--muted-foreground); text-decoration:none; }
 .message-actions > .copy:hover,.message-actions > .branch-action:hover { color:var(--foreground); background:var(--muted); }

@@ -164,7 +164,7 @@ MP4 brands are rejected rather than transformed. Format validation checks
 structure and bounds, not complete decoding; malformed or unsupported codecs
 can still produce a preview/playback error.
 
-Limits are 16 items, 10 MiB per image, 100 MiB per video, and 200 MiB per share;
+Limits are 16 items, 10 MiB per image, 100 MiB per video, and 500 MiB per share;
 additional conversation/store budgets apply. HTML, PDF, remote URLs, inline
 content, authored captions, and custom actions are not supported in this version.
 If acknowledgment is unknown, inspect the conversation before sharing again:

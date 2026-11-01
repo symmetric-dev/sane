@@ -5,7 +5,7 @@ export const MEDIA_SHARE_LIMITS = {
   items: 16,
   imageBytes: 10 * 1024 * 1024,
   videoBytes: 100 * 1024 * 1024,
-  totalBytes: 200 * 1024 * 1024,
+  totalBytes: 500 * 1024 * 1024,
   sessionBytes: 512 * 1024 * 1024,
   storeBytes: 2 * 1024 * 1024 * 1024,
   shares: 2000,
@@ -37,7 +37,7 @@ export interface MediaShareReceipt {
   media: MediaShareItemInput[]
 }
 
-export const nativeShareMediaDescription = "Show local images and MP4 videos in App chat. Supply type and media: type gallery shows one of 1–16 files at a time, row shows 2–3 files side by side, and grid shows 1–16 files in a tiled layout. Always supply a media array, even for one file; each item contains only a path. Files are read from the conversation's execution checkout and saved as frozen snapshots, not live file links. Protected paths may be unavailable; this tool does not grant additional workspace access. Supported extensions: png, jpg, jpeg, webp, and mp4 (case-insensitive). PNG/WebP must be static; APNG, animated WebP, fragmented MP4, and unsupported MP4 brands are rejected. Video codec playback depends on the browser. Supply files in display order; repeated paths are allowed. Limits: 10 MiB per image, 100 MiB per video, 200 MiB total, and 128 KiB of serialized arguments. Images are limited to 40 million pixels and 16,384 pixels per dimension. Only workspace-relative file paths are accepted, never absolute paths, traversal, backslashes, globs, directories, or URLs. No inline content, captions, supplied metadata, actions, or remote URLs in v1. Available only in App-admitted conversations; does not require workstream enrollment."
+export const nativeShareMediaDescription = "Show local images and MP4 videos in App chat. Supply type and media: type gallery shows one of 1–16 files at a time, row shows 2–3 files side by side, and grid shows 1–16 files in a tiled layout. Always supply a media array, even for one file; each item contains only a path. Files are read from the conversation's execution checkout and saved as frozen snapshots, not live file links. Protected paths may be unavailable; this tool does not grant additional workspace access. Supported extensions: png, jpg, jpeg, webp, and mp4 (case-insensitive). PNG/WebP must be static; APNG, animated WebP, fragmented MP4, and unsupported MP4 brands are rejected. Video codec playback depends on the browser. Supply files in display order; repeated paths are allowed. Limits: 10 MiB per image, 100 MiB per video, 500 MiB total, and 128 KiB of serialized arguments. Images are limited to 40 million pixels and 16,384 pixels per dimension. Only workspace-relative file paths are accepted, never absolute paths, traversal, backslashes, globs, directories, or URLs. No inline content, captions, supplied metadata, actions, or remote URLs in v1. Available only in App-admitted conversations; does not require workstream enrollment."
 
 // Use the same expression in JSON Schema and the parser. Colons also exclude
 // URI schemes and drive prefixes; glob syntax is never expanded or accepted.

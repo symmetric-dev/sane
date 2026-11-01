@@ -77,6 +77,30 @@ function Copy({ text, label = "Copy" }: { text: string; label?: string }) {
   const [feedback, setFeedback] = useState("");
   return <button type="button" className="copy" onClick={async () => { try { await navigator.clipboard.writeText(text); setFeedback("Copied"); } catch { setFeedback("Copy unavailable"); } }} aria-label={feedback || label}><FiCopy size={13} aria-hidden="true" />{feedback || label}</button>;
 }
+function messageTimestampDay(date: Date) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const day = new Date(date);
+  day.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const weekStart = new Date(today);
+  weekStart.setDate(weekStart.getDate() - (weekStart.getDay() + 6) % 7);
+  const lastWeekStart = new Date(weekStart);
+  lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+  if (day.getTime() === today.getTime()) return "Today";
+  if (day.getTime() === yesterday.getTime()) return "Yesterday";
+  if (day < today && day >= weekStart) return date.toLocaleDateString("en-US", { weekday: "long" });
+  if (day >= lastWeekStart && day < weekStart) return "Last Week";
+  return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
+}
+function MessageTimestamp({ time }: { time?: string }) {
+  const date = time ? new Date(time) : null;
+  if (!date || !Number.isFinite(date.getTime())) return null;
+  const day = messageTimestampDay(date);
+  const clock = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }).toLowerCase().replace(/\s+/g, " ");
+  return <time className="message-timestamp" dateTime={date.toISOString()} title={date.toLocaleString()}>{day} {clock}</time>;
+}
 function CodeBlock({ children }: { children?: ReactNode }) {
   const ref = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState("");
@@ -91,13 +115,29 @@ function Markdown({ text }: { text: string }) {
   return useMemo(() => <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href, title }) => <ChatFileLink href={href} title={title} sessionId={sessionId}>{children}</ChatFileLink>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>, [text, sessionId]);
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; recordedEvidenceOnly?: boolean; presentationActive?: boolean; codeShares?: CodeShareProjection; mediaShares?: MediaShareProjection; userQuestions?: UserQuestionsController; userQuestionsReadOnlyReason?: string; onExplain?: ExplainQuestion; explainDisabled?: boolean };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; timestampMessageIds?: ReadonlySet<string>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; recordedEvidenceOnly?: boolean; presentationActive?: boolean; codeShares?: CodeShareProjection; mediaShares?: MediaShareProjection; userQuestions?: UserQuestionsController; userQuestionsReadOnlyReason?: string; onExplain?: ExplainQuestion; explainDisabled?: boolean };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 export function useTranscriptIndex(messages: Message[]) {
   return useMemo(() => {
     const messagesById = new Map<string, Message>(), messageIndices = new Map<string, number>();
     messages.forEach((message, index) => { messagesById.set(message.id, message); messageIndices.set(message.id, index); });
-    return { messagesById, messageIndices };
+    const timestampMessageIds = new Set<string>();
+    let runId: string | undefined, newerTimestamp: number | undefined;
+    // Anchor each turn at its newest text response, then space older markers
+    // by elapsed message time. Tools/reasoning never consume a marker.
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index]!;
+      if (message.role === "user" || message.runId !== runId) newerTimestamp = undefined;
+      runId = message.runId;
+      if (message.role !== "assistant" || !message.parts.some(part => part.type === "text" && part.text.trim())) continue;
+      const time = Date.parse(message.time);
+      if (!Number.isFinite(time)) continue;
+      if (newerTimestamp === undefined || newerTimestamp - time >= 5 * 60 * 1000) {
+        timestampMessageIds.add(message.id);
+        newerTimestamp = time;
+      }
+    }
+    return { messagesById, messageIndices, timestampMessageIds };
   }, [messages]);
 }
 const isActivityMessage = (message: Message) => message.role === "assistant" && message.parts.some(part => part.type !== "text") && !message.parts.some(part => part.type === "text" && part.text.trim()) && message.error === undefined && message.status !== "failed" && message.status !== "interrupted";
@@ -276,7 +316,7 @@ function ChatMessageBody() {
       {!isUser && source?.runId !== "native-import" && message.status?.type === "incomplete" && <p className="run-warning" role="status">{message.status.reason === "error" ? "This run failed. The response may be incomplete." : "This run was interrupted or its completion is unknown."} {context.readOnly ? "Only recorded evidence is shown." : "See details for the recorded evidence."}</p>}
     </div>
     {!isUser && (plain || canBranch) && <div className="message-actions">{plain && <Copy text={plain} label="Copy" />}
-    {canBranch && source && <BranchAction sessionId={context.sessionId} harness={harness} {...(source.runId === "native-import" ? { messageId: source.id } : { runId: source.runId })} />}</div>}
+    {canBranch && source && <BranchAction sessionId={context.sessionId} harness={harness} {...(source.runId === "native-import" ? { messageId: source.id } : { runId: source.runId })} />}{source?.role === "assistant" && (lastInTurn && turnEndKnown || context.timestampMessageIds?.has(source.id)) && <MessageTimestamp time={source.time} />}</div>}
     {isUser && source?.queuedFollowup && <div className="message-actions"><Copy text={plain} />{source.queuedFollowup.state === "not-submitted" && !context.readOnly && <UseAsDraft sessionId={context.sessionId} text={plain} />}</div>}
   </MessagePrimitive.Root>;
 }

@@ -213,11 +213,9 @@ export class AsideStore {
   }
   private install(ledger: Ledger, reads: Map<string, ReadEntry>): void { this.ledger = ledger; this.reads = reads; }
   private copyLedger(): Ledger {
-    const next = structuredClone(this.ledger);
-    // Keep validated frozen source identity across state-only revisions. The
-    // whole-ledger clone is intentionally unchanged; optimizing writes is separate.
-    for (let i = 0; i < next.records.length; i++) next.records[i]!.source = this.ledger.records[i]!.source;
-    return next;
+    // Records are deeply frozen and receipts are private append-only history.
+    // Mutations replace their selected record before editing scalar state.
+    return { ...this.ledger, records: [...this.ledger.records], receipts: [...this.ledger.receipts] };
   }
 
   /** Cheap internal state reads; no transcript clone and no delivery inference. */
@@ -269,7 +267,8 @@ export class AsideStore {
     if (input.expectedRevision !== current.revision) conflict("Aside revision changed");
     if (current.lifecycle === "discarded") conflict("Discarded asides are terminal retained records");
     if (operation === "draft" && current.lifecycle !== "open") conflict("Only open aside drafts can be edited");
-    const next = this.copyLedger(), record = next.records.find(r => r.id === id)!;
+    const next = this.copyLedger(), record = { ...current };
+    next.records[next.records.findIndex(r => r.id === id)] = record;
     if (operation === "draft") record.draft = (input as AsideDraftRequest).text;
     else record.lifecycle = (input as AsideLifecycleRequest).lifecycle;
     record.revision++; record.updatedAt = new Date(Math.max(Date.now(), Date.parse(record.updatedAt))).toISOString();

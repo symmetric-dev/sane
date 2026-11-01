@@ -194,7 +194,7 @@ export class MediaShareStore {
     catch (error) { this.storageFailure(error); }
   }
   reserveChunk(r: Reservation, bytes: number) {
-    if (r.mediaBytes + bytes > LIMITS.totalBytes) throw new MediaShareError(413, "media-share-size", "Combined media exceeds 200 MiB");
+    if (r.mediaBytes + bytes > LIMITS.totalBytes) throw new MediaShareError(413, "media-share-size", "Combined media exceeds 500 MiB");
     this.budget({ sessionId: r.sessionId, bytes, count: 0 }); r.bytes += bytes; r.mediaBytes += bytes;
   }
   commitStage(r: Reservation, record: MediaShareRecord, assertCurrent: () => void): MediaShareRecord {
