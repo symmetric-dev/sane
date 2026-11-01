@@ -1,26 +1,23 @@
-.handoff-card { margin:10px 0; }
-.handoff-correspondents { display:grid; gap:var(--chat-ui-space-2); padding:var(--chat-ui-space-3); }
-.handoff-party { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; min-width:0; }
-.handoff-party-label { width:30px; flex-shrink:0; color:var(--chat-ui-muted); font-size:var(--chat-ui-meta-size); }
-.handoff-party strong { font-size:var(--chat-ui-title-size); font-weight:550; overflow-wrap:anywhere; }
-.handoff-phases { display:flex; flex-wrap:wrap; gap:5px; margin-left:auto; }
-.handoff-phase { padding:2px 6px; border:1px solid var(--chat-ui-border); border-radius:var(--chat-ui-control-radius); color:var(--chat-ui-muted); font-size:var(--chat-ui-meta-size); overflow-wrap:anywhere; }
-.handoff-phase.is-unassigned { border-style:dashed; }
-.handoff-context { display:flex; align-items:baseline; flex-wrap:wrap; gap:6px 12px; padding:0 var(--chat-ui-space-3) var(--chat-ui-space-3); color:var(--chat-ui-muted); font-size:var(--chat-ui-meta-size); }
-.handoff-context > span { flex:1; overflow-wrap:anywhere; }
-.handoff-context time { font-variant-numeric:tabular-nums; }
-.handoff-message { margin:0 var(--chat-ui-space-3) var(--chat-ui-space-3); }
-.handoff-message-body { min-width:0; overflow-wrap:anywhere; }
+.handoff-card { margin-block:var(--chat-ui-space-2); }
+.handoff-card > .handoff-header { display:grid; grid-template-columns:28px minmax(0,1fr) auto; grid-template-rows:repeat(2,minmax(20px,auto)); align-items:center; gap:0 var(--chat-ui-space-2); padding:var(--chat-ui-space-2); border-bottom:0; }
+.handoff-header > .chat-card-header-icon { grid-column:1; grid-row:1 / span 2; }
+.handoff-header > .chat-card-header-content { display:grid; grid-template-rows:subgrid; grid-column:2; grid-row:1 / span 2; }
+.handoff-header .chat-card-header-title { align-self:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.handoff-header .chat-card-header-description { display:flex; align-items:center; gap:var(--chat-ui-space-1); min-width:0; margin-top:0; overflow:hidden; font-size:var(--chat-ui-meta-size); white-space:nowrap; }
+.handoff-header .chat-status { flex:0 1 auto; min-width:0; padding:0; border:0; background:transparent; }
+.handoff-header .chat-status__label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.handoff-header .chat-button__spinner { flex-shrink:0; }
+.handoff-header > .chat-card-header-actions { grid-column:3; grid-row:1 / span 2; flex-wrap:nowrap; gap:var(--chat-ui-space-1); margin-inline-start:auto; }
+.handoff-header .chat-button { white-space:nowrap; padding-inline:var(--chat-ui-space-2); }
+.handoff-header .chat-icon-button { padding-inline:var(--chat-ui-space-1); }
+.handoff-header .chat-icon-button[aria-expanded="true"] { background:var(--chat-ui-accent); color:var(--chat-ui-primary); }
+.handoff-context { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.handoff-header time { flex-shrink:0; font-variant-numeric:tabular-nums; }
+.handoff-message-body { min-width:0; border-top:1px solid var(--chat-ui-border); overflow-wrap:anywhere; }
 .handoff-message-body .prose > :first-child { margin-top:0; }
 .handoff-message-body .prose > :last-child { margin-bottom:0; }
 .handoff-warning { margin:var(--chat-ui-space-2) var(--chat-ui-space-3); }
 .handoff-received-message { align-self:stretch; width:100%; }
-.handoff-receipt > .chat-card-header,.handoff-receipt > .chat-card-footer { border:0; padding:var(--chat-ui-space-2) 0; }
-.handoff-receipt .handoff-phases { margin-left:0; flex-basis:auto; }
-.handoff-receipt time { font-variant-numeric:tabular-nums; }
-.handoff-receipt .handoff-context { padding:0; }
-.handoff-receipt .handoff-message { margin:0; }
-.handoff-receipt .handoff-warning { margin-inline:0; }
 .handoff-details-body .facts dd { overflow-wrap:anywhere; }
 .handoff-status-note,.handoff-evidence { font-size:var(--chat-ui-font-size); line-height:var(--chat-ui-line-height); color:var(--chat-ui-muted); overflow-wrap:anywhere; }
 .handoff-diagnostic { margin-top:var(--chat-ui-space-3); }
@@ -30,6 +27,3 @@
 .handoff-history li > div { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 12px; font-size:var(--chat-ui-font-size); }
 .handoff-history time { color:var(--chat-ui-muted); font-size:var(--chat-ui-meta-size); }
 .handoff-history p { margin:6px 0 0; color:var(--chat-ui-muted); font-size:var(--chat-ui-font-size); overflow-wrap:anywhere; }
-@media (max-width:480px) {
-  .handoff-phases { margin-left:40px; flex-basis:100%; }
-}

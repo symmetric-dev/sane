@@ -64,6 +64,7 @@ function MediaGalleryReader({ share, imageCache, page, select, active = true, ex
   const item = share.media[page];
   if (!item) return null;
   const name = mediaShareFilename(item), count = share.media.length;
+  const title = share.input.title ?? name;
   // Reserve both neighbor slots at the ends so the current item never shifts
   // away from the middle of the full-view selector.
   const thumbnailIndices = expanded ? [page - 1, page, page + 1] : share.media.map((_, index) => index);
@@ -79,8 +80,9 @@ function MediaGalleryReader({ share, imageCache, page, select, active = true, ex
       select(next);
     }
   };
-  return <ChatCard ref={containerRef} tabIndex={-1} density="compact" className={`shared-media-card shared-media-gallery${count > 1 ? " shared-media-multiple" : ""}${expanded ? " shared-media-expanded" : ""}`} aria-label="Shared media gallery" onKeyDown={navigate}>
-    <ChatCardHeader className="shared-media-header" title={<><span className="shared-media-heading-name" title={name}>{item.kind === "video" && openModal ? <button type="button" className="shared-media-video-open" aria-label={`Open ${name} in full view`} onClick={openModal}>{name}</button> : name}</span>{count > 1 && <span className="shared-media-count" role="status" aria-live="polite">{page + 1} / {count}</span>}</>}
+  return <ChatCard ref={containerRef} tabIndex={-1} density="compact" className={`shared-media-card shared-media-gallery${count > 1 ? " shared-media-multiple" : ""}${expanded ? " shared-media-expanded" : ""}`} aria-label={share.input.title ? `Shared media gallery: ${title}` : "Shared media gallery"} onKeyDown={navigate} data-send-kind={expanded ? undefined : "media-share"} data-send-id={expanded ? undefined : share.id}>
+    <ChatCardHeader className="shared-media-header" title={<><span className="shared-media-heading-name" title={title}>{item.kind === "video" && openModal ? <button type="button" className="shared-media-video-open" aria-label={`Open ${name} in full view`} onClick={openModal}>{title}</button> : title}</span>{count > 1 && <span className="shared-media-count" role="status" aria-live="polite">{page + 1} / {count}</span>}</>}
+      description={share.input.title ? name : undefined}
       actions={<>
       {expanded ? <>
         <MediaSaveButton key={item.id} share={share} item={item} />
@@ -112,8 +114,8 @@ function MediaGalleryReader({ share, imageCache, page, select, active = true, ex
 function MediaTilesReader({ share, type, active, openModal, inactiveMessage, containerRef }: {
   share: MediaShareRecord; type: "row" | "grid"; active: boolean; openModal?: (index: number) => void; inactiveMessage: string; containerRef: RefObject<HTMLElement | null>;
 }) {
-  return <ChatCard ref={containerRef} tabIndex={-1} density="compact" className={`shared-media-card shared-media-tiles shared-media-${type}`} aria-label={`Shared media ${type}`}>
-    <ChatCardHeader className="shared-media-header" title={<><span className="shared-media-heading-name">Shared media</span><span className="shared-media-count">{share.media.length} items</span></>} actions={<MediaSaveButton share={share} />} />
+  return <ChatCard ref={containerRef} tabIndex={-1} density="compact" className={`shared-media-card shared-media-tiles shared-media-${type}`} aria-label={`Shared media ${type}${share.input.title ? `: ${share.input.title}` : ""}`} data-send-kind="media-share" data-send-id={share.id}>
+    <ChatCardHeader className="shared-media-header" title={<><span className="shared-media-heading-name" title={share.input.title}>{share.input.title ?? "Shared media"}</span><span className="shared-media-count">{share.media.length} items</span></>} actions={<MediaSaveButton share={share} />} />
     <ol className="shared-media-tile-list" style={type === "row" ? { gridTemplateColumns: `repeat(${share.media.length}, minmax(0, 1fr))` } : undefined}>
       {share.media.map((item, index) => {
         const name = mediaShareFilename(item);
@@ -145,7 +147,7 @@ function MediaShareLayout({ share, active }: { share: MediaShareRecord; active: 
     {type === "gallery"
       ? <MediaGalleryReader {...reader} containerRef={containerRef} active={inlineActive} openModal={inlineActive ? () => openModal(selected) : undefined} inactiveMessage={inactiveMessage} />
       : <MediaTilesReader share={share} containerRef={containerRef} type={type} active={inlineActive} openModal={inlineActive ? openModal : undefined} inactiveMessage={inactiveMessage} />}
-    {active && expanded && <ShellDialog title="Shared media gallery" className="shared-media-dialog" bare restoreFocus={restoreFocus} close={() => setExpanded(false)}><MediaGalleryReader {...reader} expanded closeModal={() => setExpanded(false)} /></ShellDialog>}
+    {active && expanded && <ShellDialog title={share.input.title ?? "Shared media gallery"} className="shared-media-dialog" bare restoreFocus={restoreFocus} close={() => setExpanded(false)}><MediaGalleryReader {...reader} expanded closeModal={() => setExpanded(false)} /></ShellDialog>}
   </>;
 }
 

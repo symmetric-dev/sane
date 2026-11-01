@@ -1,13 +1,14 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { FiArrowUpRight, FiBriefcase, FiInfo } from "react-icons/fi";
+import { createPortal } from "react-dom";
+import { FiArrowUpRight, FiBriefcase, FiFileText, FiInfo } from "react-icons/fi";
 import type { NativeSubagentKey, NativeSubagentSummary } from "../src/native-subagent-contract";
 import { nativeSubagentId } from "./native-subagent-presentation";
 import { NativeSubagentClient, useNativeSubagentClient } from "./native-subagent-client";
 import type { ToolPart } from "./types";
-import { ChatButton, ChatCard, ChatCardHeader, ChatDisclosure, ChatNotice, ChatStatus } from "./chat-ui";
+import { ChatButton, ChatCard, ChatCardHeader, ChatDialog, ChatDialogBody, ChatNotice, ChatOverflowMenu, ChatStatus } from "./chat-ui";
 import "./native-subagent.css";
 
-type Selection = { client: NativeSubagentClient; summary: NativeSubagentSummary; trigger: HTMLButtonElement; viewport: HTMLElement | null };
+type Selection = { client: NativeSubagentClient; summary: NativeSubagentSummary; trigger: HTMLButtonElement; viewport: HTMLElement | null; restoreFocus?: () => HTMLElement | null };
 export type NativeSubagentFeature = ReturnType<typeof useNativeSubagentFeature>;
 export const NativeSubagentContext = createContext<NativeSubagentFeature | null>(null);
 export const useNativeSubagents = () => useContext(NativeSubagentContext);
@@ -24,20 +25,32 @@ export function useNativeSubagentFeature(sessionId: string, enabled: boolean, vi
     const saved = restore.current;
     if (selection || !saved || !visible) return;
     if (saved.client !== client) { restore.current = null; return; }
-    const frame = requestAnimationFrame(() => {
-      const replacement = saved.viewport?.isConnected ? [...saved.viewport.querySelectorAll<HTMLButtonElement>("[data-native-subagent-trigger]")].find(button => button.dataset.nativeSubagentTrigger === nativeSubagentId(saved.summary)) : undefined;
-      const trigger = saved.trigger.isConnected ? saved.trigger : replacement;
+    const canRestore = (target: HTMLElement | null | undefined): target is HTMLElement => !!target?.isConnected
+      && !target.closest("[hidden], [inert]") && !target.matches(":disabled")
+      && target.getClientRects().length > 0 && getComputedStyle(target).visibility === "visible";
+    let frame: number;
+    const restoreFocus = (retry: boolean) => {
+      if (restore.current !== saved) return;
+      const explicit = saved.restoreFocus?.();
+      // A retained parent panel may need one more frame to remount its trigger.
+      if (saved.restoreFocus && !canRestore(explicit) && retry) {
+        frame = requestAnimationFrame(() => restoreFocus(false));
+        return;
+      }
+      const replacement = saved.viewport?.isConnected ? [...saved.viewport.querySelectorAll<HTMLButtonElement>("[data-native-subagent-trigger]")].find(button => button.dataset.nativeSubagentTrigger === nativeSubagentId(saved.summary) && canRestore(button)) : undefined;
+      const trigger = canRestore(explicit) ? explicit : canRestore(saved.trigger) ? saved.trigger : replacement;
       if (trigger) trigger.focus({ preventScroll: true });
-      else if (saved.viewport?.isConnected) { saved.viewport.tabIndex = -1; saved.viewport.focus({ preventScroll: true }); }
+      else if (canRestore(saved.viewport)) { saved.viewport.tabIndex = -1; saved.viewport.focus({ preventScroll: true }); }
       restore.current = null;
-    });
+    };
+    frame = requestAnimationFrame(() => restoreFocus(true));
     return () => cancelAnimationFrame(frame);
   }, [selection, visible, client]);
-  const open = (summary: NativeSubagentSummary, trigger: HTMLButtonElement) => {
+  const open = (summary: NativeSubagentSummary, trigger: HTMLButtonElement, restoreFocus?: () => HTMLElement | null) => {
     if (summary.parentSessionId !== sessionId) return;
     restore.current = null;
     const viewport = trigger.closest<HTMLElement>(".viewport");
-    setSelection({ client, summary, trigger, viewport });
+    setSelection({ client, summary, trigger, viewport, restoreFocus });
   };
   const back = () => { restore.current = active; setSelection(null); };
   const snapshot = active ? state.details.get(id) : undefined;
@@ -47,27 +60,37 @@ export function useNativeSubagentFeature(sessionId: string, enabled: boolean, vi
   return { client, state, active, snapshot, summary, summaryKnown, summaries, open, back };
 }
 
-export function NativeSubagentCard({ summary, recorded = true, tool }: { summary: NativeSubagentSummary; recorded?: boolean; tool?: ToolPart }) {
+export function NativeSubagentCard({ summary, recorded = true, tool, onOpen }: { summary: NativeSubagentSummary; recorded?: boolean; tool?: ToolPart; onOpen?: (summary: NativeSubagentSummary, trigger: HTMLButtonElement) => void }) {
   const feature = useNativeSubagents();
-  const [reportOpen, setReportOpen] = useState(false), [detailsOpen, setDetailsOpen] = useState(false);
+  const [view, setView] = useState<"report" | "details" | null>(null);
+  const trigger = useRef<HTMLButtonElement | null>(null);
   const name = summary.name ?? summary.toolName;
   const attention = [tool?.error && "reported tool error", !!summary.warnings?.length && "recorded evidence warnings", summary.status === "unknown" && "unconfirmed status"].filter(Boolean).join(", ");
   const detailsLabel = `Native subagent details (${name})${attention ? `, attention needed: ${attention}` : ""}`;
   const countLabel = recorded ? `Recorded child tool calls: ${summary.toolCallCount}` : "Recorded child tool calls unavailable";
   const output = tool?.output !== undefined && !tool.error ? typeof tool.output === "string" ? tool.output : JSON.stringify(tool.output, null, 2) : undefined;
   return <ChatCard density="compact" className="native-subagent-card" aria-label={`Native subagent · ${name}`}>
-    <ChatCardHeader title={name} headingLevel={3} icon={<FiBriefcase size={20} />}
-      metadata={<><ChatStatus>Native</ChatStatus><ChatStatus tone={summary.status === "failed" ? "danger" : summary.status === "unknown" ? "warning" : summary.status === "completed" ? "success" : "neutral"} busy={summary.status === "running"} data-status={summary.status} role="status">{summary.status === "unknown" ? "unconfirmed" : summary.status}</ChatStatus><span className="native-subagent-count" aria-label={countLabel} title={countLabel}>{recorded ? `${summary.toolCallCount} call${summary.toolCallCount === 1 ? "" : "s"}` : "Calls unavailable"}</span></>}
-      actions={<ChatButton variant="ghost" icon={<FiArrowUpRight size={13} />} disabled={!feature} data-native-subagent-trigger={nativeSubagentId(summary)} aria-label={`Open read-only subagent activity (${name})`} title={`Open read-only subagent activity (${name})`} onClick={event => feature?.open(summary, event.currentTarget)}>Open</ChatButton>} />
-    {summary.returnedReport && <ChatDisclosure className="native-subagent-card-disclosure" title={`Returned report (${name})`} open={reportOpen} onOpenChange={setReportOpen}><pre>{summary.returnedReport}</pre></ChatDisclosure>}
-    <ChatDisclosure className="native-subagent-card-disclosure" title={<><FiInfo size={13} aria-hidden="true" /> Details{attention && <><span className="native-subagent-attention" aria-hidden="true" /><span className="sr-only">{detailsLabel}</span></>}</>} open={detailsOpen} onOpenChange={setDetailsOpen}>
-      <h4>Assignment</h4><p className="native-subagent-full-assignment">{summary.assignment || "No assignment recorded."}</p>
-      <p className="muted">Read-only · Recorded activity only, not a complete native session history. Counts reflect recorded child tool calls, not a native run total.{!recorded && " Recorded tool count unavailable."}</p>
-      {summary.status === "unknown" && <p className="muted">Status is unconfirmed by recorded native evidence.</p>}
-      {output !== undefined && output !== summary.returnedReport && <><h4>Delegation tool output</h4><pre>{output}</pre></>}
-      {tool?.error && <ChatNotice tone="danger" title="Reported tool error"><pre>{typeof tool.output === "string" ? tool.output : JSON.stringify(tool.output ?? { error: true }, null, 2)}</pre></ChatNotice>}
-      {!!summary.warnings?.length && <ChatNotice tone="warning" title="Recorded evidence warnings">{summary.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</ChatNotice>}
-    </ChatDisclosure>
+    <ChatCardHeader className="native-subagent-card-header" title={<span title={name}>{name}</span>} headingLevel={3} icon={<FiBriefcase size={28} />}
+      description={<><span>Native</span><span aria-hidden="true">·</span><ChatStatus tone={summary.status === "failed" ? "danger" : summary.status === "unknown" ? "warning" : summary.status === "completed" ? "success" : "neutral"} busy={summary.status === "running"} data-status={summary.status} role="status">{summary.status === "unknown" ? "unconfirmed" : summary.status}</ChatStatus><span aria-hidden="true">·</span><span className="native-subagent-count" aria-label={countLabel} title={countLabel}>{recorded ? `${summary.toolCallCount} call${summary.toolCallCount === 1 ? "" : "s"}` : "Calls unavailable"}</span></>}
+      actions={<>
+        <ChatButton variant="ghost" icon={<FiArrowUpRight size={13} />} disabled={!onOpen && !feature} data-native-subagent-trigger={nativeSubagentId(summary)} aria-label={`Open read-only subagent activity (${name})`} title={`Open read-only subagent activity (${name})`} onClick={event => onOpen ? onOpen(summary, event.currentTarget) : feature?.open(summary, event.currentTarget)}>Open</ChatButton>
+        <ChatOverflowMenu label="Native subagent actions" attention={!!attention} items={[
+          { id: "report", label: "View report", icon: <FiFileText />, disabled: !summary.returnedReport, opensDialog: true, onSelect: button => { trigger.current = button; setView("report"); } },
+          { id: "details", label: "Details", ariaLabel: detailsLabel, icon: <FiInfo />, opensDialog: true, onSelect: button => { trigger.current = button; setView("details"); } },
+        ]} />
+      </>} />
+    {view && createPortal(<ChatDialog title={view === "report" ? "Returned report" : "Native subagent details"} subtitle={name} size="wide" close={() => setView(null)} restoreFocus={() => trigger.current}>
+      <ChatDialogBody className="native-subagent-card-details">
+        {view === "report" ? <pre>{summary.returnedReport}</pre> : <>
+          <h4>Assignment</h4><p className="native-subagent-full-assignment">{summary.assignment || "No assignment recorded."}</p>
+          <p className="muted">Read-only · Recorded activity only, not a complete native session history. Counts reflect recorded child tool calls, not a native run total.{!recorded && " Recorded tool count unavailable."}</p>
+          {summary.status === "unknown" && <p className="muted">Status is unconfirmed by recorded native evidence.</p>}
+          {output !== undefined && output !== summary.returnedReport && <><h4>Delegation tool output</h4><pre>{output}</pre></>}
+          {tool?.error && <ChatNotice tone="danger" title="Reported tool error"><pre>{typeof tool.output === "string" ? tool.output : JSON.stringify(tool.output ?? { error: true }, null, 2)}</pre></ChatNotice>}
+          {!!summary.warnings?.length && <ChatNotice tone="warning" title="Recorded evidence warnings">{summary.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</ChatNotice>}
+        </>}
+      </ChatDialogBody>
+    </ChatDialog>, document.body)}
   </ChatCard>;
 }
 

@@ -58,7 +58,7 @@ function projectSubagents(session: Session, run: Run, events: readonly Event[], 
       children.set(block.id, {
         summary: { parentSessionId: session.sessionId, runId: run.runId, parentToolUseId: block.id, toolName: block.name,
           name: text(input.name) ?? text(input.subagent_type) ?? text(input.description), assignment: text(input.prompt),
-          parentMessageId: text(data.message?.id), status: "unknown", activityObserved: false, toolCallCount: 0 },
+          parentMessageId: text(data.message?.id), createdAt: event.time, status: "unknown", activityObserved: false, toolCallCount: 0 },
         messages: [], revision: "", seq: event.seq,
       });
     }
@@ -238,19 +238,21 @@ export type OpenCodeSubagentEvidence = {
 function projectOpenCodeSubagents(session: Session, run: Run, events: readonly Event[], detail: boolean, toolId?: string): Child[] {
   if (!session.nativeSessionId) return [];
   const records = events.filter(event => event.runId === run.runId && event.sessionId === session.sessionId);
-  const parents = new Map<string, { snapshot: MessageSnapshot; event: Event }>();
+  const parents = new Map<string, { snapshot: MessageSnapshot; event: Event; createdAt?: string }>();
   for (const event of records) if (event.kind === "message" && object(event.data) && Array.isArray(event.data.parts)) {
-    parents.set(event.data.messageId, { snapshot: event.data as MessageSnapshot, event });
+    // Refreshes replace content/status, but must not move the original creation time.
+    const createdAt = parents.get(event.data.messageId)?.createdAt ?? text(event.data.createdAt);
+    parents.set(event.data.messageId, { snapshot: event.data as MessageSnapshot, event, createdAt });
   }
   const children = new Map<string, Child>();
-  for (const { snapshot, event } of parents.values()) {
+  for (const { snapshot, event, createdAt } of parents.values()) {
     if (snapshot.role !== "assistant") continue;
     for (const part of snapshot.parts) {
       if (part.type !== "tool" || part.name !== "subagent" || (toolId && part.id !== toolId)) continue;
       const input = object(part.input) ? part.input : {};
       children.set(part.id, { summary: { parentSessionId: session.sessionId, runId: run.runId, parentToolUseId: part.id,
         harness: "opencode", toolName: "subagent", nativeSessionId: part.nativeSubagentSessionId,
-        name: text(input.agent) ?? text(input.description), assignment: text(input.prompt), parentMessageId: snapshot.messageId,
+        name: text(input.agent) ?? text(input.description), assignment: text(input.prompt), parentMessageId: snapshot.messageId, createdAt,
         status: "unknown", activityObserved: false, toolCallCount: 0,
         ...(part.error !== undefined ? { warnings: ["The delegation tool reported an error; child completion is unconfirmed."] } : {}),
       }, messages: [], revision: "", seq: event.seq });

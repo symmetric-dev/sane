@@ -1,17 +1,28 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { request } from "./cc-client";
 import type { HandoffProjection } from "../src/handoff-contract";
 import { pollWhileVisible } from "./visibility";
+import { invalidateCoalescedRequests } from "./request-coalescing";
 
 const empty: HandoffProjection = { handoffs: [] };
 const handoffsInFlight = (value: HandoffProjection) => value.handoffs.some(item => !["completed", "failed"].includes(item.handoff.status));
-export function useHandoffs(sessionId: string, enabled = true): HandoffProjection & { loading: boolean } {
+export type HandoffClientProjection = HandoffProjection & { loading: boolean; retry: () => void };
+export function useHandoffs(sessionId: string, enabled = true): HandoffClientProjection {
   const scope = useRef({ sessionId, enabled, revision: 0 });
   if (scope.current.sessionId !== sessionId || scope.current.enabled !== enabled) {
     scope.current = { sessionId, enabled, revision: scope.current.revision + 1 };
   }
   const revision = scope.current.revision;
+  const [, setAttempt] = useState(0);
   const [projection, setProjection] = useState<{ sessionId: string; revision: number; value: HandoffProjection }>({ sessionId: "", revision: -1, value: empty });
+  const retry = useCallback(() => {
+    if (!sessionId || !enabled || scope.current.sessionId !== sessionId || scope.current.enabled !== enabled || scope.current.revision !== revision) return;
+    // Fence retained callbacks and pending reads before restarting the sole poll.
+    scope.current = { sessionId, enabled, revision: revision + 1 };
+    const path = `/api/sessions/${encodeURIComponent(sessionId)}/handoffs`;
+    invalidateCoalescedRequests(url => url === path);
+    setAttempt(previous => previous + 1);
+  }, [sessionId, enabled, revision]);
   useEffect(() => {
     if (!sessionId || !enabled) return;
     let inFlight = projection.sessionId !== sessionId || handoffsInFlight(projection.value), failures = 0;
@@ -37,5 +48,5 @@ export function useHandoffs(sessionId: string, enabled = true): HandoffProjectio
   // Matching last-known cards remain visible, but only this enabled scope's
   // settled read may establish readiness (and errors still cannot prove a miss).
   const matching = projection.sessionId === sessionId;
-  return { ...(matching ? projection.value : empty), loading: !sessionId || !enabled || !matching || projection.revision !== revision };
+  return { ...(matching ? projection.value : empty), loading: !sessionId || !enabled || !matching || projection.revision !== revision, retry };
 }

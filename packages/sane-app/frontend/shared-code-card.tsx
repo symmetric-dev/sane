@@ -84,12 +84,13 @@ function CodeSnippetView({ snippet: share, wrap, description }: { snippet: CodeS
   </>;
 }
 
-function CodeShareReader({ snippets, page, select, wrap, toggleWrap, openModal, expanded = false }: {
-  snippets: readonly CodeShareSnapshot[]; page: number; select: (index: number) => void;
+function CodeShareReader({ shareId, shareTitle, snippets, page, select, wrap, toggleWrap, openModal, expanded = false }: {
+  shareId: string; shareTitle?: string; snippets: readonly CodeShareSnapshot[]; page: number; select: (index: number) => void;
   wrap: boolean; toggleWrap: () => void; openModal?: () => void; expanded?: boolean;
 }) {
   const description = useId(), viewId = useId(), snippet = snippets[page];
   const { title, path, startLine, endLine, inline } = codeShareSnippetPresentation(snippet);
+  const cardTitle = shareTitle ?? title;
   const [copied, setCopied] = useState<{ snippet: CodeShareSnapshot; message: string } | null>(null);
   const [details, setDetails] = useState(false);
   const detailsTrigger = useRef<HTMLButtonElement | null>(null);
@@ -97,15 +98,15 @@ function CodeShareReader({ snippets, page, select, wrap, toggleWrap, openModal, 
   const annotationDescription = snippet.input.highlights?.length
     ? inline ? "Highlighted lines and annotations refer to snippet line numbers." : "Highlighted lines and annotations refer to original line numbers."
     : "";
-  const subtitle = `${snippet.language} · L${startLine}–${endLine} · ${inline ? "Suggested · Not saved" : "Snapshot"}`;
+  const subtitle = `${title !== cardTitle ? `${title} · ` : ""}${snippet.language} · L${startLine}–${endLine} · ${inline ? "Suggested · Not saved" : "Snapshot"}`;
   const feedback = copied?.snippet === snippet ? copied.message : "";
   useEffect(() => {
     if (!copied) return;
     const timer = window.setTimeout(() => setCopied(null), 2000);
     return () => window.clearTimeout(timer);
   }, [copied]);
-  return <><ChatCard density="compact" className={`shared-code-card${expanded ? " shared-code-expanded" : ""}`} aria-label={`Shared code: ${title}`}>
-    <ChatCardHeader className="shared-code-header" icon={<FiCode size={28} />} titleId={`${viewId}-title`} title={<span title={path && title !== path ? `${title}\n${path}` : title}>{title}</span>}
+  return <><ChatCard density="compact" className={`shared-code-card${expanded ? " shared-code-expanded" : ""}`} aria-label={`Shared code: ${cardTitle}`} tabIndex={expanded ? undefined : -1} data-send-kind={expanded ? undefined : "code-share"} data-send-id={expanded ? undefined : shareId}>
+    <ChatCardHeader className="shared-code-header" icon={<FiCode size={28} />} titleId={`${viewId}-title`} title={<span title={path && cardTitle !== path ? `${cardTitle}\n${path}` : cardTitle}>{cardTitle}</span>}
       description={<span id={description} title={[path, sourceDescription, annotationDescription].filter(Boolean).join("\n")}>{subtitle}<span className="sr-only">. {sourceDescription}. {annotationDescription}</span></span>}
       actions={<>
       <ChatButton className="shared-code-copy" variant="ghost" aria-label={feedback === "Copy unavailable" ? "Copy unavailable. Retry copy" : feedback || "Copy code"} onClick={async () => {
@@ -145,12 +146,12 @@ export function SharedCodeCard({ share }: { share: CodeShareRecord }) {
   const [page, setPage] = useState(0), [wrap, setWrap] = useState(false), [expanded, setExpanded] = useState(false);
   const selected = Math.min(page, snippets.length - 1);
   const reader = {
-    snippets, page: selected, select: setPage,
+    shareId: share.id, shareTitle: share.input.title, snippets, page: selected, select: setPage,
     wrap, toggleWrap: () => setWrap(current => !current),
   };
   return <>
     <CodeShareReader {...reader} openModal={() => setExpanded(true)} />
-    {expanded && <ChatDialog title="Shared code" subtitle={`Snippet ${selected + 1} of ${snippets.length}`} size="wide" className="shared-code-dialog" close={() => setExpanded(false)}>
+    {expanded && <ChatDialog title={share.input.title ?? "Shared code"} subtitle={`Snippet ${selected + 1} of ${snippets.length}`} size="wide" className="shared-code-dialog" close={() => setExpanded(false)}>
       <ChatDialogBody><CodeShareReader {...reader} expanded /></ChatDialogBody>
     </ChatDialog>}
   </>;

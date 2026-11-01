@@ -4,11 +4,12 @@ import { store } from "./store";
 import type { UserQuestionsRecord } from "../shared/user-questions-contract";
 
 export type SendTarget = { kind: "worker" | "handoff"; id: string; sessionId: string }
-  | { kind: "questions"; id: string; sessionId: string; anchor: UserQuestionsRecord["anchor"] };
+  | { kind: "questions" | "code-share" | "media-share"; id: string; sessionId: string; anchor: UserQuestionsRecord["anchor"] };
 type Jump = SendTarget & { serial: number };
 export type SendNavigationState = {
   sessionId: string; active: boolean; loading: boolean; connected: boolean; connectionError: string;
   workerError?: string; workerLoading?: boolean; handoffLoading: boolean; handoffError?: string;
+  codeShareLoading?: boolean; codeShareError?: string; mediaShareLoading?: boolean; mediaShareError?: string;
 };
 
 // Only the mounted chat viewport owns navigation. Panels/history never become
@@ -90,17 +91,19 @@ export function useSendNavigation(viewport: RefObject<HTMLDivElement | null>, st
   useLayoutEffect(() => {
     if (!jump || pending.current !== jump || !state.active || state.sessionId !== jump.sessionId) return;
     if (loaded?.serial !== jump.serial) return;
-    const label = jump.kind === "questions" ? "Questionnaire" : "Original send";
+    const label = jump.kind === "questions" ? "Questionnaire" : jump.kind === "code-share" ? "Shared code" : jump.kind === "media-share" ? "Shared media" : "Original send";
     if (loaded.outcome === "missing") { finish(jump, `${label} unavailable`); return; }
     if (loaded.outcome === "error") { finish(jump, `Could not load ${label.toLowerCase()}. Try again.`); return; }
     if (state.connectionError) { finish(jump, `Could not load ${label.toLowerCase()}. Try again.`); return; }
-    if (state.loading || !state.connected || jump.kind === "worker" && state.workerLoading) return;
+    if (state.loading || !state.connected || jump.kind === "worker" && state.workerLoading || jump.kind === "code-share" && state.codeShareLoading || jump.kind === "media-share" && state.mediaShareLoading) return;
     const root = viewport.current;
     if (!root) return;
     let frame = 0;
     const scan = () => {
       const live = store.snapshot();
       if (pending.current !== jump || live.selected !== jump.sessionId || live.loading || !live.connected || jump.kind === "worker" && live.workerLoading) return;
+      const projection = current.current.state;
+      if (jump.kind === "code-share" && projection.codeShareLoading || jump.kind === "media-share" && projection.mediaShareLoading) return;
       // assistant-ui publishes its external transcript separately from the
       // projection. Do not declare a miss against an earlier runtime render.
       const ready = root.querySelector<HTMLElement>("[data-send-transcript-ready]");
@@ -108,8 +111,10 @@ export function useSendNavigation(viewport: RefObject<HTMLDivElement | null>, st
       let card = [...root.querySelectorAll<HTMLElement>("[data-send-kind][data-send-id]")].find(element => element.dataset.sendKind === jump.kind && element.dataset.sendId === jump.id);
       let statusError: string | undefined;
       if (!card) {
-        const error = jump.kind === "handoff" ? state.handoffError : jump.kind === "worker" ? state.workerError : undefined;
-        if (loaded.outcome === "loaded" && jump.kind !== "questions") {
+        const error = jump.kind === "handoff" ? state.handoffError : jump.kind === "worker" ? state.workerError : jump.kind === "code-share" ? projection.codeShareError : jump.kind === "media-share" ? projection.mediaShareError : undefined;
+        // Durable artifacts must resolve to their exact card, never just another
+        // artifact (or prose) within the same containing transcript message.
+        if (loaded.outcome === "loaded" && (jump.kind === "worker" || jump.kind === "handoff")) {
           const messageId = store.snapshot().transcript?.target?.messageId;
           card = [...root.querySelectorAll<HTMLElement>("[data-transcript-message]")].find(element => element.dataset.transcriptMessage === messageId);
           if (error) statusError = "Original send status unavailable. Try again.";
@@ -131,7 +136,7 @@ export function useSendNavigation(viewport: RefObject<HTMLDivElement | null>, st
     observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-send-transcript-ready", "data-send-id"] });
     schedule();
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
-  }, [jump, loaded, state.sessionId, state.active, state.loading, state.connected, state.connectionError, state.workerError, state.workerLoading, state.handoffLoading, state.handoffError]);
+  }, [jump, loaded, state.sessionId, state.active, state.loading, state.connected, state.connectionError, state.workerError, state.workerLoading, state.handoffLoading, state.handoffError, state.codeShareLoading, state.codeShareError, state.mediaShareLoading, state.mediaShareError]);
 
   return { targeting: pending.current?.sessionId === state.sessionId, notice: notice?.sessionId === state.sessionId ? notice.text : "", cancel };
 }

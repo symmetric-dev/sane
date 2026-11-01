@@ -1,4 +1,4 @@
-import { MEDIA_SHARE_LIMITS, parseMediaShareInput, type StoredMediaShareInput } from "../../sane-cli/src/native-share-media-contract"
+import { MEDIA_SHARE_LIMITS, parseStoredMediaShareInput, type StoredMediaShareInput } from "../../sane-cli/src/native-share-media-contract"
 
 export * from "../../sane-cli/src/native-share-media-contract"
 
@@ -46,7 +46,7 @@ export function isMediaShareRecord(value: unknown): value is MediaShareRecord {
   } else if (anchor.wrapper !== null || anchor.invocationId !== anchor.toolCallId) return false
   if (native.harness === "gk" && (!/^sane-native-v1:gk:[a-f0-9]{64}$(?![\s\S])/.test(native.authorityId as string) || !nativeUUID.test(native.nativeId as string))) return false
   try {
-    const input = parseMediaShareInput(value.input)
+    const input = parseStoredMediaShareInput(value.input)
     if (!Array.isArray(value.media) || value.media.length !== input.media.length) return false
     let totalBytes = 0
     const itemIds = new Set<string>()

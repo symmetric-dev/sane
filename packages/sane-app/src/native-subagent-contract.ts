@@ -17,6 +17,8 @@ export type NativeSubagentSummary = NativeSubagentKey & {
   name?: string;
   assignment?: string;
   parentMessageId?: string;
+  /** Original recorded delegation creation timestamp, not the latest status observation. */
+  createdAt?: string;
   status: NativeSubagentStatus;
   statusEvidence?: { kind: string; seq: number; time: string };
   activityObserved: boolean;

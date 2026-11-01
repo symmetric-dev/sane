@@ -1469,14 +1469,14 @@ export class ChatStore {
       for (let attempt = 0; attempt < 2; attempt++) {
         readSerial = this.publicationSerial;
         try {
-          const query = target.kind === "questions"
+          const query = "anchor" in target
             ? { ...(target.anchor.messageId ? { targetMessageId: target.anchor.messageId } : { targetRunId: target.anchor.runId }), toolCallId: target.anchor.toolCallId }
             : { targetKind: target.kind, targetId: target.id };
           try { page = await this.client.transcriptPage!(target.sessionId, query, controller.signal); }
           catch (error) {
             // Imported native history can retain the exact tool call without an
-            // App run ID. Match that durable call, never questionnaire prose.
-            if (target.kind !== "questions" || target.anchor.messageId || target.anchor.runId === "native-import" || !(error instanceof ApiError) || error.status !== 404 || !current()) throw error;
+            // App run ID. Match that durable call, never artifact content.
+            if (!("anchor" in target) || target.anchor.messageId || target.anchor.runId === "native-import" || !(error instanceof ApiError) || error.status !== 404 || !current()) throw error;
             page = await this.client.transcriptPage!(target.sessionId, { targetRunId: "native-import", toolCallId: target.anchor.toolCallId }, controller.signal);
           }
           break;

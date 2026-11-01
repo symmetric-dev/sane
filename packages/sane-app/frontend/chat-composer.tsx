@@ -35,6 +35,11 @@ import { subscribeWorkspace, workspaceEpoch } from "./workspace-store";
 import type { ImageUploadReceipt } from "../shared/image-upload-contract";
 import { USER_QUESTIONS_LIMITS } from "../shared/user-questions-contract";
 import { useQuestionAnswerComposer } from "./question-answer-composer";
+import { useConversationInteractions } from "./shared-artifacts";
+import type { SharedArtifact } from "./shared-artifacts-model";
+import type { CodeShareProjection } from "./code-share-client";
+import type { MediaShareProjection } from "./media-share-client";
+import type { HandoffClientProjection } from "./handoff-client";
 import "./question-answer-composer.css";
 
 type ComposerImageUpload = { scope: ImageUploadDraftScope; files: File[]; seen: Set<string> };
@@ -76,7 +81,7 @@ function RetainedInputDetails({ state, disabled, operate }: { state: State; disa
 export type ChatFlowPresentation = "local" | "documents";
 
 /** Kept mounted with Thread: only the draft identity may replace the DOM input. */
-export function ChatComposer({ state, active = true, paired = false, onOpenChatFlow, flowPresentation = null, onFlowPresentationChange, navigation, ack, onAckChange, send, sendDisabled, parentId, review, statusContext, statusActions, questions }: {
+export function ChatComposer({ state, active = true, paired = false, onOpenChatFlow, flowPresentation = null, onFlowPresentationChange, navigation, ack, onAckChange, send, sendDisabled, parentId, review, statusContext, statusActions, questions, artifacts, handoffs }: {
   state: State;
   active?: boolean;
   paired?: boolean;
@@ -93,6 +98,8 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   statusContext?: ChatStatusContext;
   statusActions?: ReactNode;
   questions?: UserQuestionsController;
+  artifacts?: { scopeKey: string; codeShares: CodeShareProjection; mediaShares: MediaShareProjection; select: (artifact: SharedArtifact) => boolean };
+  handoffs?: HandoffClientProjection;
 }) {
   const answerComposer = useQuestionAnswerComposer();
   const answerEditor = answerComposer?.editor ?? null;
@@ -109,6 +116,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   const agentTrigger = useRef<HTMLButtonElement>(null);
   const normalComposer = useRef<HTMLFormElement>(null);
   const flowComposer = useRef<HTMLDivElement>(null);
+  const suppressFlowReturn = useRef(false);
   const imageInput = useRef<HTMLInputElement>(null);
   const [imageUpload, setImageUpload] = useState<ComposerImageUpload | null>(null);
   const imageUploadRef = useRef<ComposerImageUpload | null>(null);
@@ -158,13 +166,18 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   useSyncExternalStore(subscribeWorkspace, workspaceEpoch);
   const workspace = workspaces.find(item => item.workspaceId === conversation?.workspaceId);
   const flowScope = JSON.stringify([pendingScope, conversation?.workspaceId, conversation?.worktreeId, conversation?.replacedBy, workspace?.commonDir, workspace?.kind]);
-  const [localFlow, setLocalFlow] = useState<{ scope: string; page: "flows" | "terminal" | "git"; gitTarget?: GitTarget } | null>(null);
+  const [localFlow, setLocalFlow] = useState<{ scope: string; page: "flows" | "terminal" | "git" | "interactions"; gitTarget?: GitTarget } | null>(null);
   // Keep the selected flow for a return to Chat, without mounting its terminal,
   // git tools, or document controls in the Browser composer.
   const localPage = !paired && (!flowPresentation || flowPresentation === "local") && localFlow?.scope === flowScope ? localFlow.page : null;
-  const hasRequests = pendingInteractions(state, store.capabilities()).length > 0;
+  const requests = pendingInteractions(state, store.capabilities());
+  const hasRequests = requests.length > 0;
   const reviewFlow = (!flowPresentation || flowPresentation === "documents") && !!review?.flow;
   const flowOpen = hasRequests || reviewFlow || !!localPage;
+  const composerPanelOpen = flowOpen && !hasRequests;
+  // Approval requests live inside composer-frame, so hide only its toolbar:
+  // hiding the whole frame would also hide the approval controls themselves.
+  const composerToolbarHidden = composerPanelOpen || requests.some(request => request.type === "handoff-approval");
   const revealedQuestions = useRef<object | undefined>(undefined);
   const questionsReveal = questions?.revealRequest;
   useEffect(() => {
@@ -184,7 +197,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   }, [flowScope]);
   useEffect(() => { if (active && !hasRequests && localPage === "terminal") flowComposer.current?.querySelector<HTMLButtonElement>(".terminal-composer button")?.focus({ preventScroll: true }); }, [active, hasRequests, localPage]);
   useEffect(() => { if (reviewFlow) setLocalFlow(null); }, [reviewFlow]);
-  const showLocalFlow = (page: "flows" | "terminal" | "git", gitTarget?: GitTarget) => {
+  const showLocalFlow = (page: "flows" | "terminal" | "git" | "interactions", gitTarget?: GitTarget) => {
     setLocalFlow({ scope: flowScope, page, gitTarget });
     // Only a paired launch opts into the override; ordinary Chat retains its
     // existing behavior until the user explicitly supersedes a suspended flow.
@@ -212,6 +225,25 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     showLocalFlow("flows");
     if (paired) onOpenChatFlow?.();
   };
+  const conversationInteractions = useConversationInteractions({
+    sessionId: state.selected,
+    scopeKey: artifacts?.scopeKey ?? flowScope,
+    active: active && !paired && !hasRequests && !answerMode && !conversation?.replacedBy,
+    artifactDisabled: state.sending || state.loading || !state.connected || state.phase !== "ready" || !state.config?.authenticated,
+    codeShares: artifacts?.codeShares,
+    mediaShares: artifacts?.mediaShares,
+    handoffs: state.connected || !handoffs ? handoffs : { ...handoffs, error: "Connection unavailable" },
+    questions,
+    onSelect: artifacts?.select,
+    opened: localPage === "interactions",
+    onOpen: () => {
+      if (active && !paired && !hasRequests && !answerContext.current?.editor && !conversation?.replacedBy && artifacts && questions && state.selected) showLocalFlow("interactions");
+    },
+    onClose: navigating => {
+      suppressFlowReturn.current = navigating === true;
+      closeLocalFlow();
+    },
+  });
   useRegisterCommand(useMemo(() => ({
     ...FLOWS_SHORTCUT,
     contexts: ["application", "input"] as const,
@@ -233,7 +265,10 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     }
   }, [answerKey, active, flowOpen, conversation?.replacedBy]);
   useEffect(() => {
-    if (active && wasFlowOpen.current && !flowOpen) normalComposer.current?.querySelector<HTMLTextAreaElement>(visibleInputSelector)?.focus({ preventScroll: true });
+    if (active && wasFlowOpen.current && !flowOpen) {
+      if (!suppressFlowReturn.current) normalComposer.current?.querySelector<HTMLTextAreaElement>(visibleInputSelector)?.focus({ preventScroll: true });
+      suppressFlowReturn.current = false;
+    }
     else if (active && hadRequests.current && !hasRequests && reviewFlow && review?.flow?.path) flowComposer.current?.querySelector<HTMLTextAreaElement>("textarea:not(:disabled)")?.focus({ preventScroll: true });
     wasFlowOpen.current = flowOpen;
     hadRequests.current = hasRequests;
@@ -409,11 +444,12 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     <div className="composer-surface">
     <div ref={flowComposer} className="composer-flow-slot" hidden={hasRequests} style={{ display: hasRequests ? "none" : "contents" }}>
       {localPage === "flows" && active && !hasRequests && <ChatWorkstreamActions key={flowScope} conversation={conversation} active={active} close={closeLocalFlow} onDocuments={review ? openDocuments : undefined} onTerminal={() => showLocalFlow("terminal")} onGit={() => { const gitTarget = captureGitTarget(); if (gitTarget) showLocalFlow("git", gitTarget); }} />}
+      {conversationInteractions.panel}
       {localPage === "terminal" && active && !hasRequests && <TerminalProvider view="terminal"><section className="workstream-status-composer terminal-composer" aria-label="Terminal flow"><header className="workstream-status-heading"><TerminalHeader /><FlowNavigation back={() => showLocalFlow("flows")} exit={closeLocalFlow} /></header><TerminalView exit={closeLocalFlow} /></section></TerminalProvider>}
       {localPage === "git" && localFlow?.gitTarget && active && !hasRequests && <GitFlow target={localFlow.gitTarget} back={() => showLocalFlow("flows")} exit={closeLocalFlow} />}
       {!conversation?.replacedBy && reviewFlow && review && <DocumentReviewComposer review={review} active={active && !hasRequests} disabled={reviewBlocked} back={() => showLocalFlow("flows")} navigation={navigation} acknowledgment={acknowledgment} exitToChatRequest={questionsReveal} />}
     </div>
-    <div className="composer-frame">
+    <div className="composer-frame" hidden={composerPanelOpen}>
     {hasRequests && <Interactions key={flowScope} state={state} active={active && !pickerOpen} navigation={navigation} showNotice={false} />}
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onCompositionStartCapture={() => { composingRef.current = true; setComposing(true); }} onCompositionEndCapture={() => { composingRef.current = false; setComposing(false); }} onSubmit={event => { event.preventDefault(); submit(); }}
       onKeyDownCapture={answerKeyDown}
@@ -437,7 +473,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
         <ChatInput key={answerEditor.key} text={answerEditor.text} save={text => currentAnswer()?.update(text)} onCompositionInput={text => currentAnswer(true)?.update(text)} submit={saveAnswer} pathsActive={false} normalizeText={normalizeAnswerText} maxLength={USER_QUESTIONS_LIMITS.answerText * 2} className="composer-input pending-input-primary-input" data-composer-mode="answer" placeholder="Write another answer…" aria-label={`Answer ${answerEditor.questionNumber} of ${answerEditor.questionCount}: ${answerEditor.question}`} aria-keyshortcuts="Control+Enter Meta+Enter Alt+Enter Escape" sendButton={<button type="submit" className="send pending-input-primary" data-mode="answer" disabled={answerDisabled} aria-label="Save answer" title={answerEditor.reason ? `Save answer: ${answerEditor.reason}` : "Save answer"}><FiCheck size={18} aria-hidden="true" /></button>} />
       </div>}
     </form> : null}
-      <div className="composer-toolbar composer-unified-toolbar"><div className="composer-options" hidden={flowOpen || !!conversation?.replacedBy}>
+      <div className="composer-toolbar composer-unified-toolbar" hidden={composerToolbarHidden} style={composerToolbarHidden ? { display: "none" } : undefined}><div className="composer-options" hidden={flowOpen || !!conversation?.replacedBy}>
         {answerEditor ? <fieldset className="question-answer-chip" aria-label="Custom answer" onKeyDownCapture={answerKeyDown}>
           <button type="button" className="question-answer-chip-label" disabled={!active || composing} title={`Show original question: ${answerEditor.question}`} aria-label={`Show original question ${answerEditor.questionNumber} of ${answerEditor.questionCount}`} onClick={() => currentAnswer()?.reveal()}>Answer {answerEditor.questionNumber}/{answerEditor.questionCount}</button>
           <button type="button" className="question-answer-chip-cancel" disabled={!active || composing} aria-label="Cancel answer" title="Cancel answer (Esc)" onClick={cancelAnswer}><FiX size={14} aria-hidden="true" /></button>
@@ -447,11 +483,13 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
           : <span className="agent-chip fixed" role="status" aria-label={store.conversationProfileLabel(state.selected)} title={store.conversationProfileLabel(state.selected)}><FiUser size={20} aria-hidden="true" /><span className="agent-chip-label">{store.conversationProfileLabel(state.selected)}</span></span>}
         {!answerMode && <div className="composer-utilities">
           <button type="button" className="composer-flows" disabled={!uploadAvailable || !!imageUpload} aria-label="Attach images" title={uploadScope ? "Attach images" : "Choose an available workspace and checkout first to upload images"} onClick={() => beginImageUpload()}><FiPaperclip size={16} aria-hidden="true" /></button>
-          <WorkersButton key={state.selected} sessionId={state.selected} active={active && !flowOpen} />
+          {!paired && artifacts && questions && state.selected
+            ? conversationInteractions.button
+            : <WorkersButton key={state.selected} sessionId={state.selected} active={active && !flowOpen} />}
           <button type="button" className="composer-flows" disabled={paired && !onOpenChatFlow} aria-label={paired ? "Open Flows in Chat" : "Flows"} title={paired ? "Open Flows in Chat" : `Flows (${shortcutHint(FLOWS_SHORTCUT)})`} aria-keyshortcuts={`${isMacPlatform() ? "Meta" : "Control"}+p`} aria-expanded={localPage === "flows"} onClick={openFlows}><FiGrid size={16} aria-hidden="true" /><span className="composer-utility-label">Flows</span></button>
         </div>}
       </div>
-      <ComposerStatus key={flowScope} statuses={statuses} active={active} actions={statusActions} activityDetails={questions ? close => <UserQuestionsActivity questions={questions} close={close} disabled={!active || state.sending || state.loading} /> : undefined} receiptDetails={grok ? undefined : close => <AppAdmissionRecoveryPanel active={active} onActionComplete={close} />}
+      <ComposerStatus key={flowScope} statuses={statuses} active={active && !composerToolbarHidden} actions={statusActions} activityDetails={questions ? close => <UserQuestionsActivity questions={questions} close={close} disabled={!active || state.sending || state.loading} /> : undefined} receiptDetails={grok ? undefined : close => <AppAdmissionRecoveryPanel active={active} onActionComplete={close} />}
         queue={lid ? { lid, details: pendingSupported
           ? <PendingInputDetails state={state} active={active && !flowOpen && !conversation?.replacedBy} busy={pendingBusy} operate={operatePending} />
           : <RetainedInputDetails state={state} disabled={!active || flowOpen || !!conversation?.replacedBy || pendingBusy || state.actionBusy || state.sending || state.loading || !!state.pendingInputLoading} operate={operatePending} /> } : undefined}

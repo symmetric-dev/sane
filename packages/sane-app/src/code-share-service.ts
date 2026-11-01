@@ -104,7 +104,7 @@ export class CodeShareService {
     const fileSnippets = snippets.filter((snippet): snippet is CodeShareFileSnapshot => !isInlineCodeShareSnippet(snippet.input));
     const record: CodeShareRecord = "snippets" in request.input
       ? fileSnippets.length === snippets.length
-        ? { ...identity, version: 2, input: { snippets: fileSnippets.map(snippet => snippet.input) }, snippets: fileSnippets }
+        ? { ...identity, version: 2, input: { title: request.input.title, snippets: fileSnippets.map(snippet => snippet.input) }, snippets: fileSnippets }
         : { ...identity, version: 3, input: request.input, snippets }
       : { ...identity, version: 1, ...snippets[0]!, input: request.input };
     return this.store.commit(record, authorization.assertCurrent);

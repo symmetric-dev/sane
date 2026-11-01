@@ -1,23 +1,29 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { FiArrowLeft, FiArrowRight, FiArrowUpRight, FiInfo } from "react-icons/fi";
-import { isStoredSlot, type Phase } from "sane-core/contracts";
-import type { HandoffParty, HandoffPresentation } from "../src/handoff-contract";
+import { FiArrowUpRight, FiInfo, FiMessageSquare } from "react-icons/fi";
+import { LuHandHelping } from "react-icons/lu";
+import { isStoredSlot } from "sane-core/contracts";
+import type { HandoffPresentation } from "../src/handoff-contract";
 import type { ToolPart } from "./types";
 import { store, useStore } from "./store";
 import { handoffStatusLabel, phaseLabel } from "./handoff-presentation";
 import { goToSend } from "./send-navigation";
-import { ChatButton, ChatCard, ChatCardBody, ChatCardFooter, ChatCardHeader, ChatDialog, ChatDialogBody, ChatDialogFooter, ChatDisclosure, ChatNotice, ChatReceipt, ChatStatus } from "./chat-ui";
+import { ChatButton, ChatCard, ChatCardBody, ChatCardHeader, ChatDialog, ChatDialogBody, ChatDialogFooter, ChatDisclosure, ChatIconButton, ChatNotice, ChatOverflowMenu, ChatStatus } from "./chat-ui";
 
 type MessageRenderer = (text: string) => ReactNode;
-function MessageAccordion({ message, renderMessage }: { message: string; renderMessage: MessageRenderer }) {
-  return <ChatDisclosure className="handoff-message" title="Show message"><div className="handoff-message-body">{renderMessage(message)}</div></ChatDisclosure>;
-}
-function PhaseBadges({ phases }: { phases: Phase[] }) {
-  return <span className="handoff-phases">{phases.length ? phases.map(phase => <span key={phase} className="handoff-phase" title={phase}>{phaseLabel(phase)}</span>) : <span className="handoff-phase is-unassigned">Unassigned</span>}</span>;
-}
-function Party({ label, party }: { label: string; party: HandoffParty }) {
-  return <div className="handoff-party"><span className="handoff-party-label">{label}</span><strong>{party.title}</strong><PhaseBadges phases={party.phases} /></div>;
+function HandoffSummary({ title, description, status, actions, received = false, message, renderMessage }: {
+  title: string; description?: ReactNode; status: ReactNode; actions?: ReactNode; received?: boolean; message?: string; renderMessage: MessageRenderer;
+}) {
+  const [expanded, setExpanded] = useState(false), messageId = useId();
+  return <>
+    <ChatCardHeader className="handoff-header" icon={<LuHandHelping size={28} style={received ? undefined : { transform: "scaleX(-1)" }} />} title={<span title={title}>{title}</span>}
+      description={<>{status}{description}</>}
+      actions={<>
+        {message !== undefined && <ChatIconButton aria-label={expanded ? "Hide handoff message" : "Show handoff message"} aria-expanded={expanded} aria-controls={messageId} onClick={() => setExpanded(!expanded)}><FiMessageSquare /></ChatIconButton>}
+        {actions}
+      </>} />
+    {message !== undefined && <ChatCardBody id={messageId} className="handoff-message-body" hidden={!expanded}>{renderMessage(message)}</ChatCardBody>}
+  </>;
 }
 function Facts({ values }: { values: [string, string | null | undefined][] }) {
   return <dl className="facts">{values.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || "Unavailable"}</dd></div>)}</dl>;
@@ -55,32 +61,33 @@ export function HandoffCard({ presentation: p, direction, renderMessage, stale }
   const [details, setDetails] = useState(false), trigger = useRef<HTMLButtonElement>(null);
   const sending = useStore(state => state.sending);
   const h = p.handoff, target = direction === "sent" ? p.recipient : p.sender;
-  const label = target.phases[0] ? phaseLabel(target.phases[0]) : "sender";
   const moving = !stale && ["queued", "accepted", "running"].includes(h.status);
   const received = direction === "received";
-  const Frame = received ? ChatReceipt : ChatCard;
+  const context = `${target.phases.length ? target.phases.map(phaseLabel).join(", ") : "Unassigned"} · ${p.workstreamTitle}`;
   const time = <time dateTime={h.createdAt} title={new Date(h.createdAt).toLocaleString()}>{new Date(h.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>;
-  return <Frame className={`handoff-card${received ? " handoff-receipt" : ""}${h.status === "failed" || p.problem ? " has-issue" : ""}`} role={received ? "group" : undefined} aria-label={`Assistant handoff ${direction}`} data-send-kind={received ? undefined : "handoff"} data-send-id={received ? undefined : h.id} tabIndex={received ? undefined : -1}>
-    {received ? <ChatCardHeader title={p.sender.title} icon={<FiArrowRight size={16} />} metadata={<><PhaseBadges phases={p.sender.phases} /><ChatStatus>Received</ChatStatus>{time}</>} /> : <>
-      <ChatCardHeader title="Assistant handoff · sent" icon={<FiArrowLeft size={16} />} metadata={<ChatStatus tone={h.status === "failed" ? "danger" : stale ? "warning" : "neutral"} busy={moving} role="status">{handoffStatusLabel[h.status]}{stale ? " · last known" : ""}</ChatStatus>} />
-      <div className="handoff-correspondents"><Party label="From" party={p.sender} /><Party label="To" party={p.recipient} /></div>
-    </>}
-    <div className="handoff-context"><span>Workstream · {p.workstreamTitle}</span>{!received && time}</div>
-    <MessageAccordion message={h.input.message} renderMessage={renderMessage} />
+  return <ChatCard density="compact" className={`handoff-card${received ? " handoff-receipt" : ""}${h.status === "failed" || p.problem ? " has-issue" : ""}`} role={received ? "group" : undefined} aria-label={`Assistant handoff ${direction}`} data-send-kind={received ? undefined : "handoff"} data-send-id={received ? undefined : h.id} tabIndex={received ? undefined : -1}>
+    <HandoffSummary title={`${received ? "From" : "To"}: ${target.title}`} received={received} message={h.input.message} renderMessage={renderMessage}
+      status={<ChatStatus tone={!received && h.status === "failed" ? "danger" : stale ? "warning" : "neutral"} busy={!received && moving} role="status">{received ? "Received" : handoffStatusLabel[h.status]}{stale ? " · last known" : ""}</ChatStatus>}
+      description={<><span className="handoff-context" title={context}>· {context}</span>{time}</>}
+      actions={<>
+        <ChatButton variant="ghost" icon={<FiArrowUpRight size={13} />} disabled={sending || !target.sessionId} aria-label={received ? "Go to handoff send" : "Open handoff recipient"} title={!target.sessionId ? "This assistant has no local conversation to open" : undefined} onClick={() => received ? goToSend({ kind: "handoff", id: h.id, sessionId: p.sender.sessionId! }) : store.openConversation(target.sessionId!)}>{received ? "Go to send" : "Open"}</ChatButton>
+        <ChatOverflowMenu label="Handoff actions" attention={!!(p.problem || stale || h.status === "failed")} items={[
+          { id: "details", label: "Details", icon: <FiInfo />, opensDialog: true, onSelect: button => { trigger.current = button; setDetails(true); } },
+        ]} />
+      </>} />
     {(p.problem || h.status === "failed") && <ChatNotice className="handoff-warning" tone="danger" role="alert">{p.problem || "Recipient execution failed. See Details for the recorded evidence."}</ChatNotice>}
     {stale && <ChatNotice className="handoff-warning" tone="warning" role="status">Live handoff status unavailable. Details show the last recorded state.</ChatNotice>}
-    <ChatCardFooter><ChatButton variant="ghost" icon={<FiArrowUpRight size={13} />} disabled={sending || !target.sessionId} title={!target.sessionId ? "This assistant has no local conversation to open" : undefined} onClick={() => received ? goToSend({ kind: "handoff", id: h.id, sessionId: p.sender.sessionId! }) : store.openConversation(target.sessionId!)}>{received ? "Go to send" : `Open ${label}`}</ChatButton><ChatButton ref={trigger} variant="ghost" icon={<FiInfo size={13} />} aria-haspopup="dialog" aria-label="Handoff details" onClick={() => setDetails(true)}>Details</ChatButton></ChatCardFooter>
     {details && <HandoffDetails presentation={p} stale={stale} trigger={trigger.current} close={() => setDetails(false)} openDisabled={sending} />}
-  </Frame>;
+  </ChatCard>;
 }
 
 /** Preserve unconfirmed or rejected calls without displaying raw tool payloads. */
 export function PendingHandoffCard({ tool, running, renderMessage }: { tool: ToolPart; running: boolean; renderMessage: MessageRenderer }) {
   const input = tool.input && typeof tool.input === "object" && !Array.isArray(tool.input) ? tool.input as Record<string, unknown> : {};
   const phase = isStoredSlot(input.to) ? input.to : null;
-  return <ChatCard density="compact" className="handoff-card" aria-label="Assistant handoff sent"><ChatCardHeader title="Assistant handoff · sent" icon={<FiArrowLeft size={16} />} metadata={<ChatStatus tone={tool.error ? "warning" : "neutral"} busy={!tool.error && running && tool.output === undefined} role="status">{tool.error ? "Admission unconfirmed" : running && tool.output === undefined ? "Sending" : "Status unavailable"}</ChatStatus>} />
-    <ChatCardBody><div className="handoff-party"><span className="handoff-party-label">To</span><strong>{phase ? `${phaseLabel(phase)} assistant` : "Recipient unavailable"}</strong>{phase && <PhaseBadges phases={[phase]} />}</div></ChatCardBody>
-    {typeof input.message === "string" && <MessageAccordion message={input.message} renderMessage={renderMessage} />}
+  return <ChatCard density="compact" className="handoff-card" aria-label="Assistant handoff sent">
+    <HandoffSummary title={`To: ${phase ? `${phaseLabel(phase)} assistant` : "Recipient unavailable"}`} message={typeof input.message === "string" ? input.message : undefined} renderMessage={renderMessage}
+      status={<ChatStatus tone={tool.error ? "warning" : "neutral"} busy={!tool.error && running && tool.output === undefined} role="status">{tool.error ? "Admission unconfirmed" : running && tool.output === undefined ? "Sending" : "Status unavailable"}</ChatStatus>} />
     {tool.error && <ChatNotice className="handoff-warning" tone="warning" role="alert">Handoff admission could not be confirmed. Inspect run details before retrying.</ChatNotice>}
     {!running && !tool.error && <ChatNotice className="handoff-warning" role="status">The durable handoff record is unavailable. See run details for the original tool evidence.</ChatNotice>}
   </ChatCard>;

@@ -5,8 +5,11 @@ export interface CodeShareHighlight { startLine: number; endLine: number; commen
 export interface CodeShareSnippetInput { path: string; startLine?: number; endLine?: number; title?: string; format?: string; highlights?: CodeShareHighlight[] }
 export interface CodeShareInlineSnippetInput { kind: "inline"; title: string; code: string; format?: string; highlights?: CodeShareHighlight[] }
 export type CodeSharePageInput = CodeShareSnippetInput | CodeShareInlineSnippetInput
-export interface CodeShareSnippetsInput { snippets: CodeSharePageInput[] }
-export type CodeShareInput = CodeShareSnippetInput | CodeShareSnippetsInput
+export interface CodeShareSnippetsInput { title: string; snippets: CodeSharePageInput[] }
+export type CodeShareInput = (CodeShareSnippetInput & { title: string }) | CodeShareSnippetsInput
+/** Historical snapshots may predate the required overall share title. */
+export type StoredCodeShareSnippetsInput = { title?: string; snippets: CodeSharePageInput[] }
+export type StoredCodeShareInput = CodeShareSnippetInput | StoredCodeShareSnippetsInput
 export type CodeShareLanguage = "javascript" | "jsx" | "typescript" | "tsx" | "json" | "css" | "html" | "markdown" | "python" | "plaintext"
 export interface NativeCodeShareRequest {
   version: 1
@@ -20,7 +23,7 @@ export type CodeShareReceipt = { type: "sane.code-share"; version: 1; shareId: s
   | { type: "sane.code-share"; version: 2; shareId: string; snippets: CodeShareSnippetRange[] }
   | { type: "sane.code-share"; version: 3; shareId: string; snippets: CodeSharePageRange[] }
 
-export const nativeShareCodeDescription = "Show read-only code snippets as pages in one App chat card, with syntax highlighting and optional highlighted line ranges and comments. Prefer the snippets array, which can mix file references (path, optional startLine/endLine) and supplied code (kind: inline, title, code, optional format/highlights). Share a whole file with just path; startLine defaults to 1 and endLine defaults to the captured file's last line. Use inline snippets to show suggestions alongside existing code without writing or executing anything; they are labeled as suggested code, not saved files. Consider several focused snippets for navigation. Up to 16 snippets, 500 lines and 64 KiB of code each, 256 KiB of code total, and 256 KiB of serialized arguments including comments. Oversized whole files are rejected, never truncated; specify a smaller range instead. Paths are relative to the conversation's execution checkout, except .sane/... paths read SANE state from the repository's primary checkout (also in a linked worktree). Lines are 1-based and inclusive; inline lines start at 1, with the end derived from code. Comments appear before their highlighted range. Each snippet can override its syntax format. The App saves frozen snapshots, not live file links. Legacy single-snippet path arguments with optional startLine/endLine remain supported; do not combine them with snippets. Available only in App-admitted conversations; does not require workstream enrollment."
+export const nativeShareCodeDescription = "Show read-only code snippets as pages in one App chat card, with syntax highlighting and optional highlighted line ranges and comments. Always supply a top-level title for the overall card (1–256 characters). Prefer title plus the snippets array, which can mix file references (path, optional title/startLine/endLine) and supplied code (kind: inline, title, code, optional format/highlights). Snippet titles are separate from the overall card title; inline snippets require their own title. Share a whole file with a path-only snippet; startLine defaults to 1 and endLine defaults to the captured file's last line. Use inline snippets to show suggestions alongside existing code without writing or executing anything; they are labeled as suggested code, not saved files. Consider several focused snippets for navigation. Up to 16 snippets, 500 lines and 64 KiB of code each, 256 KiB of code total, and 256 KiB of serialized arguments including comments. Oversized whole files are rejected, never truncated; specify a smaller range instead. Paths are relative to the conversation's execution checkout, except .sane/... paths read SANE state from the repository's primary checkout (also in a linked worktree). Lines are 1-based and inclusive; inline lines start at 1, with the end derived from code. Comments appear before their highlighted range. Each snippet can override its syntax format. The App saves frozen snapshots, not live file links. Legacy single-snippet title and path arguments with optional startLine/endLine remain supported; do not combine path/startLine/endLine/format/highlights with snippets. Available only in App-admitted conversations; does not require workstream enrollment."
 const snippetSchema = {
   type: "object", additionalProperties: false, required: ["path"],
   properties: {
@@ -48,13 +51,14 @@ const inlineSnippetSchema = {
   },
 } as const
 export const nativeShareCodeSchema = {
-  type: "object", additionalProperties: false, required: [],
+  type: "object", additionalProperties: false, required: ["title"],
   properties: {
     snippets: { type: "array", minItems: 1, maxItems: CODE_SHARE_LIMITS.snippets, description: "Ordered pages mixing file references and inline suggestions. Multiple snippets may reference the same file.", items: { oneOf: [snippetSchema, inlineSnippetSchema] } },
     ...snippetSchema.properties,
+    title: { ...snippetSchema.properties.title, description: "Required overall display title for this shared-code card, up to 256 characters. With legacy single-file arguments, also serves as the snippet title." },
   },
   oneOf: [
-    { required: ["snippets"], not: { anyOf: Object.keys(snippetSchema.properties).map(key => ({ required: [key] })) } },
+    { required: ["snippets"], not: { anyOf: Object.keys(snippetSchema.properties).filter(key => key !== "title").map(key => ({ required: [key] })) } },
     { required: [...snippetSchema.required], not: { required: ["snippets"] } },
   ],
 } as const
@@ -118,9 +122,16 @@ export function parseCodeSharePage(input: unknown): CodeSharePageInput {
 }
 
 export function parseCodeShareInput(input: unknown): CodeShareInput {
+  const result = parseStoredCodeShareInput(input)
+  if (result.title === undefined) throw new Error("Code shares require an overall title of at most 256 characters.")
+  return { ...result, title: result.title }
+}
+
+/** Read immutable older snapshots without relaxing validation of new tool calls. */
+export function parseStoredCodeShareInput(input: unknown): StoredCodeShareInput {
   if (object(input) && Object.hasOwn(input, "snippets")) {
-    if (!exact(input, ["snippets"]) || !Array.isArray(input.snippets) || input.snippets.length < 1 || input.snippets.length > CODE_SHARE_LIMITS.snippets) throw new Error("Share between 1 and 16 snippets; do not combine snippets with legacy single-snippet arguments.")
-    const result = { snippets: input.snippets.map(parseCodeSharePage) }
+    if (!exact(input, ["snippets"], ["title"]) || input.title !== undefined && !validTitle(input.title) || !Array.isArray(input.snippets) || input.snippets.length < 1 || input.snippets.length > CODE_SHARE_LIMITS.snippets) throw new Error("Share between 1 and 16 snippets with an overall title of at most 256 characters; do not combine snippets with legacy single-snippet arguments.")
+    const result = { ...(typeof input.title === "string" ? { title: input.title } : {}), snippets: input.snippets.map(parseCodeSharePage) }
     const serialized = JSON.stringify(result)
     if (serialized.length > CODE_SHARE_LIMITS.inputBytes || new TextEncoder().encode(serialized).length > CODE_SHARE_LIMITS.inputBytes) throw new Error("Code share snippet arguments, inline code, and comments exceed 256 KiB.")
     return result
@@ -128,7 +139,7 @@ export function parseCodeShareInput(input: unknown): CodeShareInput {
   return parseCodeShareSnippet(input)
 }
 
-export function codeShareInputSnippets(input: CodeShareInput): readonly CodeSharePageInput[] {
+export function codeShareInputSnippets(input: StoredCodeShareInput): readonly CodeSharePageInput[] {
   return "snippets" in input ? input.snippets : [input]
 }
 

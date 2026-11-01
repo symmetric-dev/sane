@@ -1,4 +1,4 @@
-import { CODE_SHARE_LIMITS, codeShareInputSnippets, codeShareSnippetRange, isInlineCodeShareSnippet, normalizeCodeShareText, parseCodeShareInput, parseCodeSharePage, parseCodeShareSnippet, resolveCodeShareLanguage, type CodeShareSnippetInput, type CodeSharePageInput, type CodeShareSnippetsInput, type CodeShareLanguage } from "../../sane-cli/src/native-share-code-contract"
+import { CODE_SHARE_LIMITS, codeShareInputSnippets, codeShareSnippetRange, isInlineCodeShareSnippet, normalizeCodeShareText, parseCodeShareInput, parseStoredCodeShareInput, parseCodeSharePage, parseCodeShareSnippet, resolveCodeShareLanguage, type CodeShareSnippetInput, type CodeSharePageInput, type StoredCodeShareSnippetsInput, type CodeShareLanguage } from "../../sane-cli/src/native-share-code-contract"
 
 export { CODE_SHARE_LIMITS, codeShareInputSnippets, codeShareSnippetRange, isInlineCodeShareSnippet, normalizeCodeShareText, parseCodeShareInput, parseCodeShareSnippet, resolveCodeShareLanguage }
 export type { CodeShareHighlight, CodeShareInput, CodeShareSnippetInput, CodeShareInlineSnippetInput, CodeSharePageInput, CodeShareSnippetsInput, CodeShareLanguage, CodeShareReceipt, NativeCodeShareRequest } from "../../sane-cli/src/native-share-code-contract"
@@ -21,8 +21,8 @@ export interface CodeShareSnapshot {
 }
 export interface CodeShareFileSnapshot extends CodeShareSnapshot { input: CodeShareSnippetInput }
 export interface SingleCodeShareRecord extends CodeShareIdentity, CodeShareFileSnapshot { version: 1 }
-export interface MultiCodeShareRecord extends CodeShareIdentity { version: 2; input: { snippets: CodeShareSnippetInput[] }; snippets: CodeShareFileSnapshot[] }
-export interface MixedCodeShareRecord extends CodeShareIdentity { version: 3; input: CodeShareSnippetsInput; snippets: CodeShareSnapshot[] }
+export interface MultiCodeShareRecord extends CodeShareIdentity { version: 2; input: { title?: string; snippets: CodeShareSnippetInput[] }; snippets: CodeShareFileSnapshot[] }
+export interface MixedCodeShareRecord extends CodeShareIdentity { version: 3; input: StoredCodeShareSnippetsInput; snippets: CodeShareSnapshot[] }
 export type CodeShareRecord = SingleCodeShareRecord | MultiCodeShareRecord | MixedCodeShareRecord
 
 /** Old snapshots are one-page shares; no rewriting of historical records. */
@@ -55,7 +55,7 @@ export function isCodeShareRecord(value: unknown): value is CodeShareRecord {
   if (v.version === 1) return isSnapshot(v)
   if (!Array.isArray(v.snippets) || v.snippets.length < 1 || v.snippets.length > CODE_SHARE_LIMITS.snippets || !v.snippets.every(snippet => isSnapshot(snippet, v.version === 3))) return false
   try {
-    const input = parseCodeShareInput(v.input)
+    const input = parseStoredCodeShareInput(v.input)
     return "snippets" in input && input.snippets.length === v.snippets.length
       && input.snippets.some(isInlineCodeShareSnippet) === (v.version === 3)
       && input.snippets.every((snippet, index) => JSON.stringify(snippet) === JSON.stringify(parseCodeSharePage(v.snippets[index].input)))

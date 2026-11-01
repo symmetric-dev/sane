@@ -13,7 +13,8 @@ import { harnessName, type Conversation, type Run, type RunMetadata, type ToolPa
 import { useStore } from "./store";
 import { goToSend } from "./send-navigation";
 import { WorkerActionsMenu, WorkerOverflowMenu } from "./worker-actions-menu";
-import { ChatButton, ChatCard, ChatCardHeader, ChatDialog, ChatDialogBody, ChatDisclosure, ChatIconButton, ChatMetadata, ChatNotice, ChatReceipt, ChatStatus } from "./chat-ui";
+import { ChatButton, ChatCard, ChatCardHeader, ChatDialog, ChatDialogBody, ChatDisclosure, ChatMetadata, ChatNotice, ChatReceipt, ChatStatus } from "./chat-ui";
+import { ComposerPanel } from "./composer-panel";
 
 async function requestWorkerCancellation(parent: string, input: WorkerStop) {
   try { await workerClient.stop(parent, input); return "Worker cancellation requested; inspect current status for confirmation."; }
@@ -245,54 +246,48 @@ export function WorkerExchangeMessage({ exchange, recipient, tool, renderMessage
   </ChatCard>;
 }
 
-export function WorkersButton({ sessionId, active = true }: { sessionId: string; active?: boolean }) {
+export function useWorkerPanel(sessionId: string) {
   const projection = useWorkers(sessionId);
   const conversations = useStore(state => state.conversations);
   const runs = useStore(state => state.runs);
-  const [opened, setOpened] = useState(false);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const dialog = useRef<HTMLDialogElement>(null);
-  const activity = useRef(active); activity.current = active;
-  const id = useId();
   const workers = projection.workers;
-  const newestWorkers = [...workers].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const executions = workers.map(w => workerExecution(w, runs, conversations.find(c => c.id === w.sessionId)));
   const count = workers.filter((worker, index) => workerCountsAsActiveExecution(worker, executions[index]?.active ?? false)).length;
   const idle = workers.filter(worker => workerProtocolStatus(worker) === "idle").length;
   const awaiting = workers.filter(worker => ["awaiting-user", "awaiting-parent", "awaiting-children"].includes(workerProtocolStatus(worker) ?? "")).length;
   const uncertain = executions.filter(e => e.executionState === "uncertain" || e.executionState === "unknown").length;
+  return { projection, workers, runs, count, idle, awaiting, uncertain };
+}
+
+export function WorkerPanelNotices({ projection }: { projection: ReturnType<typeof useWorkers> }) {
+  return <>
+    {projection.error && <ChatNotice tone="warning" role="alert">Worker status unavailable: {projection.error}</ChatNotice>}
+    {projection.continuationSuppressed && <ChatNotice tone="warning" role="status">Automatic report-back is paused after an explicit stop. Results remain available; resuming this conversation re-enables delivery.</ChatNotice>}
+    {projection.deliveries.filter(d => d.error).map(d => <ChatNotice key={d.id} tone="danger" role="alert">Report-back {d.state}: {d.error}</ChatNotice>)}
+  </>;
+}
+
+export function WorkerPanelFooter({ sessionId }: { sessionId: string }) {
+  return <><CancelWorker parent={sessionId} input={{ all: true }}>Cancel all workers</CancelWorker><span className="muted">Includes nested workers</span></>;
+}
+
+export function WorkersButton({ sessionId, active = true }: { sessionId: string; active?: boolean }) {
+  const { projection, workers, runs, count, idle, awaiting, uncertain } = useWorkerPanel(sessionId);
+  const [opened, setOpened] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const activity = useRef(active); activity.current = active;
+  const id = useId();
+  const newestWorkers = [...workers].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   useEffect(() => { if (!active) setOpened(false); }, [active]);
-  useEffect(() => {
-    if (!opened || !active) return;
-    const element = dialog.current!;
-    const position = () => {
-      const rect = trigger.current?.getBoundingClientRect();
-      if (!rect) return;
-      // The trigger now sits beside Agent on the left. Keep the panel inside
-      // the viewport rather than letting its old right alignment clip it.
-      const width = Math.min(460, window.innerWidth - 32);
-      element.style.setProperty("--workers-right", `${Math.max(16, Math.min(window.innerWidth - rect.right, window.innerWidth - width - 16))}px`);
-      element.style.setProperty("--workers-bottom", `${window.innerHeight - rect.top + 10}px`);
-      element.style.setProperty("--workers-height", `${Math.max(160, rect.top - 26)}px`);
-    };
-    position();
-    element.showModal();
-    window.addEventListener("resize", position);
-    return () => { window.removeEventListener("resize", position); element.close(); if (activity.current && trigger.current?.isConnected) trigger.current.focus(); };
-  }, [opened, active]);
   const open = (w: WorkerRecord) => { flushSync(() => setOpened(false)); openWorker(w); };
   return <><button ref={trigger} type="button" disabled={!active} className="composer-workers" aria-haspopup="dialog" aria-expanded={opened && active} aria-controls={opened && active ? id : undefined} aria-label={`Workers, ${count} active`} title="Workers" onClick={() => setOpened(true)}><FiUsers size={14} aria-hidden="true" /><span className="workers-count" aria-hidden="true">{count}</span></button>
-    {opened && active && createPortal(<dialog ref={dialog} id={id} className="workers-panel" aria-modal="true" aria-labelledby={`${id}-title`} onCancel={event => { event.preventDefault(); setOpened(false); }} onClick={event => { if (event.target === event.currentTarget) setOpened(false); }}><div className="workers-panel-content">
-      <header className="workers-panel-header"><div><h2 id={`${id}-title`}>Workers</h2><ChatMetadata>{count} active · {workers.length} total{idle ? ` · ${idle} idle` : ""}{awaiting ? ` · ${awaiting} awaiting` : ""}{uncertain ? ` · ${uncertain} unconfirmed` : ""}</ChatMetadata></div><ChatIconButton aria-label="Close workers" onClick={() => setOpened(false)}><FiX size={18} /></ChatIconButton></header>
-      <div className="workers-panel-body">
-        {projection.error && <ChatNotice tone="warning" role="alert">Worker status unavailable: {projection.error}</ChatNotice>}
-        {projection.continuationSuppressed && <ChatNotice tone="warning" role="status">Automatic report-back is paused after an explicit stop. Results remain available; resuming this conversation re-enables delivery.</ChatNotice>}
-        {projection.deliveries.filter(d => d.error).map(d => <ChatNotice key={d.id} tone="danger" role="alert">Report-back {d.state}: {d.error}</ChatNotice>)}
-        {!workers.length && <div className="workers-empty"><FiUsers size={26} aria-hidden="true" /><h3>No workers yet</h3><p>Delegated tasks will appear here with their progress and results.</p></div>}
-        {newestWorkers.map(w => <WorkerCard key={w.id} worker={w} workers={workers} runs={runs} open={open} />)}
-      </div>
-      {!!workers.length && <footer className="workers-panel-footer"><CancelWorker parent={sessionId} input={{ all: true }}>Cancel all workers</CancelWorker><span className="muted">Includes nested workers</span></footer>}
-    </div></dialog>, document.body)}
+    {opened && active && <ComposerPanel id={id} title="Workers" trigger={trigger} close={() => setOpened(false)} restoreFocus={() => activity.current ? trigger.current : null}
+      summary={<>{count} active · {workers.length} total{idle ? ` · ${idle} idle` : ""}{awaiting ? ` · ${awaiting} awaiting` : ""}{uncertain ? ` · ${uncertain} unconfirmed` : ""}</>}
+      footer={workers.length ? <WorkerPanelFooter sessionId={sessionId} /> : undefined}>
+      <WorkerPanelNotices projection={projection} />
+      {!workers.length && <div className="workers-empty"><FiUsers size={26} aria-hidden="true" /><h3>No workers yet</h3><p>Delegated tasks will appear here with their progress and results.</p></div>}
+      {newestWorkers.map(w => <WorkerCard key={w.id} worker={w} workers={workers} runs={runs} open={open} />)}
+    </ComposerPanel>}
   </>;
 }
 export function WorkerSection({ sessionId, runId, open = openWorker, collapsible = false }: { sessionId: string; runId?: string; open?: (worker: WorkerRecord) => void; collapsible?: boolean }) {

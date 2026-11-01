@@ -1,4 +1,4 @@
-import { MEDIA_SHARE_LIMITS as LIMITS, parseMediaShareInput, type MediaShareRecord, type MediaShareReceipt, type NativeMediaShareRequest } from "../shared/media-share-contract";
+import { MEDIA_SHARE_LIMITS as LIMITS, parseMediaShareInput, parseStoredMediaShareInput, type MediaShareRecord, type MediaShareReceipt, type NativeMediaShareRequest } from "../shared/media-share-contract";
 import { exact } from "./app-store-format";
 import { canonicalJSON } from "./prepared-input-codec";
 import { parseCodeShareRequest } from "./code-share-service";
@@ -11,7 +11,7 @@ import { WorkspaceError, type WorkspaceService } from "./workspace";
 export function parseMediaShareRequest(value: unknown): NativeMediaShareRequest {
   try {
     exact(value, ["version", "caller", "invocation", "input"]);
-    const envelope = parseCodeShareRequest({ ...value, input: { path: "media", startLine: 1, endLine: 1 } });
+    const envelope = parseCodeShareRequest({ ...value, input: { title: "Media", path: "media", startLine: 1, endLine: 1 } });
     return { ...envelope, input: parseMediaShareInput(value.input) };
   } catch { throw new MediaShareError(400, "invalid-media-share", "Invalid media share request"); }
 }
@@ -107,7 +107,7 @@ export class MediaShareService {
     operation.check(); authorization.assertCurrent();
     if (authorization.sessionId !== expectedSessionId) throw new MediaShareError(409, "media-share-binding", "Conversation admission changed");
     if (old) {
-      if (canonicalJSON(parseMediaShareInput(old.input)) !== canonicalJSON(request.input)) throw new MediaShareError(409, "media-share-conflict", "This invocation already shared different media");
+      if (canonicalJSON(parseStoredMediaShareInput(old.input)) !== canonicalJSON(request.input)) throw new MediaShareError(409, "media-share-conflict", "This invocation already shared different media");
       return old; // Source deletion or checkout loss does not affect recovery.
     }
     if (captures >= LIMITS.concurrentCaptures) throw new MediaShareError(429, "media-share-busy", "Media capture is busy; try again shortly");

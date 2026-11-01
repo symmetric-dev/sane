@@ -1,0 +1,25 @@
+.handoff-interaction-card { margin-block:var(--chat-ui-space-2); }
+.handoff-interaction-card.has-issue { border-color:color-mix(in srgb,var(--chat-ui-danger) 35%,var(--chat-ui-border)); }
+.chat-card.handoff-interaction-card > .handoff-interaction-header { display:grid; grid-template-columns:40px minmax(0,1fr) auto; grid-template-rows:repeat(2,minmax(20px,auto)); align-items:center; gap:0 var(--chat-ui-space-2); padding-block:var(--chat-ui-space-2); padding-inline-end:var(--chat-ui-space-2); border-bottom:0; }
+.handoff-interaction-header > .chat-card-header-icon { grid-column:1; grid-row:1 / span 2; }
+.handoff-interaction-header > .chat-card-header-content { display:grid; grid-template-rows:subgrid; grid-column:2; grid-row:1 / span 2; }
+.handoff-interaction-header .chat-card-header-title { grid-row:1; align-self:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.handoff-interaction-header .chat-card-header-description { grid-row:2; align-self:center; min-width:0; margin-top:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.handoff-interaction-header > .chat-card-header-actions { grid-column:3; grid-row:1 / span 2; flex-wrap:nowrap; margin-inline-start:auto; }
+.handoff-interaction-header .chat-button { flex-shrink:0; white-space:nowrap; }
+.handoff-interaction-header .chat-button:not(.chat-icon-button) { padding-inline:var(--chat-ui-space-2); }
+.handoff-interaction-metadata { align-items:center; gap:var(--chat-ui-space-1) var(--chat-ui-space-2); padding:0 var(--chat-card-padding) var(--chat-ui-space-2); }
+.handoff-interaction-direction { color:var(--chat-ui-muted); }
+.handoff-interaction-metadata time { margin-inline-start:auto; color:var(--chat-ui-muted); font-variant-numeric:tabular-nums; }
+.handoff-interaction-metadata .chat-status { min-width:0; max-width:100%; }
+.handoff-interaction-card > .chat-notice { margin:var(--chat-ui-space-1) var(--chat-card-padding) var(--chat-ui-space-2); }
+.handoff-interaction-unavailable { margin:0 var(--chat-card-padding) var(--chat-ui-space-2); color:var(--chat-ui-muted); font-size:var(--chat-ui-meta-size); }
+.handoff-interaction-details-body > section + section { margin-block-start:var(--chat-ui-space-4); }
+.handoff-interaction-details-body h3 { margin:0 0 var(--chat-ui-space-2); font-size:var(--chat-ui-title-size); }
+.handoff-interaction-details-body p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.handoff-interaction-card button:focus-visible { outline:2px solid var(--focus-ring); outline-offset:3px; }
+@media (max-width:480px) {
+  .chat-card.handoff-interaction-card > .handoff-interaction-header { grid-template-columns:40px minmax(0,1fr); }
+  .handoff-interaction-header > .chat-card-header-actions { grid-column:2; grid-row:3; margin-block-start:var(--chat-ui-space-1); }
+  .handoff-interaction-metadata time { flex-basis:100%; margin-inline-start:0; }
+}

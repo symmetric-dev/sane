@@ -1,14 +1,28 @@
-.native-subagent-card,.native-shell-card { margin: 10px 0; }
-.native-subagent-card > .chat-disclosure,.native-shell-card > .chat-disclosure { margin: var(--chat-ui-space-2) var(--chat-ui-space-3); }
-.native-subagent-card .chat-disclosure__title { display: inline-flex; align-items: center; gap: var(--chat-ui-space-1); }
+.native-subagent-card { margin-block: var(--chat-ui-space-2); }
+.native-subagent-card > .native-subagent-card-header { display: grid; grid-template-columns: 28px minmax(0,1fr) auto; grid-template-rows: repeat(2,minmax(20px,auto)); align-items: center; gap: 0 var(--chat-ui-space-2); padding: var(--chat-ui-space-2); border-bottom: 0; }
+.native-subagent-card-header > .chat-card-header-icon { grid-column: 1; grid-row: 1 / span 2; }
+.native-subagent-card-header > .chat-card-header-content { display: grid; grid-template-rows: subgrid; grid-column: 2; grid-row: 1 / span 2; }
+.native-subagent-card-header .chat-card-header-title { align-self: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.native-subagent-card-header .chat-card-header-description { display: flex; align-items: center; gap: var(--chat-ui-space-1); min-width: 0; margin-top: 0; overflow: hidden; font-size: var(--chat-ui-meta-size); white-space: nowrap; }
+.native-subagent-card-header .chat-status { flex: 0 1 auto; min-width: 0; padding: 0; border: 0; background: transparent; }
+.native-subagent-card-header .chat-status__label,.native-subagent-card-header .native-subagent-count { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.native-subagent-card-header .chat-button__spinner { flex-shrink: 0; }
+.native-subagent-card-header > .chat-card-header-actions { grid-column: 3; grid-row: 1 / span 2; flex-wrap: nowrap; gap: var(--chat-ui-space-1); margin-inline-start: auto; }
+.native-subagent-card-header .chat-button { white-space: nowrap; padding-inline: var(--chat-ui-space-2); }
+.native-subagent-card-header .chat-icon-button { padding-inline: var(--chat-ui-space-1); }
+.native-shell-card { margin: 10px 0; }
+.native-shell-card > .chat-disclosure { margin: var(--chat-ui-space-2) var(--chat-ui-space-3); }
 .native-subagent-count { color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
 .native-subagent-attention { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--error); flex-shrink: 0; }
 .native-subagent-disclosure { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; overflow-wrap: anywhere; }
 .native-subagent-disclosure h4 { margin: 12px 0 6px; font-size: 12px; font-weight: 550; }
 .native-subagent-disclosure > h4:first-child { margin-top: 0; }
 .native-subagent-disclosure p { margin: 6px 0; }
-.native-subagent-card pre,.native-shell-card pre { margin: 6px 0; font: 12px/1.8 var(--font-mono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; max-height: none; overflow: visible; }
-.native-subagent-card .muted, .native-subagent-header .muted { font-size: 12px; }
+.native-subagent-card-details pre,.native-shell-card pre { margin: 6px 0; font: 12px/1.8 var(--font-mono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; max-height: none; overflow: visible; }
+.native-subagent-card-details .muted, .native-subagent-header .muted { font-size: 12px; }
+.native-subagent-card-details h4 { margin: var(--chat-ui-space-3) 0 var(--chat-ui-space-1); font-size: var(--chat-ui-title-size); }
+.native-subagent-card-details > h4:first-child { margin-top: 0; }
+.native-subagent-card-details > .chat-notice { margin-block: var(--chat-ui-space-2); }
 .native-subagent-returned-report pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
 .native-subagent-view { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 .native-subagent-header { border-bottom: 1px solid var(--border); max-height: 35%; overflow: auto; flex-shrink: 0; }

@@ -1,0 +1,27 @@
+.interaction-actions-content { display:flex; flex-direction:column; gap:var(--chat-ui-space-3, 12px); min-width:0; color:var(--chat-ui-foreground); overflow-wrap:anywhere; }
+.interaction-actions-content > .chat-card { min-width:0; margin:0; }
+.interaction-actions-section { display:flex; flex-direction:column; gap:var(--chat-ui-space-2, 8px); min-width:0; }
+.interaction-actions-section h3 { margin:0; font-size:var(--chat-ui-font-size); font-weight:600; }
+.interaction-actions-section p { margin:0; color:var(--chat-ui-muted); font-size:var(--chat-ui-meta-size); line-height:1.5; }
+.interaction-actions-section .chat-notice { margin:0; }
+.interaction-actions-counts { display:flex; flex-wrap:wrap; gap:8px 18px; margin:0; }
+.interaction-actions-counts > div { display:flex; align-items:baseline; gap:6px; }
+.interaction-actions-counts dt { color:var(--chat-ui-muted); font-size:var(--chat-ui-meta-size); }
+.interaction-actions-counts dd { margin:0; font-size:var(--chat-ui-font-size); font-weight:600; font-variant-numeric:tabular-nums; }
+.interaction-actions-buttons { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.interaction-actions-muted { color:var(--chat-ui-muted); font-size:var(--chat-ui-meta-size); }
+.interaction-actions-confirmation { display:flex; flex-direction:column; gap:8px; padding:10px; border:1px solid var(--chat-ui-border); border-radius:var(--chat-ui-control-radius); background:var(--chat-ui-accent); }
+.interaction-actions-confirmation > strong { font-size:var(--chat-ui-font-size); }
+.interaction-actions-sources { display:flex; flex-direction:column; gap:10px; min-width:0; margin:0; padding:0; list-style:none; }
+.interaction-actions-source { display:flex; flex-direction:column; gap:6px; min-width:0; padding-top:10px; border-top:1px solid var(--chat-ui-border); }
+.interaction-actions-source-heading { display:flex; align-items:center; flex-wrap:wrap; gap:6px 8px; min-width:0; }
+.interaction-actions-source-heading > strong { font-size:var(--chat-ui-font-size); }
+.interaction-actions-source-heading > .chat-button { margin-inline-start:auto; }
+@media (max-width:480px) {
+  .interaction-actions-counts { gap:6px 12px; }
+  .interaction-actions-buttons > .chat-button { max-width:100%; }
+  .interaction-actions-confirmation { padding:8px; }
+}
+@media (forced-colors:active) {
+  .interaction-actions-confirmation,.interaction-actions-source { border-color:ButtonText; }
+}

@@ -67,6 +67,7 @@ import { finishAsideHydration, openAsideParent } from "./aside-navigation";
 import { chatPresentationKey } from "./chat-return-state";
 import { ChatDisclosure, ChatNotice } from "./chat-ui";
 import type { AsideRecord } from "../shared/aside-contract";
+import type { SharedArtifact } from "./shared-artifacts-model";
 
 export { convertMessage } from "./transcript-runtime";
 
@@ -431,6 +432,23 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const documentFlow = reviewPresented ? review.flow : null;
   const readingDocument = !hasRequests && !!documentFlow?.path;
   const presentationActive = isActive && transcriptVisible && !readingDocument;
+  const artifactScope = JSON.stringify([workerRefreshScope, conversation?.workspaceId, conversation?.worktreeId, conversation?.replacedBy]);
+  const openSharedArtifact = (artifact: SharedArtifact): boolean => {
+    const current = store.snapshot();
+    const liveConversation = current.conversations.find(item => item.id === current.selected);
+    if (!presentationActive || paired || hasRequests || pendingInteractions(current, store.capabilities()).length > 0 || current.sending || current.loading || !current.connected || current.phase !== "ready"
+      || !current.config?.authenticated || current.config.storeId !== state.config?.storeId || current.selected !== state.selected || artifact.sessionId !== current.selected
+      || !conversation || !liveConversation || conversation.harness !== liveConversation.harness || conversation.authorityId !== liveConversation.authorityId
+      || conversation.nativeSessionId !== liveConversation.nativeSessionId || conversation.cwd !== liveConversation.cwd
+      || conversation.workspaceId !== liveConversation.workspaceId || conversation.worktreeId !== liveConversation.worktreeId || conversation.replacedBy !== liveConversation.replacedBy) return false;
+    if (artifact.kind === "questions") {
+      if (!userQuestions.forms.some(draft => draft.form.id === artifact.id && draft.form.sessionId === current.selected)) return false;
+      userQuestions.open(artifact.id);
+      return true;
+    }
+    const share = (artifact.kind === "code-share" ? codeShares.shares : mediaShares.shares).find(share => share.id === artifact.id && share.sessionId === current.selected);
+    return !!share && goToSend({ kind: artifact.kind, id: share.id, sessionId: share.sessionId, anchor: share.anchor });
+  };
   const asideSupported = state.config?.asideCapability?.version === 1 && state.config.asideCapability.drafts;
   const asideParentId = conversation?.aside?.parentSessionId ?? state.selected;
   const asideScope = useMemo(() => asideSupported && state.config?.storeId && asideParentId ? { storeId: state.config.storeId, sessionId: asideParentId } : null, [asideSupported, state.config?.storeId, asideParentId]);
@@ -534,7 +552,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const statusActions = pendingInputStopAction({ chainLocked, appRunning: grok ? state.grokView?.active === true : appRunning, cancelRun: capabilities.cancelRun === true, nativeQueueWaiting,
     disabled: !isActive || state.actionBusy || state.sending || (chainLocked ? state.phase !== "ready" || state.config?.authenticated !== true : !state.connected),
     cancel: () => void store.cancel() });
-  const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} paired={paired} onOpenChatFlow={onOpenChatFlow} flowPresentation={flowPresentation} onFlowPresentationChange={changeFlowPresentation} questions={userQuestions} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={paired ? undefined : review} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
+  const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} paired={paired} onOpenChatFlow={onOpenChatFlow} flowPresentation={flowPresentation} onFlowPresentationChange={changeFlowPresentation} questions={userQuestions} handoffs={handoffs} artifacts={{ scopeKey: artifactScope, codeShares, mediaShares, select: openSharedArtifact }} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={paired ? undefined : review} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
   const transcriptHeader = <>
     <SessionSearch root={searchRoot} active={presentationActive} state={state} />
     <BranchLinks key={state.selected} conversation={conversation} />
@@ -544,7 +562,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     <AsideLaunchStatus controller={asides} presentation={asidePresentation} />
   </>;
     return <QuestionAnswerComposerProvider questions={userQuestions} active={isActive && !hasRequests && !documentFlow}><LoadedWorkerRefreshProvider sessionId={state.selected} scope={workerRefreshScope} enabled={isActive && state.connected} workers={loadedWorkers}><TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, exchanges, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, presentationActive, codeShares, mediaShares, userQuestions, onExplain: asideSupported && asideScope && !conversation?.aside ? asidePresentation.explain : undefined, explainDisabled: !asideCanCreate || !presentationActive || paired || asides.creating || !!asides.pendingCreate?.uncertain, userQuestionsReadOnlyReason: questionsReadOnlyReason, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${paired ? " is-browser-paired" : ""}${documentFlow && !hasRequests ? " is-document-review" : ""}`}>
-    <ChatScroll active={isActive} transcriptTarget={transcriptTarget} transcriptVisible={transcriptVisible} beforeViewport={transcriptHeader} presentationKey={presentationKey} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} history={{ key: state.transcript?.islands[0]?.key ?? "", canLoad: !!state.transcript?.islands[0]?.coverage.olderCursor && !state.pageBusy && !state.pageErrors?.[`${state.transcript.islands[0].key}:older`], load: () => { const island = state.transcript?.islands[0]; if (island) void store.loadTranscriptPage({ island: island.key, direction: "older" }); } }} sendNavigation={{ sessionId: state.selected, loading: state.loading, connected: state.connected, connectionError: state.connectionError, workerError: projection.error, workerLoading: state.workerLoading, handoffLoading: handoffs.loading, handoffError: handoffs.error }} replacement={readingDocument ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
+    <ChatScroll active={isActive} transcriptTarget={transcriptTarget} transcriptVisible={transcriptVisible} beforeViewport={transcriptHeader} presentationKey={presentationKey} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} history={{ key: state.transcript?.islands[0]?.key ?? "", canLoad: !!state.transcript?.islands[0]?.coverage.olderCursor && !state.pageBusy && !state.pageErrors?.[`${state.transcript.islands[0].key}:older`], load: () => { const island = state.transcript?.islands[0]; if (island) void store.loadTranscriptPage({ island: island.key, direction: "older" }); } }} sendNavigation={{ sessionId: state.selected, loading: state.loading, connected: state.connected, connectionError: state.connectionError, workerError: projection.error, workerLoading: state.workerLoading, handoffLoading: handoffs.loading, handoffError: handoffs.error, codeShareLoading: codeShares.loading, codeShareError: codeShares.error, mediaShareLoading: mediaShares.loading, mediaShareError: mediaShares.error }} replacement={readingDocument ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
       <div className="transcript" ref={searchRoot}>
         <NativeSubagentDiscovery loaded={loadedNativeSubagents} />
         {conversation?.aside && (asideRecord ? <AsideReference key={asideRecord.id} source={asideRecord.source} /> : <ChatNotice role="status">{asides.error || asides.selected?.error || "Loading captured parent reference…"}<button type="button" className="text-button" disabled={!asides.enabled} onClick={() => void asides.open(conversation.aside!.id, { refresh: true })}>Refresh reference</button></ChatNotice>)}
