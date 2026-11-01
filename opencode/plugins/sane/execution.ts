@@ -302,6 +302,11 @@ export async function registerExecutionOperations(ctx: Context) {
   return {
     /** Any durable binding (pending or ready) is App-configured execution. */
     managed: (sessionID: string) => bindings.has(sessionID),
+    selected: (sessionID: string) => {
+      const binding = bindings.get(sessionID)
+      if (!binding || binding.state !== "ready" || configuring.has(sessionID)) throw new Error("Canonical execution binding is not ready")
+      return binding.configuration.executionAgent
+    },
     dispose: async () => { bindings.clear(); active.clear(); await admission.dispose(); await hook.dispose(); await registration.dispose(); await agents?.dispose() },
   }
 }

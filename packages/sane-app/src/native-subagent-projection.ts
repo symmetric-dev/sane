@@ -239,7 +239,7 @@ function projectOpenCodeSubagents(session: Session, run: Run, events: readonly E
     const namespace = (kind: string, id: string) => `native-subagent:${Buffer.from(JSON.stringify([session.sessionId, run.runId, child.summary.parentToolUseId, kind, id])).toString("base64url")}`;
     child.messages = [...(snapshots.get(child)?.values() ?? [])].filter(message => !message.compaction && (message.role !== "system" || message.parts.length)).map(message => ({
       id: namespace("message", message.messageId), nativeIds: [message.messageId], runId: run.runId, role: message.role,
-      time: message.createdAt, status: message.status, normalized: true, error: message.error, nativeSubagentResult: message.nativeSubagentResult, nativeShellResult: message.nativeShellResult,
+      time: message.createdAt, status: message.status, normalized: true, error: message.error, nativeSubagentResult: message.nativeSubagentResult, nativeShellResult: message.nativeShellResult, nativeInstructionContext: message.nativeInstructionContext,
       parts: message.parts.map(part => part.type === "tool" ? { type: "tool", id: namespace("tool", part.id), toolCallId: part.id,
         name: part.name, input: part.input, output: part.output ?? part.error, error: part.error !== undefined, toolStatus: part.status }
         : { type: part.type, text: part.text, ...(part.type === "reasoning" ? { id: namespace("reasoning", part.id) } : {}) }),

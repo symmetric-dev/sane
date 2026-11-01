@@ -9,8 +9,11 @@ import { sentHandoffs } from "../shared/conversation/handoff-matching";
 import type { Message, Run as DisplayRun, RunMetadata } from "../shared/conversation/types";
 import type { Event, Run, Session } from "./history";
 import type { ReconciledHistory } from "../shared/conversation/native-history-contract";
+import { ASIDE_LIMITS, type AsideTranscriptSnapshot } from "../shared/aside-contract";
+import { canonicalJSON } from "./prepared-input-codec";
 import { GrokOutputProjection } from "./grok-output";
 import { decodeContextMessageSubmission } from "./context-message-evidence";
+import { AuthoredSubmissionProjector } from "./authored-submission-projection";
 import { TRANSCRIPT_MAX_MESSAGES, TRANSCRIPT_PAGE_BYTES, type TranscriptCompaction, type TranscriptMessage, type TranscriptMetadataItem, type TranscriptMetadataPage, type TranscriptPage, type TranscriptRefresh, type TranscriptRefreshRequest, type TranscriptRunMetadata, type TranscriptSendAnchor, type TranscriptSummary, type TranscriptUsage } from "./transcript-contract";
 
 export class TranscriptError extends Error {
@@ -103,6 +106,7 @@ function grokAuthoredHistory(history: ReconciledHistory | undefined, runs: Displ
  * startup decode. Polling unchanged evidence never replays event logs or rebuilds
  * the transcript. Dirty projections reuse the existing exact merge/usage helpers. */
 export class TranscriptService {
+  private authoredSubmissions = new AuthoredSubmissionProjector();
   private secret = randomBytes(32);
   private processId = randomBytes(12).toString("base64url");
   private serial = 0;
@@ -263,7 +267,7 @@ export class TranscriptService {
       if (session.harness === "grok") this.snapshotGrok(display);
       return display;
     });
-    const merged = transcriptMessages(session.harness === "grok" ? grokAuthoredHistory(history, runs) : history, runs);
+    const merged = transcriptMessages(session.harness === "grok" ? grokAuthoredHistory(history, runs) : history, runs, this.authoredSubmissions.forSession(session, runs));
     const structural = !old || old.identity !== identity(session) || old.history !== history && !history?.observation || old.messages.length > merged.length || old.messages.some((entry, index) => entry.message.id !== merged[index]?.id);
     const epoch = structural ? `${this.processId}:e${++this.serial}` : old.epoch;
     const messages = merged.map(message => this.materialize(message));
@@ -309,6 +313,26 @@ export class TranscriptService {
     const p = await this.project(session);
     const latestRun = p.items.findLast(item => item.kind === "run");
     return { ...this.summary(session, p), toolCallCount: p.toolCallCount, latestRun: latestRun?.kind === "run" ? latestRun.run : null };
+  }
+  /** Complete App-observed projection, not proof of a native prefix, external
+   * history coverage, or a completed turn. Streaming observations are allowed.
+   * Clone the materialized bytes, not live reducer-owned nested message parts. */
+  async captureAsideReference(session: Session): Promise<AsideTranscriptSnapshot> {
+    let p: Projection;
+    try { p = await this.project(session); }
+    catch (error) {
+      if (error instanceof TranscriptError || error && typeof error === "object" && "status" in error && typeof error.status === "number" && "code" in error && typeof error.code === "string") throw error;
+      throw new TranscriptError(409, "aside-transcript-unavailable", "The App transcript projection could not be captured; retry");
+    }
+    if (p.messages.length > ASIDE_LIMITS.messages) throw new TranscriptError(413, "aside-snapshot-too-large", "The complete App transcript exceeds the aside message limit; it was not truncated");
+    const messages: AsideTranscriptSnapshot["messages"] = p.messages.map(entry => ({ ...JSON.parse(entry.json), version: entry.envelope.version }));
+    const snapshot: AsideTranscriptSnapshot = {
+      kind: "app-transcript", epoch: p.epoch, revision: p.revision, messages,
+      totalMessages: messages.length, boundaryMessageId: messages.at(-1)?.id ?? null,
+      fingerprint: createHash("sha256").update(canonicalJSON(messages)).digest("hex"),
+    };
+    if (bytes(snapshot) > ASIDE_LIMITS.snapshotBytes) throw new TranscriptError(413, "aside-snapshot-too-large", "The complete App transcript exceeds the aside byte limit; it was not truncated");
+    return snapshot;
   }
   private limit(query: URLSearchParams, fallback: number) {
     const value = query.get("limit");

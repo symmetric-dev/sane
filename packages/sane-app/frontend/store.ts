@@ -2364,6 +2364,11 @@ export class ChatStore {
     if (capture) notificationStore.acknowledgeCaptured(capture);
     return true;
   };
+  /** Async navigation helpers must not activate after away/back or reauthentication. */
+  conversationNavigationFence = (): (() => boolean) => {
+    const auth = this.authEpoch, selection = this.selectionEpoch, config = this.state.config;
+    return () => auth === this.authEpoch && selection === this.selectionEpoch && config === this.state.config && this.state.phase === "ready";
+  };
   openWorkerConversation = async (id: string): Promise<void> => {
     const auth = this.authEpoch, selection = this.selectionEpoch;
     const current = () => auth === this.authEpoch && selection === this.selectionEpoch && this.state.phase === "ready";

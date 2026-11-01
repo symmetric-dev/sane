@@ -23,7 +23,7 @@ export type ContextMessageInheritance = Readonly<{
 export type ContextMessagePlacement =
   | Readonly<{ kind: "body-only"; inherited?: ContextMessageInheritance }>
   | Readonly<{ kind: "bootstrap"; workerMode?: "assigned" | "free"; inherited?: ContextMessageInheritance }>
-  | Readonly<{ kind: "selected"; purpose: "update" | "sharing" | "branch-update"; inherited?: ContextMessageInheritance }>;
+  | Readonly<{ kind: "selected"; purpose: "update" | "sharing" | "branch-update" | "compaction-restore"; inherited?: ContextMessageInheritance }>;
 
 /** Supply only from an independently loaded, verified pinned store. Pure
  * composition checks package integrity, but cannot attest to filesystem bytes. */
@@ -97,7 +97,11 @@ type SegmentContent = Omit<ContextMessageSegment, "range">;
 const HASH = /^[a-f0-9]{64}$/;
 const origins = new Set<ContextMessageOrigin>(["user", "queued-user", "worker-report", "worker-exchange", "worker-recovery", "handoff", "questionnaire-response", "activation", "context-update", "worker-launch", "branch"]);
 const categories = new Set(["role", "framework", "procedure", "resource", "procedure-index", "session", "worker-assignment", "branch", "protocol", "shared"]);
-function fail(message: string): never { throw new Error(`Invalid context message: ${message}`); }
+export class ContextMessageValidationError extends Error {
+  readonly name = "ContextMessageValidationError";
+  constructor(message: string) { super(`Invalid context message: ${message}`); }
+}
+function fail(message: string): never { throw new ContextMessageValidationError(message); }
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("expected an object");
   return value as Record<string, unknown>;
@@ -157,7 +161,7 @@ function placement(value: unknown): ContextMessagePlacement {
   keys(item, item.kind === "selected" ? ["kind", "purpose"] : ["kind"], ["inherited"]);
   const inherited = item.inherited === undefined ? {} : { inherited: inheritance(item.inherited) };
   if (item.kind === "body-only") return { kind: "body-only", ...inherited };
-  if (item.purpose !== "update" && item.purpose !== "sharing" && item.purpose !== "branch-update") fail("unknown selection purpose");
+  if (item.purpose !== "update" && item.purpose !== "sharing" && item.purpose !== "branch-update" && item.purpose !== "compaction-restore") fail("unknown selection purpose");
   return { kind: "selected", purpose: item.purpose, ...inherited };
 }
 function assetReference(value: unknown): ContextMessageAssetReference {
@@ -223,6 +227,8 @@ function encode(binding: ContextMessageBinding, origin: ContextMessageOrigin, se
     ? "SANE activation: these selected procedures and session details are composed on the user's behalf. The user directs the work and may change these conventions."
     : selectedPlacement.kind === "selected" && selectedPlacement.purpose === "sharing"
       ? "SANE shared context: use the selected material for this message. Sharing alone does not change your role, assignment, or session membership."
+      : selectedPlacement.kind === "selected" && selectedPlacement.purpose === "compaction-restore"
+        ? "SANE context restoration after compaction: restore these selected standing instructions verbatim on the user's behalf. This is the same conversation and role, not a new activation or assignment. Continue the existing task; do not repeat initial Pickup or treat this restoration as a new request. Preserve the user's subsequent decisions and explicit context updates recorded in the summary and retained conversation."
       : selectedPlacement.kind === "selected" && selectedPlacement.purpose === "branch-update"
         ? "SANE branch context update: the selected branch-specific details supersede corresponding earlier details. Preserve other inherited context unless explicitly changed."
         : "SANE context update: the selected changed details supersede corresponding earlier details. Other context remains unchanged unless explicitly stated.";

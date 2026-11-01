@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { CODE_SHARE_LIMITS, codeShareInputSnippets, codeShareSnippetRange, isInlineCodeShareSnippet, normalizeCodeShareText, parseCodeShareInput, resolveCodeShareLanguage, type CodeShareFileSnapshot, type CodeShareRecord, type CodeShareSnapshot, type NativeCodeShareRequest, type CodeShareReceipt } from "../shared/code-share-contract";
+import { CODE_SHARE_LIMITS, codeShareInputSnippets, codeShareSnippetRange, isInlineCodeShareSnippet, normalizeCodeShareText, parseCodeShareInput, parseCodeShareSnippet, resolveCodeShareLanguage, type CodeShareFileSnapshot, type CodeShareRecord, type CodeShareSnapshot, type NativeCodeShareRequest, type CodeShareReceipt } from "../shared/code-share-contract";
 import { exact } from "./app-store";
 import { canonicalJSON, canonicalPath } from "./prepared-input-codec";
 import { assertSourceDescriptor } from "./app-sources";
@@ -51,9 +51,14 @@ export class CodeShareService {
     this.pending.set(key, operation);
     try {
       const share = await operation;
-      if (share.version === 3) return { type: "sane.code-share", version: 3, shareId: share.id, snippets: share.snippets.map(({ input }) => codeShareSnippetRange(input)) };
-      if (share.version === 2) return { type: "sane.code-share", version: 2, shareId: share.id, snippets: share.snippets.map(({ input: { path, startLine, endLine } }) => ({ path, startLine, endLine })) };
-      return { type: "sane.code-share", version: 1, shareId: share.id, path: share.input.path, startLine: share.input.startLine, endLine: share.input.endLine };
+      if (share.version === 3) return { type: "sane.code-share", version: 3, shareId: share.id, snippets: share.snippets.map(({ input, code }) => codeShareSnippetRange(input, code)) };
+      const files = share.version === 2 ? share.snippets : [share];
+      const ranges = files.map(({ input, code }) => {
+        const { startLine, endLine } = codeShareSnippetRange(input, code);
+        return { path: input.path, startLine, endLine };
+      });
+      if (share.version === 2) return { type: "sane.code-share", version: 2, shareId: share.id, snippets: ranges };
+      return { type: "sane.code-share", version: 1, shareId: share.id, ...ranges[0] };
     } finally { if (this.pending.get(key) === operation) this.pending.delete(key); }
   }
   private async capture(request: NativeCodeShareRequest, key: string): Promise<CodeShareRecord> {
@@ -79,8 +84,11 @@ export class CodeShareService {
         authorization.assertCurrent();
         if (file.text === null || file.revision === null) throw new CodeShareError(400, "code-share-text", "Only UTF-8 text files up to 256 KiB can be shared");
         // Like CodeMirror, splitting normalized LF includes an empty EOF line.
-        const lines = file.text.split("\n"), { startLine, endLine } = input;
-        if (endLine > lines.length) throw new CodeShareError(400, "code-share-range", `The requested range exceeds the source document: ${input.path}`);
+        const lines = file.text.split("\n"), startLine = input.startLine ?? 1, endLine = input.endLine ?? lines.length;
+        if (startLine > lines.length || endLine > lines.length) throw new CodeShareError(400, "code-share-range", `The requested range exceeds the source document: ${input.path}`);
+        if (endLine - startLine + 1 > CODE_SHARE_LIMITS.lines) throw new CodeShareError(400, "code-share-range", `The selected file or range exceeds ${CODE_SHARE_LIMITS.lines} lines: ${input.path}. Specify a smaller startLine/endLine range.`);
+        try { parseCodeShareSnippet({ ...input, startLine, endLine }); }
+        catch { throw new CodeShareError(400, "code-share-range", `Invalid range or highlights outside the captured file range: ${input.path}`); }
         snippet = { input, sourceRevision: file.revision, language: resolveCodeShareLanguage(input.path, input.format), code: lines.slice(startLine - 1, endLine).join("\n") };
       }
       const bytes = Buffer.byteLength(snippet.code);

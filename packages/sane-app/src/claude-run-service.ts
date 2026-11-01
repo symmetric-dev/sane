@@ -21,6 +21,8 @@ import type { DispatchIdentity } from "../shared/conversation/dispatch-contract"
 import { claudeExecutionConfiguration } from "./canonical-agent-operations";
 import type { CanonicalExecutionProvider } from "./canonical-execution-store";
 import type { WorkerProtocolPin } from "./worker-contract";
+import type { CompactionContext, CompactionContextProvider } from "./compaction-context";
+import { claudeCompactionRestorationNeeded } from "./claude-compaction-context";
 import { execFile } from "node:child_process";
 
 export const hookEvents = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged"] as const;
@@ -58,6 +60,7 @@ export type ClaudeRunDependencies = {
   refreshCompactHistory: (owner: RunOwner) => Promise<void>;
   assertWorkerDeliverySubmission: (owner: RunOwner) => void;
   canonicalExecution?: CanonicalExecutionProvider;
+  compactionContext?: CompactionContextProvider;
   /** Recorded worker pin only. Absent must not upgrade an unpinned resume. */
   explicitProtocol?: (sessionId: string) => WorkerProtocolPin | undefined;
   browserMcp?: (sessionId: string, runId: string) => Promise<{ mcpConfigPath: string; allowedTools: string[] } | null>;
@@ -85,9 +88,10 @@ export type ClaudeRunRuntime = {
   writeSettings: (path: string, content: string) => Promise<void>;
   agentSettings: typeof claudeAgentSettings;
   version?: (executable: string) => Promise<string>;
+  compactionRestorationNeeded: typeof claudeCompactionRestorationNeeded;
 };
 
-export type ClaudeHookInput = { runId?: unknown; payload?: unknown };
+export type ClaudeHookInput = { runId?: unknown; payload?: unknown; restorationFailure?: unknown };
 export type ClaudeHookReply = { status: 200; body: { ok: true } } | { status: 400 | 403; body: { error: string } };
 export type ClaudeQueuedFollowup = { requestId: string; afterRunId: string; sessionId: string; prompt: string; configuration?: QueuedSendConfiguration };
 export type ClaudeTerminalCause = "result-success" | "service-closing" | "stop-requested" | "storage-failure" | "nonzero-exit" | "signal-exit" | "framework-rejected" | "result-failure" | "missing-result" | "termination-unconfirmed" | "launch-stream-shutdown-failure";
@@ -116,9 +120,12 @@ type Supervision = {
   nativeAttempted: boolean; exitObserved: boolean; exitCode: number | null; exitSignal: string | number | null;
   termination: ClaudeLocalSupervision["termination"]; terminationPromise?: Promise<boolean>;
   streamsDrained: boolean; finished: boolean; valid: boolean; terminal: ClaudeLocalSupervision["terminal"];
+  restoration?: ClaudeCompactionRestoration;
 };
 type QueuedFollowup = { owner: RunOwner; input: ClaudeQueuedFollowup; cancelled?: boolean; persisted: Promise<void>; draining?: Promise<void> };
-type Result = ClaudeResultSequenceState & { stderr: string };
+type ClaudeCompactionRestoration = { context: CompactionContext; expected: readonly boolean[]; delivered: number[];
+  boundaries: Set<string>; hookCompactions: number };
+type Result = ClaudeResultSequenceState & { stderr: string; restoration?: ClaudeCompactionRestoration };
 type LiveInput = { closed: boolean; sending: boolean; turnComplete: boolean; pendingUuids: Set<string>; result: Result;
   contextMessages: OwnedContextMessages; contextIdentity: DispatchIdentity };
 const resultTextLimit = CLAUDE_RESULT_TEXT_LIMIT;
@@ -162,6 +169,7 @@ export class ClaudeRunService {
       env: process.env,
       writeSettings: (path, content) => writeFile(path, content, { mode: 0o600 }),
       agentSettings: claudeAgentSettings,
+      compactionRestorationNeeded: claudeCompactionRestorationNeeded,
       version: executable => new Promise((resolve, reject) => execFile(executable, ["--version"], { timeout: 10000, maxBuffer: 4096 }, (error, stdout) => error ? reject(error) : resolve(stdout.trim()))),
       ...runtime,
     };
@@ -514,10 +522,24 @@ export class ClaudeRunService {
     if (!session || session.harness !== "claude-code" && session.harness !== undefined || !this.sameOriginalSource(expected.supervised, session)
       || run.cwd !== expected.supervised.identity.cwd || !payload || typeof payload !== "object" || (payload as Record<string, unknown>).hook_event_name !== event
       || (payload as Record<string, unknown>).session_id !== expected.supervised.identity.nativeSessionId) return { status: 400, body: { error: "Hook association mismatch" } };
+    if (input.restorationFailure !== undefined) {
+      if (event !== "SessionStart" || !isClaudeRootRecord(payload) || !expected.supervised.restoration
+        || typeof input.restorationFailure !== "string" || !input.restorationFailure.trim() || input.restorationFailure.length > 2000)
+        return { status: 400, body: { error: "Invalid compaction restoration failure" } };
+      await this.deps.emit(run, "context", { type: "compaction-context", stage: "failed", reason: input.restorationFailure,
+        binding: expected.supervised.restoration.context.message.binding });
+      // SessionStart itself has no blocking decision. The reporting hook waits
+      // on this response, so terminate the ORIGINAL owned process group before
+      // it can return a nonblocking hook failure and let native work resume.
+      await this.terminate(expected.supervised.owner);
+      return { status: 400, body: { error: "SANE compaction restoration failed; owned execution stopped" } };
+    }
     // Publish root hook state in receipt order before starting journal I/O.
     // Stop becomes queueable only after its own durable write finishes; a later
     // activity hook invalidates that publication even while Stop is persisting.
     const root = isClaudeRootRecord(payload);
+    if (root && event === "SessionStart" && (payload as Record<string, unknown>).source === "compact" && expected.supervised.restoration)
+      expected.supervised.restoration.hookCompactions++;
     if (root && (event === "UserPromptSubmit" || event === "PreToolUse")) this.stoppedTurns.delete(run.runId);
     const stop = root && event === "Stop" ? Symbol() : undefined;
     if (root && (stop || event === "UserPromptSubmit" || event === "PreToolUse")) this.turnHooks.set(run.runId, stop);
@@ -541,6 +563,24 @@ export class ClaudeRunService {
           this.stoppedTurns.delete(run.runId); this.turnHooks.set(run.runId, undefined);
         }
         const observation = consumeClaudeResultRecord(result, data, nativeSessionId);
+        const restoration = result.restoration;
+        if (restoration && isClaudeRootRecord(data) && data?.session_id === nativeSessionId && data.type === "system") {
+          if (data.subtype === "compact_boundary") restoration.boundaries.add(data.uuid ?? `${run.runId}:compact:${restoration.boundaries.size + 1}`);
+          if (data.subtype === "hook_response" && data.hook_event === "SessionStart") {
+            let restored: unknown;
+            try { restored = JSON.parse(data.stdout)?.hookSpecificOutput?.additionalContext; } catch { /* Empty or unrelated hook output. */ }
+            const index = restoration.context.parts.findIndex(part => part === restored);
+            if (data.outcome === "success" && index >= 0) {
+              restoration.delivered[index] = restoration.delivered[index]! + 1;
+              await this.deps.emit(run, "context", { type: "compaction-context", stage: "native-hook-delivered",
+                binding: restoration.context.message.binding, transportSha256: restoration.context.message.transport.sha256,
+                part: index, parts: restoration.context.parts.length, channel: "SessionStart user-context attachment" });
+            } else if (data.outcome !== "success" && String(data.stderr ?? "").includes("SANE_CONTEXT_RESTORE")) {
+              result.error = true; result.diagnostic = "SANE compaction context restoration hook failed";
+              void this.terminate(owner);
+            }
+          }
+        }
         // Retain historical framework decoding without requiring new delivery.
         if (observation.frameworkRejected || result.integrityRejected) void this.terminate(owner);
       }
@@ -661,10 +701,11 @@ export class ClaudeRunService {
           throw new HarnessDispatchError("dispatch-source-mismatch", "Original Claude execution checkout changed during preparation");
         }
       };
+      let assertRestorationCurrent = () => {};
       const setupLaunch = async (_payload: string, steps: RunSubmissionPreparationSteps): Promise<ClaudeLaunchSetup> => {
         await checkExecution(steps);
         const secret = runtime.randomUUID() + runtime.randomUUID(); this.secrets.set(runId, { secret, supervised });
-        const hooks: Record<string, { hooks: { type: "command"; command: string; timeout: number }[] }[]> = Object.fromEntries(hookEvents.map(event => [event, [{ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/forward.ts"))} ${quote(event)}`, timeout: 3 }] }]]));
+        const hooks: Record<string, { matcher?: string; hooks: { type: "command"; command: string; timeout: number }[] }[]> = Object.fromEntries(hookEvents.map(event => [event, [{ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/forward.ts"))} ${quote(event)}`, timeout: 3 }] }]]));
         const executionPolicy = await steps.step("execution.configure", async () => await deps.canonicalExecution?.(sessionId) ?? null);
         if (executionPolicy && (!identity || executionPolicy.policy.spec.name !== `sane/${identity.kind}/${identity.role}`)) throw new Error("Canonical execution role differs from the run");
         const privateExecution = executionPolicy ? claudeExecutionConfiguration({ policy: executionPolicy.policy, children: executionPolicy.children, protocol: deps.explicitProtocol?.(sessionId) }) : undefined;
@@ -675,6 +716,25 @@ export class ClaudeRunService {
           if (!version || Number(version[1]) < 2 || Number(version[1]) === 2 && (Number(version[2]) < 1 || Number(version[2]) === 1 && Number(version[3]) < 281)) throw new AgentLaunchConfigurationError("Canonical execution requires Claude Code 2.1.281 or newer");
         }
         if (identity && !privateExecution) throw new AgentLaunchConfigurationError("SANE Claude roles require canonical execution configuration");
+        let restorePath: string | undefined;
+        if (identity) {
+          if (!deps.compactionContext) throw new AgentLaunchConfigurationError("SANE Claude compaction context provider is unavailable");
+          const prepared = await steps.step("execution.configure", () => deps.compactionContext!(sessionId, assertPreparationCurrent));
+          const context = prepared?.context;
+          if (!context || context.message.binding.nativeSessionId !== nativeSessionId || context.message.binding.cwd !== cwd)
+            throw new AgentLaunchConfigurationError("SANE Claude compaction context differs from its native launch");
+          assertRestorationCurrent = prepared!.assertCurrent;
+          assertRestorationCurrent();
+          const expected = resume ? await steps.step("native.inspect", async () => runtime.compactionRestorationNeeded(context,
+            join(this.options.claudeRoot, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${nativeSessionId}.jsonl`))) : context.parts.map(() => false);
+          result.restoration = supervised.restoration = { context, expected, delivered: context.parts.map(() => 0), boundaries: new Set(), hookCompactions: 0 };
+          restorePath = join(this.options.dataDir, `${runId}.compaction-context.json`);
+          await steps.step("transport.setup", () => deps.enqueue(() => runtime.writeSettings(restorePath!, JSON.stringify(context))));
+          context.parts.forEach((_part, index) => hooks.SessionStart!.push({ matcher: "compact|resume", hooks: [{ type: "command",
+            command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/compaction-context.ts"))} ${quote(restorePath!)} ${index}`, timeout: 10 }] }));
+          await steps.step("execution.configure", () => deps.emit(run, "context", { type: "compaction-context", stage: "configured",
+            channel: "SessionStart user-context attachment", context, path: restorePath }));
+        }
         // Base sessions grant parent messaging without inheriting bridge context.
         const ccAgent = privateExecution?.agent, permissions = privateExecution?.permissions ?? { allow: ["mcp__sane__sane_worker_message"] };
         const session = assertSource();
@@ -693,6 +753,7 @@ export class ClaudeRunService {
         await steps.step("transport.setup", () => deps.enqueue(() => runtime.writeSettings(settingsPath, settings)));
         const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", nativeSessionId!, "--settings", settingsPath];
         if (operation !== "compact") args.push("--input-format", "stream-json");
+        if (restorePath) args.push("--include-hook-events");
         if (browserMcp) args.push("--mcp-config", browserMcp.mcpConfigPath);
         if (privateExecution) args.push(...privateExecution.args);
         // Never revive an old system-context snapshot on a canonical SANE resume.
@@ -708,9 +769,12 @@ export class ClaudeRunService {
           agent: agent ?? null, saneContextVersion: saneContextVersion ?? null, args: [...args], claudeVersion,
           ...(executionPolicy ? { executionPolicy: { revision: executionPolicy.revision, agent: ccAgent, nativeRoleRegistration: false, policyTranslation: privateExecution!.policyTranslation } } : {}),
           agentFile: null, settings: { path: settingsPath, sha256: sha256(settings) },
+          ...(restorePath ? { compactionContext: { path: restorePath, transportSha256: result.restoration!.context.message.transport.sha256,
+            channel: "SessionStart user-context attachment" } } : {}),
         } };
       };
       const beforeLaunch = () => {
+        assertRestorationCurrent();
         deps.assertWorkerDeliverySubmission(owner);
         assertDispatchCurrent();
         synchronousDispatchHook(() => owner.beforeSend?.());
@@ -784,6 +848,13 @@ export class ClaudeRunService {
       activity.finishing();
       if (this.groupAlive(owner) && !(await this.terminate(owner))) throw new Error("Process group termination unconfirmed");
       assertSource();
+      if (result.restoration) {
+        const state = result.restoration, compactions = Math.max(state.boundaries.size, state.hookCompactions);
+        if (state.context.parts.some((_part, index) => state.delivered[index]! < compactions + (state.expected[index] ? 1 : 0))) {
+          result.error = true;
+          result.diagnostic = "SANE compaction context restoration was not fully acknowledged by the native hooks";
+        }
+      }
       const closing = deps.closing(), stopRequested = owner.stopRequested, storageFailed = deps.storageFailed();
       const exitSignal = supervised.exitSignal, exitedNormally = exit === 0 && exitSignal === null;
       const status = closing || stopRequested ? "interrupted" : !storageFailed && exitedNormally && result.seen && !result.error ? "completed" : "failed";

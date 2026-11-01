@@ -11,6 +11,7 @@ import { RequestChoices, RequestInput, RequestTextarea } from "./composer-reques
 import { ChatButton, ChatCard, ChatCardBody, ChatCardHeader, ChatDialog, ChatDialogBody, ChatDialogFooter, ChatDisclosure, ChatIconButton, ChatNotice, ChatOverflowMenu, type ChatButtonProps, type ChatButtonVariant, type ChatMenuItem } from "./chat-ui";
 import { questionsNeedAttention, questionsStatus } from "./user-questions-presentation";
 import "./user-questions.css";
+import type { ExplainQuestion } from "./aside-panel";
 
 export { questionsForMessage } from "./user-questions-presentation";
 
@@ -83,13 +84,13 @@ function AnswerInput({ value, change, ...props }: Omit<InputHTMLAttributes<HTMLI
 
 function AnswerEditor({ question, answer, change, disabled, name }: { question: UserQuestion; answer: UserQuestionAnswer; change: (answer: UserQuestionAnswer) => void; disabled: boolean; name: string }) {
   const options = question.options ?? [];
-  if (!options.length) return <div className="request-field">
+  if (!options.length) return <div className="request-field user-questions-answers">
     <label className="sr-only" htmlFor={name}>Your answer</label>
     <span id={`${name}-state`} className="sr-only">{answer === null ? "Unanswered" : answer === "" ? "Empty answer" : "Answer entered"}</span>
     <AnswerTextarea id={name} aria-describedby={`${name}-state`} rows={3} maxLength={USER_QUESTIONS_LIMITS.answerText * 2} value={typeof answer === "string" ? answer : ""} placeholder="Write an answer…" disabled={disabled} change={change} />
   </div>;
   const selection: { selected: string[]; other?: string } = answer !== null && typeof answer === "object" ? answer : { selected: [] };
-  return <div className="request-field">
+  return <div className="request-field user-questions-answers">
     <RequestChoices label={question.question} multiple={question.multiple} disabled={disabled}
       options={options.map((label, index) => ({ value: `option-${index}`, label }))}
       values={options.flatMap((option, index) => selection.selected.includes(option) ? [`option-${index}`] : [])}
@@ -196,15 +197,14 @@ function QuestionsEditor({ questions, draft, page }: { questions: UserQuestionsC
 }
 
 /** Terminal records stay compact; recovery never hides behind the answers modal. */
-export function UserQuestionsCard({ questions, draft, readOnlyReason, tool, active = true }: {
-  questions: UserQuestionsController; draft: UserQuestionsDraft; readOnlyReason?: string; tool?: ToolPart; active?: boolean;
+export function UserQuestionsCard({ questions, draft, readOnlyReason, tool, active = true, onExplain, explainDisabled = false }: {
+  questions: UserQuestionsController; draft: UserQuestionsDraft; readOnlyReason?: string; tool?: ToolPart; active?: boolean; onExplain?: ExplainQuestion; explainDisabled?: boolean;
 }) {
   const { form } = draft;
   const presented = form.status === "presented";
   const expanded = presented && questions.selected?.form.id === form.id && questions.expanded;
   const blocked = !questions.editable || !!draft.operation || draft.conflict;
-  const [page, setPage] = useState(0);
-  const pageIndex = Math.min(page, form.input.pages.length - 1);
+  const pageIndex = questions.page(form.id);
   const final = pageIndex === form.input.pages.length - 1;
   const submitting = draft.operation?.kind === "submit" && !draft.operation.uncertain;
   const [view, setView] = useState<"answers" | "details" | "tool" | "dismiss" | null>(null);
@@ -237,13 +237,14 @@ export function UserQuestionsCard({ questions, draft, readOnlyReason, tool, acti
   const Glyph = form.status === "submitted" ? FiCheck : FiX;
   const needsFeedback = !!draft.error || draft.conflict || !!draft.operation?.uncertain
     || !presented && (draft.dirty || !!draft.operation?.answers) || presented && expanded && !questions.editable;
-  return <><ChatCard id={`user-questions-${form.id}`} tabIndex={-1} density="compact" className={`user-questions-card${hasReferences ? " has-references" : ""}`} aria-label={`Questionnaire: ${form.input.title}`} data-expanded={expanded} data-send-kind="questions" data-send-id={form.id}>
+  return <><ChatCard id={`user-questions-${form.id}`} tabIndex={-1} density="compact" className={`user-questions-card${hasReferences ? " has-references" : ""}`} aria-label={`Questionnaire: ${form.input.title}`} data-expanded={expanded} data-send-kind="questions" data-send-id={form.id} data-question-scope={questions.scopeKey} data-question-active={active}>
     <ChatCardHeader className="user-questions-header" icon={presented ? undefined : <Glyph size={28} />} title={<span title={form.input.title}>{form.input.title}</span>} description={<span id={`question-${form.id}-progress`} title={subtitle} role="status">{subtitle}</span>}
       actions={<>
         {presented && <ChatIconButton className="user-questions-collapse" aria-label={expanded ? "Collapse questionnaire" : "Expand questionnaire"} aria-expanded={expanded} aria-controls={`user-questions-${form.id}-editor`} onClick={() => expanded ? questions.toggle() : questions.open(form.id)}><FiHelpCircle /></ChatIconButton>}
         {expanded && <>
-          <ChatIconButton aria-label="Previous question" disabled={pageIndex === 0} onClick={() => setPage(pageIndex - 1)}><FiArrowLeft /></ChatIconButton>
-          <ChatIconButton aria-label="Next question" disabled={final} onClick={() => setPage(pageIndex + 1)}><FiArrowRight /></ChatIconButton>
+          {onExplain && <ChatButton variant="ghost" data-question-focus="explain" disabled={!active || explainDisabled} onClick={event => onExplain({ kind: "question", formId: form.id, questionIndex: pageIndex }, `Can you explain Question ${pageIndex + 1}`, event.currentTarget)}>Explain</ChatButton>}
+          <ChatIconButton aria-label="Previous question" disabled={pageIndex === 0} onClick={() => questions.setPage(form.id, pageIndex - 1)}><FiArrowLeft /></ChatIconButton>
+          <ChatIconButton aria-label="Next question" disabled={final} onClick={() => questions.setPage(form.id, pageIndex + 1)}><FiArrowRight /></ChatIconButton>
         </>}
         <ChatButton ref={primary} className={expanded ? "user-questions-submit" : undefined} variant={expanded ? "primary" : "ghost"} disabled={expanded && (!final || blocked)} busy={expanded && submitting} title={expanded && !final ? "Review the remaining questions before submitting" : undefined} aria-label={expanded ? submitting ? "Submitting answers" : "Submit answers" : undefined} aria-expanded={presented && !expanded ? false : undefined} aria-controls={presented && !expanded ? `user-questions-${form.id}-editor` : undefined} aria-haspopup={presented ? undefined : "dialog"} onClick={event => expanded ? void questions.mutate(form.id, "submit") : presented ? questions.open(form.id) : show("answers", event.currentTarget)}>{expanded ? "Submit" : presented ? questions.editable ? "Answer" : "View questions" : form.status === "submitted" ? "View answers" : "View questions"}</ChatButton>
         <ChatOverflowMenu label="Questionnaire actions" attention={draft.conflict || !!draft.error || !!draft.operation?.uncertain || !!tool?.error || form.delivery?.state === "paused"} items={items} />

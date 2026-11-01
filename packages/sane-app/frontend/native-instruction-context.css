@@ -1,0 +1,3 @@
+.native-instruction-context { margin-block: var(--chat-ui-space-2); }
+.native-instruction-context .chat-disclosure__trigger { color: var(--chat-ui-muted); font-weight: 400; }
+.native-instruction-context pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.8 var(--font-mono, monospace); }

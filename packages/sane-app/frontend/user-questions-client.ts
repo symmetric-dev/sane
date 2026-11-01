@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { isUserQuestionsRecord, parseUserQuestionAnswers, type UserQuestionAnswer, type UserQuestionsRecord } from "../shared/user-questions-contract";
 import { ApiError, request } from "./cc-client";
 import { pollWhileVisible } from "./visibility";
@@ -36,7 +36,8 @@ const actionable = (draft: UserQuestionsDraft) => needsRecovery(draft) || draft.
 const settledState = (draft: UserQuestionsDraft) => needsRecovery(draft) ? null
   : draft.form.status === "dismissed" ? "dismissed"
   : settledSubmission(draft) ? "submitted" : null;
-type Projection = { forms: readonly UserQuestionsDraft[]; loading: boolean; error: string };
+type QuestionsView = { scopeKey: string; id: string; expanded: boolean; settled: ReturnType<typeof settledState>; reveal?: object };
+type Projection = { forms: readonly UserQuestionsDraft[]; loading: boolean; error: string; view?: QuestionsView | null; pages?: Readonly<Record<string, number>> };
 export type UserQuestionsScope = { storeId: string; sessionId: string; harness: Harness; nativeSessionId: string; authorityId: string };
 export const userQuestionsScopeKey = (scope: UserQuestionsScope) => JSON.stringify([scope.storeId, scope.sessionId, scope.harness, scope.nativeSessionId, scope.authorityId]);
 const matchesScope = (form: UserQuestionsRecord, scope: UserQuestionsScope) => form.sessionId === scope.sessionId
@@ -89,6 +90,18 @@ class QuestionsSession {
   constructor(readonly scope: UserQuestionsScope) { this.state = { forms: restoreDrafts(scope), loading: true, error: "" }; }
   snapshot = () => this.state;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  // Presentation belongs to the same full store/native owner as the drafts, but
+  // is not durable answer data and must not schedule a save or mutate answers.
+  setView = (view: QuestionsView | null) => {
+    this.state = { ...this.state, view };
+    this.listeners.forEach(listener => listener());
+  };
+  setPage = (id: string, page: number) => {
+    const draft = this.find(id);
+    if (!draft || !Number.isInteger(page)) return;
+    this.state = { ...this.state, pages: { ...this.state.pages, [id]: Math.max(0, Math.min(page, draft.form.input.pages.length - 1)) } };
+    this.listeners.forEach(listener => listener());
+  };
   private publish(state: Projection) {
     this.state = state;
     // Keep unsaved edits and exact pending operations across a same-tab refresh.
@@ -276,7 +289,11 @@ export function useUserQuestions(scope: UserQuestionsScope | null, { enabled, ed
     };
   }
   const state = useSyncExternalStore(session?.subscribe ?? noSubscribe, session?.snapshot ?? emptySnapshot, session?.snapshot ?? emptySnapshot);
-  const [view, setView] = useState<{ scopeKey: string; id: string; expanded: boolean; settled: ReturnType<typeof settledState>; reveal?: object } | null>(null);
+  const view = state.view;
+  // Selection survives a visit; an explicit Go to questions request does not.
+  // Replaying an old reveal on Back would override the captured reading anchor.
+  const visit = useRef<{ scopeKey: string; reveal?: object }>({ scopeKey });
+  if (visit.current.scopeKey !== scopeKey) visit.current = { scopeKey };
   useEffect(() => {
     access.current.mounted = true;
     return () => { access.current.mounted = false; };
@@ -315,29 +332,35 @@ export function useUserQuestions(scope: UserQuestionsScope | null, { enabled, ed
   // submitted panel. Explicitly reopened history survives delivery proof changes.
   const activeView = viewed && view?.settled === settledState(viewed) ? view : null;
   useEffect(() => {
-    if (view?.scopeKey === scopeKey && !activeView) setView(current => current === view ? null : current);
-  }, [view, scopeKey, activeView]);
+    if (view?.scopeKey === scopeKey && !activeView && session?.snapshot().view === view) session.setView(null);
+  }, [view, scopeKey, activeView, session]);
   const selected = activeView ? viewed : preferred;
   const defaultExpanded = !!selected && actionable(selected);
   const expanded = activeView ? activeView.expanded : defaultExpanded;
   const canClose = !!activeView && !!selected && settledState(selected) !== null;
   return {
-    ...state, scopeKey, selected, expanded, canClose, revealRequest: activeView?.reveal,
+    ...state, scopeKey, selected, expanded, canClose, revealRequest: activeView?.reveal === visit.current.reveal ? activeView?.reveal : undefined,
     editable: !!session && enabled && editable && !state.loading && !state.error,
+    page: (id: string) => Math.max(0, Math.min(state.pages?.[id] ?? 0, (state.forms.find(draft => draft.form.id === id)?.form.input.pages.length ?? 1) - 1)),
+    setPage: (id: string, page: number) => session?.setPage(id, page),
     open: (id: string) => {
       const draft = session?.snapshot().forms.find(item => item.form.id === id);
-      if (draft) setView({ scopeKey, id, expanded: true, settled: settledState(draft), reveal: {} });
+      if (draft) {
+        const reveal = {};
+        visit.current.reveal = reveal;
+        session?.setView({ scopeKey, id, expanded: true, settled: settledState(draft), reveal });
+      }
     },
     toggle: () => {
       const draft = session?.snapshot().forms.find(item => item.form.id === selected?.form.id);
-      if (draft) setView({ scopeKey, id: draft.form.id, expanded: !expanded, settled: settledState(draft) });
+      if (draft) session?.setView({ scopeKey, id: draft.form.id, expanded: !expanded, settled: settledState(draft) });
     },
     close: () => {
       const draft = session?.snapshot().forms.find(item => item.form.id === activeView?.id);
       // Closing settled submitted history is view-only, even before delivery.
       // Never conceal paused/missing delivery or local recovery that
       // appeared after the close button was rendered.
-      if (canClose && draft && settledState(draft) !== null) setView(current => current === activeView ? null : current);
+      if (canClose && draft && settledState(draft) !== null && session?.snapshot().view === activeView) session.setView(null);
     },
     edit: (id: string, index: number, answer: UserQuestionAnswer) => session?.edit(id, index, answer),
     mutate: (id: string, kind: Operation["kind"]) => session?.mutate(id, kind),

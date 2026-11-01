@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { FiArrowDown } from "react-icons/fi";
 import { useSendNavigation, type SendNavigationState } from "./send-navigation";
+import { cancelChatReturn, completeChatReturn, pendingChatReturn, restoreQuestionPresentation, subscribeChatReturn } from "./chat-return-state";
 import "./chat-transcript-region.css";
 
 /** Gesture intent wins over concurrent content growth, independent of layout. */
@@ -19,7 +20,7 @@ export class FollowLatest {
   }
 }
 
-export function ChatScroll({ children, footer, beforeViewport, resetKey, replacement, active = true, transcriptTarget, transcriptVisible = true, sendNavigation, history }: { children: ReactNode; footer: ReactNode; beforeViewport?: ReactNode; resetKey?: string; replacement?: ReactNode; active?: boolean; transcriptTarget?: HTMLElement | null; transcriptVisible?: boolean; sendNavigation?: Omit<SendNavigationState, "active">; history?: { key: string; canLoad: boolean; load: () => void } }) {
+export function ChatScroll({ children, footer, beforeViewport, resetKey, presentationKey = "", replacement, active = true, transcriptTarget, transcriptVisible = true, sendNavigation, history }: { children: ReactNode; footer: ReactNode; beforeViewport?: ReactNode; resetKey?: string; presentationKey?: string; replacement?: ReactNode; active?: boolean; transcriptTarget?: HTMLElement | null; transcriptVisible?: boolean; sendNavigation?: Omit<SendNavigationState, "active">; history?: { key: string; canLoad: boolean; load: () => void } }) {
   // Never change the React portal target: only its physical placement changes.
   // This retains message/input DOM, runtime contexts, and viewport subscriptions.
   const [transcriptHost] = useState(() => document.createElement("div"));
@@ -34,6 +35,7 @@ export function ChatScroll({ children, footer, beforeViewport, resetKey, replace
   const policy = useRef(new FollowLatest());
   const historyRef = useRef(history); historyRef.current = history;
   const navigationRef = useRef(sendNavigation); navigationRef.current = sendNavigation;
+  const presentationRef = useRef({ key: presentationKey, sessionId: resetKey }); presentationRef.current = { key: presentationKey, sessionId: resetKey };
   const anchor = useRef<{ id: string; offset: number } | null>(null);
   const programmedTop = useRef<number | null>(null);
   const upwardIntent = useRef(false), pointerIntent = useRef(false), touchY = useRef<number | null>(null);
@@ -58,6 +60,7 @@ export function ChatScroll({ children, footer, beforeViewport, resetKey, replace
   targeting.current = target.targeting;
   useLayoutEffect(() => { if (targetedPause.current && !target.targeting) captureAnchor(); }, [target.targeting]);
   const placeLatest = () => {
+    if (pendingChatReturn(presentationRef.current.key)) return;
     const element = viewport.current;
     // resetKey can change before assistant-ui publishes the new transcript.
     // Keep bottom intent, but don't position against the previous session's DOM.
@@ -65,13 +68,36 @@ export function ChatScroll({ children, footer, beforeViewport, resetKey, replace
     if (element) { element.scrollTop = element.scrollHeight; programmedTop.current = element.scrollTop; transcriptTop.current = element.scrollTop; policy.current.position(element.scrollTop); }
   };
   const latest = () => {
-    target.cancel(); targetedPause.current = false;
+    cancelChatReturn(); target.cancel(); targetedPause.current = false;
     anchor.current = null; upwardIntent.current = false; gesture.current = { direction: 0, until: 0 };
     policy.current.follow(); setFollowing(true); placeLatest();
   };
   const restore = () => {
     const root = viewport.current;
     if (!root || !root.clientHeight || !activity.current || replaced.current || targetedPause.current && targeting.current) return;
+    const request = pendingChatReturn(presentationRef.current.key);
+    if (request) {
+      // A reset and assistant-ui publication are independent. Suppress bottom
+      // placement until the exact parent runtime and questionnaire page are ready.
+      policy.current.pause(); setFollowing(false);
+      const ready = root.querySelector<HTMLElement>("[data-send-transcript-ready]")?.dataset.sendTranscriptReady;
+      if (ready !== presentationRef.current.sessionId || navigationRef.current?.loading) return;
+      const questions = restoreQuestionPresentation(root, request.presentation);
+      if (!questions && performance.now() - request.started < 1200) { scheduleRestore(); return; }
+      const saved = request.presentation.anchor;
+      const message = saved && [...root.querySelectorAll<HTMLElement>("[data-transcript-message]")].find(element => element.dataset.transcriptMessage === saved.id);
+      // The parent's cached island may no longer contain the anchor. Fall back
+      // once rather than loading history forever or creating another fetcher.
+      root.scrollTop = message && saved ? root.scrollTop + message.getBoundingClientRect().top - root.getBoundingClientRect().top - saved.offset : request.presentation.top;
+      programmedTop.current = root.scrollTop; transcriptTop.current = root.scrollTop;
+      policy.current.position(root.scrollTop);
+      targetedPause.current = true; targeting.current = false;
+      anchor.current = message ? saved : null;
+      if (!message) captureAnchor();
+      completeChatReturn(request);
+      questions?.focus?.focus({ preventScroll: true });
+      return;
+    }
     if (policy.current.following) { placeLatest(); return; }
     const saved = anchor.current;
     if (!saved) { captureAnchor(); return; }
@@ -85,6 +111,7 @@ export function ChatScroll({ children, footer, beforeViewport, resetKey, replace
     cancelAnimationFrame(restoreFrame.current);
     restoreFrame.current = requestAnimationFrame(restore);
   };
+  useLayoutEffect(() => subscribeChatReturn(scheduleRestore), []);
   useLayoutEffect(() => {
     const root = viewport.current!;
     const jump = (event: Event) => {
@@ -119,7 +146,7 @@ export function ChatScroll({ children, footer, beforeViewport, resetKey, replace
     // markdown/code layout. A visible message ID, not scrollHeight, is the anchor.
     const observer = new ResizeObserver(schedule);
     observer.observe(content.current!); observer.observe(viewport.current!);
-    const mutations = new MutationObserver(schedule); mutations.observe(content.current!, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["data-send-transcript-ready", "hidden"] });
+    const mutations = new MutationObserver(schedule); mutations.observe(content.current!, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["data-send-transcript-ready", "data-question-page", "data-question-active", "data-expanded", "hidden"] });
     const release = () => { pointerIntent.current = false; selectionStart.current = null; };
     const document = viewport.current!.ownerDocument;
     document.addEventListener("pointerup", release); document.addEventListener("pointercancel", release);
@@ -130,12 +157,17 @@ export function ChatScroll({ children, footer, beforeViewport, resetKey, replace
   useLayoutEffect(() => {
     pointerIntent.current = false; selectionStart.current = null; touchY.current = null;
     gesture.current = { direction: 0, until: 0 };
+    if (pendingChatReturn(presentationRef.current.key)) {
+      target.cancel(); targetedPause.current = true; targeting.current = false;
+      anchor.current = null; upwardIntent.current = false;
+      policy.current.pause(); setFollowing(false); restore(); scheduleRestore(); return;
+    }
     if (target.targeting) { targetPause(); return; }
     anchor.current = null; upwardIntent.current = false; programmedTop.current = null;
     targetedPause.current = false;
     policy.current = new FollowLatest(); setFollowing(true);
     placeLatest(); scheduleRestore();
-  }, [resetKey]);
+  }, [resetKey, presentationKey]);
   useLayoutEffect(() => {
     if (!replacement && wasReplaced.current && viewport.current) { viewport.current.scrollTop = transcriptTop.current; programmedTop.current = viewport.current.scrollTop; policy.current.position(viewport.current.scrollTop); restore(); }
     wasReplaced.current = !!replacement;
@@ -167,7 +199,7 @@ export function ChatScroll({ children, footer, beforeViewport, resetKey, replace
     }
   }, [transcriptHost, transcriptTarget, transcriptVisible, transcriptActive, !!replacement]);
   useLayoutEffect(() => () => { transcriptHost.remove(); }, [transcriptHost]);
-  const interrupt = () => { target.cancel(); targetedPause.current = false; };
+  const interrupt = () => { cancelChatReturn(); target.cancel(); targetedPause.current = false; };
   const readGesture = (direction: number) => {
     interrupt(); programmedTop.current = null;
     gesture.current = { direction, until: performance.now() + 350 };
@@ -178,7 +210,7 @@ export function ChatScroll({ children, footer, beforeViewport, resetKey, replace
     upwardIntent.current = false; captureAnchor(); historyRef.current.load();
   };
   const transcriptControls = <>{target.notice && <p className="notice send-navigation-notice" role="status">{target.notice}</p>}{!replacement && !following && <button type="button" className="scroll-bottom" aria-label="Scroll to latest message" onClick={latest}><FiArrowDown size={15} aria-hidden="true" /></button>}</>;
-  return <><div ref={inlineTranscript} className="chat-transcript-placeholder" />{createPortal(<>{beforeViewport}<div ref={viewport} className="viewport" hidden={!!replacement} inert={!!replacement} style={{ overflowAnchor: "none", ...(replacement ? { display: "none" } : {}) }} onWheel={event => { if (event.deltaY) readGesture(Math.sign(event.deltaY)); }} onTouchStart={event => { interrupt(); touchY.current = event.touches[0]?.clientY ?? null; }}
+  return <><div ref={inlineTranscript} className="chat-transcript-placeholder" />{createPortal(<>{beforeViewport}<div ref={viewport} className="viewport" data-chat-presentation-key={presentationKey || undefined} data-chat-presentation-active={transcriptActive && !replacement} hidden={!!replacement} inert={!!replacement} style={{ overflowAnchor: "none", ...(replacement ? { display: "none" } : {}) }} onWheel={event => { if (event.deltaY) readGesture(Math.sign(event.deltaY)); }} onTouchStart={event => { interrupt(); touchY.current = event.touches[0]?.clientY ?? null; }}
     onTouchMove={event => { const y = event.touches[0]?.clientY; if (y !== undefined && touchY.current !== null && y !== touchY.current) readGesture(Math.sign(touchY.current - y)); touchY.current = y ?? null; }} onTouchEnd={() => { touchY.current = null; }} onTouchCancel={() => { touchY.current = null; }}
     onPointerDown={event => {
       interrupt();

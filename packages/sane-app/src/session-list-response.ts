@@ -1,3 +1,5 @@
+import type { AsideSummary } from "../shared/aside-contract";
+import type { AsideConversationSummary } from "../shared/aside-chat-contract";
 import type { ConversationActivity } from "../shared/conversation/activity";
 import type { ConversationUpdateSource } from "../shared/conversation/conversation-updates";
 import { legacyProfileId } from "./agent-profiles-contract";
@@ -26,10 +28,13 @@ export interface SessionListRow {
   admission?: Admission;
   updateSource?: ConversationUpdateSource;
   activity?: ConversationActivity;
+  aside?: AsideConversationSummary;
 }
 
 export interface SessionListResponseInput {
   rows: readonly SessionListRow[];
+  /** Lightweight tracked-aside metadata only; omitted preserves legacy DTOs. */
+  asides?: readonly AsideSummary[];
   /** Summary omits row admissions only; default preserves the full list contract. */
   presentation?: "full" | "summary";
   runs: readonly Run[];
@@ -72,6 +77,14 @@ export function sessionDisplayTitle(session: Session, runs: readonly Run[], even
  * awaits. The sole service dependency is the existing followup liveness reader. */
 export function sessionListResponse(input: SessionListResponseInput, followups: Pick<ClaudeRunService, "followupPending">) {
   const { runs, events, indexes } = input;
+  const asideCounts = input.asides === undefined ? undefined
+    : new Map<string, { open: number; archived: number; discarded: number; total: number }>();
+  if (asideCounts) for (const aside of input.asides ?? []) {
+    const counts = asideCounts.get(aside.sourceSessionId) ?? { open: 0, archived: 0, discarded: 0, total: 0 };
+    counts[aside.lifecycle]++;
+    counts.total++;
+    asideCounts.set(aside.sourceSessionId, counts);
+  }
   const updatedAt = recency.project(runs, events);
   const runsById = new Map<string, Run>(), runsBySession = new Map<string, Run[]>();
   // A failed prompt submission also consumes the recovery draft; compact does not.
@@ -84,9 +97,10 @@ export function sessionListResponse(input: SessionListResponseInput, followups: 
     if (run.operation !== "compact") prompted.add(run.sessionId);
   }
   const branchDrafts = new Map(indexes.branches.filter(op => op.state === "completed" && op.firstMessage && !op.firstRunId && !prompted.has(op.destinationId)).map(op => [op.destinationId, op.firstMessage]));
-  const sessions = input.rows.map(({ session, availability, association, admission, updateSource, activity }) => {
+  const sessions = input.rows.map(({ session, availability, association, admission, updateSource, activity, aside }) => {
     const run = session.lastRunId ? runsById.get(session.lastRunId) : undefined;
     const sessionRuns = runsBySession.get(session.sessionId) ?? [];
+    const counts = asideCounts ? asideCounts.get(session.sessionId) ?? { open: 0, archived: 0, discarded: 0, total: 0 } : undefined;
     return {
       // List DTO, not a persisted Session: never send standing framework/context,
       // assignments, execution revisions, or future session-detail fields here.
@@ -107,6 +121,7 @@ export function sessionListResponse(input: SessionListResponseInput, followups: 
       ...(run?.sessionId === session.sessionId ? { lastRunStatus: run.status, lastRunOperation: run.operation ?? "prompt", lastRunEndedAt: run.endedAt } : {}),
       ...(updateSource ? { updateSource } : {}),
       ...(activity ? { activity } : {}),
+      ...(aside ? { aside } : {}),
       updatedAt: updatedAt.get(session.sessionId) ?? null,
       branchDraft: branchDrafts.get(session.sessionId),
       branchOrigin: indexes.origins.get(session.sessionId),
@@ -115,6 +130,8 @@ export function sessionListResponse(input: SessionListResponseInput, followups: 
       ...(indexes.workerSessions.has(session.sessionId) ? { worker: indexes.workerSessions.get(session.sessionId) } : {}),
       ...(indexes.workerProtocol.has(session.sessionId) ? { workerProtocol: indexes.workerProtocol.get(session.sessionId) } : {}),
       directWorkerCount: indexes.workerCounts.get(session.sessionId) ?? 0,
+      // All tracked records count, including archived/discarded references.
+      ...(counts ? { asideCount: counts.total, asideCounts: counts } : {}),
       profileId: session.profileId ?? legacyProfileId(session.harness ?? "claude-code", session.agent),
       title: sessionDisplayTitle(session, sessionRuns, events),
       titleSource: session.titleSource ?? (session.title ? "legacy" : "fallback"),

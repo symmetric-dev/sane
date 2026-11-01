@@ -27,6 +27,18 @@ import type { NativeMediaShareRequest } from "../shared/media-share-contract";
 import type { UserQuestionsRecord } from "../shared/user-questions-contract";
 import { UserQuestionsStore, UserQuestionsError } from "./user-questions-store";
 import { UserQuestionsService } from "./user-questions-service";
+import { AsideStore, AsideError, type AsideReferenceSnapshot } from "./aside-store";
+import { AsideService } from "./aside-service";
+import { createAsideSourceResolver } from "./aside-source";
+import { createAsideRoute, matchesAsideRoute } from "./aside-routes";
+import { AsideExecutionService } from "./aside-execution";
+import { createAsideExecutionRoute, matchesAsideExecutionRoute } from "./aside-execution-routes";
+import { AsideChatStore, type AsideChatBinding, type AsideChatIntent } from "./aside-chat-store";
+import { asideReferenceInput } from "./aside-chat-reference";
+import { captureAsideReferenceDelivery, type AsideReferenceDelivery } from "./aside-reference-delivery";
+import { createAsideChatRoute, matchesAsideChatRoute } from "./aside-chat-routes";
+import type { AsideChatState, AsideChatSendRequest, AsideChatSendResponse, AsideConversationOpenResponse } from "../shared/aside-chat-contract";
+import { contextMessageFromSubmission, decodeContextMessageDispatchObservation } from "./context-message-evidence";
 import { denyUserQuestionsIdentity, matchesUserQuestionsTool, matchesUserQuestionsPart, readUserQuestionsContinuation } from "./user-questions-evidence";
 import { UserQuestionsDelivery, UserQuestionsDeliveryDeferred, UserQuestionsDeliverySuperseded, type UserQuestionsDeliveryDenial } from "./user-questions-delivery";
 import { httpErrorResponse, toHttpError } from "./bridge-errors";
@@ -165,6 +177,7 @@ import { proveInstalledGrokWorkerRuntime } from "./grok-native-runtime";
 import { grokSessionExists, prepareGrokFork, readGrokHistory, verifyGrokFork } from "./grok-native-history";
 import { forkGrokSession, GrokAcpForkError, type GrokAcpCloseEvidence, type GrokAcpSpawnInfo } from "./grok-acp";
 import { composeContextMessage } from "./context-message";
+import { composeCompactionContext, type PreparedCompactionContext } from "./compaction-context";
 import type { GrokSessionView, GrokTurnInput } from "../shared/conversation/grok-contract";
 import { SessionRunPreviewService } from "./session-run-preview";
 import { createNativeSubagentEvidenceRoute, createTranscriptEvidenceRoute, createRunEvidenceRoute, createConversationSearchRoute,
@@ -411,6 +424,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let appAdmissions: AppAdmissionService | undefined;
   let originalAdmissionScope: OriginalAppAdmission | undefined;
   const appAdmissionLeases = new WeakMap<ConversationAdmissionLease, OriginalAppAdmission>();
+  let asideChats: AsideChatStore;
+  // Private selection captured by the existing serialized intake hook, before
+  // asynchronous preparation. Only its original consumed envelope/lease can use it.
+  type AsideAdmissionInput = Readonly<{ reference: AsideReferenceSnapshot; text: string; binding: AsideChatBinding; delivery: AsideReferenceDelivery }>;
+  const asideAdmissionInputs = new WeakMap<AppAdmissionEnvelope, AsideAdmissionInput>();
+  const originalAsideInputs = new WeakMap<OriginalAppAdmission, Readonly<{ envelope: AppAdmissionEnvelope; input: AsideAdmissionInput }>>();
   function withOriginalAdmission<T>(original: OriginalAppAdmission, action: () => T): T {
     if (originalAdmissionScope) throw new Error("Original App admission readiness scope reentered");
     originalAdmissionScope = original;
@@ -542,6 +561,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   router = new RepositoryRouter(catalog, store.sources, {
     beforeMutation: (domain, input) => {
       assertDomainMutationOpen();
+      if ((input.kind === "associate" && input.workstreamId !== null || input.kind === "phase/assign")
+        && meta.sessions.some(session => asideChats?.forSession(session.sessionId)
+          && session.nativeSessionId === input.ref.nativeId && session.authorityId === input.ref.authorityId
+          && toNativeHarness(sessionHarness(session)) === input.ref.harness))
+        throw new WorkstreamAdapterError(409, "aside-session-assigned", "Aside conversations cannot acquire workstream or phase ownership");
       assertPendingInputDomainMutation(pendingInputs?.store.readRecords().conversations ?? [], domain, input);
       if (input.kind !== "create" && lifecycleReservations.has(domain.repositoryId)) throw new WorkstreamAdapterError(409, "workstream-action-pending", "A repository phase action is in progress");
     },
@@ -653,11 +677,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // installs a Run or replays a prompt; pending preparation is explicit-only.
   const anchoredActivationRuns = pendingActivations.anchoredRunIds();
   const deferredJournals = new Set<string>();
-  let materializeDeferred: ((runId: string) => Event[]) | undefined;
+  let materializeDeferred: ((runId: string, readOnly?: boolean) => Event[]) | undefined;
   function journalEvents(id: string): Event[] {
     return events.get(id) ?? materializeDeferred?.(id) ?? [];
   }
-  let ensureSessionJournals = (sessionId: string) => { for (const run of meta.runs) if (run.sessionId === sessionId) journalEvents(run.runId); };
+  let ensureSessionJournals = (sessionId: string, readOnly = false) => {
+    for (const run of meta.runs) if (run.sessionId === sessionId) {
+      if (readOnly) { if (!events.has(run.runId)) materializeDeferred?.(run.runId, true); }
+      else journalEvents(run.runId);
+    }
+  };
   const updateStore = new ConversationUpdateStore(options.dataDir, store.manifest.storeId);
   updateStore.load(); // Optional derived storage: failure never blocks execution.
   const updateEligible = (session: Session, run?: Run) => !retirements.isRetired(session) && session.agentKind !== "worker" && !workerStore.hasSession(session.sessionId) && run?.operation !== "compact";
@@ -757,7 +786,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     policy: options => readinessPolicy(options, sessionListReadiness.current),
     canRetainPredecessor: owner => {
       const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
-      if (session?.harness === "grok") return false;
+      if (session?.harness === "grok" || asideChats?.forSession(owner.run.sessionId)) return false;
       return claudeRuns.canQueueFollowup(owner);
     },
     wake: { dispatch: () => {
@@ -976,7 +1005,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     closing: () => closing, storageFailed: () => storageFailed, retained: () => retainOwner,
     requireReconciliation: () => { retainOwner = true; meta.reconciliationRequired = true; },
     failClosed, emit, persist, enqueue, execution, executionContext, compactExecution,
-    refreshCompactHistory, assertWorkerDeliverySubmission, canonicalExecution,
+    refreshCompactHistory, assertWorkerDeliverySubmission, canonicalExecution, compactionContext,
     explicitProtocol: sessionId => workerStore.getBySession(sessionId)?.protocol,
     browserMcp: async (sessionId, runId) => {
       const session = meta.sessions.find(s => s.sessionId === sessionId), admission = admissions.get(sessionId);
@@ -1170,6 +1199,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   function readinessPolicy(options: Readonly<ConversationReadinessOptions<Owner>>, read?: SessionListProjection) {
     const { conversationId: sessionId, intent, phase, lease } = options;
+    const asideBinding = sessionId ? asideChats?.forSession(sessionId) : undefined;
+    if (asideBinding) {
+      const record = asides.getMetadata(asideBinding.asideId);
+      if (!record || record.lifecycle !== "open") return { ready: false as const, code: "aside-closed", reason: `This aside is ${record?.lifecycle ?? "unavailable"} and read-only.` };
+      // Neither CC live input nor a durable waiting chain selects the immutable
+      // reference. Aside user input must take the ordinary idle admission path.
+      if (intent.kind === "user-prompt" && phase === "enqueue") return { ready: false as const, code: "aside-idle-only", reason: "Wait for this aside conversation to finish before sending" };
+    }
     if (sessionId && appAdmissions) {
       const original = intent.kind === "user-prompt" ? originalAdmissionScope
         ?? (lease && coordinator.holdsAdmission(lease, sessionId) ? appAdmissionLeases.get(lease) : undefined) : undefined;
@@ -1235,7 +1272,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const intent = delivery ? { kind: "handoff" as const } : preparation ? { kind: "prepare-recipient" as const } : inputMode === "user" ? { kind: "user-prompt" as const } : capacity ? { kind: "user-prompt" as const } : { kind: "inspect-idle" as const };
     const inspect = () => coordinator.inspectReadiness({ conversationId: sessionId, intent, phase: "admission" });
     const result = read ? sessionListReadiness.inspect(read, inspect) : inspect();
+    const asideBinding = sessionId ? asideChats?.forSession(sessionId) : undefined;
+    if (result.ready && asideBinding && asideUnresolvedRequest(asideBinding)) return { canSend: false, code: "aside-admission-unconfirmed",
+      reason: "An earlier legacy aside send is unconfirmed. Reconcile its original request before sending another message." };
     if (!result.ready && result.code === "conversation-busy" && sessionId && inputMode === "user"
+      && !asideBinding
       && !coordinator.hasAdmission(sessionId) && !coordinator.hasReconciliation(sessionId) && !pendingInputs?.hasChain(sessionId)) {
       const owner = owners.get(sessionId);
       const session = meta.sessions.find(s => s.sessionId === sessionId);
@@ -1615,7 +1656,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
   });
   const followupSessions = new Set(meta.runs.filter(run => run.queuedFollowupId).map(run => run.sessionId));
-  materializeDeferred = runId => {
+  materializeDeferred = (runId, readOnly = false) => {
     if (!deferredJournals.has(runId)) return [];
     const run = meta.runs.find(item => item.runId === runId);
     if (!run) return [];
@@ -1626,6 +1667,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       try { raw = readFileSync(logPath, "utf8"); } catch (e: any) { throw new Error(`Cannot load historical event log for ${run.runId}: ${e.code === "ENOENT" ? "missing file" : "read failed"}`); }
       const decoded = decodeLog(raw, run);
       if (decoded.repaired !== undefined) {
+        if (readOnly) throw new AsideError(409, "aside-source-journal-repair-required", "Source journal requires explicit repair; aside capture did not modify it");
         if (retiredId(run.sessionId)) throw new Error("Archived journal requires explicit repair; no history was modified");
         if (anchoredActivationRuns.has(runId)) throw new Error("Anchored activation journal requires explicit reconciliation; no history was modified");
         runJournals.assertUnclaimed(runId);
@@ -1945,7 +1987,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const descriptor = getHarnessDescriptor(session.harness);
     if (!descriptor) return "Compaction requires a known native harness";
     if (!descriptor.operations.compact.supported) return descriptor.operations.compact.reason;
-    if (snapshotIdentity(session)) return "SANE compaction requires qualified activation-retention proof; shared context will not be silently bootstrapped again";
+    if (snapshotIdentity(session)) {
+      if (!supportsCompactionRestoration(session)) return "This SANE conversation has no supported pinned compaction-context restoration lifecycle";
+      if (branches.list().some(op => op.destinationId === session.sessionId)) return "Inherited SANE context requires explicit branch qualification before compaction";
+    }
     if (!meta.runs.some(row => row.sessionId === session.sessionId) && pendingActivations.hasPending(session.sessionId)) return "Send the original pending activation before compacting; its preparation journal cannot be replaced";
     if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId)) return "Worker conversations cannot be compacted manually";
     if (workers.hasBlockingDescendants(session.sessionId) || workerStore.hasActiveDelivery(session.sessionId) || workerStore.hasActiveExchange(session.sessionId)) return "Finish outstanding workers and worker report deliveries before compacting";
@@ -2112,7 +2157,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     session: sessionId => meta.sessions.find(s => s.sessionId === sessionId)!,
     events: runId => journalEvents(runId), emit, persist, execution, executionContext,
     compactExecution, refreshCompactHistory, assertWorkerDeliverySubmission,
-    workerHasRun: runId => workerStore.hasExecutionRun(runId), sleep: ms => Bun.sleep(ms), canonicalExecution,
+    workerHasRun: runId => workerStore.hasExecutionRun(runId), sleep: ms => Bun.sleep(ms), canonicalExecution, compactionContext,
     explicitProtocol: sessionId => workerStore.getBySession(sessionId)?.protocol,
     completionInboxEmpty: async id => {
       const result = await oc.request<{ data: unknown[] }>(oc.path(id) + "/inbox");
@@ -2151,6 +2196,46 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const { dispatchSource, dispatchSnapshot, contextBinding } = createDispatchSource({ sessionHarness, nativeSource });
   const sessionMessageSource = createSessionMessageSource({ storeId: store.manifest.storeId,
     resolveExecution, catalog });
+  function supportsCompactionRestoration(session: Session) {
+    return (session.harness === "claude-code" || session.harness === "opencode") && !!session.saneExecution && !!session.saneContext?.package;
+  }
+  async function compactionContext(sessionId: string, assertOwner: () => void): Promise<PreparedCompactionContext | null> {
+    const session = meta.sessions.find(row => row.sessionId === sessionId);
+    if (!session || !snapshotIdentity(session)) return null;
+    if (!supportsCompactionRestoration(session)) throw new WorkstreamAdapterError(409, "context-retention-unproven", "Compaction restoration requires its original paired SANE context and a supported native harness");
+    const identity = snapshotIdentity(session)!, pin = dispatchSnapshot(session), worker = workerStore.getBySession(sessionId);
+    const workerPin = worker && canonicalJSON({ input: worker.input, protocol: worker.protocol, assignment: session.saneContext?.assignment });
+    const current = () => {
+      assertStorageOwned(); assertOwner();
+      assertDispatchSnapshot(sessionId, pin);
+      const admission = admissions.get(sessionId), actualWorker = workerStore.getBySession(sessionId);
+      if (!admission || admission.state !== "ready" || admission.nativeId !== session.nativeSessionId
+        || admission.source.authorityId !== session.authorityId || session.authorityId !== nativeSource(session.harness)
+        || toSessionHarness(admission.source.descriptor.harness) !== session.harness || admission.binding.executionCheckout !== session.cwd
+        || workerPin !== (actualWorker && canonicalJSON({ input: actualWorker.input, protocol: actualWorker.protocol, assignment: session.saneContext?.assignment })))
+        throw new WorkstreamAdapterError(409, "context-source-changed", "Compaction restoration source or original assignment changed");
+    };
+    current();
+    await validateCanonicalActivation({ saneExecution: session.saneExecution!, saneContext: session.saneContext! }, identity, activationStores);
+    current();
+    const pinned = await contextPackages.load(session.saneContext!.package!);
+    current();
+    const roots = await sessionMessageSource(session, current);
+    current(); roots.check();
+    if (identity.kind === "worker" && (!worker || !session.saneContext?.assignment))
+      throw new WorkstreamAdapterError(409, "context-source-unavailable", "Worker restoration lacks its original structured assignment");
+    const protocol = worker?.protocol?.id === "explicit-v1" ? [
+      { kind: "asset" as const, assetId: "framework.worker-protocol", reason: "Restore the worker's original explicit protocol" },
+    ] : [];
+    const restoration = composeCompactionContext({ binding: contextBinding(session), executionRevision: session.saneExecution!.revision,
+      context: pinned, session: roots.fragment,
+      ...(worker ? { worker: { free: worker.input.worker === "implementer" && !worker.input.jobs?.length,
+        assignment: { id: "worker-assignment", category: "worker-assignment" as const, text: session.saneContext!.assignment!,
+          source: `app:${store.manifest.storeId}/worker:${worker.id}`, revision: createHash("sha256").update(workerPin!).digest("hex"),
+          reason: "Restore original worker paths and assigned jobs, without starting a new assignment" }, protocol } } : {}) });
+    current(); roots.check();
+    return Object.freeze({ context: restoration, assertCurrent: () => { current(); roots.check(); } });
+  }
   const assertQualifiedContinuation = (session: Session, activeRun: Run) => {
     // Lifecycle compatibility, not a claim about the current native prefix.
     // Existing metadata is validated when loaded; do not reconstruct journals
@@ -2161,20 +2246,42 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       || admission.nativeId !== session.nativeSessionId || admission.source.authorityId !== session.authorityId
       || admission.binding.executionCheckout !== session.cwd || toSessionHarness(admission.source.descriptor.harness) !== session.harness) throw new WorkstreamAdapterError(409, "context-source-unavailable", "Continuation requires its original ready native admission");
     if (branches.list().some(op => op.destinationId === session.sessionId)) throw new WorkstreamAdapterError(409, "context-branch-prefix-unproven", "Inherited shared context has no qualified branch lifecycle");
+    let blocked: string | undefined;
     for (const run of meta.runs) {
       if (run.sessionId !== session.sessionId) continue;
+      const compactions = projectCompactions(session, [run], events.get(run.runId) ?? []);
+      const latestReset = compactions.findLastIndex(compact => compact.lifecycle === "completed");
+      if (!supportsCompactionRestoration(session) && compactions.length) blocked = "This native harness has no qualified SANE compaction restoration lifecycle";
+      // A later confirmed checkpoint supersedes earlier ambiguous retention;
+      // it does not replay or retrospectively confirm an earlier request.
+      if (supportsCompactionRestoration(session) && latestReset >= 0) blocked = undefined;
       let compactNotSubmitted = false;
       for (const event of events.get(run.runId) ?? []) {
         const data = event.data as { contextReset?: boolean; compaction?: unknown; operation?: string; compactNotSubmitted?: boolean } | null;
-        if (data?.contextReset || event.kind === "message" && data?.compaction) throw new WorkstreamAdapterError(409, "context-retention-unproven", "Observed context reset or compaction requires explicit qualification before continuing");
+        if (data?.contextReset) {
+          const compact = (data as { compaction?: { lifecycle?: string } }).compaction;
+          if (!supportsCompactionRestoration(session) || compact?.lifecycle !== "completed")
+            blocked = "An unknown or unresolved native reset cannot restore SANE context";
+          // The next native launch configures a fresh user-channel restoration;
+          // this does NOT certify that the original activation survived.
+        }
         if (event.kind === "status" && event.runId === run.runId && event.sessionId === session.sessionId
           && data?.operation === "compact" && data.compactNotSubmitted === true) compactNotSubmitted = true;
       }
-      // A failed status alone proves nothing. Only the original explicit local
-      // non-submission fact exempts an attempt, never an accepted/native reset.
-      if (run.operation === "compact" && (!compactNotSubmitted || run.nativePhase === "accepted"
-        || run.nativeAcceptedAt !== undefined || run.compact?.nativeAdmittedId !== undefined)) throw new WorkstreamAdapterError(409, "context-retention-unproven", "Compaction retention requires explicit qualification before continuing");
+      // Project final native outcomes, rather than rejecting an earlier running
+      // snapshot that was subsequently completed. A process status alone cannot
+      // certify completion or definite non-submission.
+      if (compactions.slice(latestReset + 1).some(compact => !supportsCompactionRestoration(session)
+        || !["completed", "failed", "skipped"].includes(compact.lifecycle)))
+        blocked = "Compaction outcome remains unconfirmed; context restoration cannot authorize another turn";
+      if (latestReset < 0 && run.operation === "compact" && (!compactNotSubmitted || run.nativePhase === "accepted"
+        || run.nativeAcceptedAt !== undefined || run.compact?.nativeAdmittedId !== undefined)) {
+        const outcome = compactions[0]?.lifecycle;
+        if (!supportsCompactionRestoration(session) || outcome !== "completed" && outcome !== "skipped" && outcome !== "failed")
+          blocked = "Compaction outcome remains unconfirmed; context restoration cannot authorize another turn";
+      }
     }
+    if (blocked) throw new WorkstreamAdapterError(409, "context-retention-unproven", blocked);
   };
   const prepareOwnedMessage = createPrepareOwnedMessage({ storeId: store.manifest.storeId,
     contextPackages, activationStores, assertQualifiedContinuation, sessionMessageSource, contextBinding,
@@ -2466,6 +2573,38 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
    * recovery. Ordinary user sends are idle-only. */
   async function admitPreparedInput(prepared: PreparedUserInput, lease: ConversationAdmissionLease, options: PreparedAdmissionOptions & { messageIntent?: BridgeMessageIntent; submissionPublication?: SubmissionPublicationFactory } = {}) {
     const { conversationId, cwd, harness } = prepared.binding;
+    const asideBinding = asideChats.forSession(conversationId);
+    const explicitMessageIntent = options.messageIntent;
+    if (asideBinding && explicitMessageIntent)
+      throw new UserInputPreparationError("Aside reference delivery accepts body-only user input; explicit selected context or activation cannot be replaced", 409, "aside-message-intent-unsupported");
+    const original = appAdmissionLeases.get(lease);
+    const asideInput = original && originalAsideInputs.get(original);
+    let asideDispatchRunId: string | undefined;
+    let assertAsideRoots = () => {};
+    const assertAsideInput = () => {
+      if (!asideBinding) return;
+      assertAsideChatDestination(asideBinding);
+      const key = original && appAdmissions?.key(original);
+      const envelope = asideInput?.envelope, captured = asideInput?.input;
+      const record = asides.getMetadata(asideBinding.asideId);
+      if (!key || !envelope || !captured || key.storeId !== envelope.storeId || key.clientRequestId !== envelope.clientRequestId || key.payloadSha256 !== envelope.payloadSha256
+        || envelope.intent.operation !== "message" || envelope.intent.conversationId !== conversationId || envelope.intent.payload.sessionId !== conversationId
+        || envelope.intent.payload.prompt !== prepared.prompt || captured.text !== prepared.prompt
+        || captured.binding.asideId !== asideBinding.asideId || captured.binding.sessionId !== conversationId
+        || captured.binding.sourceFingerprint !== asideBinding.sourceFingerprint || captured.binding.nativeSessionId !== asideBinding.nativeSessionId
+        || !record || record.lifecycle !== "open" || record.revision !== captured.reference.record.revision || record.sourceFingerprint !== captured.reference.sourceFingerprint)
+        throw new UserInputPreparationError("Aside submission requires its original App admission, captured reference, open lifecycle and revision", 409, "aside-conflict");
+      // Model/effort are ordinary validated preferences, not aside identity.
+      // The existing prepared-input guards pin their prior/installed snapshots;
+      // only a change to the independent base identity is forbidden here.
+      const { model: _model, effort: _effort, ...configuration } = prepared.configuration;
+      const { model: _priorModel, effort: _priorEffort, ...priorConfiguration } = prepared.expectedPrior?.configuration ?? {};
+      if (prepared.stagedUpgrade || !prepared.expectedPrior || !isDeepStrictEqual(configuration, priorConfiguration))
+        throw new UserInputPreparationError("Aside conversations retain their independent base configuration", 409, "aside-session-changed");
+      captured.delivery.assertCurrent(asideDispatchRunId);
+      assertAsideRoots();
+    };
+    assertAsideInput();
     const input = prepared.normalized, { model, effort, agent } = prepared.configuration;
     const { queuedFollowupId, publish } = options;
     const namingText = prepared.prompt;
@@ -2490,6 +2629,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const intent = context?.intent ?? { kind: "user-prompt" as const };
     const origin = context?.origin ?? (queuedFollowupId ? "queued-user" : "user");
     const delivery = context?.delivery ?? (origin === "user" ? "idle-only" : undefined);
+    if (asideBinding && (queuedFollowupId !== undefined || intent.kind !== "user-prompt" || origin !== "user" || delivery !== "idle-only"))
+      throw new UserInputPreparationError("Aside reference delivery requires idle body-only user input; this delivery origin is unsupported", 409, "aside-message-intent-unsupported");
     const priorSession = meta.sessions.find(row => row.sessionId === conversationId);
     const noPriorRun = !meta.runs.some(row => row.sessionId === conversationId);
     const anchored = noPriorRun && pendingActivations.hasPending(conversationId);
@@ -2523,6 +2664,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Resolve the original preparation identity BEFORE constructing dispatch or
     // linking any consumer. No replacement attempt is allocated on adoption.
     const runId = activationPreparation?.runId ?? context?.runId ?? crypto.randomUUID();
+    asideDispatchRunId = runId;
     // Grok throws here, before followup checks, receipts, or admission writes.
     const nativeCommandId = preparedAdmissionNativeCommandId(harness, activationPreparation?.nativeCommandId ?? context?.nativeCommandId);
     const identity: DispatchIdentity = Object.freeze({ runId, nativeCommandId, ...(intent.requestId !== undefined ? { requestId: intent.requestId } : {}), source: Object.freeze({ harnessId: harness, sessionId: conversationId,
@@ -2547,6 +2689,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const assertLease = () => {
       if (!coordinator.holdsAdmission(lease, conversationId) || closing || storageFailed || meta.reconciliationRequired
         || queuedFollowupId && !claudeRuns.followupPending(queuedFollowupId)) throw new UserInputPreparationError("Input cancelled or admission unavailable before launch", 409);
+      assertAsideInput();
     };
     const assertDispatch = () => {
       assertLease();
@@ -2557,6 +2700,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await revalidatePreparedUserInput(prepared, { ...preparationState(), ensureDirectory, validateBinding: assertDispatch });
     let session = meta.sessions.find(s => s.sessionId === conversationId), createdSnapshot: Session | undefined;
     if (session) await execution(conversationId);
+    if (asideBinding && session) {
+      const resolved = await resolveExecution(conversationId);
+      const ref = { harness: toNativeHarness(harness), authorityId: session.authorityId!, nativeId: session.nativeSessionId! };
+      assertAsideRoots = () => {
+        if (resolved.roots.workstreamId || resolved.domain?.resolveContext(ref).workstream)
+          throw new UserInputPreparationError("Aside conversations cannot acquire workstream or phase ownership", 409, "aside-session-assigned");
+      };
+      assertAsideInput();
+    }
     const workspaceId = prepared.associationSelection.workspaceId, worktreeId = prepared.associationSelection.worktreeId;
     const association = await catalog.associate(conversationId, cwd, workspaceId, worktreeId);
     assertPreparedUserInputCurrent(prepared, preparationState()); assertLease();
@@ -2654,7 +2806,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         || canonicalJSON({ saneExecution: session!.saneExecution, saneContext: session!.saneContext }) !== canonicalJSON(activationInput.activation)) throw new UserInputPreparationError("Activation journal has no exact ready original native admission and pinned pair", 409);
       pendingActivations.assertCurrent(activationPreparation, activationInput);
     };
-    const messageIntent: BridgeMessageIntent | undefined = options.messageIntent ?? (activationPreparation || upgradeContext ? {
+    const asideMessageIntent: BridgeMessageIntent | undefined = asideBinding && asideInput!.input.delivery.kind === "reference" ? {
+      kind: "selected", source: `app:${store.manifest.storeId}/aside:${asideBinding.asideId}/parent-reference`,
+      assertCurrent: assertAsideInput,
+      readCurrent: () => { assertAsideInput(); return asideReferenceInput(asideInput!.input.reference, contextBinding(session!), prepared.prompt); },
+    } : undefined;
+    const messageIntent: BridgeMessageIntent | undefined = asideMessageIntent ?? explicitMessageIntent ?? (activationPreparation || upgradeContext ? {
       kind: upgradeContext ? "assistant-upgrade" : "assistant-activation",
       source: activationPreparation ? `app:${store.manifest.storeId}/activation-run:${activationPreparation.runId}` : `app:${store.manifest.storeId}/prepared-upgrade:${run.runId}`,
       assertCurrent: () => {
@@ -2664,7 +2821,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     } : undefined);    // Capture only user-origin input before role/context expansion.
     // Other dispatch origins and inherited/attached sessions remain ineligible.
     if ((origin === "user" || origin === "queued-user") && session.titleAutoEligible && session.agentKind !== "worker" && !session.attachment) namingSubmissions.set(run, namingText);
-    const lifecycle = executePrompt(lease, session, run, prepared.prompt, prepared.resume, origin, {
+    // Delivery selection, not lastRunId/install/empty history, distinguishes the
+    // independently allocated first CC --session-id from a real continuation.
+    // Explicit withheld turns may have installed Runs without a native turn.
+    const nativeResume = asideBinding && harness === "claude-code" ? asideInput!.input.delivery.kind === "body-only" : prepared.resume;
+    const lifecycle = executePrompt(lease, session, run, prepared.prompt, nativeResume, origin, {
       requestId: intent.requestId,
       coordinatorIntent: intent.kind,
       validate: () => { assertDispatch(); assertContext(); assertPreparedUserInputCurrent(prepared, preparationState(), createdSnapshot); },
@@ -2692,6 +2853,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
       },
       beforeSend: () => {
+        assertAsideInput();
         assertPreparedUserInputCurrent(prepared, preparationState(), installedSnapshot);
         if (run.runId !== identity.runId || (run.nativeCommandId ?? null) !== identity.nativeCommandId || run.cwd !== identity.source.cwd) { failClosed(); throw new Error("Installed dispatch IDs or checkout changed"); }
         validateContext();
@@ -2919,6 +3081,370 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   const userQuestions = new UserQuestionsStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "user-questions-storage"));
   userQuestions.recover();
+  // App-owned reference records only: no native admission, source reservation,
+  // role/context injection, or workstream membership is created for an aside.
+  const asides = new AsideStore(options.dataDir, store.manifest.storeId, error => failClosed(error, "aside-storage"));
+  asideChats = new AsideChatStore(options.dataDir, store.manifest.storeId, () => {
+    assertStorageOwned(); if (storageFailed) throw new Error("Aside conversation owner is unavailable");
+  }, error => failClosed(error, "aside-chat-storage"));
+  const asideOpenings = new Map<string, Promise<void>>();
+  function asideMetadata(id: string) {
+    const metadata = asides.getMetadata(id);
+    if (!metadata) throw new AsideError(404, "aside-missing", "Aside does not exist");
+    return metadata;
+  }
+  function asideRecord(id: string) {
+    const reference = asides.getReference(id);
+    if (!reference) throw new AsideError(404, "aside-missing", "Aside does not exist");
+    return reference.record;
+  }
+  function assertAsideChatDestination(binding: AsideChatBinding) {
+    const record = asideMetadata(binding.asideId), p = binding.prepared;
+    const current = asideChats.get(binding.asideId);
+    const session = meta.sessions.find(s => s.sessionId === binding.sessionId), a = admissions.get(binding.sessionId);
+    if (!current || current.sessionId !== binding.sessionId || current.nativeSessionId !== binding.nativeSessionId
+      || current.sourceFingerprint !== binding.sourceFingerprint || !isDeepStrictEqual(current.prepared, p)
+      || binding.sessionId === record.sourceSessionId || binding.sourceFingerprint !== record.sourceFingerprint
+      || binding.nativeSessionId === null || !session || !a || a.state !== "ready" || a.nativeId !== binding.nativeSessionId
+      || a.parent !== null || a.operation !== "create"
+      || a.nativeId === record.native.nativeId && a.source.authorityId === record.native.authorityId && a.source.descriptor.harness === record.native.harness
+      || session.nativeSessionId !== binding.nativeSessionId || session.authorityId !== p.binding.authorityId || nativeSource(session.harness) !== p.binding.authorityId
+      || sessionHarness(session) !== p.binding.harness || session.cwd !== p.binding.cwd || session.agent || session.agentKind === "worker"
+      || session.saneContext || session.saneExecution || session.attachment || workerStore.hasSession(binding.sessionId)
+      || session.profileId !== p.configuration.profileId
+      || branches.pending(binding.sessionId) || branches.replaced(binding.sessionId)
+      || a.source.authorityId !== p.binding.authorityId || toSessionHarness(a.source.descriptor.harness) !== p.binding.harness
+      || a.binding.executionCheckout !== p.binding.cwd || a.binding.workspaceId !== record.binding.workspaceId || a.binding.worktreeId !== record.binding.worktreeId
+      || a.binding.bindingRevision !== record.binding.bindingRevision)
+      throw new UserInputPreparationError("Aside destination no longer matches its original independent native binding", 409, "aside-session-changed");
+    assertCatalogActive(session);
+    catalog.assertBinding(a.binding.workspaceId, a.binding.worktreeId, p.binding.cwd, a.binding.bindingRevision);
+    if (normalizeNativeSource(a.source.descriptor).authorityId !== p.binding.authorityId)
+      throw new UserInputPreparationError("Aside native authority changed", 409, "aside-session-changed");
+    return session;
+  }
+  async function materializeAsideConversation(id: string, assertRequest: () => void): Promise<AsideChatBinding> {
+    assertRequest(); const record = asideRecord(id);
+    let binding = asideChats.get(id);
+    // Opening an already materialized child is read-only historical access.
+    // Closed references may inspect it, but never allocate or resume creation.
+    if (binding && binding.nativeSessionId !== null) {
+      assertAsideChatDestination(binding);
+      return binding;
+    }
+    if (record.lifecycle !== "open") throw new AsideError(409, `aside-${record.lifecycle}`, "Only open asides can create a conversation");
+    if (!binding) {
+      if (record.source.native.harness === "gk") throw new AsideError(409, "aside-harness-unsupported", "Grok aside admission is not qualified");
+      const sourceBinding = await catalog.binding(record.source.binding.workspaceId, record.source.binding.worktreeId);
+      assertRequest();
+      catalog.assertBinding(record.source.binding.workspaceId, record.source.binding.worktreeId, record.source.binding.cwd, record.source.binding.bindingRevision);
+      if (sourceBinding.cwd !== record.source.binding.cwd) throw new AsideError(409, "aside-binding-changed", "Captured checkout is unavailable");
+      // Pure launch preparation only. The placeholder is NEVER submitted, rendered,
+      // journaled as a message or used as native input; opening has no prompt port.
+      const prepared = await prepareUserInput({ harness: toSessionHarness(record.source.native.harness), cwd: sourceBinding.cwd,
+        workspaceId: record.source.binding.workspaceId, worktreeId: record.source.binding.worktreeId, prompt: "Prepare independent aside conversation" }, {
+        ...preparationState(), defaultCwd: options.cwd, conversationId: () => crypto.randomUUID(), sourceAuthorityId: nativeSource,
+        selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
+        ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings),
+      });
+      assertRequest();
+      binding = asideChats.allocate({ asideId: id, sessionId: prepared.binding.conversationId, sourceFingerprint: asideMetadata(id).sourceFingerprint, nativeSessionId: null, prepared, requests: [] }, () => {
+        assertRequest(); if (asideMetadata(id).lifecycle !== "open") throw new AsideError(409, "aside-conflict", "Aside lifecycle changed");
+        catalog.assertBinding(record.source.binding.workspaceId, record.source.binding.worktreeId, record.source.binding.cwd, record.source.binding.bindingRevision);
+      });
+    }
+    let opening = asideOpenings.get(id);
+    if (!opening) {
+      const destination = binding;
+      opening = (async () => {
+        const p = destination.prepared, source = asideRecord(id).source;
+        const savedAdmission = admissions.get(destination.sessionId);
+        const assertOpen = () => {
+          assertRequest();
+          const current = asideMetadata(id);
+          if (current.lifecycle !== "open" || current.sourceFingerprint !== destination.sourceFingerprint || destination.sessionId === source.sessionId)
+            throw new AsideError(409, "aside-conflict", "Aside lifecycle or reference changed");
+          catalog.assertBinding(source.binding.workspaceId, source.binding.worktreeId, p.binding.cwd, source.binding.bindingRevision);
+          if (nativeSource(p.binding.harness) !== p.binding.authorityId) throw new AsideError(409, "aside-session-changed", "Native source changed");
+          const saved = admissions.get(destination.sessionId);
+          if (savedAdmission && (!saved || saved.requestId !== savedAdmission.requestId || saved.nativeId !== savedAdmission.nativeId))
+            throw new AsideError(409, "aside-session-changed", "Original aside native creation identity changed during recovery");
+          if (saved && (saved.operation !== "create" || saved.parent !== null || saved.source.authorityId !== p.binding.authorityId
+            || toSessionHarness(saved.source.descriptor.harness) !== p.binding.harness || saved.binding.executionCheckout !== p.binding.cwd
+            || saved.binding.workspaceId !== source.binding.workspaceId || saved.binding.worktreeId !== source.binding.worktreeId
+            || saved.binding.bindingRevision !== source.binding.bindingRevision))
+            throw new AsideError(409, "aside-session-changed", "Saved aside admission no longer matches its original independent binding");
+        };
+        assertOpen();
+        const existing = meta.sessions.find(s => s.sessionId === destination.sessionId);
+        if (existing && destination.nativeSessionId !== null) { assertAsideChatDestination(destination); return; }
+        // Only a durable known identity may use the existing admission-retry
+        // policy. Never turn an uncertain native create into a fresh allocation.
+        if (savedAdmission && (!savedAdmission.nativeId || !["identity_known", "ready"].includes(savedAdmission.state)))
+          throw new AsideError(409, savedAdmission.state === "native_creation_unknown" ? "native_creation_unknown" : "admission-pending", "Original aside native creation requires reconciliation; no new identity was allocated");
+        if (savedAdmission && (existing?.lastRunId || meta.runs.some(run => run.sessionId === destination.sessionId)))
+          throw new AsideError(409, "aside-session-changed", "Incomplete aside opening cannot adopt an existing conversation run");
+        const admission = coordinator.reserveAdmission({ conversationIds: [destination.sessionId], intent: { kind: savedAdmission ? "retry-admission" : "user-prompt" } });
+        if (!admission.ready) throw new AsideError(admission.code === "capacity" ? 429 : 409, admission.code, admission.reason);
+        try {
+          if (existing && !admissions.get(destination.sessionId)) throw new AsideError(409, "aside-session-changed", "Reserved aside ID collides with unrelated session metadata");
+          const association = await catalog.associate(destination.sessionId, p.binding.cwd, source.binding.workspaceId, source.binding.worktreeId);
+          assertOpen(); if (association.association !== "resolved") throw new AsideError(409, "aside-binding-changed", "Aside checkout association is unresolved");
+          const native = conversationCreation(p.binding.harness, p.binding.cwd, () => { assertOpen(); return p.nativeLaunch!; });
+          const a = admissions.get(destination.sessionId) ?? await beginConversationCreation(admissions, { sessionId: destination.sessionId, cwd: p.binding.cwd,
+            workspaceId: source.binding.workspaceId, worktreeId: source.binding.worktreeId }, native);
+          assertOpen();
+          await completeConversationCreation(admissions, a, native, async a => {
+            assertOpen();
+            if (a.source.authorityId !== p.binding.authorityId || a.binding.executionCheckout !== p.binding.cwd) throw new AsideError(409, "aside-session-changed", "Original native creation binding changed");
+            if (a.parent !== null || a.operation !== "create" || a.nativeId === source.native.nativeId && a.source.authorityId === source.native.authorityId && a.source.descriptor.harness === source.native.harness)
+              throw new AsideError(409, "aside-session-changed", "Aside requires a genuinely independent fresh native identity");
+            const old = meta.sessions.find(s => s.sessionId === destination.sessionId);
+            if (old) {
+              if (old.nativeSessionId !== a.nativeId || old.authorityId !== a.source.authorityId || old.cwd !== p.binding.cwd || old.harness !== p.binding.harness
+                || old.agent || old.saneContext || old.saneExecution || old.attachment || old.lastRunId !== null
+                || old.profileId !== p.configuration.profileId || old.model !== p.configuration.model || old.effort !== p.configuration.effort
+                || meta.runs.some(run => run.sessionId === destination.sessionId)) throw new AsideError(409, "aside-session-changed", "Original aside session metadata changed");
+              return old;
+            }
+            const session: Session = { sessionId: destination.sessionId, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId,
+              cwd: p.binding.cwd, harness: p.binding.harness, lastRunId: null, lastStatus: "unknown", hidden: true, title: "Aside discussion", titleSource: "fallback",
+              titleRevision: 0, titleAutoEligible: false, profileId: p.configuration.profileId,
+              ...(p.configuration.model ? { model: p.configuration.model } : {}), ...(p.configuration.effort ? { effort: p.configuration.effort } : {}) };
+            meta.sessions.push(session); await persist(); return session;
+          });
+          assertOpen();
+          asideChats.bindNative(id, admissions.get(destination.sessionId)!.nativeId!, assertOpen);
+          assertAsideChatDestination(asideChats.get(id)!);
+        } finally { coordinator.releaseAdmission(admission.lease); }
+      })();
+      asideOpenings.set(id, opening);
+      void opening.finally(() => { if (asideOpenings.get(id) === opening) asideOpenings.delete(id); }).catch(() => {});
+    }
+    await opening; assertRequest();
+    const opened = asideChats.get(id);
+    if (!opened) throw new AsideError(404, "aside-session-missing", "Aside conversation binding is missing");
+    assertAsideChatDestination(opened);
+    return opened;
+  }
+  async function openAsideConversation(id: string, assertRequest: () => void): Promise<AsideConversationOpenResponse> {
+    const binding = await materializeAsideConversation(id, assertRequest);
+    assertRequest();
+    const record = asideMetadata(binding.asideId);
+    return { asideId: record.id, conversationId: binding.sessionId, parentSessionId: record.sourceSessionId,
+      sourceFingerprint: record.transcriptFingerprint };
+  }
+  async function openAsideChat(id: string, assertRequest: () => void): Promise<AsideChatState> {
+    await materializeAsideConversation(id, assertRequest);
+    return asideChatState(id, assertRequest);
+  }
+  async function asideChatState(id: string, assertRequest: () => void): Promise<AsideChatState> {
+    assertRequest(); asideMetadata(id); const binding = asideChats.get(id);
+    if (!binding) throw new AsideError(404, "aside-session-missing", "Open the aside conversation first");
+    const session = meta.sessions.find(s => s.sessionId === binding.sessionId);
+    let messages: AsideChatState["messages"] = [];
+    if (session) { ensureSessionJournals(session.sessionId, true); messages = (await transcripts.captureAsideReference(session)).messages; }
+    assertRequest();
+    const record = asideMetadata(id);
+    let unavailableReason: string | undefined;
+    try {
+      assertAsideChatDestination(binding);
+      if (record.lifecycle !== "open") unavailableReason = `This aside is ${record.lifecycle} and read-only.`;
+      else if (!appAdmissions) unavailableReason = "App admission must be initialized before sending, as in normal chat.";
+      else if (asideUnresolvedRequest(binding)) unavailableReason = "An earlier send is unconfirmed. Retry the original request before sending another message.";
+      else {
+        const readiness = coordinator.inspectReadiness({ conversationId: binding.sessionId, intent: { kind: "user-prompt" }, phase: "admission" });
+        if (!readiness.ready) unavailableReason = readiness.reason;
+      }
+    } catch (error) { unavailableReason = error instanceof UserInputPreparationError ? error.message : "The aside destination is unavailable. Reopen this chat to check its saved binding."; }
+    return { asideId: id, sessionId: binding.sessionId, harness: binding.prepared.binding.harness, sourceFingerprint: record.transcriptFingerprint,
+      messages, running: coordinator.hasOwner(binding.sessionId), canSend: !unavailableReason, ...(unavailableReason ? { unavailableReason } : {}) };
+  }
+  function recoverAsideChatSend(binding: AsideChatBinding, item: AsideChatIntent, flush = false): AsideChatSendResponse {
+    if (!appAdmissions) throw new AsideError(503, "app-admission-uninitialized", "Durable App admission requires explicit initialization");
+    const lookup = appAdmissions.lookup({ storeId: item.envelope.storeId, clientRequestId: item.envelope.clientRequestId, payloadSha256: item.envelope.payloadSha256 });
+    if (lookup.kind !== "found" || lookup.receipt.state === "pending") throw new AsideError(409, "aside-admission-pending", "Original admission is unresolved; retry this exact request without changing its identity");
+    if (lookup.receipt.state === "rejected") throw new AsideError(409, "aside-admission-rejected", "Original admission was rejected; it was not resent");
+    const target = lookup.receipt.target;
+    if (target.dispatch.source.sessionId !== binding.sessionId) throw new AsideError(409, "aside-session-changed", "Admission belongs to a different destination");
+    ensureSessionJournals(binding.sessionId, true);
+    const history = journalEvents(target.dispatch.runId);
+    const submitted = history.filter(event => event.kind === "submission").flatMap(event => {
+      try {
+        const submission = decodeContextMessageSubmission(event.data);
+        if (submission.messageId !== target.messageId || !isDeepStrictEqual(submission.composition.dispatch, target.dispatch)) return [];
+        const message = contextMessageFromSubmission(submission), reference = message.segments.find(segment => segment.id === "aside.parent-reference");
+        const record = asideMetadata(binding.asideId);
+        if (message.body.text !== item.request.text || message.placement.kind !== "selected" || message.placement.purpose !== "sharing"
+          || !reference || reference.category !== "shared" || reference.provenance.kind !== "fragment"
+          || reference.provenance.revision !== binding.sourceFingerprint || binding.sourceFingerprint !== record.sourceFingerprint
+          || reference.provenance.source !== `app:${store.manifest.storeId}/aside:${binding.asideId}/parent-reference`) return [];
+        return [submission];
+      } catch { return []; }
+    });
+    if (submitted.length !== 1) throw new AsideError(409, "aside-reference-unconfirmed", "Original authored input and reference delivery are not proven; do not create a replacement request");
+    const accepted = journalEvents(target.dispatch.runId).find(event => {
+      if (event.kind !== "context") return false;
+      try { const observation = decodeContextMessageDispatchObservation(event.data);
+        return observation.stage === "outcome" && observation.messageId === target.messageId && observation.evidence.submission === "submitted"
+          && (target.dispatch.source.harnessId === "claude-code" || observation.evidence.nativeAcceptance === "accepted")
+          && observation.transportSha256 === submitted[0]!.composition.transport.sha256
+          && observation.evidence.nativeCommandId === target.dispatch.nativeCommandId
+          && isDeepStrictEqual(observation.evidence.source, target.dispatch.source) && observation.evidence.runId === target.dispatch.runId;
+      } catch { return false; }
+    });
+    if (!accepted) throw new AsideError(409, "aside-admission-unconfirmed", "Original native acceptance is not proven; do not resend with a new identity");
+    if (flush) runJournals.flushThrough(runJournals.reservation(accepted));
+    return { asideId: binding.asideId, sessionId: binding.sessionId, runId: target.dispatch.runId };
+  }
+  function asideUnresolvedRequest(binding: AsideChatBinding, exceptRequestId?: string): boolean {
+    if (!appAdmissions) return binding.requests.length > 0;
+    return binding.requests.some(item => {
+      if (item.request.requestId === exceptRequestId) return false;
+      const lookup = appAdmissions!.lookup({ storeId: item.envelope.storeId, clientRequestId: item.envelope.clientRequestId, payloadSha256: item.envelope.payloadSha256 });
+      // Frozen selection alone is not a dispatch journal. Intake still arbitrates
+      // absent requests in its existing serialized queue; only its durable pending
+      // or admitted-but-unconfirmed records block a new explicit user request.
+      if (lookup.kind === "absent") return false;
+      if (lookup.kind === "found" && lookup.receipt.state === "rejected") return false;
+      try { recoverAsideChatSend(binding, item, false); return false; } catch (error) {
+        if (error instanceof AsideError && error.status === 409) return true;
+        throw error;
+      }
+    });
+  }
+  function assertAsideLegacyRecoveryBeforeIntake(envelope: AppAdmissionEnvelope) {
+    const binding = envelope.intent.conversationId ? asideChats.forSession(envelope.intent.conversationId) : undefined;
+    if (!binding || !appAdmissions) return;
+    // Run in begin's existing serialized authorization prefix, BEFORE the strict
+    // store enters mutation. Looking up legacy receipts inside assertCanBegin
+    // would reenter that store. Exact own receipt recovery still wins first.
+    const own = appAdmissions.lookup({ storeId: envelope.storeId, clientRequestId: envelope.clientRequestId, payloadSha256: envelope.payloadSha256 });
+    if (own.kind === "found") return;
+    const legacy = binding.requests.find(item => item.envelope.clientRequestId === envelope.clientRequestId
+      && item.envelope.payloadSha256 === envelope.payloadSha256 && item.envelope.storeId === envelope.storeId);
+    if (asideUnresolvedRequest(binding, legacy?.request.requestId))
+      throw new AppAdmissionRequestError("pending-admission", "An earlier legacy aside send is unconfirmed. Reconcile its original request before sending another message.");
+  }
+  async function sendAsideChat(id: string, request: AsideChatSendRequest, assertRequest: () => void): Promise<AsideChatSendResponse> {
+    assertRequest(); const binding = asideChats.get(id), service = appAdmissions;
+    if (!binding) throw new AsideError(404, "aside-session-missing", "Open the aside conversation first");
+    if (!service) throw new AsideError(503, "app-admission-uninitialized", "Durable App admission requires explicit initialization");
+    const item = binding.requests.find(item => item.request.requestId === request.requestId);
+    if (item && !isDeepStrictEqual(item.request, request)) throw new AsideError(409, "aside-request-conflict", "Request identity already belongs to different text or revision");
+    // Historical receipt recovery comes BEFORE mutable lifecycle, revision and
+    // busy checks. This legacy endpoint has no new-intake or dispatch port: an
+    // unresolved/missing receipt never authorizes a replacement native command.
+    if (item) return recoverAsideChatSend(binding, item);
+    throw new AsideError(409, "aside-legacy-send-retired", "New aside messages use the regular conversation submission path; this endpoint only recovers original saved requests");
+  }
+  function asideRequestAccess(req: Request) {
+    const principal = auth.terminalToken(req);
+    const assertCurrent = () => {
+      if (req.signal.aborted) throw new AsideError(409, "aside-interrupted", "The aside request was interrupted");
+      if (!principal || !auth.authenticated(req) || !auth.validTerminalToken(principal) || auth.terminalToken(req) !== principal)
+        throw new AsideError(401, "authentication-required", "The original authenticated aside request is no longer valid");
+      if (!startupReady || closing || storageFailed || !ownsStorage())
+        throw new AsideError(503, "aside-unavailable", "Aside storage ownership is unavailable");
+      assertStorageOwned();
+    };
+    return assertCurrent;
+  }
+  async function authorizeAsideSource(sessionId: string, assertRequest: () => void) {
+    assertRequest();
+    const session = meta.sessions.find(value => value.sessionId === sessionId);
+    if (!session) throw new AsideError(404, "aside-source-not-found", "Source conversation not found");
+    const admission = admissions.get(sessionId);
+    if (!admission || admission.state !== "ready" || !session.nativeSessionId || !session.authorityId)
+      throw new AsideError(409, "aside-source-unavailable", "The source requires a ready native identity and catalog binding");
+    const admissionPin = canonicalJSON(admission), sessionPin = dispatchSnapshot(session);
+    const binding = { workspaceId: admission.binding.workspaceId, worktreeId: admission.binding.worktreeId,
+      bindingRevision: admission.binding.bindingRevision, cwd: admission.binding.executionCheckout };
+    const assertCurrent = () => {
+      assertRequest();
+      const association = catalog.association(sessionId);
+      if (retirementPaused(sessionId) || session.hidden || session.agentKind === "worker" || workerStore.hasSession(sessionId)
+        || branches.pending(sessionId) || branches.replaced(sessionId) || retainOwner || meta.reconciliationRequired
+        || meta.sessions.find(value => value.sessionId === sessionId) !== session || dispatchSnapshot(session) !== sessionPin
+        || canonicalJSON(admissions.get(sessionId) ?? null) !== admissionPin
+        || admission.nativeId !== session.nativeSessionId || admission.source.authorityId !== session.authorityId
+        || admission.source.descriptor.harness !== toNativeHarness(sessionHarness(session))
+        || nativeSource(session.harness) !== session.authorityId || binding.cwd !== session.cwd
+        || association.association !== "resolved" || association.workspaceId !== binding.workspaceId || association.worktreeId !== binding.worktreeId)
+        throw new AsideError(409, "aside-source-changed", "The original source identity or binding is unavailable or changed");
+      if (normalizeNativeSource(admission.source.descriptor).authorityId !== session.authorityId)
+        throw new AsideError(409, "aside-source-changed", "The source native authority changed");
+      try { catalog.assertBinding(binding.workspaceId, binding.worktreeId, binding.cwd, binding.bindingRevision); }
+      catch (error) {
+        if (error instanceof WorkspaceError) throw new AsideError(error.status, error.code, error.message);
+        throw error;
+      }
+    };
+    // Validate the live binding before copying reference data; continuation and
+    // prefix-qualification guards remain entirely independent of this capture.
+    try { await catalog.binding(binding.workspaceId, binding.worktreeId); }
+    catch (error) {
+      if (error instanceof WorkspaceError) throw new AsideError(error.status, error.code, error.message);
+      throw error;
+    }
+    assertCurrent();
+    return { session, binding, assertCurrent };
+  }
+  async function asideRoute(req: Request, url: URL) {
+    const assertRequest = asideRequestAccess(req);
+    if (matchesAsideChatRoute(url)) return createAsideChatRoute({ assertCurrent: assertRequest,
+      get: id => asideChatState(id, assertRequest), open: id => openAsideChat(id, assertRequest),
+      openConversation: id => openAsideConversation(id, assertRequest),
+      send: (id, input) => sendAsideChat(id, input, assertRequest),
+    })(req, url);
+    const source = createAsideSourceResolver({
+      storeId: store.manifest.storeId,
+      authorizeRead: sessionId => {
+        const assertCurrent = () => {
+          assertRequest();
+          // Saved references remain accessible after source retirement/removal;
+          // only a NEW capture requires a live admitted source and checkout.
+          if (!meta.sessions.some(session => session.sessionId === sessionId) && !asides.list(sessionId).length)
+            throw new AsideError(404, "aside-source-not-found", "Source conversation not found");
+        };
+        assertCurrent();
+        return assertCurrent;
+      },
+      authorizeSource: sessionId => authorizeAsideSource(sessionId, assertRequest),
+      captureTranscript: async session => {
+        assertRequest();
+        ensureSessionJournals(session.sessionId, true);
+        try { return await transcripts.captureAsideReference(session); }
+        catch (error) {
+          if (error instanceof TranscriptError) throw new AsideError(error.status, error.code, error.message);
+          throw error;
+        }
+      },
+      question: (sessionId, formId) => userQuestions.get(sessionId, formId),
+    });
+    const service = new AsideService(asides, source);
+    if (matchesAsideExecutionRoute(url)) {
+      // Retained-record access uses the same authenticated App-store principal.
+      // No context provider is registered: metadata is not execution authority.
+      const execution = new AsideExecutionService({
+        getAside: id => service.get(id),
+        assertCurrent: () => assertRequest(),
+      });
+      return createAsideExecutionRoute({
+        assertCurrent: () => assertRequest(),
+        inspect: id => execution.inspect(id),
+        submit: (id, input) => execution.submit(id, input),
+      })(req, url);
+    }
+    return createAsideRoute({
+      assertCurrent: () => assertRequest(),
+      create: (sessionId, input) => service.create(sessionId, input),
+      list: sessionId => service.list(sessionId),
+      get: async id => service.get(id),
+      saveDraft: async (id, input) => service.saveDraft(id, input),
+      setLifecycle: async (id, input) => service.setLifecycle(id, input),
+    })(req, url);
+  }
   const userQuestionsSession = (request: Pick<NativeCodeShareRequest, "caller">) => codeShareSession(request, denyUserQuestionsIdentity);
   const userQuestionsService = new UserQuestionsService(userQuestions, userQuestionsSession, async (request, old) => {
     const sessionId = userQuestionsSession(request), session = meta.sessions.find(s => s.sessionId === sessionId)!;
@@ -4707,8 +5233,60 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const decision = coordinator.inspectReadiness({ conversationId: binding.conversationId, intent: { kind: "user-prompt" }, phase: intent.operation === "live-input" ? "enqueue" : "admission" });
       if (!decision.ready) throw new AppAdmissionRequestError(decision.code === "capacity" ? "capacity" : "pending-admission", decision.reason, decision.code === "capacity" ? 429 : 409);
       if (pendingInputs?.hasChain(binding.conversationId)) throw new AppAdmissionRequestError("pending-admission", "A durable input chain already owns this conversation");
+      const asideBinding = asideChats.forSession(binding.conversationId);
+      if (asideBinding) {
+        if (intent.operation !== "message") throw new AppAdmissionRequestError("target-conflict", "Aside input requires an idle ordinary message submission");
+        try { assertAsideChatDestination(asideBinding); }
+        catch (error) {
+          if (error instanceof UserInputPreparationError || error instanceof WorkstreamAdapterError || error instanceof WorkspaceError)
+            throw new AppAdmissionRequestError("target-conflict", error.message);
+          throw error;
+        }
+        const reference = asides.getReference(asideBinding.asideId);
+        if (!reference) throw new AppAdmissionRequestError("target-conflict", "Aside does not exist");
+        const record = reference.record;
+        // Old exact custom intents remain valid, but ordinary composer chain IDs
+        // are unrelated to aside IDs and require no second durable send ledger.
+        const legacy = asideBinding.requests.find(item => item.envelope.clientRequestId === envelope.clientRequestId);
+        if (record.lifecycle !== "open" || legacy && (!isDeepStrictEqual(legacy.envelope, envelope) || legacy.request.expectedRevision !== record.revision))
+          throw new AppAdmissionRequestError("target-conflict", "Aside lifecycle or original request revision changed");
+        // assertAsideLegacyRecoveryBeforeIntake already checked
+        // asideUnresolvedRequest(binding, legacy?.request.requestId) in begin's
+        // serialized authorization prefix, with exact own-receipt replay first.
+        // No await separates that check from this hook. Repeating its receipt
+        // lookup here would fatally reenter the App admission store's mutation.
+        let delivery: AsideReferenceDelivery;
+        try {
+          const session = assertAsideChatDestination(asideBinding);
+          delivery = captureAsideReferenceDelivery({ record: reference, destination: contextBinding(session), runs: () => meta.runs,
+            read: run => contextHistory.read(run) });
+        } catch (error) {
+          if (error instanceof UserInputPreparationError) {
+            // Keep normal admission's public 409/target-conflict contract. The
+            // preparation error retains its safe reason and internal cause;
+            // neither journal diagnostics nor payloads become HTTP fields.
+            const conflict = new AppAdmissionRequestError("target-conflict", error.message);
+            Object.defineProperty(conflict, "cause", { value: error, configurable: true, writable: true });
+            throw conflict;
+          }
+          throw error;
+        }
+        // Capture the selection ONCE in the original normal intake. Native setup,
+        // source checks and publication revalidate this capability, never replace
+        // it with a newly discovered reference intent after an awaited race.
+        asideAdmissionInputs.set(envelope, Object.freeze({ reference, text: input.prompt, binding: asideBinding, delivery }));
+      }
     },
   });
+  function bindOriginalAsideInput(original: OriginalAppAdmission, envelope: AppAdmissionEnvelope) {
+    // AppAdmissionStore.consume returns the exact original envelope that passed
+    // assertCanBegin. Receipts/restarts never carry this in-memory capability.
+    const input = asideAdmissionInputs.get(envelope);
+    if (input) {
+      originalAsideInputs.set(original, Object.freeze({ envelope, input }));
+      asideAdmissionInputs.delete(envelope);
+    }
+  }
   function originalSubmissionPublication(original: OriginalAppAdmission): SubmissionPublicationFactory {
     return owner => {
       if (!appAdmissions) throw new Error("App admission is unavailable");
@@ -4824,6 +5402,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     runsForSession: id => meta.runs.filter(run => run.sessionId === id), journalEvents, storedNativeHistory,
   });
   const sessionCatalogRoute = createSessionCatalogRoute({ selection: sessionCatalog,
+    asideSummaries: () => asides.summaries(),
+    asideConversation: sessionId => {
+      const binding = asideChats.forSession(sessionId), record = binding && asides.getMetadata(binding.asideId);
+      return record ? { id: record.id, parentSessionId: record.sourceSessionId,
+        sourceFingerprint: record.transcriptFingerprint, lifecycle: record.lifecycle } : undefined;
+    },
     registeredWorkspaces: async () => (await catalog.registeredWorkspaces()).workspaces,
     registeredWorkspace: id => catalog.registered(id), association: id => catalog.association(id),
     current: () => ({ sessions: meta.sessions.map(session => grokApp!.overlay(session)), active: activeSessions().map(session => grokApp!.overlay(session)),
@@ -4953,6 +5537,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   async function submitUserInput(input: Awaited<ReturnType<typeof body>>, submissionPublication?: SubmissionPublicationFactory, originalSubmission?: OriginalSubmission): Promise<Response> {
     const originalIntent = originalSubmission?.envelope.intent;
     if (originalIntent?.operation === "science-message" || input && Object.hasOwn(input, "scienceSnapshots")) return json({ error: "Science chat has been retired; saved submission history remains available", code: "science-chat-retired" }, 409);
+    const asideBinding = input?.sessionId ? asideChats.forSession(input.sessionId) : undefined;
+    if (asideBinding && (!originalSubmission || originalIntent?.operation !== "message" || !originalAsideInputs.has(originalSubmission.original)))
+      return json({ error: "Aside input requires its original ordinary App submission", code: "aside-admission-required" }, 409);
     if (originalSubmission?.binding.kind === "server-provisional"
       && (meta.sessions.some(session => session.sessionId === originalSubmission.binding.conversationId) || admissions.get(originalSubmission.binding.conversationId))) throw new AppAdmissionRequestError("target-conflict", "Reserved conversation collides with existing App state; it cannot be adopted");
     if (input?.sessionId) {
@@ -4981,7 +5568,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
     const liveOwner = owners.get(conversationId);
     if (originalIntent?.operation === "live-input" && (!liveOwner || liveOwner.run.runId !== originalIntent.expectedLiveRunId || !claudeRuns.canSendInput(liveOwner))) throw new AppAdmissionRequestError("target-conflict", "The selected live run changed during preparation; no replacement send is allowed");
-    if ((!originalIntent || originalIntent.operation === "live-input") && prepared.binding.harness === "claude-code" && liveOwner && claudeRuns.canSendInput(liveOwner)) {
+    if (!asideBinding && (!originalIntent || originalIntent.operation === "live-input") && prepared.binding.harness === "claude-code" && liveOwner && claudeRuns.canSendInput(liveOwner)) {
       if (prepared.stagedUpgrade || prepared.configuration.model !== liveOwner.run.model || prepared.configuration.effort !== liveOwner.run.effort) return json({ error: "Wait for this run to finish before changing assistant settings", code: "claude-input-configuration" }, 409);
       const checkCurrent = () => {
         if (originalIntent && liveOwner.run.runId !== originalIntent.expectedLiveRunId) throw new AppAdmissionRequestError("target-conflict", "The original selected live run changed");
@@ -5055,7 +5642,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           { id: "grok", name: "Grok", available: grokCapability.configured, connected: grokCapability.configured,
             state: grokCapability.configured ? "configured" : "unconfigured", reason: grokCapability.reason,
             capabilities: capabilitiesFor("grok") },
-        ], grokCapability } : {}) });
+        ], grokCapability, asideCapability: { version: 1, drafts: true, execution: Boolean(appAdmissions) } } : {}) });
       }
       if (path === "/api/login" && req.method === "POST") return await auth.login(req, expected);
       if (path === "/api/logout" && req.method === "POST") {
@@ -5064,6 +5651,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return auth.logout(req);
       }
       if (path.startsWith("/api/") && !auth.authenticated(req)) return json({ error: "Authentication required" }, 401);
+      if (matchesAsideRoute(url) || matchesAsideExecutionRoute(url) || matchesAsideChatRoute(url)) {
+        // Aside metadata does not mutate the source session. Route independently
+        // of source execution/branch locks, with its own request/commit fences.
+        const task = Promise.withResolvers<void>(); attachmentTasks.add(task.promise);
+        try { return (await asideRoute(req, url))!; }
+        finally { task.resolve(); attachmentTasks.delete(task.promise); }
+      }
       // Capture-only Grok intake is deliberately separate from v1 receipts.
       // Browser auth/origin checks above apply to these routes as to normal chat.
       if (path === "/api/grok/turns") {
@@ -5199,8 +5793,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         try {
           const envelope = decodeAppAdmissionEnvelope(await body(req));
           if (!appAdmissionAuthorization) throw new Error("Original submission authorization was not captured");
-          const begun = await service.begin(envelope, appAdmissionAuthorization);
+          const begun = await service.begin(envelope, () => {
+            appAdmissionAuthorization();
+            assertAsideLegacyRecoveryBeforeIntake(envelope);
+          });
           if (begun.kind === "existing") { finish(); return json(begun.receipt, 202); }
+          bindOriginalAsideInput(begun.original, begun.intent);
           const originalSubmission: OriginalSubmission = { original: begun.original, envelope: begun.intent, binding: begun.binding };
           // One original, supervised background invocation. Browser abort is not
           // cancellation and no receipt, GET, restart or duplicate starts it again.

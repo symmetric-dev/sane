@@ -1,3 +1,5 @@
+import type { AsideSummary } from "../shared/aside-contract";
+import type { AsideConversationSummary } from "../shared/aside-chat-contract";
 import type { SessionCatalogGroupsResponse, SessionCatalogPageInfo } from "../shared/conversation/session-catalog";
 import { json } from "./bridge-http";
 import type { Association, WorkspaceRecord, WorktreeRecord } from "./catalog-contract";
@@ -36,6 +38,9 @@ export interface SessionCatalogRoutePorts {
   projectRow(session: Session, summary: boolean, indexes: SessionListProjection): SessionListRow;
   globalAvailability(indexes: SessionListProjection): SessionListAvailability;
   followupPending(requestId: string): boolean;
+  /** Synchronous metadata read after asynchronous catalog observation. */
+  asideSummaries?(): readonly AsideSummary[];
+  asideConversation?(sessionId: string): AsideConversationSummary | undefined;
   isRetired(session: Session): boolean;
   isWorkerSession(id: string): boolean;
 }
@@ -139,9 +144,10 @@ export function createSessionCatalogRoute(ports: SessionCatalogRoutePorts) {
       selected = selection.sessions; page = selection.page;
     }
     // Selection precedes per-row policy, admission, followup and DTO projection.
-    const rows = selected.map(session => ports.projectRow(session, summary, indexes));
+    const rows = selected.map(session => ({ ...ports.projectRow(session, summary, indexes), aside: ports.asideConversation?.(session.sessionId) }));
     return json({ ...sessionListResponse({
       rows, presentation: summary ? "summary" : "full", runs: view.runs, events: view.events, indexes,
+      asides: ports.asideSummaries?.(),
       native: { active: native.value ?? {}, error: native.error ?? "" },
       availability: ports.globalAvailability(indexes),
     }, { followupPending: requestId => ports.followupPending(requestId) }), ...(page ? { page } : {}), ...(targeted ? { missing } : {}) });

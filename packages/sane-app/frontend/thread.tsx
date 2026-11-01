@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { WorkerDelivery, WorkerExchange, WorkerRecord } from "../src/worker-contract";
 import { useWorkers, useWorkerPolling, openWorker, workerReference } from "./worker-client";
 import { WorkerCard, WorkerExchangeMessage, WorkerOutcomeReport, WorkerSection } from "./worker-ui";
@@ -51,7 +51,8 @@ import { canonicalCount, turnBoundaryKnown } from "./transcript-pages";
 import { nativeSubagentFallback, nativeSubagentId, nativeSubagentKey } from "./native-subagent-presentation";
 import { NativeSubagentResult } from "./native-subagent-result";
 import { NativeShellResult } from "./native-shell-result";
-import { NativeSubagentCard, NativeSubagentDiscovery, useNativeSubagents } from "./native-subagent-feature";
+import { NativeInstructionContext } from "./native-instruction-context";
+import { NativeSubagentCard, NativeSubagentContext, NativeSubagentDiscovery, useNativeSubagents } from "./native-subagent-feature";
 import { claudeReplyPresentation } from "./claude-reply-presentation";
 import { ChatFileLink } from "./chat-file-link";
 import { pendingInputStopAction } from "./pending-input-ui";
@@ -59,6 +60,12 @@ import { useUserQuestions, type UserQuestionsController } from "./user-questions
 import { PendingUserQuestions, UserQuestionsCard, UserQuestionsResponse, UserQuestionsStatus } from "./user-questions";
 import { isUserQuestionsTool, questionsForMessage, submittedQuestionsForMessage } from "./user-questions-presentation";
 import { goToSend } from "./send-navigation";
+import { consumeAsideListRequest, readCachedAside, useAsideListRequest, useAsides } from "./aside-client";
+import { AsideLaunchStatus, AsidePanel, useAsidePresentation, type ExplainQuestion } from "./aside-panel";
+import { finishAsideHydration, openAsideParent } from "./aside-navigation";
+import { chatPresentationKey } from "./chat-return-state";
+import { ChatDisclosure, ChatNotice } from "./chat-ui";
+import type { AsideRecord } from "../shared/aside-contract";
 
 export { convertMessage } from "./transcript-runtime";
 
@@ -83,7 +90,7 @@ function Markdown({ text }: { text: string }) {
   return useMemo(() => <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href, title }) => <ChatFileLink href={href} title={title} sessionId={sessionId}>{children}</ChatFileLink>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>, [text, sessionId]);
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; presentationActive?: boolean; codeShares?: CodeShareProjection; mediaShares?: MediaShareProjection; userQuestions?: UserQuestionsController; userQuestionsReadOnlyReason?: string };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; messagesById?: ReadonlyMap<string, Message>; messageIndices?: ReadonlyMap<string, number>; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; exchanges?: readonly WorkerExchange[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; activityScope?: string; inspectActivity?: (entryId: string, trigger: HTMLButtonElement) => void; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean; recordedEvidenceOnly?: boolean; presentationActive?: boolean; codeShares?: CodeShareProjection; mediaShares?: MediaShareProjection; userQuestions?: UserQuestionsController; userQuestionsReadOnlyReason?: string; onExplain?: ExplainQuestion; explainDisabled?: boolean };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 export function useTranscriptIndex(messages: Message[]) {
   return useMemo(() => {
@@ -112,6 +119,7 @@ function TranscriptActivityRow({ group }: { group: ActivityGroup }) {
 const renderHandoffMessage = (text: string) => <Markdown text={text} />;
 function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   const context = useContext(TranscriptContext)!;
+  if (context.recordedEvidenceOnly) return <details className="aside-recorded-tool"><summary>{part.name} · {part.toolStatus}</summary><ActivityBody id={part.id} source={source} index={source.parts.indexOf(part)} part={part} /></details>;
   const classification = classifyTranscriptTool({ sessionId: context.sessionId, source, part, workers: context.workers, handoffs: context.handoffs?.handoffs ?? [], nativeRuns: context.runs, nativeHarness: context.harness, readOnly: context.readOnly, codeShares: context.codeShares?.shares, mediaShares: context.mediaShares?.shares, exchanges: context.exchanges, questionnaires: context.userQuestions?.forms });
   if (classification.kind === "code-share" || classification.kind === "shared-content") return <>
     {classification.shares.map(share => <SharedCodeCard key={share.id} share={share} />)}
@@ -129,7 +137,7 @@ function TranscriptToolContent({ part, source, classification }: { part: ToolPar
   const native = useNativeSubagents();
   const questions = context.userQuestions;
   if (classification.kind === "user-questions" && questions) return classification.drafts.length
-    ? classification.drafts.map(draft => <UserQuestionsCard key={draft.form.id} questions={questions} draft={draft} readOnlyReason={context.userQuestionsReadOnlyReason} tool={part} active={context.presentationActive ?? true} />)
+    ? classification.drafts.map(draft => <UserQuestionsCard key={draft.form.id} questions={questions} draft={draft} readOnlyReason={context.userQuestionsReadOnlyReason} tool={part} active={context.presentationActive ?? true} onExplain={context.onExplain} explainDisabled={context.explainDisabled} />)
     : <PendingUserQuestions questions={questions} running={active(source.status)} tool={part} />;
   if (classification.kind === "native-subagent") {
     const key = classification.key;
@@ -155,6 +163,57 @@ export function ChatMessage() {
   const first = island?.messages[0]?.id === id, last = island?.messages.at(-1)?.id === id;
   return <>{first && state && island && state.transcript?.islands[0] === island && <HistoryEdge state={state} island={island} direction="older" />}<CompactionMarkers records={context.compactionPositions?.get(id)} /><div data-transcript-message={id} tabIndex={-1}><ChatMessageBody /></div>{last && state && island && state.transcript?.islands.at(-1) === island && <HistoryEdge state={state} island={island} direction="newer" />}</>;
 }
+
+/** Same read-only message projection as NativeSubagentView, but inline in the
+ * regular transcript. There is no second live chat shell, composer, or polling. */
+function AsideTranscript({ messages, harness }: { messages: Message[]; harness: Harness }) {
+  const scope = useId();
+  const index = useTranscriptIndex(messages);
+  const projected = useMemo(() => projectTranscriptMessages(messages), [messages]);
+  const workers = useMemo<WorkerRecord[]>(() => [], []);
+  const activities = useActivityPresentation({ sessionId: scope, messages, workers, loading: false, animate: false, nativeHarness: harness, readOnly: true });
+  const inspection = useActivityInspection({ scope, plan: activities.plan });
+  const runtime = useExternalStoreRuntime({ messages: projected, convertMessage: convertTranscriptMessage,
+    isRunning: false, isSendDisabled: true, onNew: async () => {} });
+  return <NativeSubagentContext.Provider value={null}><TranscriptContext.Provider value={{ sessionId: "", harness, messages, ...index, runs: [], workers, openWorker: () => {}, readOnly: true, recordedEvidenceOnly: true, branchEnabled: false, activities, activityScope: inspection.scope, inspectActivity: inspection.open }}>
+    <AssistantRuntimeProvider runtime={runtime}><div className="aside-reference-messages"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /></div></AssistantRuntimeProvider>
+    <ActivityInspector inspection={inspection} renderBody={renderActivityInspectorBody} />
+  </TranscriptContext.Provider></NativeSubagentContext.Provider>;
+}
+const CAPTURED_REFERENCE_WINDOW = 40;
+// Source identity is frozen and reused across draft revisions/live child tokens.
+// Only a bounded presentation slice reaches the runtime, indexes, and activity
+// planner. Never replace or trim the complete evidence used by the send path.
+const AsideReference = memo(function AsideReference({ source }: { source: AsideRecord["source"] }) {
+  const [open, setOpen] = useState(true);
+  const [page, setPage] = useState(0);
+  const messagesId = useId(), countId = useId();
+  const total = source.transcript.messages.length;
+  const lastPage = Math.max(0, Math.ceil(total / CAPTURED_REFERENCE_WINDOW) - 1);
+  const currentPage = Math.min(page, lastPage);
+  const end = total - currentPage * CAPTURED_REFERENCE_WINDOW;
+  const start = Math.max(0, end - CAPTURED_REFERENCE_WINDOW);
+  const messages = useMemo(() => source.transcript.messages.slice(start, end), [source, start, end]);
+  const harness: Harness = source.native.harness === "cc" ? "claude-code" : source.native.harness === "gk" ? "grok" : "opencode";
+  const question = source.question;
+  return <section className="aside-reference" aria-label="Captured parent conversation reference">
+    <ChatDisclosure title="Parent conversation · captured reference" open={open} onOpenChange={setOpen}>
+      <p className="muted">Captured <time dateTime={source.capturedAt}>{new Date(source.capturedAt).toLocaleString()}</time>. Read-only reference; the parent conversation is unchanged.</p>
+      {/* Keep controls above the replaced window, never prepend above the reader.
+          aria-disabled keeps the activated control focusable at either boundary;
+          both its DOM identity and position survive paging. ChatScroll's normal
+          control-activation policy pauses follow-latest before this update. */}
+      <nav className="transcript-page-control aside-reference-pagination" aria-label="Captured message history">
+        {total > CAPTURED_REFERENCE_WINDOW && <button type="button" className="text-button" aria-controls={messagesId} aria-describedby={countId} aria-disabled={start === 0} onClick={event => { event.currentTarget.focus({ preventScroll: true }); if (start > 0) setPage(currentPage + 1); }}>Show earlier captured messages</button>}
+        <span id={countId} className="muted" role="status" aria-atomic="true">{total ? `Captured messages ${start + 1}–${end} of ${total}` : "No captured messages"}</span>
+        {total > CAPTURED_REFERENCE_WINDOW && <button type="button" className="text-button" aria-controls={messagesId} aria-describedby={countId} aria-disabled={currentPage === 0} onClick={event => { event.currentTarget.focus({ preventScroll: true }); if (currentPage > 0) setPage(currentPage - 1); }}>Show newer captured messages</button>}
+      </nav>
+      <div id={messagesId}>{open && <AsideTranscript key={end} messages={messages} harness={harness} />}</div>
+      {question && <section aria-label={`Captured Question ${question.questionIndex + 1}`}><h3>Question {question.questionIndex + 1}</h3><p className="user-text">{question.question.question}</p>{question.question.context && <p className="user-text">{question.question.context}</p>}{!!question.question.options?.length && <ul>{question.question.options.map((option, index) => <li key={index}>{option}</li>)}</ul>}</section>}
+    </ChatDisclosure>
+    <p className="muted">Aside conversation starts here.</p>
+  </section>;
+});
 function ChatMessageBody() {
   const message = useAuiState(s => s.message);
   const context = useContext(TranscriptContext)!;
@@ -183,7 +242,8 @@ function ChatMessageBody() {
   const questions = context.userQuestions;
   const questionResponse = !context.readOnly && source && questions && submittedQuestionsForMessage(context.sessionId, source, questions.forms);
   if (questionResponse && questions && source) return <MessagePrimitive.Root className="message user-questions-response-message"><UserQuestionsResponse questions={questions} draft={questionResponse} message={source} active={context.presentationActive ?? true} disabled={context.pageState?.sending || context.presentationActive === false} />{source.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}</MessagePrimitive.Root>;
-  if (harness === "opencode" && source?.role === "system" && source.nativeSubagentResult) return <MessagePrimitive.Root className="message native-subagent-result-message"><NativeSubagentResult source={source} /></MessagePrimitive.Root>;
+   if (harness === "opencode" && source?.role === "system" && source.nativeInstructionContext) return <MessagePrimitive.Root className="message native-instruction-context-message"><NativeInstructionContext source={source} /></MessagePrimitive.Root>;
+   if (harness === "opencode" && source?.role === "system" && source.nativeSubagentResult) return <MessagePrimitive.Root className="message native-subagent-result-message"><NativeSubagentResult source={source} /></MessagePrimitive.Root>;
   if (harness === "opencode" && source?.role === "system" && source.nativeShellResult) return <MessagePrimitive.Root className="message native-shell-result-message"><NativeShellResult source={source} /></MessagePrimitive.Root>;
   if (exchange) return <MessagePrimitive.Root className="message worker-exchange-message"><WorkerExchangeMessage exchange={exchange} recipient={context.workers.find(worker => worker.sessionId === exchange.recipient.sessionId)} renderMessage={renderHandoffMessage} />{source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}</MessagePrimitive.Root>;
   if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} /></MessagePrimitive.Root>;
@@ -226,9 +286,12 @@ function UseAsDraft({ sessionId, text }: { sessionId: string; text: string }) {
 }
 
 /** The external runtime can lag the store by a render during session changes. */
-function SendTranscriptReady({ sessionId, messages }: { sessionId: string; messages: Message[] }) {
+function SendTranscriptReady({ sessionId, messages, storeId, initialReady }: { sessionId: string; messages: Message[]; storeId?: string; initialReady: boolean }) {
   const rendered = useAuiState(state => state.thread.messages);
   const ready = rendered.length === messages.length && rendered.every((message, index) => message.id === messages[index]?.id && message.metadata.custom.transcriptVersion === (messages[index]?.version ?? ""));
+  useEffect(() => {
+    if (ready && initialReady && storeId) finishAsideHydration(storeId, sessionId);
+  }, [ready, initialReady, storeId, sessionId]);
   return <span hidden data-send-transcript-ready={ready ? sessionId : undefined} />;
 }
 
@@ -313,10 +376,6 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     const key = part.type === "tool" ? nativeSubagentKey(state.selected, source, part, state.runs, harness) : null;
     return key ? [nativeSubagentId(key)] : [];
   }))), [messages, state.selected, state.runs, harness]);
-  const runtime = useExternalStoreRuntime({ messages: runtimeMessages, convertMessage: convertTranscriptMessage, isRunning: running,
-    isSendDisabled: !isActive || hasRequests || chainLocked || !capabilities.prompt || busyInput || compactBlocked || state.actionBusy || state.sending || !(state.interactive ?? state.connected) || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
-    onNew: async message => { if (store.pendingInputChainLocked()) return; const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
-  });
   const sendDisabled = !isActive || hasRequests || chainLocked || !capabilities.prompt || busyInput || compactBlocked || state.actionBusy || state.sending || !(state.interactive ?? state.connected) || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
   // A paired launcher intent survives activation of full Chat, independently
   // of the document review controller that resumes there with its edits intact.
@@ -331,6 +390,62 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const documentFlow = reviewPresented ? review.flow : null;
   const readingDocument = !hasRequests && !!documentFlow?.path;
   const presentationActive = isActive && transcriptVisible && !readingDocument;
+  const asideSupported = state.config?.asideCapability?.version === 1 && state.config.asideCapability.drafts;
+  const asideParentId = conversation?.aside?.parentSessionId ?? state.selected;
+  const asideScope = useMemo(() => asideSupported && state.config?.storeId && asideParentId ? { storeId: state.config.storeId, sessionId: asideParentId } : null, [asideSupported, state.config?.storeId, asideParentId]);
+  const asideBinding = repository.workspaces.find(item => item.workspaceId === conversation?.workspaceId)?.worktrees.find(item => item.worktreeId === conversation?.worktreeId);
+  const presentationKey = conversation && state.phase === "ready" && state.config?.authenticated && state.config.storeId
+    ? chatPresentationKey(state.config.storeId, conversation, asideBinding?.bindingRevision) : "";
+  const asideCanCreate = !!asideScope && isActive && state.connected && (state.interactive ?? state.connected) && !!conversation && !!conversation.nativeSessionId && !!conversation.authorityId && !conversation.replacedBy && !conversation.aside && !parentId && !conversation.worker && store.conversationKind() !== "worker" && asideBinding?.state === "available";
+  const asidePresentationScope = JSON.stringify([asideScope, conversation?.harness, conversation?.authorityId, conversation?.nativeSessionId, conversation?.workspaceId, conversation?.worktreeId, conversation?.cwd, asideBinding?.bindingRevision, conversation?.replacedBy]);
+  const asideAuthority = useMemo(() => ({}), [state.config, asidePresentationScope]);
+  const asides = useAsides(asideScope, { enabled: !!asideScope && isActive && state.connected && !!state.config?.authenticated, canCreate: asideCanCreate, authority: asideAuthority });
+  const asidePresentation = useAsidePresentation(asides, asidePresentationScope, !!asideScope && presentationActive && !paired);
+  const openAsideReference = useRef(asides.open);
+  openAsideReference.current = asides.open;
+  useEffect(() => {
+    if (conversation?.aside && asides.enabled) void openAsideReference.current(conversation.aside.id);
+  }, [conversation?.id, conversation?.aside?.id, conversation?.aside?.sourceFingerprint, asides.scopeKey, asides.enabled]);
+  // The POST already supplied validated, frozen evidence. Render it on the
+  // first child frame instead of waiting for a selection effect or parsing and
+  // cloning the captured transcript again. Reloaded tabs still GET on a miss.
+  const asideRecord = useMemo(() => {
+    if (!asideScope || !conversation?.aside || !asides.enabled) return undefined;
+    const record = readCachedAside(asideScope, conversation.aside.id, { borrow: true });
+    return record?.source.sessionId === conversation.aside.parentSessionId
+      && record.source.transcript.fingerprint === conversation.aside.sourceFingerprint ? record : undefined;
+  }, [asideScope, conversation?.aside?.id, conversation?.aside?.parentSessionId, conversation?.aside?.sourceFingerprint, asides.enabled, asides.selected?.record]);
+  const [asideParentError, setAsideParentError] = useState("");
+  useEffect(() => setAsideParentError(""), [state.selected]);
+  const returnToAsideParent = async () => {
+    if (!conversation?.aside) return;
+    const selected = state.selected;
+    setAsideParentError("");
+    try {
+      if (!await openAsideParent(conversation) && store.snapshot().selected === selected) setAsideParentError("The parent conversation could not be opened. Your aside is unchanged.");
+    } catch (error) {
+      if (store.snapshot().selected === selected) setAsideParentError(error instanceof Error ? error.message : "The parent conversation could not be opened.");
+    }
+  };
+  const runtime = useExternalStoreRuntime({ messages: runtimeMessages, convertMessage: convertTranscriptMessage, isRunning: running,
+    isSendDisabled: sendDisabled,
+    onNew: async message => { if (store.pendingInputChainLocked()) return; const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
+  });
+  const asideListRequest = useAsideListRequest();
+  useEffect(() => {
+    if (!asideListRequest) return;
+    const current = store.snapshot();
+    if (current.config?.storeId !== asideListRequest.storeId || current.selected !== asideListRequest.sessionId) {
+      consumeAsideListRequest(asideListRequest);
+      return;
+    }
+    // Sidebar selection can publish before this Thread receives its new props.
+    if (asideScope?.storeId !== asideListRequest.storeId || asideScope.sessionId !== asideListRequest.sessionId) return;
+    if (!presentationActive || paired) { consumeAsideListRequest(asideListRequest); return; }
+    consumeAsideListRequest(asideListRequest);
+    asidePresentation.launch(asideListRequest.trigger, searchRoot.current?.closest<HTMLElement>(".viewport"));
+    void asides.refresh();
+  }, [asideListRequest, asideScope, asidePresentation.launch, presentationActive, paired, asides.refresh]);
   const questionsJump = useRef<object | undefined>(undefined);
   useEffect(() => {
     const reveal = userQuestions.revealRequest, form = userQuestions.selected?.form;
@@ -383,18 +498,23 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     <SessionSearch root={searchRoot} active={presentationActive} state={state} />
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
+    {conversation?.aside && <nav className="worker-parent-nav" aria-label="Aside navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => void returnToAsideParent()}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Aside conversation</span></nav>}
+    {asideParentError && <p className="notice error" role="alert">{asideParentError}</p>}
+    <AsideLaunchStatus controller={asides} presentation={asidePresentation} />
   </>;
-   return <LoadedWorkerRefreshProvider sessionId={state.selected} scope={workerRefreshScope} enabled={isActive && state.connected} workers={loadedWorkers}><TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, exchanges, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, presentationActive, codeShares, mediaShares, userQuestions, userQuestionsReadOnlyReason: questionsReadOnlyReason, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${paired ? " is-browser-paired" : ""}${documentFlow && !hasRequests ? " is-document-review" : ""}`}>
-    <ChatScroll active={isActive} transcriptTarget={transcriptTarget} transcriptVisible={transcriptVisible} beforeViewport={transcriptHeader} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} history={{ key: state.transcript?.islands[0]?.key ?? "", canLoad: !!state.transcript?.islands[0]?.coverage.olderCursor && !state.pageBusy && !state.pageErrors?.[`${state.transcript.islands[0].key}:older`], load: () => { const island = state.transcript?.islands[0]; if (island) void store.loadTranscriptPage({ island: island.key, direction: "older" }); } }} sendNavigation={{ sessionId: state.selected, loading: state.loading, connected: state.connected, connectionError: state.connectionError, workerError: projection.error, workerLoading: state.workerLoading, handoffLoading: handoffs.loading, handoffError: handoffs.error }} replacement={readingDocument ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
+    return <LoadedWorkerRefreshProvider sessionId={state.selected} scope={workerRefreshScope} enabled={isActive && state.connected} workers={loadedWorkers}><TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, exchanges, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, presentationActive, codeShares, mediaShares, userQuestions, onExplain: asideSupported && asideScope && !conversation?.aside ? asidePresentation.explain : undefined, explainDisabled: !asideCanCreate || !presentationActive || paired || asides.creating || !!asides.pendingCreate?.uncertain, userQuestionsReadOnlyReason: questionsReadOnlyReason, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${paired ? " is-browser-paired" : ""}${documentFlow && !hasRequests ? " is-document-review" : ""}`}>
+    <ChatScroll active={isActive} transcriptTarget={transcriptTarget} transcriptVisible={transcriptVisible} beforeViewport={transcriptHeader} presentationKey={presentationKey} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} history={{ key: state.transcript?.islands[0]?.key ?? "", canLoad: !!state.transcript?.islands[0]?.coverage.olderCursor && !state.pageBusy && !state.pageErrors?.[`${state.transcript.islands[0].key}:older`], load: () => { const island = state.transcript?.islands[0]; if (island) void store.loadTranscriptPage({ island: island.key, direction: "older" }); } }} sendNavigation={{ sessionId: state.selected, loading: state.loading, connected: state.connected, connectionError: state.connectionError, workerError: projection.error, workerLoading: state.workerLoading, handoffLoading: handoffs.loading, handoffError: handoffs.error }} replacement={readingDocument ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
       <div className="transcript" ref={searchRoot}>
         <NativeSubagentDiscovery loaded={loadedNativeSubagents} />
+        {conversation?.aside && (asideRecord ? <AsideReference key={asideRecord.id} source={asideRecord.source} /> : <ChatNotice role="status">{asides.error || asides.selected?.error || "Loading captured parent reference…"}<button type="button" className="text-button" disabled={!asides.enabled} onClick={() => void asides.open(conversation.aside!.id, { refresh: true })}>Refresh reference</button></ChatNotice>)}
         {!messages.length && (state.transcriptInitialLoading || state.loading || !repository.ready || (state.selected && state.connectionError) ? <ConversationLoading /> : !state.selected ? <div className="welcome framework-welcome"><span className="welcome-mark" aria-hidden="true"><FrameworkMark active={isActive} /></span>{/* <h1>SANE</h1> */}<p className="eyebrow">Design | Engineer | Plan | Execute</p></div> : <div className="chat-empty"><PenroseTriangle size={24} aria-hidden="true" /><p>No messages yet.</p><span>Send a message to begin.</span></div>)}
         <ThreadPrimitive.Messages components={{ Message: ChatMessage }} />
-        <SendTranscriptReady sessionId={state.selected} messages={messages} />
+        <SendTranscriptReady sessionId={state.selected} messages={messages} storeId={state.config?.storeId} initialReady={state.phase === "ready" && !!state.config?.authenticated && !state.loading && !state.transcriptInitialLoading && !state.transcriptError && state.connected && !state.connectionError && repository.ready} />
         <CompactionMarkers records={positions.get("")} />
       </div>
     </ChatScroll>
     <ActivityInspector inspection={inspection} renderBody={renderActivityInspectorBody} />
+    <AsidePanel controller={asides} presentation={asidePresentation} />
   </ThreadPrimitive.Root></AssistantRuntimeProvider></TranscriptContext.Provider></LoadedWorkerRefreshProvider>;
 }
 

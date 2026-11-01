@@ -1,4 +1,4 @@
-import type { ConversationClient, RunMetadata, RunStatus, SessionCatalogQuery, SessionTitleResult } from "./types";
+import type { AsideSessionMetadata, ConversationClient, RunMetadata, RunStatus, SessionCatalogQuery, SessionTitleResult } from "./types";
 import { validConversationGroups } from "./conversation-listing";
 import { coalescedFetch } from "./request-coalescing";
 import { isConversationUpdateFeedRequest, isConversationUpdatePage } from "../shared/conversation/conversation-updates";
@@ -35,10 +35,24 @@ function catalogParams(query?: SessionCatalogQuery, directory = false) {
   }
   return params;
 }
+function asideMetadata(value: unknown): AsideSessionMetadata {
+  const v = value as Partial<AsideSessionMetadata> | null;
+  const id = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value);
+  if (!v || typeof v !== "object" || Array.isArray(v)
+    || Object.keys(v).some(key => !["id", "parentSessionId", "sourceFingerprint", "lifecycle"].includes(key))
+    || !id(v.id) || !id(v.parentSessionId) || typeof v.sourceFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(v.sourceFingerprint)
+    || !["open", "archived", "discarded"].includes(v.lifecycle as string)) {
+    throw new Error(SESSION_REFRESH_ERROR, { cause: new Error("Invalid aside metadata in conversation listing.") });
+  }
+  return { id: v.id, parentSessionId: v.parentSessionId, sourceFingerprint: v.sourceFingerprint, lifecycle: v.lifecycle! };
+}
 function mapConversations(data: any) {
   if (!Array.isArray(data?.sessions) || data.sessions.some((session: any) => !session || typeof session.sessionId !== "string" || !session.sessionId)) throw new Error(SESSION_REFRESH_ERROR, { cause: new Error("Invalid conversation listing.") });
-  const conversations = data.sessions.map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", authorityId: s.authorityId, nativeSessionId: s.nativeSessionId, ...(s.updateSource !== undefined ? { updateSource: s.updateSource } : {}), activity: s.activity, nativeActivity: s.nativeActivity, nativeActivityReason: s.nativeActivityReason, updatedAt: s.updatedAt, cwd: s.cwd, lastRunId: s.lastRunId, lastRunStatus: s.lastRunStatus, lastRunOperation: s.lastRunOperation, lastRunEndedAt: s.lastRunEndedAt, status: s.lastStatus as RunStatus, title: s.title, titleSource: s.titleSource, titleRevision: s.titleRevision ?? 0, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, queuedFollowups: s.queuedFollowups, attachment: s.attachment, worker: s.worker, ...(s.workerProtocol !== undefined ? { workerProtocol: s.workerProtocol } : {}), directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy }));
+  const conversations = data.sessions.map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", authorityId: s.authorityId, nativeSessionId: s.nativeSessionId, ...(s.updateSource !== undefined ? { updateSource: s.updateSource } : {}), activity: s.activity, nativeActivity: s.nativeActivity, nativeActivityReason: s.nativeActivityReason, updatedAt: s.updatedAt, cwd: s.cwd, lastRunId: s.lastRunId, lastRunStatus: s.lastRunStatus, lastRunOperation: s.lastRunOperation, lastRunEndedAt: s.lastRunEndedAt, status: s.lastStatus as RunStatus, title: s.title, titleSource: s.titleSource, titleRevision: s.titleRevision ?? 0, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, queuedFollowups: s.queuedFollowups, attachment: s.attachment, worker: s.worker, ...(s.workerProtocol !== undefined ? { workerProtocol: s.workerProtocol } : {}), directWorkerCount: s.directWorkerCount, ...(Number.isSafeInteger(s.asideCount) && s.asideCount >= 0 ? { asideCount: s.asideCount } : {}), branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy }));
   if (conversations.some((c: any) => c.updateSource !== undefined && !nativeNotificationSource(c))) throw new Error(SESSION_REFRESH_ERROR, { cause: new Error("Invalid conversation update source in listing.") });
+  for (let index = 0; index < conversations.length; index++) {
+    if (data.sessions[index].aside !== undefined) conversations[index].aside = asideMetadata(data.sessions[index].aside);
+  }
   return { conversations, availability: data.availability ?? { canSend: false, reason: "Waiting for bridge availability." } };
 }
 async function updateSessionTitle(id: string, input: { title?: string; expectedRevision: number }, regenerate = false): Promise<SessionTitleResult> {

@@ -2,13 +2,14 @@
 .user-questions-page > :not(.user-questions-context) { flex-shrink:0; }
 .user-questions-page:focus-visible { outline:2px solid var(--focus-ring); outline-offset:3px; border-radius:6px; }
 .user-questions-title { margin:0 0 var(--chat-ui-space-2); color:inherit; font-size:1.125rem; font-weight:600; line-height:1.4; }
-.prose.user-questions-context { box-sizing:border-box; flex:1 1 0; min-height:4rem; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; color:inherit; font-size:inherit; line-height:inherit; margin:8px 0 12px; }
+.prose.user-questions-context { box-sizing:border-box; flex:1 1 0; min-height:4rem; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; color:inherit; font-size:inherit; line-height:inherit; margin:8px 0 0; padding:0; }
 .user-questions-context:focus-visible { outline:var(--chat-ui-focus-width) solid var(--chat-ui-focus); outline-offset:-2px; }
 .prose.user-questions-context :is(h1,h2,h3,h4,h5,h6) { font-size:inherit; line-height:inherit; }
 .user-questions-context > :first-child { margin-top:0; }
 .user-questions-context > :last-child { margin-bottom:0; }
 .user-questions-context pre,.request-inline-notice pre { white-space:pre-wrap; overflow-wrap:anywhere; }
 .user-questions-page .request-field { gap:var(--chat-ui-space-1); margin:var(--chat-ui-space-2) 0 0; }
+.user-questions-page > .user-questions-answers { position:relative; z-index:1; margin:auto calc(-1 * var(--chat-card-padding)) calc(-1 * var(--chat-card-padding)); padding:var(--chat-ui-space-2) var(--chat-card-padding); border-top:1px solid var(--chat-ui-border); background:var(--chat-ui-surface); color:var(--user-questions-subtitle-color); font-size:var(--user-questions-subtitle-size); font-weight:400; line-height:var(--chat-ui-line-height); }
 .user-questions-page .request-field > .request-field { margin:0; }
 .user-questions-references { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none; }
 .user-questions-references-footer { --chat-card-padding:var(--chat-ui-space-3); box-sizing:border-box; min-width:0; margin-bottom:var(--chat-ui-space-2); overflow:hidden; border:1px solid var(--chat-ui-border); border-top:0; border-radius:0 0 var(--chat-ui-radius) var(--chat-ui-radius); background:var(--chat-ui-surface); color:var(--chat-ui-muted); font-family:inherit; font-size:var(--chat-ui-font-size); font-weight:400; line-height:var(--chat-ui-line-height); }
@@ -23,9 +24,10 @@
 .user-questions-answer-text,.user-questions-delivery-detail { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.6; }
 .user-questions-answer-options { margin:0; padding-left:18px; white-space:pre-wrap; }
 .user-questions-answer-options + div { margin-top:6px; }
-.user-questions-card { min-height:0; max-height:50dvh; margin-block:var(--chat-ui-space-2); overflow:hidden; background:transparent; color:var(--foreground); font-family:inherit; font-size:1rem; line-height:1.85; }
+/* Capture subtitle tokens before the editor's normal-chat typography overrides. */
+.user-questions-card { --user-questions-subtitle-size:var(--chat-ui-font-size); --user-questions-subtitle-color:var(--chat-ui-muted); min-height:0; max-height:65vh; margin-block:var(--chat-ui-space-2); overflow:hidden; background:transparent; color:var(--foreground); font-family:inherit; font-size:1rem; line-height:1.85; }
 .user-questions-card.has-references { margin-bottom:0; border-end-start-radius:0; border-end-end-radius:0; }
-.user-questions-card[data-expanded="true"] { height:50dvh; }
+.user-questions-card[data-expanded="true"] { height:65vh; }
 .user-questions-card > .user-questions-header { position:relative; display:grid; flex-shrink:0; grid-template-columns:40px minmax(0,1fr) auto; grid-template-rows:repeat(2,minmax(20px,auto)); align-items:center; gap:0 var(--chat-ui-space-2); padding:var(--chat-ui-space-2); border-bottom:0; border-radius:inherit; background:var(--chat-ui-surface); }
 .user-questions-header > .chat-card-header-icon { grid-column:1; grid-row:1 / span 2; }
 .user-questions-header > .chat-card-header-content { display:grid; grid-template-rows:subgrid; grid-column:2; grid-row:1 / span 2; }
@@ -49,10 +51,13 @@
 .user-questions-conflict .chat-button + .chat-button { margin-inline-start:var(--chat-ui-space-2); }
 .user-questions-card .request-choices { gap:0; }
 .user-questions-card .request-choice { align-items:center; min-height:var(--chat-ui-control-height); padding:var(--chat-ui-space-1) var(--chat-ui-space-2); border-radius:0; line-height:1.5; }
+.user-questions-card .request-choice-mark { flex-basis:20px; height:20px; margin-top:0; border-radius:var(--chat-ui-control-radius); }
 .user-questions-card .request-choice + .request-choice { border-top-color:var(--chat-ui-border); }
 .user-questions-card .request-field-label,.user-questions-card .request-choice-copy { font-size:inherit; }
 .user-questions-card .request-field-hint { color:inherit; font-size:inherit; }
 .user-questions-card .request-input { min-height:var(--chat-ui-control-height); padding:6px var(--chat-ui-space-2); border-radius:var(--chat-ui-control-radius); font-family:inherit; font-size:inherit; line-height:1.5; }
+.user-questions-card .user-questions-answers :is(.request-choice,.request-input) { color:inherit; font-size:inherit; font-weight:inherit; line-height:inherit; }
+.user-questions-card .user-questions-answers .request-input::placeholder { color:inherit; opacity:1; }
 .user-questions-card .request-textarea { min-height:80px; }
 .user-questions-page .user-questions-other { padding-top:var(--chat-ui-space-1); border-top:1px solid var(--chat-ui-border); }
 .user-questions-activity ul { margin:0; padding:0; list-style:none; }

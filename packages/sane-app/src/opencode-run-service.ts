@@ -14,6 +14,7 @@ import { synchronousDispatchHook } from "./dispatch-evidence";
 import { coordinateRunSubmission, type RunSubmissionPreparationSteps } from "./run-submission-preparation";
 import { createRunSubmissionTiming, type RunSubmissionTimingSnapshot } from "./run-submission-timing";
 import type { ActualContextSubmission } from "./context-message-transport";
+import type { CompactionContextProvider } from "./compaction-context";
 
 /** Private App recovery capability; no Run synthesis or submission hooks. */
 export type OpenCodeRecoveryObservation = Readonly<{
@@ -28,7 +29,7 @@ export type OpenCodeRecoveryObservation = Readonly<{
 }>;
 
 /** Native transport only; owner arbitration and durable writes remain in the bridge. */
-export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel"> & Partial<Pick<OpenCodeAdapter, "history" | "observeCommand" | "promptQueuedHandoff" | "preparePromptSubmission" | "preflightNativeSession" | "configureCanonicalExecution" | "cancelInput">>;
+export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel"> & Partial<Pick<OpenCodeAdapter, "history" | "observeCommand" | "promptQueuedHandoff" | "preparePromptSubmission" | "preflightNativeSession" | "configureCanonicalExecution" | "configureCompactionContext" | "cancelInput">>;
 export type OpenCodeRunDependencies = {
   oc: OpenCodeRunAdapter;
   closing: () => boolean;
@@ -50,6 +51,7 @@ export type OpenCodeRunDependencies = {
   /** Operator verification requires literal inbox emptiness, including startup synthetics. */
   completionInboxEmpty?: (nativeSessionId: string) => Promise<boolean>;
   canonicalExecution?: CanonicalExecutionProvider;
+  compactionContext?: CompactionContextProvider;
   /** Recorded worker pin only. Absent must not upgrade an unpinned resume. */
   explicitProtocol?: (sessionId: string) => WorkerProtocolPin | undefined;
   sleep: (ms: number) => Promise<unknown>;
@@ -75,6 +77,7 @@ export type OpenCodePendingCancellation = Readonly<{ ready: false }> | Readonly<
 /** OpenCode command lifecycle. Reads live bridge state after awaited work; never
  * owns a second registry, replays a mutation, or cancels native work on detach. */
 export class OpenCodeRunService {
+  private readonly compactionContextChecks = new WeakMap<RunOwner, () => void>();
   // Observation pins only, not an admission/token or ownership registry. The
   // bridge's real claim gate and durable dispatch evidence remain mandatory.
   private readonly handoffPins = new WeakMap<RunOwner, HandoffPins>();
@@ -121,6 +124,20 @@ export class OpenCodeRunService {
     guard();
     const readOnly = run.nativeDelivery === "queue";
     await step(() => this.deps.oc.configureCanonicalExecution!(configuration, guard, readOnly));
+    if (!this.deps.compactionContext || !this.deps.oc.configureCompactionContext) throw new Error("Canonical compaction-context restoration integration is unavailable");
+    const prepared = await step(() => this.deps.compactionContext!(run.sessionId, guard));
+    const context = prepared?.context;
+    guard();
+    if (!context || context.executionRevision !== snapshot.revision || context.message.binding.nativeSessionId !== session.nativeSessionId)
+      throw new Error("Compaction restoration differs from the configured native execution");
+    const assertContext = prepared!.assertCurrent;
+    assertContext();
+    await step(() => this.deps.emit(run, "context", { type: "compaction-context", stage: "prepared", channel: "native-request user-context", context }));
+    await step(() => this.deps.oc.configureCompactionContext!(context, configuration.agent, () => { guard(); assertContext(); }, readOnly));
+    await step(() => this.deps.emit(run, "context", { type: "compaction-context", stage: readOnly ? "verified" : "configured",
+      channel: "native-request user-context", binding: context.message.binding, transportSha256: context.message.transport.sha256 }));
+    assertContext();
+    this.compactionContextChecks.set(owner, assertContext);
     this.executionAgents.set(owner, configuration.agent);
     await step(() => this.deps.emit(run, "context", { type: "canonical-execution", stage: readOnly ? "verified" : "configured", revision: snapshot.revision, sessionId: session.sessionId, nativeSessionId: session.nativeSessionId }));
     guard();
@@ -529,6 +546,7 @@ export class OpenCodeRunService {
       await this.deps.oc.assertIdle(session.nativeSessionId!, session.cwd);
       const submission = this.deps.oc.compact(session.nativeSessionId!, run.compact!.nativeRequestId!, () => {
         guard();
+        this.compactionContextChecks.get(owner)?.();
         if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested || this.deps.currentOwner(session.sessionId) !== owner) throw new Error("Compaction withheld before native dispatch");
         attempted = true; owner.nativeDispatched = true;
       });
@@ -596,6 +614,7 @@ export class OpenCodeRunService {
     };
     const assertBeforeSend = () => {
       assertDispatchState();
+      this.compactionContextChecks.get(owner)?.();
       synchronousDispatchHook(() => owner.beforeSend?.());
       assertDelivery();
       this.deps.assertWorkerDeliverySubmission(owner);

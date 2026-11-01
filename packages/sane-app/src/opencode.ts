@@ -72,16 +72,17 @@ const restartContinuation = (message: NativeMessage, command: NativeMessage) => 
 /** Native instruction discovery inserts context during a turn, not a new inbox
  * input. Recognize only the evidenced metadata shape; prose and filenames are
  * never lifecycle evidence. Unknown/malformed synthetics still fence ownership. */
-const instructionContext = (message: NativeMessage, command: NativeMessage) => {
-  if (message.type !== "synthetic" || !nativeMessageId(message.id) || !Number.isFinite(message.time?.created)
-    || message.time.created < command.time.created) return false;
+const instructionPaths = (message: NativeMessage): string[] | undefined => {
+  if (message.type !== "synthetic") return;
   const metadata = message.metadata, instruction = metadata?.instruction;
   if (!metadata || Object.keys(metadata).some(key => key !== "instruction")
-    || !instruction || typeof instruction !== "object" || Array.isArray(instruction)) return false;
+    || !instruction || typeof instruction !== "object" || Array.isArray(instruction)) return;
   const value = instruction as Record<string, unknown>;
-  return Object.keys(value).every(key => key === "paths") && Array.isArray(value.paths) && value.paths.length > 0
-    && value.paths.every(path => typeof path === "string" && !!path.trim() && !path.includes("\0"));
+  if (Object.keys(value).every(key => key === "paths") && Array.isArray(value.paths) && value.paths.length > 0
+    && value.paths.every(path => typeof path === "string" && !!path.trim() && !path.includes("\0"))) return [...value.paths];
 };
+const instructionContext = (message: NativeMessage, command: NativeMessage) => nativeMessageId(message.id)
+  && Number.isFinite(message.time?.created) && message.time.created >= command.time.created && !!instructionPaths(message);
 /** Completion attribution and queued-input cancellation must agree on which
  * messages are new inputs. Do not exempt all synthetic messages. */
 export const openCodeTurnContext = (message: NativeMessage, command: NativeMessage) => restartContinuation(message, command) || instructionContext(message, command);
@@ -481,6 +482,16 @@ export class OpenCodeAdapter {
     if (response?.output?.sessionID !== input.sessionID || response.output.agent !== input.agent || JSON.stringify(response.output.nativeChildren) !== JSON.stringify(input.nativeChildren.map(child => child.id))) throw new OpenCodeError("Canonical execution acknowledgement mismatch; prompt withheld");
     return response.output;
   }
+  async configureCompactionContext(context: import("./compaction-context").CompactionContext, agent: string, guard: () => void, readOnly = false) {
+    const binding = context.message.binding;
+    const response = await this.request<{ output?: { sessionID: string; transportSha256: string; channel: string } }>(
+      `/api/rpc/sane-context/configure?location%5Bdirectory%5D=${encodeURIComponent(binding.cwd)}`, "POST",
+      { input: { agent, context, ...(readOnly ? { readOnly: true } : {}) } }, guard);
+    guard();
+    if (response?.output?.sessionID !== binding.nativeSessionId || response.output.transportSha256 !== context.message.transport.sha256
+      || response.output.channel !== "user-context") throw new OpenCodeError("Compaction context configuration was not acknowledged by the selected native runtime; prompt withheld");
+    return response.output;
+  }
   /** Disk configuration alone cannot establish which plugin/options the selected
    * service actually loaded. This RPC is observational and never creates a turn. */
   async assertSelectedWorkerRuntime(directory: string, selected: import("../../sane-cli/src/install-sane-agent-context-packages").SelectedNativeRuntime) {
@@ -806,6 +817,8 @@ export function normalizeMessage(message: NativeMessage): MessageSnapshot | unde
   if (message.type === "model-switched") return { messageId: message.id, role: "system", parts: [], status: "completed", createdAt: new Date(message.time.created).toISOString(), ...(model ? { model } : {}) };
   if (!["user", "assistant", "system", "synthetic"].includes(message.type)) return;
   if (message.type === "synthetic" && saneStartupContext(message.metadata)) return;
+  const paths = instructionPaths(message);
+  if (paths) return { messageId: message.id, role: "system", parts: [{ id: `${message.id}:text`, type: "text", text: message.text ?? "" }], status: "completed", createdAt: new Date(message.time.created).toISOString(), nativeInstructionContext: { paths } };
   if (message.type === "synthetic" && message.metadata?.source === "shell" && typeof message.metadata.shellID === "string" && typeof message.metadata.state === "string") {
     return { messageId: message.id, role: "system", parts: [{ id: `${message.id}:text`, type: "text", text: message.text ?? "" }], status: "completed", createdAt: new Date(message.time.created).toISOString(),
       nativeShellResult: { shellId: message.metadata.shellID, state: message.metadata.state,

@@ -1,0 +1,18 @@
+.shell-dialog.chat-dialog.aside-panel { --chat-dialog-width: 960px; }
+.aside-panel-layout { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr); gap: 20px; margin-top: 16px; }
+.aside-list { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.aside-list button { text-align: left; justify-content: flex-start; white-space: normal; }
+.aside-list small { display: block; opacity: .7; margin-top: 4px; }
+.aside-list [aria-current="true"] { outline: 1px solid currentColor; }
+.aside-editor { min-width: 0; }
+.aside-editor label { display: block; margin: 16px 0 8px; }
+.aside-editor textarea { box-sizing: border-box; width: 100%; resize: vertical; font: inherit; color: inherit; background: var(--chat-ui-surface); border: 1px solid var(--chat-ui-border); border-radius: var(--chat-ui-control-radius); padding: var(--chat-ui-space-3); }
+.aside-editor textarea:read-only { opacity: .75; }
+.aside-panel-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.aside-local-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; font: inherit; }
+.aside-reference { margin-bottom: var(--chat-ui-space-4); }
+.aside-reference-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: var(--chat-ui-space-3); }
+.aside-reference-pagination .text-button[aria-disabled="true"] { opacity: .5; cursor: default; }
+.aside-recorded-tool { margin-block: var(--chat-ui-space-2); }
+.aside-recorded-tool pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .aside-panel-layout { grid-template-columns: minmax(0, 1fr); } .aside-list { max-height: 160px; overflow: auto; } }

@@ -5,12 +5,18 @@ import { synchronousDispatchHook } from "./dispatch-evidence";
 import { decodeLog, uuid, type Event, type Run } from "./history";
 
 export type ContextMessageHistoryErrorCode = "context-activation-unproven" | "context-retention-unproven" | "context-source-unavailable";
+export type ContextMessageHistoryErrorReason = "missing" | "oversized" | "unsafe" | "malformed" | "changed" | "unavailable";
 
 /** Scoped absence of protected history, never a storage-owner failure or native permission. */
 export class ContextMessageHistoryError extends Error {
-  constructor(readonly code: ContextMessageHistoryErrorCode, message: string, cause?: unknown) {
+  readonly reason: ContextMessageHistoryErrorReason;
+  constructor(readonly code: ContextMessageHistoryErrorCode, message: string, cause?: unknown, reason?: ContextMessageHistoryErrorReason) {
     super(message, { cause });
     this.name = "ContextMessageHistoryError";
+    // Safe diagnostic annotations only: no paths, contents, or raw error text.
+    this.reason = reason ?? (code === "context-activation-unproven" ? "malformed"
+      : code === "context-retention-unproven" ? "changed"
+      : cause instanceof Error && "code" in cause && cause.code === "ENOENT" ? "missing" : "unavailable");
   }
 }
 
@@ -72,16 +78,16 @@ export class ContextMessageJournalReader {
   }
   private rootPin(): RootPin {
     const stat = lstatSync(this.directory, { bigint: true });
-    if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(this.directory) !== this.directory) throw new Error("Unsafe context history directory");
+    if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(this.directory) !== this.directory) throw new ContextMessageHistoryError("context-source-unavailable", "Unsafe context history directory", undefined, "unsafe");
     return { dev: stat.dev, ino: stat.ino };
   }
   private assertRoot(): void {
-    if (!sameRoot(this.root, this.rootPin())) throw new Error("Context history root changed");
+    if (!sameRoot(this.root, this.rootPin())) throw new ContextMessageHistoryError("context-source-unavailable", "Context history root changed", undefined, "changed");
   }
   private filePin(fd: number, path: string, limit: number): FilePin {
     const opened = fstatSync(fd, { bigint: true }), current = lstatSync(path, { bigint: true });
     if (!opened.isFile() || opened.nlink !== 1n || !current.isFile() || current.isSymbolicLink() || current.nlink !== 1n
-      || realpathSync(path) !== path || !samePin(opened, current) || opened.size < 0n || opened.size > BigInt(limit)) throw new Error("Unsafe or oversized context history file");
+      || realpathSync(path) !== path || !samePin(opened, current) || opened.size < 0n || opened.size > BigInt(limit)) throw new ContextMessageHistoryError("context-source-unavailable", "Unsafe or oversized context history file", undefined, opened.size > BigInt(limit) ? "oversized" : "unsafe");
     return { dev: opened.dev, ino: opened.ino, size: opened.size, mtimeNs: opened.mtimeNs, ctimeNs: opened.ctimeNs };
   }
   private captureFile(path: string, limit: number): Capture {
@@ -94,17 +100,17 @@ export class ContextMessageJournalReader {
       let position = 0;
       while (position < bytes.length) {
         const count = readSync(fd, bytes, position, Math.min(64 * 1024, bytes.length - position), position);
-        if (count <= 0) throw new Error("Context history ended while reading");
+        if (count <= 0) throw new ContextMessageHistoryError("context-source-unavailable", "Context history ended while reading", undefined, "changed");
         position += count;
       }
-      if (!samePin(pin, this.filePin(fd, path, limit))) throw new Error("Context history changed while reading");
+      if (!samePin(pin, this.filePin(fd, path, limit))) throw new ContextMessageHistoryError("context-source-unavailable", "Context history changed while reading", undefined, "changed");
       this.assertRoot();
       return { pin, bytes, hash: sha256(bytes) };
     } finally { closeSync(fd); }
   }
   private assertRootManifest(): void {
     const manifest = this.captureFile(join(this.directory, "manifest.json"), 64 * 1024);
-    if (!samePin(this.manifest.pin, manifest.pin) || this.manifest.hash !== manifest.hash) throw new Error("Context history manifest changed");
+    if (!samePin(this.manifest.pin, manifest.pin) || this.manifest.hash !== manifest.hash) throw new ContextMessageHistoryError("context-source-unavailable", "Context history manifest changed", undefined, "changed");
   }
   private guard(): void {
     synchronousDispatchHook(() => this.deps.assertStorage());

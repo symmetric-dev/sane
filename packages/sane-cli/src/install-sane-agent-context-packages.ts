@@ -67,7 +67,7 @@ export const PLUGIN_SRC_FILES: readonly string[] = ["cli-arguments.ts", "native-
 
 /** Browser-safe parser shared by the App and native transports. Keep its full
  * runtime closure here; it must not import App persistence or service modules. */
-export const PLUGIN_APP_SHARED_FILES: readonly string[] = ["user-questions-contract.ts"]
+export const PLUGIN_APP_SHARED_FILES: readonly string[] = ["user-questions-contract.ts", "compaction-context-contract.ts"]
 
 export const PLUGIN_CORE_SRC_FILES: readonly string[] = ["agent-catalog.ts", "artifact-lock.ts", "bootstrap-registry.ts", "bootstrap-validation.ts", "confined-lifecycle-filesystem.ts", "context-markdown.ts", "contracts.ts", "document-catalog.ts", "errors.ts", "execution-report-validation.ts", "handoff.ts", "job-policy.ts", "lifecycle-filesystem.ts", "lifecycle.ts", "markdown-document-validation.ts", "native-source-contract.ts", "native-source.ts", "planning-document-validation.ts", "provision.ts", "repository.ts", "repository-reader.ts", "repository-reader-worker.ts", "sane-context.ts", "sane-framework.ts", "sane-worker-procedures.ts", "schema.ts", "schema-upgrade.ts", "server.ts", "slots.ts", "validation.ts", "workstream-type.ts"]
 
@@ -76,6 +76,7 @@ export const PLUGIN_FILENAMES = [
   "sane/index.ts",
   "sane/execution.ts",
   "sane/execution-rpc.ts",
+  "sane/compaction-context.ts",
   "sane/visibility.ts",
   ...PLUGIN_SRC_FILES.map((filename) => `sane/runtime/packages/sane-cli/src/${filename}`),
   ...PLUGIN_CORE_SRC_FILES.map(filename => `sane/runtime/packages/sane-core/src/${filename}`),
@@ -99,6 +100,7 @@ export const OPENCODE_CONFIG_PACKAGE_FILENAME = "package.json"
 
 export function rewritePluginImports(content: string): string {
   return content.split(PLUGIN_SRC_IMPORT_PREFIX).join(PLUGIN_DEST_IMPORT_PREFIX)
+    .split("../../../packages/sane-app/shared/").join("./runtime/packages/sane-app/shared/")
 }
 
 export const DEFAULT_SOURCE_ROOT = fileURLToPath(new URL("../../../", import.meta.url))
@@ -225,6 +227,11 @@ function installationEntries(
       source: join(sourceRoot, "opencode", "plugins", "sane", filename),
       destination: join(homeDirectory, ".config", "opencode", "plugins", "sane", filename),
     })),
+    {
+      rewriteImports: true,
+      source: join(sourceRoot, "opencode", "plugins", "sane", "compaction-context.ts"),
+      destination: join(homeDirectory, ".config", "opencode", "plugins", "sane", "compaction-context.ts"),
+    },
     ...PLUGIN_SRC_FILES.map((filename) => ({
       rewriteImports: true,
       source: join(sourceRoot, "packages", "sane-cli", "src", filename),

@@ -307,6 +307,35 @@
   height:28px;
 }
 
+.conversation-sidebar-relations {
+  position:absolute;
+  left:13px;
+  right:64px;
+  bottom:10px;
+  height:22px;
+  display:flex;
+  align-items:center;
+  pointer-events:none;
+}
+
+.history-list .conversation-sidebar-relations .conversation-sidebar-asides {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:4px;
+  width:auto;
+  min-width:30px;
+  height:22px;
+  padding:2px;
+  border:1px solid transparent;
+  border-radius:5px;
+  color:var(--muted-foreground);
+  font-size:11px;
+  font-variant-numeric:tabular-nums;
+  flex-shrink:0;
+  pointer-events:auto;
+}
+
 /* Main Chat sidebar tabs reach the panel, including on wide iPad layouts.
    shell.css widens the scrollport by --chat-panel-overlap for the Safari seam
    workaround; compensate here to preserve unselected row/content alignment.
@@ -355,4 +384,13 @@
 
 .view-chat>.sidebar .conversation-sidebar-row>button:focus-visible {
   outline:none;
+}
+
+.view-chat>.sidebar .conversation-sidebar-row:has(>button.selected)>.conversation-sidebar-relations {
+  right:76px;
+}
+
+.history-list .conversation-sidebar-relations .conversation-sidebar-asides:focus-visible {
+  outline:2px solid var(--focus-ring);
+  outline-offset:-2px;
 }

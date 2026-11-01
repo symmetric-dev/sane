@@ -2,7 +2,7 @@ import { lstatSync, readFileSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import { DomainError, normalizeNativeSource } from "../../sane-core/src/server.ts"
 import { nativeRuntimeHeaders, type NativeCaller } from "./native-caller.ts"
-import { codeShareInputSnippets, codeShareSnippetRange, parseCodeShareInput, type CodeShareReceipt, type NativeCodeShareRequest } from "./native-share-code-contract.ts"
+import { CODE_SHARE_LIMITS, codeShareInputSnippets, codeShareSnippetRange, isInlineCodeShareSnippet, parseCodeShareInput, type CodeSharePageInput, type CodeSharePageRange, type CodeShareReceipt, type NativeCodeShareRequest } from "./native-share-code-contract.ts"
 
 type Invocation = NativeCodeShareRequest["invocation"]
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value)
@@ -15,6 +15,25 @@ export function claudeCodeShareInvocation(caller: NativeCaller): Invocation {
   return { toolCallId: caller.invocation.toolCallId, invocationId: caller.invocation.toolCallId, ...(caller.invocation.messageId ? { messageId: caller.invocation.messageId } : {}) }
 }
 
+/** The App resolves omitted file boundaries. Verify all supplied boundaries and
+ * project only bounded, concrete ranges, without reading the live file again. */
+function projectRange(value: unknown, input: CodeSharePageInput): CodeSharePageRange {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
+  const range = value as Record<string, unknown>
+  if (isInlineCodeShareSnippet(input)) {
+    const expected = codeShareSnippetRange(input)
+    if (Object.entries(expected).some(([key, value]) => range[key] !== value)) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
+    return expected
+  }
+  const { startLine, endLine } = range
+  if (range.kind !== undefined || range.path !== input.path
+    || typeof startLine !== "number" || !Number.isSafeInteger(startLine) || startLine !== (input.startLine ?? 1)
+    || typeof endLine !== "number" || !Number.isSafeInteger(endLine) || endLine < startLine || endLine - startLine + 1 > CODE_SHARE_LIMITS.lines
+    || input.endLine !== undefined && endLine !== input.endLine
+    || input.highlights?.some(highlight => highlight.startLine < startLine || highlight.endLine > endLine)) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
+  return { path: input.path, startLine, endLine }
+}
+
 /** Project only the compact receipt; source text and internal project/session fields
  * never become tool output. A successful but invalid reply is an unknown acknowledgment. */
 function projectReceipt(value: unknown, input: NativeCodeShareRequest["input"]): CodeShareReceipt {
@@ -22,13 +41,16 @@ function projectReceipt(value: unknown, input: NativeCodeShareRequest["input"]):
   const receipt = value as Record<string, unknown>
   if (receipt.type !== "sane.code-share" || !text(receipt.shareId)) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
   if ("snippets" in input) {
-    const expected = codeShareInputSnippets(input).map(codeShareSnippetRange), version = expected.some(snippet => "kind" in snippet) ? 3 : 2
-    if (receipt.version !== version || !Array.isArray(receipt.snippets) || receipt.snippets.length !== expected.length || receipt.snippets.some((snippet, index) => !snippet || typeof snippet !== "object" || snippet.kind !== ("kind" in expected[index]! ? "inline" : undefined) || Object.entries(expected[index]!).some(([key, value]) => snippet[key] !== value))) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
-    if (version === 3) return { type: "sane.code-share", version: 3, shareId: receipt.shareId, snippets: expected }
-    return { type: "sane.code-share", version: 2, shareId: receipt.shareId, snippets: expected.flatMap(snippet => "path" in snippet ? [{ path: snippet.path, startLine: snippet.startLine, endLine: snippet.endLine }] : []) }
+    const pages = codeShareInputSnippets(input), version = pages.some(isInlineCodeShareSnippet) ? 3 : 2
+    if (receipt.version !== version || !Array.isArray(receipt.snippets) || receipt.snippets.length !== pages.length) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
+    const received = receipt.snippets
+    const ranges = pages.map((page, index) => projectRange(received[index], page))
+    if (version === 3) return { type: "sane.code-share", version: 3, shareId: receipt.shareId, snippets: ranges }
+    return { type: "sane.code-share", version: 2, shareId: receipt.shareId, snippets: ranges.flatMap(snippet => "path" in snippet ? [{ path: snippet.path, startLine: snippet.startLine, endLine: snippet.endLine }] : []) }
   }
-  if (receipt.version !== 1 || receipt.path !== input.path || receipt.startLine !== input.startLine || receipt.endLine !== input.endLine) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
-  return { type: "sane.code-share", version: 1, shareId: receipt.shareId, path: input.path, startLine: input.startLine, endLine: input.endLine }
+  if (receipt.version !== 1) throw new DomainError("UNAVAILABLE", UNKNOWN_ACKNOWLEDGMENT)
+  const range = projectRange(receipt, input)
+  return { type: "sane.code-share", version: 1, shareId: receipt.shareId, path: input.path, startLine: range.startLine, endLine: range.endLine }
 }
 
 /** App admission, checkout confinement, and snapshot persistence are server-side.

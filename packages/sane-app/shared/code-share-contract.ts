@@ -1,6 +1,6 @@
 import { CODE_SHARE_LIMITS, codeShareInputSnippets, codeShareSnippetRange, isInlineCodeShareSnippet, normalizeCodeShareText, parseCodeShareInput, parseCodeSharePage, parseCodeShareSnippet, resolveCodeShareLanguage, type CodeShareSnippetInput, type CodeSharePageInput, type CodeShareSnippetsInput, type CodeShareLanguage } from "../../sane-cli/src/native-share-code-contract"
 
-export { CODE_SHARE_LIMITS, codeShareInputSnippets, codeShareSnippetRange, isInlineCodeShareSnippet, normalizeCodeShareText, parseCodeShareInput, resolveCodeShareLanguage }
+export { CODE_SHARE_LIMITS, codeShareInputSnippets, codeShareSnippetRange, isInlineCodeShareSnippet, normalizeCodeShareText, parseCodeShareInput, parseCodeShareSnippet, resolveCodeShareLanguage }
 export type { CodeShareHighlight, CodeShareInput, CodeShareSnippetInput, CodeShareInlineSnippetInput, CodeSharePageInput, CodeShareSnippetsInput, CodeShareLanguage, CodeShareReceipt, NativeCodeShareRequest } from "../../sane-cli/src/native-share-code-contract"
 
 interface CodeShareIdentity {
@@ -35,8 +35,9 @@ function isSnapshot(value: unknown, allowInline = false): value is CodeShareSnap
   const v = value as CodeShareSnapshot
   if (typeof v.sourceRevision !== "string" || !/^[a-f0-9]{64}$/.test(v.sourceRevision) || typeof v.code !== "string" || v.code.length > CODE_SHARE_LIMITS.bytes || new TextEncoder().encode(v.code).length > CODE_SHARE_LIMITS.bytes || /[\r\0]/.test(v.code)) return false
   try {
-    const input = allowInline ? parseCodeSharePage(v.input) : parseCodeShareSnippet(v.input), range = codeShareSnippetRange(input)
+    const input = allowInline ? parseCodeSharePage(v.input) : parseCodeShareSnippet(v.input), range = codeShareSnippetRange(input, v.code)
     const inline = isInlineCodeShareSnippet(input)
+    if (!inline) parseCodeShareSnippet({ ...input, startLine: range.startLine, endLine: range.endLine })
     return v.language === resolveCodeShareLanguage(inline ? "" : input.path, input.format) && v.code.split("\n").length === range.endLine - range.startLine + 1
       && (!inline || v.code === normalizeCodeShareText(input.code))
   } catch { return false }

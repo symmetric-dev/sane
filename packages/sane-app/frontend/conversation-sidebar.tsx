@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
-import { FiBell, FiGitBranch, FiUsers } from "react-icons/fi";
+import { FiBell, FiGitBranch, FiMessageCircle, FiUsers } from "react-icons/fi";
 import { store, type State } from "./store";
 import { AgentAvatar } from "./agent-visuals";
 import { formatTitle } from "./conversation-filter";
@@ -13,6 +13,7 @@ import { CHAT_WORKTREE_SHORTCUTS, shortcutHint } from "./shortcut-definitions";
 import type { Conversation } from "./types";
 import { useCatalogSelector, worktreeDisplay } from "./catalog-selector";
 import { WorktreeMenu } from "./worktree-menu";
+import { asideCountFor, requestAsideList, useAsideCounts } from "./aside-client";
 import "./conversation-sidebar.css";
 
 export { useConversationSidebarModel } from "./conversation-sidebar-model";
@@ -51,6 +52,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
   // Dialog visibility is presentation-local: opening the drawer must not create two modal dialogs.
   const [dialogOpen, setDialogOpen] = useState(false);
   const notifications = useSyncExternalStore(notificationStore.subscribe, notificationStore.snapshot);
+  const asideCounts = useAsideCounts();
   const unreadSessions = new Set(notifications.items.map(item => item.conversationId));
   // Notification sources are hydrated independently of sidebar pages. A closed
   // panel must retain its unread badge without loading any conversation rows.
@@ -98,9 +100,27 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
     const selected = selectedId === c.id;
     const phases = membership?.phases ?? [];
     const workerCount = workerCounts.get(c.id) ?? 0;
+    const asideScope = state.config?.asideCapability?.drafts && state.config.storeId ? { storeId: state.config.storeId, sessionId: c.id } : null;
+    const asideCount = asideScope ? Math.max(c.asideCount ?? 0, asideCountFor(asideScope, asideCounts)) : 0;
     const profile = store.profileFor(c);
     const showConnect = !history && !!onConnect && !c.replacedBy && !c.worker && c.agentKind !== "worker" && !knownWorker(c.id);
     const connectDisabled = state.sending || state.actionBusy || canConnect?.(c) === false;
+    const asideAction = !history && asideScope && asideCount > 0 ? <button type="button" className="conversation-sidebar-asides" disabled={state.sending || state.phase !== "ready"} aria-haspopup="dialog" aria-label={`Open ${asideCount} asides for ${formatTitle(c.title, basename(c.cwd))}`} title={`${asideCount} asides`} onClick={event => {
+      const trigger = event.currentTarget;
+      select(c.id);
+      const current = store.snapshot();
+      if (current.selected === c.id && current.config?.storeId === asideScope.storeId && !current.sending && current.phase === "ready") requestAsideList(asideScope, trigger);
+    }}><FiMessageCircle size={12} aria-hidden="true" /><span aria-hidden="true">{asideCount}</span></button> : null;
+    const metadata = <span className="conversation-sidebar-metadata" aria-busy={workstreamLoading}>
+      {membership?.workstreamId ? history && <WorkstreamIcon workstreamId={membership.workstreamId} /> : workstreamLoading && <span role="status" title="Loading workstream…"><span className="conversation-sidebar-loading-dots" aria-hidden="true">…</span><span className="sr-only">Loading workstream</span></span>}
+      {phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}
+      {showLocation && <span className="conversation-sidebar-location" title={locationLabel(c)}>{locationLabel(c)}</span>}
+      {!history && workerCount > 0 && <span className="history-workers" title={`${workerCount} direct workers`}><FiUsers size={12} aria-hidden="true" /><span aria-hidden="true">{workerCount}</span><span className="sr-only">{workerCount} direct workers</span></span>}
+      {asideAction}
+      {history && knownWorker(c.id) && <span className="harness-badge">Worker</span>}
+      {history && c.replacedBy ? <span className="harness-badge">Replaced</span> : c.hidden && <span className="harness-badge">Hidden</span>}
+      {history && c.branchOrigin && <span className="harness-badge">Branch</span>}
+    </span>;
     return <div className="history-row conversation-sidebar-row" key={c.id}>
       <button type="button" className={selected ? "selected" : ""} aria-current={selected ? "page" : undefined} disabled={!history && state.sending} onClick={() => select(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}>
         <span className="history-line conversation-sidebar-heading">
@@ -109,18 +129,12 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
           {unreadSessions.has(c.id) && <span className="conversation-sidebar-unread"><FiBell size={13} aria-hidden="true" /><span className="sr-only">Unread update</span></span>}
         </span>
         <span className="history-line conversation-sidebar-footer">
-          <span className="conversation-sidebar-metadata" aria-busy={workstreamLoading}>
-            {membership?.workstreamId ? history && <WorkstreamIcon workstreamId={membership.workstreamId} /> : workstreamLoading && <span role="status" title="Loading workstream…"><span className="conversation-sidebar-loading-dots" aria-hidden="true">…</span><span className="sr-only">Loading workstream</span></span>}
-            {phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}
-            {showLocation && <span className="conversation-sidebar-location" title={locationLabel(c)}>{locationLabel(c)}</span>}
-            {!history && workerCount > 0 && <span className="history-workers" title={`${workerCount} direct workers`}><FiUsers size={12} aria-hidden="true" /><span aria-hidden="true">{workerCount}</span><span className="sr-only">{workerCount} direct workers</span></span>}
-            {history && knownWorker(c.id) && <span className="harness-badge">Worker</span>}
-            {history && c.replacedBy ? <span className="harness-badge">Replaced</span> : c.hidden && <span className="harness-badge">Hidden</span>}
-            {history && c.branchOrigin && <span className="harness-badge">Branch</span>}
-          </span>
+          {asideAction ? <span className="conversation-sidebar-metadata" aria-hidden="true" /> : metadata}
           <StatusIcon status={c.status} protocol={c.workerProtocol} />
         </span>
       </button>
+      {/* Keep the action outside the selection button, but inline with workers. */}
+      {asideAction && <div className="conversation-sidebar-relations">{metadata}</div>}
       <ConversationMenu conversationId={c.id} hidden={c.hidden} disabled={state.actionBusy || !!c.replacedBy} metadataDisabled={!!c.replacedBy} onHistory={onHistory ?? (history ? onSelect : undefined)} onConnect={showConnect ? onConnect : undefined} connectDisabled={connectDisabled} />
     </div>;
   };

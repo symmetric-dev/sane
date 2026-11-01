@@ -39,7 +39,11 @@ export type ContextMessageDispatchObservation = Readonly<{
   evidence: DispatchSubmissionEvidence;
 }>;
 
-function fail(reason: string): never { throw new Error(`Invalid context message evidence: ${reason}`); }
+export class ContextMessageEvidenceValidationError extends Error {
+  readonly name = "ContextMessageEvidenceValidationError";
+  constructor(reason: string) { super(`Invalid context message evidence: ${reason}`); }
+}
+function fail(reason: string): never { throw new ContextMessageEvidenceValidationError(reason); }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("expected object");
   return value as Record<string, unknown>;

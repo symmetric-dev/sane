@@ -1,54 +1,36 @@
-.shared-code-card { margin: .65rem 0; }
-.shared-code-card .chat-card-header-title { font-family: var(--font-mono, monospace); }
-.shared-code-source-path { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); font-family: var(--font-mono, monospace); }
-.shared-code-card button[aria-pressed="true"] { font-weight: 700; text-decoration: underline; }
-.shared-code-caption { margin: .4rem .65rem; opacity: .7; font-size: .72rem; }
-.shared-code-editor .cm-editor { background: transparent; font-size: .78rem; }
-.shared-code-editor .cm-scroller { max-height: 28rem; overflow: auto; overscroll-behavior: contain; }
+.shared-code-card { margin-block: var(--chat-ui-space-2); overflow: hidden; }
+.shared-code-card:not(.shared-code-expanded) { height: 65vh; max-height: 65vh; }
+.shared-code-card > .shared-code-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--chat-ui-space-2); padding: var(--chat-ui-space-2) var(--chat-card-padding); background: var(--chat-ui-surface); }
+.shared-code-header .chat-card-header-title, .shared-code-header .chat-card-header-description { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shared-code-header .chat-card-header-actions { flex-wrap: nowrap; gap: var(--chat-ui-space-1); margin-inline-start: 0; }
+.shared-code-copy { min-width: 4rem; }
+.shared-code-editor .cm-editor { height: 100%; background: transparent; font-size: .78rem; }
+.shared-code-editor .cm-scroller { max-height: none; overflow: auto; overscroll-behavior: contain; }
 .shared-code-card .shared-code-highlight { background: color-mix(in srgb, #d6a83b 19%, transparent); }
 .shared-code-card .shared-code-comment { display: block; margin: .3rem .5rem; padding: .4rem .65rem; border-left: 3px solid #b89131; background: color-mix(in srgb, #d6a83b 12%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; font: .78rem/1.5 var(--font-sans, sans-serif); }
-.shared-code-fallback { max-height: 28rem; overflow: auto; padding: .5rem .65rem; }
+.shared-code-fallback { flex: 1; min-height: 0; max-height: none; overflow: auto; padding: .5rem .65rem; }
 .shared-code-fallback pre { margin: 0; }
 .shared-code-line-number { opacity: .55; user-select: none; }
-.shared-code-feedback:empty { display: none; }
-.shared-code-feedback { padding: .5rem .65rem; }
 .shared-code-notice, .shared-code-pending { margin-block: var(--chat-ui-space-2); }
-.shared-code-pagination { display: flex; flex: 1; min-width: 0; align-items: center; gap: .25rem; }
-.shared-code-tabs { display: flex; flex: 1; min-width: 0; gap: .2rem; }
-.shared-code-tab { flex: 1 1 0; min-width: 0; min-height: 2rem; padding: .35rem .5rem; border: 0; border-bottom: 2px solid transparent; border-radius: 4px 4px 0 0; background: transparent; color: var(--muted-foreground); }
-.shared-code-tab > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.shared-code-tab:hover, .shared-code-overflow:hover { background: var(--muted); color: var(--foreground); }
-.shared-code-tab[aria-selected="true"] { border-bottom-color: var(--primary); background: var(--muted); color: var(--foreground); font-weight: 600; }
-.shared-code-overflow { flex-shrink: 0; min-width: 2rem; min-height: 2rem; padding: .25rem; border: 0; border-radius: 4px; background: transparent; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
-.shared-code-count { flex-shrink: 0; color: var(--muted-foreground); font-size: .72rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.shared-code-overflow-menu { position: fixed; inset: auto; z-index: 100; box-sizing: border-box; margin: 0; padding: .25rem; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--foreground); box-shadow: 0 6px 24px #0003; font: .8rem/1.45 var(--font-sans, sans-serif); }
-.shared-code-overflow-menu[data-open="false"] { display: none; }
-.shared-code-overflow-menu button { display: flex; align-items: baseline; gap: .6rem; width: 100%; padding: .5rem .65rem; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.shared-code-overflow-menu button > span:last-child { min-width: 0; overflow-wrap: anywhere; }
-.shared-code-overflow-menu button:hover, .shared-code-overflow-menu button:focus-visible { background: var(--muted); outline: 2px solid var(--primary); outline-offset: -2px; }
-.shared-code-menu-index { flex-shrink: 0; min-width: 1.25rem; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.shared-code-controls { padding: var(--chat-ui-space-1) var(--chat-card-padding); background: var(--chat-ui-surface); }
+.shared-code-pagination { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: var(--chat-ui-space-2); }
+.shared-code-picker { position: relative; flex: 0 1 24rem; min-width: 0; color: var(--chat-ui-muted); }
+.shared-code-picker select { box-sizing: border-box; width: 100%; min-width: 0; min-height: var(--chat-ui-control-height); padding: var(--chat-ui-space-1) calc(2 * var(--chat-ui-space-3)) var(--chat-ui-space-1) var(--chat-ui-space-2); appearance: none; border: 1px solid transparent; border-radius: var(--chat-ui-control-radius); background: transparent; color: inherit; font: inherit; text-overflow: ellipsis; cursor: pointer; }
+.shared-code-picker select:hover { background: var(--chat-ui-surface-muted); color: var(--chat-ui-foreground); }
+.shared-code-picker select:focus-visible { outline: var(--chat-ui-focus-width) solid var(--chat-ui-focus); outline-offset: -2px; }
+.shared-code-picker select option { background: var(--chat-ui-surface); color: var(--chat-ui-foreground); }
+.shared-code-picker > svg { position: absolute; top: 50%; right: var(--chat-ui-space-2); transform: translateY(-50%); pointer-events: none; }
+.shared-code-details p { margin: 0; }
+.shared-code-details dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--chat-ui-space-2) var(--chat-ui-space-3); margin-block: var(--chat-ui-space-3); }
+.shared-code-details dt { color: var(--chat-ui-muted); }
+.shared-code-details dd { margin: 0; overflow-wrap: anywhere; }
 .shell-dialog.chat-dialog.shared-code-dialog { width: 84vw; height: 84dvh; }
 .shared-code-dialog > .shell-dialog-content { height: 100%; }
 .shell-dialog.shared-code-dialog .chat-dialog-body { display: flex; padding: 0; overflow: hidden; }
 .shared-code-expanded { display: flex; flex-direction: column; flex: 1; min-height: 0; margin: 0; border: 0; border-radius: 0; }
-.shared-code-expanded > :not(.shared-code-panel) { flex-shrink: 0; }
-.shared-code-panel { min-width: 0; }
-.shared-code-expanded .shared-code-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.shared-code-expanded .shared-code-editor { flex: 1; min-height: 0; }
-.shared-code-expanded .cm-editor { height: 100%; }
-.shared-code-expanded .cm-scroller { max-height: none; }
-.shared-code-expanded .shared-code-fallback { flex: 1; min-height: 0; max-height: none; }
+.shared-code-card > :not(.shared-code-panel) { flex-shrink: 0; }
+.shared-code-panel { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.shared-code-editor { flex: 1; min-height: 0; }
 @media (max-width: 640px) {
   .shell-dialog.chat-dialog.shared-code-dialog { width: 96vw; height: 92dvh; }
-  .shared-code-tab, .shared-code-overflow { min-height: 2.75rem; }
-}
-@media (max-width: 480px) {
-  .shared-code-controls { align-items: flex-end; gap: .25rem; }
-  .shared-code-pagination { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; gap: .2rem; }
-  .shared-code-overflow-before { grid-row: 1; grid-column: 1; }
-  .shared-code-tabs { grid-row: 1; grid-column: 2 / 5; }
-  .shared-code-overflow-after { grid-row: 1; grid-column: 5; }
-  .shared-code-previous { grid-row: 2; grid-column: 1; }
-  .shared-code-next { grid-row: 2; grid-column: 2; }
-  .shared-code-count { grid-row: 2; grid-column: 4 / 6; justify-self: end; }
 }

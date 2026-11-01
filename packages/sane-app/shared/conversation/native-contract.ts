@@ -53,6 +53,8 @@ export type MessagePart =
  * millisecond timestamp. Retained terminal metadata is not live retry activity. */
 export type NativeRetry = { attempt: number; at: number; error: unknown };
 export type MessageSnapshot = {
+  /** Native instruction-discovery provenance, never inferred from message prose. */
+  nativeInstructionContext?: { paths: string[] };
   nativeShellResult?: { shellId: string; state: string; exit?: number; truncated?: boolean };
   nativeSubagentResult?: { sessionId: string; agent?: string; state: string };
   messageId: string; role: "user" | "assistant" | "system"; parts: MessagePart[];

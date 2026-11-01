@@ -2,7 +2,7 @@ import type { NativeSourceDescriptor } from "../../sane-core/src/contracts.ts"
 
 export const CODE_SHARE_LIMITS = { path: 4096, title: 256, lines: 500, bytes: 64 * 1024, highlights: 64, comment: 2000, snippets: 16, totalBytes: 256 * 1024, inputBytes: 256 * 1024 } as const
 export interface CodeShareHighlight { startLine: number; endLine: number; comment?: string }
-export interface CodeShareSnippetInput { path: string; startLine: number; endLine: number; title?: string; format?: string; highlights?: CodeShareHighlight[] }
+export interface CodeShareSnippetInput { path: string; startLine?: number; endLine?: number; title?: string; format?: string; highlights?: CodeShareHighlight[] }
 export interface CodeShareInlineSnippetInput { kind: "inline"; title: string; code: string; format?: string; highlights?: CodeShareHighlight[] }
 export type CodeSharePageInput = CodeShareSnippetInput | CodeShareInlineSnippetInput
 export interface CodeShareSnippetsInput { snippets: CodeSharePageInput[] }
@@ -14,20 +14,20 @@ export interface NativeCodeShareRequest {
   invocation: { toolCallId: string; messageId?: string; invocationId: string; wrapper?: "execute" }
   input: CodeShareInput
 }
-export type CodeShareSnippetRange = Pick<CodeShareSnippetInput, "path" | "startLine" | "endLine">
+export type CodeShareSnippetRange = { path: string; startLine: number; endLine: number }
 export type CodeSharePageRange = CodeShareSnippetRange | { kind: "inline"; title: string; startLine: number; endLine: number }
 export type CodeShareReceipt = { type: "sane.code-share"; version: 1; shareId: string } & CodeShareSnippetRange
   | { type: "sane.code-share"; version: 2; shareId: string; snippets: CodeShareSnippetRange[] }
   | { type: "sane.code-share"; version: 3; shareId: string; snippets: CodeSharePageRange[] }
 
-export const nativeShareCodeDescription = "Show read-only code snippets as pages in one App chat card, with syntax highlighting and optional highlighted line ranges and comments. Prefer the snippets array, which can mix file references (path/startLine/endLine) and supplied code (kind: inline, title, code, optional format/highlights). Use inline snippets to show suggestions alongside existing code without writing or executing anything; they are labeled as suggested code, not saved files. Consider several focused snippets for Previous/Next navigation. Up to 16 snippets, 500 lines and 64 KiB of code each, 256 KiB of code total, and 256 KiB of serialized arguments including comments. Paths are relative to the conversation's execution checkout, except .sane/... paths read SANE state from the repository's primary checkout (also in a linked worktree). Lines are 1-based and inclusive; inline lines start at 1, with the end derived from code. Comments appear before their highlighted range. Each snippet can override its syntax format. The App saves frozen snapshots, not live file links. Legacy single-snippet path/startLine/endLine arguments remain supported; do not combine them with snippets. Available only in App-admitted conversations; does not require workstream enrollment."
+export const nativeShareCodeDescription = "Show read-only code snippets as pages in one App chat card, with syntax highlighting and optional highlighted line ranges and comments. Prefer the snippets array, which can mix file references (path, optional startLine/endLine) and supplied code (kind: inline, title, code, optional format/highlights). Share a whole file with just path; startLine defaults to 1 and endLine defaults to the captured file's last line. Use inline snippets to show suggestions alongside existing code without writing or executing anything; they are labeled as suggested code, not saved files. Consider several focused snippets for navigation. Up to 16 snippets, 500 lines and 64 KiB of code each, 256 KiB of code total, and 256 KiB of serialized arguments including comments. Oversized whole files are rejected, never truncated; specify a smaller range instead. Paths are relative to the conversation's execution checkout, except .sane/... paths read SANE state from the repository's primary checkout (also in a linked worktree). Lines are 1-based and inclusive; inline lines start at 1, with the end derived from code. Comments appear before their highlighted range. Each snippet can override its syntax format. The App saves frozen snapshots, not live file links. Legacy single-snippet path arguments with optional startLine/endLine remain supported; do not combine them with snippets. Available only in App-admitted conversations; does not require workstream enrollment."
 const snippetSchema = {
-  type: "object", additionalProperties: false, required: ["path", "startLine", "endLine"],
+  type: "object", additionalProperties: false, required: ["path"],
   properties: {
     path: { type: "string", minLength: 1, maxLength: CODE_SHARE_LIMITS.path, pattern: "^(?![A-Za-z]:)(?![\\s\\S]*[\\u0000-\\u001f\\\\])(?!(?:[\\s\\S]*/)?\\.{1,2}(?:/|$))[^/]+(?:/[^/]+)*$(?![\\s\\S])", description: "File path relative to the conversation's execution checkout, or .sane/... relative to the repository's primary checkout. No absolute paths, traversal, empty segments, or backslashes." },
-    startLine: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "First source line, inclusive." },
-    endLine: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "Last source line, inclusive. Share at most 500 lines." },
-    title: { type: "string", minLength: 1, maxLength: CODE_SHARE_LIMITS.title, allOf: [{ pattern: "\\S" }, { not: { pattern: "[\\u0000-\\u001f\\u007f]" } }], description: "Optional display title for this file snippet, e.g. Current implementation. Defaults to the filename in tabs; the source path remains visible in the header." },
+    startLine: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "First source line, inclusive. Defaults to 1." },
+    endLine: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "Last source line, inclusive. Defaults to the captured file's last line. Share at most 500 lines; larger ranges are rejected, not truncated." },
+    title: { type: "string", minLength: 1, maxLength: CODE_SHARE_LIMITS.title, allOf: [{ pattern: "\\S" }, { not: { pattern: "[\\u0000-\\u001f\\u007f]" } }], description: "Optional display title for this file snippet, e.g. Current implementation. Defaults to the source path; the full path is also available in details." },
     format: { type: "string", minLength: 1, maxLength: 32, pattern: "^[.a-zA-Z0-9_+-]{1,32}$(?![\\s\\S])", description: "Syntax override, e.g. .md, .json, .py, typescript, or plaintext. Defaults to the file extension; unknown formats use plaintext. Does not transform source." },
     highlights: { type: "array", maxItems: CODE_SHARE_LIMITS.highlights, items: {
       type: "object", additionalProperties: false, required: ["startLine", "endLine"], properties: {
@@ -72,13 +72,15 @@ function withinLength(value: string, maximum: number): boolean {
 function validTitle(value: unknown): value is string { return typeof value === "string" && !!value.trim() && withinLength(value, CODE_SHARE_LIMITS.title) && !/[\u0000-\u001f\u007f]/.test(value) }
 
 export function parseCodeShareSnippet(input: unknown): CodeShareSnippetInput {
-  const invalid = (): never => { throw new Error("Invalid code share: use a relative file path, an inclusive range of at most 500 lines, and contained highlight ranges with bounded comments.") }
-  if (!object(input) || !exact(input, ["path", "startLine", "endLine"], ["title", "format", "highlights"])) return invalid()
+  const invalid = (): never => { throw new Error("Invalid code share: use a relative file path, optional inclusive startLine/endLine (defaulting to the whole file), at most 500 lines, and contained highlight ranges with bounded comments.") }
+  if (!object(input) || !exact(input, ["path"], ["startLine", "endLine", "title", "format", "highlights"])) return invalid()
   const { path, startLine, endLine, title, format, highlights } = input
   if (typeof path !== "string" || !path.length || !withinLength(path, CODE_SHARE_LIMITS.path) || /[\u0000-\u001f\\]/.test(path) || path.startsWith("/") || /^[A-Za-z]:/.test(path) || path.split("/").some(segment => !segment || segment === "." || segment === "..")) return invalid()
-  if (!line(startLine) || !line(endLine) || endLine < startLine || endLine - startLine + 1 > CODE_SHARE_LIMITS.lines) return invalid()
+  if (startLine !== undefined && !line(startLine) || endLine !== undefined && !line(endLine)) return invalid()
+  const first = typeof startLine === "number" ? startLine : 1
+  if (typeof endLine === "number" && (endLine < first || endLine - first + 1 > CODE_SHARE_LIMITS.lines)) return invalid()
   if (title !== undefined && !validTitle(title)) return invalid()
-  return { path, startLine, endLine, ...(typeof title === "string" ? { title } : {}), ...parseCodeShareAnnotations(format, highlights, startLine, endLine) }
+  return { path, ...(typeof startLine === "number" ? { startLine } : {}), ...(typeof endLine === "number" ? { endLine } : {}), ...(typeof title === "string" ? { title } : {}), ...parseCodeShareAnnotations(format, highlights, first, typeof endLine === "number" ? endLine : Number.MAX_SAFE_INTEGER) }
 }
 
 function parseCodeShareAnnotations(format: unknown, highlights: unknown, startLine: number, endLine: number): Pick<CodeShareSnippetInput, "format" | "highlights"> {
@@ -95,10 +97,13 @@ function parseCodeShareAnnotations(format: unknown, highlights: unknown, startLi
 
 export function normalizeCodeShareText(code: string): string { return code.replace(/\r\n|\r/g, "\n") }
 export function isInlineCodeShareSnippet(input: CodeSharePageInput): input is CodeShareInlineSnippetInput { return "kind" in input && input.kind === "inline" }
-export function codeShareSnippetRange(input: CodeSharePageInput): CodeSharePageRange {
-  return isInlineCodeShareSnippet(input)
-    ? { kind: "inline", title: input.title, startLine: 1, endLine: normalizeCodeShareText(input.code).split("\n").length }
-    : { path: input.path, startLine: input.startLine, endLine: input.endLine }
+/** Resolve omitted boundaries from the frozen excerpt, never the current file. */
+export function codeShareSnippetRange(input: CodeSharePageInput, capturedCode?: string): CodeSharePageRange {
+  if (isInlineCodeShareSnippet(input)) return { kind: "inline", title: input.title, startLine: 1, endLine: normalizeCodeShareText(input.code).split("\n").length }
+  const startLine = input.startLine ?? 1
+  const endLine = input.endLine ?? (capturedCode !== undefined ? startLine + normalizeCodeShareText(capturedCode).split("\n").length - 1 : undefined)
+  if (endLine === undefined) throw new Error("A frozen code excerpt is required to resolve an omitted endLine.")
+  return { path: input.path, startLine, endLine }
 }
 
 export function parseCodeSharePage(input: unknown): CodeSharePageInput {

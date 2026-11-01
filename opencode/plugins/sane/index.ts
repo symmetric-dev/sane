@@ -13,12 +13,14 @@ import { nativeUserQuestionsDescription, nativeUserQuestionsSchema, parsePresent
 import { presentQuestionsNativeCaller } from "../../../packages/sane-cli/src/native-user-questions.ts"
 import { browserNativeCaller, nativeBrowserDescriptions, nativeBrowserSchemas, nativeBrowserToolNames } from "../../../packages/sane-cli/src/native-browser.ts"
 import { registerExecutionOperations } from "./execution.ts"
+import { registerCompactionContext } from "./compaction-context.ts"
 import { createSaneVisibility } from "./visibility.ts"
 
 export const SanePlugin = Plugin.define({
   id: "sane",
   async setup(ctx) {
     const execution = await registerExecutionOperations(ctx)
+    const compactionContext = await registerCompactionContext(ctx, execution)
     const registration = ctx.options.registrationFile
     // Per-session visibility via session permission rules (see visibility.ts).
     // Tools stay registered (Code Mode); hiding never replaces handler checks.
@@ -164,7 +166,7 @@ export const SanePlugin = Plugin.define({
       const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
       event.input = { ...input, command: `export SANE_CALLER_CONTEXT=${quote(reference)}\nunset SANE_SESSION_ID OPENCODE_SESSION_ID\n${input.command}` }
     })
-    return async () => { workerInvocations.clear(); visibility.clear(); await visibilityPrompt.dispose(); await visibilityContext.dispose(); await execution.dispose() }
+    return async () => { workerInvocations.clear(); visibility.clear(); await visibilityPrompt.dispose(); await visibilityContext.dispose(); await compactionContext.dispose(); await execution.dispose() }
   },
 })
 

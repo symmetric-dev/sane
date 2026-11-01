@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Compartment, EditorState, type Range } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, keymap, lineNumbers } from "@codemirror/view";
 import { searchKeymap } from "@codemirror/search";
-import { FiMaximize2 } from "react-icons/fi";
+import { FiCheck, FiCode, FiCornerDownLeft, FiInfo, FiMaximize2 } from "react-icons/fi";
 import { codeSharePages, type CodeShareRecord, type CodeShareSnapshot } from "../shared/code-share-contract";
 import type { CodeShareProjection } from "./code-share-client";
 import { codeShareSnippetPresentation } from "./code-share-presentation";
@@ -10,7 +11,7 @@ import { SharedCodeNavigation } from "./shared-code-navigation";
 import { editorLanguage } from "./editor-languages";
 import { resolvedEditorTheme } from "./workspace-theme";
 import { themeSettings } from "./theme-settings";
-import { ChatButton, ChatCard, ChatCardBody, ChatCardFooter, ChatCardHeader, ChatDialog, ChatDialogBody, ChatIconButton, ChatNotice } from "./chat-ui";
+import { ChatButton, ChatCard, ChatCardBody, ChatCardFooter, ChatCardHeader, ChatDialog, ChatDialogBody, ChatIconButton, ChatNotice, ChatOverflowMenu } from "./chat-ui";
 import "./shared-code.css";
 
 class CommentWidget extends WidgetType {
@@ -90,26 +91,53 @@ function CodeShareReader({ snippets, page, select, wrap, toggleWrap, openModal, 
   const description = useId(), viewId = useId(), snippet = snippets[page];
   const { title, path, startLine, endLine, inline } = codeShareSnippetPresentation(snippet);
   const [copied, setCopied] = useState<{ snippet: CodeShareSnapshot; message: string } | null>(null);
-  return <ChatCard density="compact" className={`shared-code-card${expanded ? " shared-code-expanded" : ""}`} aria-label={`Shared code: ${title}`}>
-    <ChatCardHeader title={<span title={title}>{title}</span>}
-      metadata={<>{path && title !== path && <span className="shared-code-source-path" title={path}>{path}</span>}<span>L{startLine}–{endLine}</span><span>{snippet.language}</span></>}
+  const [details, setDetails] = useState(false);
+  const detailsTrigger = useRef<HTMLButtonElement | null>(null);
+  const sourceDescription = inline ? "Suggested code · not saved to a file" : "Frozen snapshot · not the current file";
+  const annotationDescription = snippet.input.highlights?.length
+    ? inline ? "Highlighted lines and annotations refer to snippet line numbers." : "Highlighted lines and annotations refer to original line numbers."
+    : "";
+  const subtitle = `${snippet.language} · L${startLine}–${endLine} · ${inline ? "Suggested · Not saved" : "Snapshot"}`;
+  const feedback = copied?.snippet === snippet ? copied.message : "";
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+  return <><ChatCard density="compact" className={`shared-code-card${expanded ? " shared-code-expanded" : ""}`} aria-label={`Shared code: ${title}`}>
+    <ChatCardHeader className="shared-code-header" icon={<FiCode size={28} />} titleId={`${viewId}-title`} title={<span title={path && title !== path ? `${title}\n${path}` : title}>{title}</span>}
+      description={<span id={description} title={[path, sourceDescription, annotationDescription].filter(Boolean).join("\n")}>{subtitle}<span className="sr-only">. {sourceDescription}. {annotationDescription}</span></span>}
       actions={<>
-      <ChatButton variant="ghost" aria-pressed={wrap} onClick={toggleWrap}>Wrap</ChatButton>
-      <ChatButton variant="ghost" onClick={async () => {
-        try { await navigator.clipboard.writeText(snippet.code); setCopied({ snippet, message: "Copied" }); }
-        catch { setCopied({ snippet, message: "Copy unavailable" }); }
-      }}>Copy code</ChatButton>
+      <ChatButton className="shared-code-copy" variant="ghost" aria-label={feedback === "Copy unavailable" ? "Copy unavailable. Retry copy" : feedback || "Copy code"} onClick={async () => {
+         try { await navigator.clipboard.writeText(snippet.code); setCopied({ snippet, message: "Copied" }); }
+         catch { setCopied({ snippet, message: "Copy unavailable" }); }
+      }}>{feedback === "Copy unavailable" ? "Retry copy" : feedback || "Copy"}</ChatButton>
       {openModal && <ChatIconButton aria-label="Open in modal" onClick={openModal}><FiMaximize2 /></ChatIconButton>}
+      <ChatOverflowMenu label="Shared code actions" items={[
+        { id: "wrap", label: wrap ? "Disable line wrapping" : "Enable line wrapping", icon: wrap ? <FiCheck /> : <FiCornerDownLeft />, onSelect: toggleWrap },
+        { id: "details", label: "Snapshot and annotation details", icon: <FiInfo />, opensDialog: true, onSelect: trigger => { detailsTrigger.current = trigger; setDetails(true); } },
+      ]} />
     </>} />
-    <p id={description} className="shared-code-caption">{inline ? "Suggested code · not saved to a file" : "Frozen snapshot · not the current file"}{snippet.input.highlights?.length ? inline ? " · Highlighted lines and annotations refer to snippet line numbers." : " · Highlighted lines and annotations refer to original line numbers." : ""}</p>
-    <span className="shared-code-feedback" role="status">{copied?.snippet === snippet ? copied.message : ""}</span>
-    <ChatCardBody flush className="shared-code-panel" role="tabpanel" id={`${viewId}-panel`} aria-labelledby={`${viewId}-tab-${page}`}>
+    <span className="sr-only" role="status">{feedback}</span>
+    <ChatCardBody flush className="shared-code-panel" role="region" id={`${viewId}-panel`} aria-labelledby={`${viewId}-title`}>
       <CodeSnippetView key={page} snippet={snippet} wrap={wrap} description={description} />
     </ChatCardBody>
-    <ChatCardFooter className="shared-code-controls">
-      <SharedCodeNavigation snippets={snippets} page={page} select={select} viewId={viewId} />
-    </ChatCardFooter>
-  </ChatCard>;
+    {snippets.length > 1 && <ChatCardFooter className="shared-code-controls">
+      <SharedCodeNavigation snippets={snippets} page={page} select={select} panelId={`${viewId}-panel`} />
+    </ChatCardFooter>}
+  </ChatCard>
+    {details && createPortal(<ChatDialog title="Shared code details" subtitle={title} close={() => setDetails(false)} restoreFocus={() => detailsTrigger.current}>
+      <ChatDialogBody className="shared-code-details">
+        <p>{sourceDescription}</p>
+        <dl>
+          {path && <><dt>Source path</dt><dd>{path}</dd></>}
+          <dt>Language</dt><dd>{snippet.language}</dd>
+          <dt>Lines</dt><dd>L{startLine}–{endLine}</dd>
+        </dl>
+        {annotationDescription && <p>{annotationDescription}</p>}
+      </ChatDialogBody>
+    </ChatDialog>, document.body)}
+  </>;
 }
 
 export function SharedCodeCard({ share }: { share: CodeShareRecord }) {

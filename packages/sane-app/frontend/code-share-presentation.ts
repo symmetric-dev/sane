@@ -4,7 +4,7 @@ import type { Message, ToolPart } from "./types";
 export const isCodeShareTool = (part: ToolPart) => /(?:^|[_.:/])sane_share_code$/.test(part.name);
 
 export function codeShareSnippetPresentation(snippet: CodeShareSnapshot) {
-  const range = codeShareSnippetRange(snippet.input), path = "path" in range ? range.path : null;
+  const range = codeShareSnippetRange(snippet.input, snippet.code), path = "path" in range ? range.path : null;
   const title = snippet.input.title ?? path ?? "Code snippet";
   return {
     startLine: range.startLine, endLine: range.endLine, title, path, inline: "kind" in range,
