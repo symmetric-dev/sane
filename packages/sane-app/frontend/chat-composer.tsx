@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { FiGrid, FiLoader, FiPaperclip, FiUser } from "react-icons/fi";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { FiCheck, FiGrid, FiLoader, FiPaperclip, FiUser, FiX } from "react-icons/fi";
 import { useRegisterCommand, isMacPlatform } from "./application-commands";
 import { FLOWS_SHORTCUT, shortcutHint } from "./shortcut-definitions";
 import { TerminalProvider, TerminalHeader, TerminalView } from "./terminal";
@@ -33,8 +33,13 @@ import { ImageUploadDialog } from "./image-upload-dialog";
 import { appendImageUploadReferences, imageUploadDraftBlocked, imageUploadDraftScope, imageUploadSelection, type ImageUploadDraftScope } from "./image-upload-draft";
 import { subscribeWorkspace, workspaceEpoch } from "./workspace-store";
 import type { ImageUploadReceipt } from "../shared/image-upload-contract";
+import { USER_QUESTIONS_LIMITS } from "../shared/user-questions-contract";
+import { useQuestionAnswerComposer } from "./question-answer-composer";
+import "./question-answer-composer.css";
 
 type ComposerImageUpload = { scope: ImageUploadDraftScope; files: File[]; seen: Set<string> };
+const normalizeAnswerText = (text: string) => Array.from(text).slice(0, USER_QUESTIONS_LIMITS.answerText).join("");
+const visibleInputSelector = '.composer-input-slot:not([hidden]) textarea';
 
 function pendingScopeFor(state: State) {
   const conversation = state.conversations.find(item => item.id === state.selected);
@@ -89,6 +94,11 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   statusActions?: ReactNode;
   questions?: UserQuestionsController;
 }) {
+  const answerComposer = useQuestionAnswerComposer();
+  const answerEditor = answerComposer?.editor ?? null;
+  const answerKey = answerEditor?.key;
+  const answerMode = !!answerEditor;
+  const answerContext = useRef(answerComposer); answerContext.current = answerComposer;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [composing, setComposing] = useState(false);
   const composingRef = useRef(false);
@@ -109,7 +119,8 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     ? state.config?.grokCapability?.reason || "Set up the Grok runtime on this bridge before sending."
     : state.grokView?.blocked || state.grokView?.phase === "not-submitted" ? state.grokView.reason || "" : "";
   const draftIdentity = store.draftKey();
-  useEffect(() => { composingRef.current = false; setComposing(false); }, [draftIdentity]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A replaced DOM editor starts a fresh composition lifecycle.
+  useLayoutEffect(() => { composingRef.current = false; setComposing(false); }, [draftIdentity, answerKey]);
   const pendingSupported = store.pendingInputSupported();
   const chainLocked = pendingSupported && store.pendingInputChainLocked();
   const pendingScope = pendingScopeFor(state);
@@ -163,6 +174,11 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     if (flowPresentation) onFlowPresentationChange?.(null);
   }, [active, hasRequests, questionsReveal, flowPresentation, onFlowPresentationChange]);
   useEffect(() => {
+    if (!active || !answerKey || hasRequests) return;
+    setLocalFlow(null);
+    if (flowPresentation) onFlowPresentationChange?.(null);
+  }, [active, answerKey, hasRequests, flowPresentation, onFlowPresentationChange]);
+  useEffect(() => {
     setLocalFlow(null);
     if (flowPresentation === "local") onFlowPresentationChange?.(null);
   }, [flowScope]);
@@ -192,26 +208,32 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     void review.start(identity);
   };
   const openFlows = () => {
-    if (!active || hasRequests || conversation?.replacedBy || paired && !onOpenChatFlow) return;
+    if (!active || answerContext.current?.editor || hasRequests || conversation?.replacedBy || paired && !onOpenChatFlow) return;
     showLocalFlow("flows");
     if (paired) onOpenChatFlow?.();
   };
   useRegisterCommand(useMemo(() => ({
     ...FLOWS_SHORTCUT,
     contexts: ["application", "input"] as const,
-    available: () => active && (!paired || !!onOpenChatFlow) && !conversation?.replacedBy && (!flowOpen || localPage === "flows") && !hasRequests,
+    available: () => active && !answerMode && (!paired || !!onOpenChatFlow) && !conversation?.replacedBy && (!flowOpen || localPage === "flows") && !hasRequests,
     action: () => { if (localPage === "flows") closeLocalFlow(); else openFlows(); },
-  }), [active, paired, onOpenChatFlow, flowPresentation, onFlowPresentationChange, conversation?.replacedBy, flowOpen, localPage, hasRequests, flowScope]));
+  }), [active, answerMode, paired, onOpenChatFlow, flowPresentation, onFlowPresentationChange, conversation?.replacedBy, flowOpen, localPage, hasRequests, flowScope]));
   const wasFlowOpen = useRef(flowOpen);
   const hadRequests = useRef(hasRequests);
   // Dialog cleanup runs after a navigation render; consult the current activity,
   // not the value captured when the modal was opened. Body is an explicit safe
   // target because ShellDialog falls back to its old trigger for a null target.
   const activity = useRef(active); activity.current = active && !flowOpen;
-  const restoreAgentFocus = () => activity.current ? agentTrigger.current : document.body;
-  useEffect(() => { if (!active || flowOpen) setPickerOpen(false); }, [active, flowOpen]);
+  const restoreAgentFocus = () => activity.current && !answerContext.current?.editor ? agentTrigger.current : document.body;
+  useEffect(() => { if (!active || flowOpen || answerMode) setPickerOpen(false); }, [active, flowOpen, answerMode]);
+  useLayoutEffect(() => {
+    if (!active || flowOpen || conversation?.replacedBy) return;
+    if (answerKey) {
+      normalComposer.current?.querySelector<HTMLTextAreaElement>(visibleInputSelector)?.focus({ preventScroll: true });
+    }
+  }, [answerKey, active, flowOpen, conversation?.replacedBy]);
   useEffect(() => {
-    if (active && wasFlowOpen.current && !flowOpen) normalComposer.current?.querySelector("textarea")?.focus({ preventScroll: true });
+    if (active && wasFlowOpen.current && !flowOpen) normalComposer.current?.querySelector<HTMLTextAreaElement>(visibleInputSelector)?.focus({ preventScroll: true });
     else if (active && hadRequests.current && !hasRequests && reviewFlow && review?.flow?.path) flowComposer.current?.querySelector<HTMLTextAreaElement>("textarea:not(:disabled)")?.focus({ preventScroll: true });
     wasFlowOpen.current = flowOpen;
     hadRequests.current = hasRequests;
@@ -232,7 +254,7 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   if (imageNotice) statuses.push({ id: "image-upload", text: "Image upload needs attention", detail: imageNotice, priority: 86 });
   const reviewBlocked = !active || hasRequests || chainLocked || !capabilities.prompt || !store.captureSendSupported() || sendDisabled || (needsAck && ack !== state.selected);
   const uploadScope = imageUploadDraftScope();
-  const uploadAvailable = active && !flowOpen && !sendDisabled && !imageUploadDraftBlocked() && !!uploadScope;
+  const uploadAvailable = active && !answerMode && !flowOpen && !sendDisabled && !imageUploadDraftBlocked() && !!uploadScope;
   const uploadActivity = useRef(uploadAvailable); uploadActivity.current = uploadAvailable;
   const closeImageUpload = () => {
     imageUploadRef.current = null;
@@ -332,7 +354,41 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
   };
   const primary = deriveAction(state, draft.text);
   const lid = pendingInputLid(state, pendingSupported);
+  const composerVisible = () => activity.current && !!normalComposer.current
+    && !normalComposer.current.closest('[hidden], [inert]') && normalComposer.current.getClientRects().length > 0;
+  const currentAnswer = (allowComposition = false) => {
+    const current = store.snapshot(), context = answerContext.current;
+    if (!mounted.current || !composerVisible() || !allowComposition && composingRef.current || imageUploadRef.current
+      || scopeRef.current !== pendingScope || pendingScopeFor(current) !== pendingScope
+      || store.draftKey() !== draftIdentity || !answerEditor || context?.editor?.key !== answerEditor.key
+      || pendingInteractions(current, store.capabilities()).length || current.conversations.find(item => item.id === current.selected)?.replacedBy) return null;
+    return context;
+  };
+  const saveAnswer = () => {
+    const context = currentAnswer();
+    if (!context?.editor?.canSave) return;
+    // Save only the custom answer to the questionnaire draft, never send chat.
+    // The answer owner restores focus to its row for continued questionnaire use.
+    context.save();
+  };
+  const cancelAnswer = () => { currentAnswer()?.cancel(); };
+  const answerKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (!answerMode) return;
+    if (document.querySelector('dialog[open], [role="dialog"][aria-modal="true"], [role="menu"][data-open="true"], [aria-haspopup="menu"][aria-expanded="true"]')) return;
+    // Stop IME and answer shortcuts before either chat or questionnaire handlers.
+    if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) { event.stopPropagation(); return; }
+    if (event.key === "Escape" || event.key === "Enter" && (event.altKey || event.ctrlKey || event.metaKey)) {
+      event.preventDefault(); event.stopPropagation();
+      if (event.repeat || !composerVisible()) return;
+      if (event.key === "Escape") cancelAnswer();
+      else if (!event.shiftKey && !event.getModifierState("AltGraph")) saveAnswer();
+    }
+  };
+  const answerDisabled = !active || flowOpen || !!conversation?.replacedBy || composing || !answerEditor?.canSave;
   const submit = () => {
+    if (answerMode) { saveAnswer(); return; }
+    // A callback retained by the hidden chat input must not cross into answer mode.
+    if (answerContext.current?.editor) return;
     // The input shortcut and form submit share the same current-state decision.
     // Validate the rendered scope and consent before touching the current store.
     const current = store.snapshot();
@@ -360,42 +416,51 @@ export function ChatComposer({ state, active = true, paired = false, onOpenChatF
     <div className="composer-frame">
     {hasRequests && <Interactions key={flowScope} state={state} active={active && !pickerOpen} navigation={navigation} showNotice={false} />}
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onCompositionStartCapture={() => { composingRef.current = true; setComposing(true); }} onCompositionEndCapture={() => { composingRef.current = false; setComposing(false); }} onSubmit={event => { event.preventDefault(); submit(); }}
+      onKeyDownCapture={answerKeyDown}
       onPasteCapture={event => {
         const files = Array.from(event.clipboardData.files);
         if (!files.length) return; // Keep ordinary text paste native.
-        event.preventDefault(); event.stopPropagation(); beginImageUpload(files);
+        event.preventDefault(); event.stopPropagation(); if (!answerMode) beginImageUpload(files);
       }}
       onDragOver={event => { if (Array.from(event.dataTransfer.types).includes("Files")) event.preventDefault(); }}
       onDropCapture={event => {
         const files = Array.from(event.dataTransfer.files);
         if (!files.length && !Array.from(event.dataTransfer.types).includes("Files")) return;
-        event.preventDefault(); event.stopPropagation(); beginImageUpload(files);
+        event.preventDefault(); event.stopPropagation(); if (!answerMode) beginImageUpload(files);
       }}>
-      {acknowledgment}
+      {!answerMode && acknowledgment}
       <input ref={imageInput} type="file" accept=".png,.jpg,.jpeg,.webp" multiple hidden aria-label="Choose images to upload" onChange={event => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ""; imageFilesChosen(files); }} />
-      <ChatInput key={draftIdentity} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input pending-input-primary-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" sendButton={<button type="submit" className="send pending-input-primary" data-mode={primary.mode} disabled={primary.disabled} aria-label={state.sending ? "Sending message" : "Send message"} aria-busy={state.sending} title={primary.reason ?? "Send message"}>{state.sending ? <FiLoader className="composer-send-spinner" size={18} aria-hidden="true" /> : <Icon name="send" />}</button>} />
+      <div className="composer-input-slot" hidden={answerMode}>
+        <ChatInput key={draftIdentity} text={draft.text} save={text => { if (!answerContext.current?.editor && store.draftKey() === draftIdentity) store.setDraft({ text }); }} submit={() => { if (!answerContext.current?.editor) submit(); }} pathsActive={active && !flowOpen && !answerMode} className="composer-input pending-input-primary-input" data-composer-mode="chat" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" sendButton={<button type="submit" className="send pending-input-primary" data-mode={primary.mode} disabled={primary.disabled} aria-label={state.sending ? "Sending message" : "Send message"} aria-busy={state.sending} title={primary.reason ?? "Send message"}>{state.sending ? <FiLoader className="composer-send-spinner" size={18} aria-hidden="true" /> : <Icon name="send" />}</button>} />
+      </div>
+      {answerEditor && <div className="composer-input-slot">
+        <ChatInput key={answerEditor.key} text={answerEditor.text} save={text => currentAnswer()?.update(text)} onCompositionInput={text => currentAnswer(true)?.update(text)} submit={saveAnswer} pathsActive={false} normalizeText={normalizeAnswerText} maxLength={USER_QUESTIONS_LIMITS.answerText * 2} className="composer-input pending-input-primary-input" data-composer-mode="answer" placeholder="Write another answer…" aria-label={`Answer ${answerEditor.questionNumber} of ${answerEditor.questionCount}: ${answerEditor.question}`} aria-keyshortcuts="Control+Enter Meta+Enter Alt+Enter Escape" sendButton={<button type="submit" className="send pending-input-primary" data-mode="answer" disabled={answerDisabled} aria-label="Save answer" title={answerEditor.reason ? `Save answer: ${answerEditor.reason}` : "Save answer"}><FiCheck size={18} aria-hidden="true" /></button>} />
+      </div>}
     </form> : null}
       <div className="composer-toolbar composer-unified-toolbar"><div className="composer-options" hidden={flowOpen || !!conversation?.replacedBy}>
-        {profile ? fixed
+        {answerEditor ? <fieldset className="question-answer-chip" aria-label="Custom answer" onKeyDownCapture={answerKeyDown}>
+          <button type="button" className="question-answer-chip-label" disabled={!active || composing} title={`Show original question: ${answerEditor.question}`} aria-label={`Show original question ${answerEditor.questionNumber} of ${answerEditor.questionCount}`} onClick={() => currentAnswer()?.reveal()}>Answer {answerEditor.questionNumber}/{answerEditor.questionCount}</button>
+          <button type="button" className="question-answer-chip-cancel" disabled={!active || composing} aria-label="Cancel answer" title="Cancel answer (Esc)" onClick={cancelAnswer}><FiX size={14} aria-hidden="true" /></button>
+        </fieldset> : profile ? fixed
           ? <span className="agent-chip fixed" role="status" aria-label={profile.label} title={profile.label}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span></span>
           : <button ref={agentTrigger} type="button" className="agent-chip" aria-haspopup="dialog" disabled={state.sending || !active || chainLocked} title={chainLocked ? "Agent settings are fixed while the pending-input chain is active." : profile.label} aria-label={`${state.selected ? "Agent" : "Agent for new conversation"}: ${profile.label}${store.pendingUpgrade() ? " (pending)" : ""}`} onClick={() => { if (!store.pendingInputChainLocked()) setPickerOpen(true); }}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span>{store.pendingUpgrade() && <span className="agent-chip-pending">pending</span>}</button>
           : <span className="agent-chip fixed" role="status" aria-label={store.conversationProfileLabel(state.selected)} title={store.conversationProfileLabel(state.selected)}><FiUser size={20} aria-hidden="true" /><span className="agent-chip-label">{store.conversationProfileLabel(state.selected)}</span></span>}
-        <div className="composer-utilities">
+        {!answerMode && <div className="composer-utilities">
           <button type="button" className="composer-flows" disabled={!uploadAvailable || !!imageUpload} aria-label="Attach images" title={uploadScope ? "Attach images" : "Choose an available workspace and checkout first to upload images"} onClick={() => beginImageUpload()}><FiPaperclip size={16} aria-hidden="true" /></button>
           <WorkersButton key={state.selected} sessionId={state.selected} active={active && !flowOpen} />
           <button type="button" className="composer-flows" disabled={paired && !onOpenChatFlow} aria-label={paired ? "Open Flows in Chat" : "Flows"} title={paired ? "Open Flows in Chat" : `Flows (${shortcutHint(FLOWS_SHORTCUT)})`} aria-keyshortcuts={`${isMacPlatform() ? "Meta" : "Control"}+p`} aria-expanded={localPage === "flows"} onClick={openFlows}><FiGrid size={16} aria-hidden="true" /><span className="composer-utility-label">Flows</span></button>
-        </div>
+        </div>}
       </div>
       <ComposerStatus key={flowScope} statuses={statuses} active={active} actions={statusActions} activityDetails={questions ? close => <UserQuestionsActivity questions={questions} close={close} disabled={!active || state.sending || state.loading} /> : undefined} receiptDetails={grok ? undefined : close => <AppAdmissionRecoveryPanel active={active} onActionComplete={close} />}
         queue={lid ? { lid, details: pendingSupported
           ? <PendingInputDetails state={state} active={active && !flowOpen && !conversation?.replacedBy} busy={pendingBusy} operate={operatePending} />
           : <RetainedInputDetails state={state} disabled={!active || flowOpen || !!conversation?.replacedBy || pendingBusy || state.actionBusy || state.sending || state.loading || !!state.pendingInputLoading} operate={operatePending} /> } : undefined}
-        restoreFocus={() => !flowOpen ? normalComposer.current?.querySelector("textarea") ?? document.body : document.body} />
+        restoreFocus={() => !flowOpen ? normalComposer.current?.querySelector(visibleInputSelector) ?? document.body : document.body} />
       {!flowOpen && navigation && <div className="composer-actions">{navigation}</div>}
       </div>
     </div>
     </div>
-    {active && pickerOpen && <AgentPicker close={() => setPickerOpen(false)} restoreFocus={restoreAgentFocus} />}
+    {active && !answerMode && pickerOpen && <AgentPicker close={() => setPickerOpen(false)} restoreFocus={restoreAgentFocus} />}
     {imageUpload && imageUpload.files.length > 0 && imageUploadRef.current === imageUpload && <div onKeyDown={event => event.stopPropagation()}><ImageUploadDialog target={imageUpload.scope.target} expectedBindingRevision={imageUpload.scope.bindingRevision} files={imageUpload.files} onUploaded={(receipts: ImageUploadReceipt[]) => imagesUploaded(imageUpload, receipts)} onClose={() => { if (imageUploadRef.current === imageUpload) closeImageUpload(); }} /></div>}
   </>;
 }

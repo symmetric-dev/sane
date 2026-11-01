@@ -61,3 +61,19 @@ export function questionsStatus(draft: UserQuestionsDraft) {
     default: return "Delivery unconfirmed";
   }
 }
+
+/** Compact labels only; detailed status and recovery evidence remain available. */
+export function questionsCompactStatus(draft: UserQuestionsDraft, loading = false) {
+  const status = questionsStatus(draft);
+  switch (status) {
+    case "Version conflict": return "Conflict";
+    case "Local answers retained": return "Local draft";
+    case "Needs attention": return "Attention";
+    case "Draft saved": return loading ? "Loading…" : "Saved";
+    case "Delivered to Grok": return "Delivered";
+    case "Delivery pending": return "Pending";
+    case "Delivery paused": return "Paused";
+    case "Delivery unconfirmed": return "Unconfirmed";
+    default: return status;
+  }
+}

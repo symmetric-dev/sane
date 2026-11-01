@@ -1,5 +1,6 @@
 import { commandBindings, commandHints, type CommandBindings, type CommandScope } from "./application-commands";
 import { NAVIGATION_HOTKEYS, navigationBinding } from "./navigation-hotkeys";
+import { USER_QUESTIONS_ANSWER_KEYS, USER_QUESTIONS_KEYS } from "./user-questions-shortcuts";
 
 /** Static documentation, independent of which views/commands are currently mounted. */
 export type ShortcutDefinition = CommandBindings & {
@@ -123,10 +124,31 @@ export const CHAT_WORKTREE_SHORTCUTS = Array.from({ length: 9 }, (_, index) => (
   description: "Expand the worktree in sidebar order and open its most recently updated conversation.",
 } satisfies ShortcutDefinition));
 
+export const QUESTIONNAIRE_SHORTCUTS: readonly ShortcutDefinition[] = [
+  ...([
+    ["next", "Next question"], ["previous", "Previous question"],
+    ["focusOther", "Open custom-answer mode"], ["exitInput", "Cancel custom edit / leave answer input"],
+    ["submit", "Save custom answer / submit questionnaire"],
+  ] as const).map(([action, label]) => ({
+    id: `chat.questions.${action}`, label, binding: USER_QUESTIONS_KEYS[action],
+    scope: { kind: "view", view: "chat", region: "main-panel" }, owner: "application",
+    description: action === "focusOther" ? "Open the composer to write or edit the current question’s custom answer."
+      : action === "exitInput" ? "Cancel custom-answer editing, or leave the questionnaire’s free-text input without clearing its answer."
+      : action === "submit" ? "In custom-answer mode, save only that answer. Questionnaire submission requires focus inside the expanded card and an enabled Submit button."
+      : "Only within the focused, expanded questionnaire.",
+  } satisfies ShortcutDefinition)),
+  ...USER_QUESTIONS_ANSWER_KEYS.map((binding, index) => ({
+    id: `chat.questions.answer-${index + 1}`, label: `Select/toggle answer ${index + 1}`, binding,
+    scope: { kind: "view", view: "chat", region: "main-panel" }, owner: "application",
+    description: "Uses the option's normal click behavior; excludes the custom-answer row and does not advance to another question.",
+  } satisfies ShortcutDefinition)),
+];
+
 export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   ...GLOBAL_SHORTCUTS,
   ...Object.values(FILE_SHORTCUTS),
   ...CHAT_WORKTREE_SHORTCUTS,
+  ...QUESTIONNAIRE_SHORTCUTS,
 ];
 
 /** Use for Settings columns, toolbar hints, and command registration alike. */

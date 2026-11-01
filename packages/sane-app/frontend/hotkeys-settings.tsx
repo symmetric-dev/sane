@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CHAT_WORKTREE_SHORTCUTS, GLOBAL_SHORTCUTS, SHORTCUT_DEFINITIONS, shortcutHint, type ShortcutDefinition } from "./shortcut-definitions";
+import { CHAT_WORKTREE_SHORTCUTS, GLOBAL_SHORTCUTS, QUESTIONNAIRE_SHORTCUTS, SHORTCUT_DEFINITIONS, shortcutHint, type ShortcutDefinition } from "./shortcut-definitions";
 import "./hotkeys-settings.css";
 
 const SHORTCUT_TABS = [
@@ -51,6 +51,12 @@ export function HotkeysSettings() {
         <ShortcutTable definitions={CHAT_WORKTREE_SHORTCUTS} labelledBy="hotkeys-chat-worktrees" />
         <p className="muted">Cmd/Ctrl + 1–9 selects and expands worktrees in their displayed sidebar order, collapsing the others. It opens the most recently updated conversation, excluding hidden, replaced, and worker sessions, or an unsent draft if none exists.</p>
         <p className="muted">These shortcuts work while typing in Chat. Missing worktrees keep their numbered positions but cannot be opened. Shortcuts pause while a dialog is open, a message is submitting, or the conversation list is loading.</p>
+      </section>
+      <section className="interaction" aria-labelledby="hotkeys-chat-questions">
+        <h3 id="hotkeys-chat-questions">Questionnaires</h3>
+        <ShortcutTable definitions={QUESTIONNAIRE_SHORTCUTS} labelledBy="hotkeys-chat-questions" />
+        <p className="muted">These shortcuts apply only inside the focused, expanded questionnaire. Alt is Option on Mac. Alt + 1–9 selects or toggles options; Alt + 0 selects option 10, without advancing. Alt + O opens the composer in custom-answer mode when available.</p>
+        <p className="muted">In custom-answer mode, Escape cancels editing and Alt + Enter saves only the custom answer, without submitting the questionnaire or sending a chat message. In the questionnaire’s free-text input, Escape returns focus to the question without clearing your text. Questionnaire submission with Alt + Enter requires focus inside the card and an enabled Submit button. Shortcuts pause during composition and while menus or dialogs are open. Outside these contexts, browser navigation and normal chat shortcuts are unchanged.</p>
       </section>
     </div>
     <div role="tabpanel" id="hotkeys-panel-files" aria-labelledby="hotkeys-tab-files" hidden={tab !== "files"} tabIndex={0}>

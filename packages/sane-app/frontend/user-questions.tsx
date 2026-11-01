@@ -1,15 +1,18 @@
-import { useEffect, useLayoutEffect, useRef, useState, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
-import { FiArrowLeft, FiArrowRight, FiCheck, FiHelpCircle, FiInfo, FiRefreshCw, FiRotateCcw, FiX } from "react-icons/fi";
+import { FiArrowLeft, FiArrowRight, FiCheck, FiHelpCircle, FiInfo, FiPlus, FiRefreshCw, FiRotateCcw, FiX } from "react-icons/fi";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { USER_QUESTIONS_LIMITS, type UserQuestion, type UserQuestionAnswer, type UserQuestionsRecord } from "../shared/user-questions-contract";
 import type { Message, ToolPart } from "./types";
 import type { UserQuestionsController, UserQuestionsDraft } from "./user-questions-client";
 import { ChatFileLink } from "./chat-file-link";
-import { RequestChoices, RequestInput, RequestTextarea } from "./composer-request";
-import { ChatButton, ChatCard, ChatCardBody, ChatCardHeader, ChatDialog, ChatDialogBody, ChatDialogFooter, ChatDisclosure, ChatIconButton, ChatNotice, ChatOverflowMenu, type ChatButtonProps, type ChatButtonVariant, type ChatMenuItem } from "./chat-ui";
-import { questionsNeedAttention, questionsStatus } from "./user-questions-presentation";
+import { RequestChoices, RequestTextarea } from "./composer-request";
+import { ChatButton, ChatCard, ChatCardBody, ChatCardFooter, ChatCardHeader, ChatDialog, ChatDialogBody, ChatDialogFooter, ChatDisclosure, ChatIconButton, ChatNotice, ChatOverflowMenu, type ChatButtonProps, type ChatButtonVariant, type ChatMenuItem } from "./chat-ui";
+import { questionsCompactStatus, questionsNeedAttention, questionsStatus } from "./user-questions-presentation";
+import { commandHint } from "./application-commands";
+import { USER_QUESTIONS_KEYS, userQuestionsShortcut } from "./user-questions-shortcuts";
+import { useQuestionAnswerComposer } from "./question-answer-composer";
 import "./user-questions.css";
 import type { ExplainQuestion } from "./aside-panel";
 
@@ -65,24 +68,8 @@ function AnswerTextarea({ value, change, ...props }: Omit<TextareaHTMLAttributes
     }} />;
 }
 
-/** Single-line custom answers retain the same IME and code-point safeguards. */
-function AnswerInput({ value, change, ...props }: Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange"> & { value: string; change: (value: string) => void }) {
-  const composing = useRef(false);
-  const [composition, setComposition] = useState<string | null>(null);
-  return <RequestInput {...props} type="text" value={composition ?? value}
-    onCompositionStart={event => { composing.current = true; setComposition(event.currentTarget.value); }}
-    onCompositionEnd={event => {
-      composing.current = false;
-      setComposition(null);
-      change(answerText(event.currentTarget.value));
-    }}
-    onChange={event => {
-      if (composing.current) setComposition(event.currentTarget.value);
-      else change(answerText(event.currentTarget.value));
-    }} />;
-}
-
-function AnswerEditor({ question, answer, change, disabled, name }: { question: UserQuestion; answer: UserQuestionAnswer; change: (answer: UserQuestionAnswer) => void; disabled: boolean; name: string }) {
+function AnswerEditor({ question, answer, change, disabled, otherDisabled, name, formId, page }: { question: UserQuestion; answer: UserQuestionAnswer; change: (answer: UserQuestionAnswer) => void; disabled: boolean; otherDisabled: boolean; name: string; formId: string; page: number }) {
+  const composer = useQuestionAnswerComposer();
   const options = question.options ?? [];
   if (!options.length) return <div className="request-field user-questions-answers">
     <label className="sr-only" htmlFor={name}>Your answer</label>
@@ -90,9 +77,12 @@ function AnswerEditor({ question, answer, change, disabled, name }: { question: 
     <AnswerTextarea id={name} aria-describedby={`${name}-state`} rows={3} maxLength={USER_QUESTIONS_LIMITS.answerText * 2} value={typeof answer === "string" ? answer : ""} placeholder="Write an answer…" disabled={disabled} change={change} />
   </div>;
   const selection: { selected: string[]; other?: string } = answer !== null && typeof answer === "object" ? answer : { selected: [] };
+  const hasOther = selection.other !== undefined;
+  // The nearest provider owns the current question scope; never match by text.
+  const editingOther = composer?.editor?.formId === formId && composer.editor.questionIndex === page;
   return <div className="request-field user-questions-answers">
     <RequestChoices label={question.question} multiple={question.multiple} disabled={disabled}
-      options={options.map((label, index) => ({ value: `option-${index}`, label }))}
+      options={options.map((label, index) => ({ value: `option-${index}`, label, shortcut: index < 10 ? `Alt+${(index + 1) % 10}` : undefined }))}
       values={options.flatMap((option, index) => selection.selected.includes(option) ? [`option-${index}`] : [])}
       choose={value => {
         const option = options[Number(value.slice(7))];
@@ -101,7 +91,16 @@ function AnswerEditor({ question, answer, change, disabled, name }: { question: 
         if (question.multiple) change(choiceAnswer(selected ? selection.selected.filter(item => item !== option) : [...selection.selected, option], selection.other));
         else change(selected ? null : { selected: [option] });
       }} />
-    {question.allow_other && <div className="request-field user-questions-other"><label className="sr-only" htmlFor={`${name}-other`}>Write another answer</label><AnswerInput id={`${name}-other`} maxLength={USER_QUESTIONS_LIMITS.answerText * 2} value={selection.other ?? ""} disabled={disabled} placeholder="Write another answer…" change={value => change(choiceAnswer(value !== "" && !question.multiple ? [] : selection.selected, value === "" ? undefined : value))} /></div>}
+    {question.allow_other && <div className="request-field user-questions-other">
+      <button id={`${name}-other`} type="button" className="request-choice user-questions-other-choice" data-editing={editingOther}
+        aria-pressed={hasOther} aria-expanded={editingOther} aria-label={hasOther ? `Edit custom answer: ${selection.other === "" ? "Empty answer" : selection.other}` : "Write custom answer"} aria-keyshortcuts="Alt+O"
+        title={!composer?.available ? "Return to the chat composer to write a custom answer" : `${hasOther ? "Edit" : "Write"} custom answer (${commandHint(USER_QUESTIONS_KEYS.focusOther)})`}
+        disabled={disabled || otherDisabled || !composer?.available}
+        onClick={event => { if (!disabled && !otherDisabled) composer?.begin(formId, page, event.currentTarget); }}>
+        <span className="request-choice-mark" aria-hidden="true">{hasOther ? <FiCheck size={12} /> : <FiPlus size={12} />}</span>
+        <span className="request-choice-copy">{hasOther ? selection.other === "" ? "Empty answer" : selection.other : editingOther ? "Writing another answer…" : "Write another answer"}</span>
+      </button>
+    </div>}
   </div>;
 }
 
@@ -166,7 +165,7 @@ function QuestionsFeedback({ questions, draft, readOnlyReason }: { questions: Us
   </>;
 }
 
-function QuestionsEditor({ questions, draft, page }: { questions: UserQuestionsController; draft: UserQuestionsDraft; page: number }) {
+function QuestionsEditor({ questions, draft, page, navigation, active }: { questions: UserQuestionsController; draft: UserQuestionsDraft; page: number; navigation: ReactNode; active: boolean }) {
   const pageField = useRef<HTMLFieldSetElement>(null);
   const previousPage = useRef(page);
   const { form, answers, operation } = draft;
@@ -191,7 +190,8 @@ function QuestionsEditor({ questions, draft, page }: { questions: UserQuestionsC
         // biome-ignore lint/a11y/noNoninteractiveTabindex: The bounded context region needs keyboard focus for scrolling.
         <section key={pageIndex} className="prose user-questions-context" aria-label="Question context" tabIndex={0}><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ a: ({ href, children }) => <QuestionLink href={href} form={form}>{children}</QuestionLink>, img: ({ alt }) => <span className="muted">[Image: {alt || "omitted"}]</span> }}>{question.context}</ReactMarkdown></section>
       )}
-      <AnswerEditor key={`answers-${pageIndex}`} question={question} answer={answers[pageIndex] ?? null} disabled={disabled} name={`question-${form.id}-${pageIndex}`} change={answer => questions.edit(form.id, pageIndex, answer)} />
+      {navigation}
+      <AnswerEditor key={`answers-${pageIndex}`} question={question} answer={answers[pageIndex] ?? null} disabled={disabled} otherDisabled={draft.conflict || !!draft.error || !!operation?.uncertain || !active} name={`question-${form.id}-${pageIndex}`} formId={form.id} page={pageIndex} change={answer => questions.edit(form.id, pageIndex, answer)} />
     </fieldset>}
     </RequestBody>;
 }
@@ -201,6 +201,8 @@ export function UserQuestionsCard({ questions, draft, readOnlyReason, tool, acti
   questions: UserQuestionsController; draft: UserQuestionsDraft; readOnlyReason?: string; tool?: ToolPart; active?: boolean; onExplain?: ExplainQuestion; explainDisabled?: boolean;
 }) {
   const { form } = draft;
+  const answerComposer = useQuestionAnswerComposer();
+  const editingCustomAnswer = answerComposer?.editor?.formId === form.id;
   const presented = form.status === "presented";
   const expanded = presented && questions.selected?.form.id === form.id && questions.expanded;
   const blocked = !questions.editable || !!draft.operation || draft.conflict;
@@ -226,35 +228,78 @@ export function UserQuestionsCard({ questions, draft, readOnlyReason, tool, acti
     items.unshift({ id: "clear", label: "Clear current answer", icon: <FiRotateCcw />, disabled: !canEdit || answer === null, onSelect: () => questions.edit(form.id, pageIndex, null) });
     // Keep the explicit-empty-text distinction available without another row.
     if (!form.input.pages[pageIndex]?.options?.length && answer === null) items.splice(1, 0, { id: "empty", label: "Use empty answer", disabled: !canEdit, onSelect: () => questions.edit(form.id, pageIndex, "") });
+    if (editingCustomAnswer && answerComposer) items.push({ id: "discard-custom", label: "Discard unsaved custom draft", danger: true, disabled: !active, onSelect: () => answerComposer.discard() });
   }
   if (tool) items.push({ id: "tool", label: "Tool details", icon: <FiInfo />, opensDialog: true, onSelect: button => show("tool", button) });
   if (presented) items.push({ id: "separator", separator: true }, { id: "dismiss", label: "Dismiss questions", icon: <FiX />, danger: true, disabled: blocked, opensDialog: true, onSelect: button => show("dismiss", button) });
   const count = form.input.pages.length;
-  const status = questionsStatus(draft);
-  const subtitle = presented ? `${expanded ? `Question ${pageIndex + 1} of ${count}` : `${count} question${count === 1 ? "" : "s"}`} · ${status}` : form.status === "submitted" ? `Submitted · ${status}` : status === "Dismissed" ? status : `Dismissed · ${status}`;
+  const status = questionsCompactStatus(draft, questions.loading);
+  const fullStatus = questionsStatus(draft);
+  const subtitle = presented ? expanded ? `${pageIndex + 1}/${count}` : `${count} question${count === 1 ? "" : "s"} · ${status}` : form.status === "submitted" ? `Submitted · ${status}` : status === "Dismissed" ? status : `Dismissed · ${status}`;
+  const statusDetail = questions.loading && fullStatus === "Draft saved" ? "Loading saved answers…" : fullStatus;
+  const progressDetail = expanded ? `Question ${pageIndex + 1} of ${count}` : `${presented ? `${count} questions` : form.status === "submitted" ? "Submitted" : "Dismissed"} · ${statusDetail}`;
+  const progress = <span id={`question-${form.id}-progress`} title={progressDetail} role="status" aria-label={progressDetail}>{subtitle}</span>;
   const references = expanded ? form.input.pages[pageIndex]?.references : undefined;
   const hasReferences = (references?.length ?? 0) > 0;
   const Glyph = form.status === "submitted" ? FiCheck : FiX;
   const needsFeedback = !!draft.error || draft.conflict || !!draft.operation?.uncertain
     || !presented && (draft.dirty || !!draft.operation?.answers) || presented && expanded && !questions.editable;
-  return <><ChatCard id={`user-questions-${form.id}`} tabIndex={-1} density="compact" className={`user-questions-card${hasReferences ? " has-references" : ""}`} aria-label={`Questionnaire: ${form.input.title}`} data-expanded={expanded} data-send-kind="questions" data-send-id={form.id} data-question-scope={questions.scopeKey} data-question-active={active}>
-    <ChatCardHeader className="user-questions-header" icon={presented ? undefined : <Glyph size={28} />} title={<span title={form.input.title}>{form.input.title}</span>} description={<span id={`question-${form.id}-progress`} title={subtitle} role="status">{subtitle}</span>}
+  const keyDown = (event: KeyboardEvent<HTMLElement>) => {
+    const card = event.currentTarget, target = event.target;
+    if (!active || !expanded || view || event.defaultPrevented || !(target instanceof Element) || !card.contains(target)
+      || target.closest('[hidden], [inert], select, [role="combobox"], [role="menu"], [role="listbox"], .cm-editor, .xterm')
+      || document.querySelector('dialog[open], [role="dialog"][aria-modal="true"], [role="menu"][data-open="true"], [aria-haspopup="menu"][aria-expanded="true"]')) return;
+    const shortcut = userQuestionsShortcut(event.nativeEvent);
+    if (!shortcut) return;
+    const typing = target.closest('input, textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"]');
+    let control: HTMLElement | null;
+    if (shortcut.kind === "exitInput") {
+      if (!target.closest(".user-questions-answers input, .user-questions-answers textarea")) return;
+      control = card.querySelector<HTMLElement>(".user-questions-page");
+    } else {
+      if (typing && shortcut.kind !== "submit") return;
+      control = shortcut.kind === "answer" ? card.querySelectorAll<HTMLButtonElement>(".user-questions-page .request-choices .request-choice")[shortcut.index] ?? null
+        : shortcut.kind === "focusOther" ? card.querySelector<HTMLButtonElement>(".user-questions-other button")
+        : card.querySelector<HTMLButtonElement>(`[data-question-action="${shortcut.kind}"]`);
+    }
+    if (!control) return;
+    // Consume navigation even at the ends, so Alt+Left/Right cannot fall through
+    // to browser history. Holding a shortcut must not toggle or submit twice.
+    event.preventDefault(); event.stopPropagation();
+    if (event.repeat || control instanceof HTMLButtonElement && control.disabled || control instanceof HTMLInputElement && control.disabled) return;
+    if (shortcut.kind === "exitInput") control.focus({ preventScroll: true });
+    else {
+      if (shortcut.kind === "answer" || shortcut.kind === "focusOther") control.focus({ preventScroll: true });
+      control.click();
+    }
+  };
+  const navigation = expanded && <ChatCardFooter className="user-questions-navigation" aria-label="Questionnaire navigation">
+    <div className="user-questions-progress">
+      <ChatIconButton data-question-action="previous" aria-label="Previous question" aria-keyshortcuts="Alt+ArrowLeft" title={`Previous question (${commandHint(USER_QUESTIONS_KEYS.previous)})`} disabled={pageIndex === 0} onClick={() => questions.setPage(form.id, pageIndex - 1)}><FiArrowLeft /></ChatIconButton>
+      {progress}
+      <ChatIconButton data-question-action="next" aria-label="Next question" aria-keyshortcuts="Alt+ArrowRight" title={`Next question (${commandHint(USER_QUESTIONS_KEYS.next)})`} disabled={final} onClick={() => questions.setPage(form.id, pageIndex + 1)}><FiArrowRight /></ChatIconButton>
+    </div>
+    <div className="user-questions-navigation-actions">
+      <span className="user-questions-navigation-state" title={statusDetail} role="status" aria-label={statusDetail}>{status}</span>
+      <ChatButton ref={primary} data-question-action="submit" className="user-questions-submit" variant="primary" disabled={!final || blocked || editingCustomAnswer} busy={submitting} title={editingCustomAnswer ? "Save or cancel the custom answer before submitting" : !final ? "Review the remaining questions before submitting" : `Submit answers (${commandHint(USER_QUESTIONS_KEYS.submit)})`} aria-keyshortcuts="Alt+Enter" aria-label={submitting ? "Submitting answers" : "Submit answers"} onClick={() => void questions.mutate(form.id, "submit")}>Submit</ChatButton>
+    </div>
+  </ChatCardFooter>;
+  return <><ChatCard id={`user-questions-${form.id}`} tabIndex={-1} density="compact" className={`user-questions-card${hasReferences ? " has-references" : ""}`} aria-label={`Questionnaire: ${form.input.title}`} data-expanded={expanded} data-send-kind="questions" data-send-id={form.id} data-question-scope={questions.scopeKey} data-question-active={active} onKeyDown={keyDown}>
+    <ChatCardHeader className="user-questions-header user-questions-header-single" icon={presented ? undefined : <Glyph size={28} />} title={<span title={form.input.title}>{form.input.title}</span>}
       actions={<>
         {presented && <ChatIconButton className="user-questions-collapse" aria-label={expanded ? "Collapse questionnaire" : "Expand questionnaire"} aria-expanded={expanded} aria-controls={`user-questions-${form.id}-editor`} onClick={() => expanded ? questions.toggle() : questions.open(form.id)}><FiHelpCircle /></ChatIconButton>}
-        {expanded && <>
-          {onExplain && <ChatButton variant="ghost" data-question-focus="explain" disabled={!active || explainDisabled} onClick={event => onExplain({ kind: "question", formId: form.id, questionIndex: pageIndex }, `Can you explain Question ${pageIndex + 1}`, event.currentTarget)}>Explain</ChatButton>}
-          <ChatIconButton aria-label="Previous question" disabled={pageIndex === 0} onClick={() => questions.setPage(form.id, pageIndex - 1)}><FiArrowLeft /></ChatIconButton>
-          <ChatIconButton aria-label="Next question" disabled={final} onClick={() => questions.setPage(form.id, pageIndex + 1)}><FiArrowRight /></ChatIconButton>
-        </>}
-        <ChatButton ref={primary} className={expanded ? "user-questions-submit" : undefined} variant={expanded ? "primary" : "ghost"} disabled={expanded && (!final || blocked)} busy={expanded && submitting} title={expanded && !final ? "Review the remaining questions before submitting" : undefined} aria-label={expanded ? submitting ? "Submitting answers" : "Submit answers" : undefined} aria-expanded={presented && !expanded ? false : undefined} aria-controls={presented && !expanded ? `user-questions-${form.id}-editor` : undefined} aria-haspopup={presented ? undefined : "dialog"} onClick={event => expanded ? void questions.mutate(form.id, "submit") : presented ? questions.open(form.id) : show("answers", event.currentTarget)}>{expanded ? "Submit" : presented ? questions.editable ? "Answer" : "View questions" : form.status === "submitted" ? "View answers" : "View questions"}</ChatButton>
+        {expanded && onExplain && <ChatButton variant="ghost" data-question-focus="explain" disabled={!active || explainDisabled} onClick={event => onExplain({ kind: "question", formId: form.id, questionIndex: pageIndex }, `Can you explain Question ${pageIndex + 1}`, event.currentTarget)}>Explain</ChatButton>}
+        {!expanded && <ChatButton ref={primary} variant="ghost" aria-expanded={presented ? false : undefined} aria-controls={presented ? `user-questions-${form.id}-editor` : undefined} aria-haspopup={presented ? undefined : "dialog"} onClick={event => presented ? questions.open(form.id) : show("answers", event.currentTarget)}>{presented ? questions.editable ? "Answer" : "View questions" : form.status === "submitted" ? "View answers" : "View questions"}</ChatButton>}
         <ChatOverflowMenu label="Questionnaire actions" attention={draft.conflict || !!draft.error || !!draft.operation?.uncertain || !!tool?.error || form.delivery?.state === "paused"} items={items} />
-      </>} />
+      </>}>
+      {!expanded && <div className="user-questions-header-state">{progress}</div>}
+    </ChatCardHeader>
     <div className="user-questions-content">
     {needsFeedback && <ChatCardBody className="user-questions-feedback"><QuestionsFeedback questions={questions} draft={draft} readOnlyReason={readOnlyReason} /></ChatCardBody>}
     {tool?.error && <ChatNotice tone="warning" role="alert">The question tool reported an error. The saved questionnaire is retained; inspect Tool details before retrying.</ChatNotice>}
     {form.status === "submitted" && (form.delivery?.state === "paused" || form.delivery?.state === "unknown" || !form.delivery) && <ChatCardBody className="user-questions-feedback"><ChatNotice tone="warning"><DeliveryStatus form={form} />{form.delivery?.reason && <p className="user-questions-delivery-detail">{form.delivery.reason}</p>}{form.delivery?.state === "paused" && <ChatButton variant="primary" disabled={blocked} onClick={() => void questions.mutate(form.id, "resume")}>Resume delivery</ChatButton>}</ChatNotice></ChatCardBody>}
     {presented && <div id={`user-questions-${form.id}-editor`} hidden={!expanded} onFocusCapture={() => { focused.current = true; }} onBlurCapture={event => { if (event.relatedTarget instanceof Node) focused.current = event.currentTarget.contains(event.relatedTarget); }}>
-      <QuestionsEditor key={`${questions.scopeKey}:${form.id}`} questions={questions} draft={draft} page={pageIndex} />
+      <QuestionsEditor key={`${questions.scopeKey}:${form.id}`} questions={questions} draft={draft} page={pageIndex} navigation={navigation} active={active} />
     </div>}
     </div>
     {active && view && createPortal(<ChatDialog title={view === "dismiss" ? "Dismiss questions?" : view === "tool" ? "Question tool details" : view === "details" ? "Questionnaire details" : form.status === "submitted" ? "Submitted answers" : "Questions"} subtitle={form.input.title} size="wide" close={() => setView(null)} restoreFocus={() => trigger.current}>

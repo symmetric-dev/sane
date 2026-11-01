@@ -137,19 +137,21 @@ class QuestionsSession {
       if (this.writable && draft.dirty && !draft.operation && !draft.conflict && !draft.error) void this.mutate(draft.form.id, "answers", true);
     }
   };
-  edit = (id: string, index: number, answer: UserQuestionAnswer) => {
+  /** True confirms local draft acceptance only; persistence is still autosaved. */
+  edit = (id: string, index: number, answer: UserQuestionAnswer): boolean => {
     const draft = this.find(id);
     if (!this.writable || !this.allowEndpoint() || this.state.loading || this.state.error || !draft || draft.form.status !== "presented"
-      || draft.operation && draft.operation.kind !== "answers" || !Number.isInteger(index) || index < 0 || index >= draft.answers.length) return;
+      || draft.operation && draft.operation.kind !== "answers" || !Number.isInteger(index) || index < 0 || index >= draft.answers.length) return false;
     try {
       const answers = parseUserQuestionAnswers(draft.form.input, draft.answers.map((value, i) => i === index ? answer : value));
       this.update(id, current => ({ ...current, answers, edit: current.edit + 1, dirty: !sameAnswers(answers, current.form.answers),
         error: current.operation || current.conflict ? current.error : "" }));
     } catch (error) {
       this.update(id, current => ({ ...current, error: `Answer not saved: ${message(error)}` }));
-      return;
+      return false;
     }
     this.schedule(id);
+    return true;
   };
   private merge(form: UserQuestionsRecord) {
     const current = this.find(form.id);
@@ -362,7 +364,7 @@ export function useUserQuestions(scope: UserQuestionsScope | null, { enabled, ed
       // appeared after the close button was rendered.
       if (canClose && draft && settledState(draft) !== null && session?.snapshot().view === activeView) session.setView(null);
     },
-    edit: (id: string, index: number, answer: UserQuestionAnswer) => session?.edit(id, index, answer),
+    edit: (id: string, index: number, answer: UserQuestionAnswer) => session?.edit(id, index, answer) ?? false,
     mutate: (id: string, kind: Operation["kind"]) => session?.mutate(id, kind),
     reconcile: (id: string) => session?.reconcile(id), reload: (id: string) => session?.reload(id), retry: () => void session?.read(),
   };

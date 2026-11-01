@@ -62,7 +62,7 @@ function createInputSizer(element: HTMLTextAreaElement) {
 }
 
 /** DOM owns in-progress edits/IME. Polling must never rewrite the live buffer. */
-export function ChatInput({ text, save, submit, pathsActive = true, sendButton, ...props }: Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "defaultValue" | "onChange" | "onInput"> & { text: string; save: (text: string) => void; submit: () => void; pathsActive?: boolean; sendButton?: ReactNode }) {
+export function ChatInput({ text, save, submit, pathsActive = true, sendButton, normalizeText, onCompositionChange, onCompositionInput, ...props }: Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "defaultValue" | "onChange" | "onInput"> & { text: string; save: (text: string) => void; submit: () => void; pathsActive?: boolean; sendButton?: ReactNode; normalizeText?: (text: string) => string; onCompositionChange?: (composing: boolean) => void; onCompositionInput?: (text: string) => void }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const sizing = useRef<ReturnType<typeof createInputSizer> | null>(null);
   const composing = useRef(false);
@@ -108,12 +108,22 @@ export function ChatInput({ text, save, submit, pathsActive = true, sendButton, 
     }
   }, [text]);
   useLayoutEffect(() => { sizing.current?.resize(); }, [props.className, props.style, props.wrap, props.dir, props.lang]);
-  const textarea = <textarea rows={1} {...props} {...paths.aria} ref={input} defaultValue={initialText.current}
-    onInput={event => { sizing.current?.resize(); save(event.currentTarget.value); paths.onInput(!!(event.nativeEvent as InputEvent).isComposing); }}
+  const saveInput = (element: HTMLTextAreaElement, isComposing: boolean) => {
+    // Keep raw composition in the DOM; normalization must wait for confirmation.
+    if (normalizeText && isComposing) { onCompositionInput?.(element.value); return; }
+    const value = normalizeText ? normalizeText(element.value) : element.value;
+    if (element.value !== value) element.value = value;
+    sizing.current?.resize();
+    save(value);
+  };
+  const textarea = <textarea rows={1} {...props} {...(pathsActive ? paths.aria : {})} ref={input} defaultValue={initialText.current}
+    onInput={event => { const isComposing = composing.current || !!(event.nativeEvent as InputEvent).isComposing; sizing.current?.resize(); saveInput(event.currentTarget, isComposing); paths.onInput(isComposing); }}
     onSelect={() => paths.refresh()} onFocus={() => paths.onFocus()} onBlur={() => paths.dismiss()}
-    onCompositionStart={() => { composing.current = true; paths.onCompositionStart(); }}
-    onCompositionEnd={event => { composing.current = false; sizing.current?.resize(); save(event.currentTarget.value); paths.onCompositionEnd(); }}
+    onCompositionStart={event => { composing.current = true; onCompositionChange?.(true); paths.onCompositionStart(); props.onCompositionStart?.(event); }}
+    onCompositionEnd={event => { composing.current = false; onCompositionChange?.(false); saveInput(event.currentTarget, false); paths.onCompositionEnd(); props.onCompositionEnd?.(event); }}
     onKeyDown={event => {
+      props.onKeyDown?.(event);
+      if (event.defaultPrevented) return;
       if (paths.onKeyDown(event)) return;
       // Plain Enter is a native newline on every device. Only the explicit
       // Ctrl/Cmd+Enter shortcut submits; IME confirmation never does.

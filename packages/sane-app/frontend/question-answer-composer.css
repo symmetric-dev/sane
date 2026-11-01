@@ -1,0 +1,18 @@
+.composer-input-slot { display:contents; }
+.composer-input-slot[hidden] { display:none; }
+
+/* This is one toolbar chip, not an additional composer row. Its progress label
+   stays visible at the narrow breakpoints that collapse ordinary agent labels. */
+.question-answer-chip { display:inline-flex; align-items:center; flex-shrink:0; min-width:0; min-height:36px; margin:0; padding:0; border:1px solid var(--border); border-radius:8px; color:var(--foreground); background:var(--muted); white-space:nowrap; }
+.question-answer-chip > button { display:inline-flex; align-items:center; justify-content:center; min-height:34px; padding:4px 8px; font-size:12px; }
+.question-answer-chip-label { border-radius:7px 0 0 7px; }
+.question-answer-chip-cancel { border-radius:0 7px 7px 0; }
+.question-answer-chip > button:hover:not(:disabled) { background:var(--accent); }
+.question-answer-chip > button:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+@container composer (max-width:380px) {
+  .question-answer-chip-label { padding-inline:4px; font-size:11px; }
+}
+@media (pointer:coarse) {
+  .question-answer-chip > button { min-height:38px; }
+  .question-answer-chip-cancel { min-width:40px; }
+}

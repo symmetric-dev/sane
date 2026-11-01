@@ -54,12 +54,12 @@ export function RequestToggle({ checked, children, onChange, disabled }: { check
 
 /** Toggle buttons keep keyboard and screen-reader behavior without native radio/checkbox chrome. */
 export function RequestChoices({ options, values, multiple = false, disabled, label, choose }: {
-  options: { value: string; label: string; description?: string }[]; values: string[];
+  options: { value: string; label: string; description?: string; shortcut?: string }[]; values: string[];
   multiple?: boolean; disabled: boolean; label: string; choose: (value: string) => void;
 }) {
   const id = useId();
   return <div className="request-choices" role="group" aria-label={label}>
-    {options.map((option, index) => <button type="button" key={option.value} className="request-choice" disabled={disabled} aria-pressed={values.includes(option.value)} aria-labelledby={`${id}-${index}-label`} aria-describedby={option.description ? `${id}-${index}-description` : undefined} onClick={() => choose(option.value)}>
+    {options.map((option, index) => <button type="button" key={option.value} className="request-choice" disabled={disabled} aria-pressed={values.includes(option.value)} aria-keyshortcuts={option.shortcut} aria-labelledby={`${id}-${index}-label`} aria-describedby={option.description ? `${id}-${index}-description` : undefined} onClick={() => choose(option.value)}>
       <span className={`request-choice-mark${multiple ? " is-multiple" : ""}`} aria-hidden="true">{values.includes(option.value) && <FiCheck size={12} />}</span>
       <span className="request-choice-copy"><span id={`${id}-${index}-label`}>{option.label}</span>{option.description && <small id={`${id}-${index}-description`}>{option.description}</small>}</span>
     </button>)}
